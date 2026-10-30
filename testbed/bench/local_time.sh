@@ -255,7 +255,8 @@ local_time_validate_relay() {
      else .State.Running==false and .State.Status=="created" end) and
     .HostConfig.ReadonlyRootfs==true and .HostConfig.Privileged==false and .HostConfig.AutoRemove==false and
     .HostConfig.CapDrop==["ALL"] and (.HostConfig.CapAdd==null or .HostConfig.CapAdd==[]) and
-    .HostConfig.SecurityOpt==["no-new-privileges:true"] and (.HostConfig.Sysctls==null or .HostConfig.Sysctls=={}) and
+    .HostConfig.SecurityOpt==["no-new-privileges:true"] and
+    .HostConfig.Sysctls=={"net.ipv4.ip_forward":"0","net.ipv6.conf.all.forwarding":"0"} and
     .HostConfig.PidMode=="" and .HostConfig.IpcMode=="private" and .HostConfig.UTSMode=="" and .HostConfig.UsernsMode=="" and
     (.HostConfig.Devices==null or .HostConfig.Devices==[]) and (.HostConfig.DeviceRequests==null or .HostConfig.DeviceRequests==[]) and
     (.HostConfig.DeviceCgroupRules==null or .HostConfig.DeviceCgroupRules==[]) and (.HostConfig.VolumesFrom==null or .HostConfig.VolumesFrom==[]) and
@@ -339,6 +340,7 @@ with os.fdopen(fd,"w") as f:json.dump(value,f,separators=(",",":"));f.write("\n"
     --arg config "$LOCAL_TIME_RELAY_CONFIG" --arg cpu "$LOCAL_TIME_CPU" --arg project "$COMPOSE_PROJECT_NAME" --argjson ports "$ports" '
     {services:{"time-relay":{image:$image,container_name:($project+"-time-relay"),user:$owner,read_only:true,
       cap_drop:["ALL"],security_opt:["no-new-privileges:true"],cpuset:$cpu,cpus:1,mem_limit:"128m",pids_limit:128,
+      sysctls:{"net.ipv4.ip_forward":"0","net.ipv6.conf.all.forwarding":"0"},
       labels:{"io.lantern.bench-time.profile":"bench_local_udp_v1","lantern.owner":"bench-local-tcp-relay"},networks:["default","frontend"],
       entrypoint:["/fixture/ntpfixture"],command:["-relay-config","/fixture/relay.json"],ports:$ports,
       volumes:[{type:"bind",source:$helper,target:"/fixture/ntpfixture",read_only:true,bind:{create_host_path:false,propagation:"rprivate"}},

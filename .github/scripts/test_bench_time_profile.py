@@ -117,7 +117,8 @@ def fixture(root, expected=None, receipt=True):
     relay_config_ref = write(root / "time-source-evidence/relay.json", relay_config)
     relay_executable_ref = write(root / "time-source-evidence/relay-executable.sha256",
                                  (helper["sha256"] + "  /proc/1/exe\n").encode(), True)
-    relay["HostConfig"].update(Sysctls={}, NanoCpus=1000000000, Memory=134217728, PidsLimit=128)
+    relay["HostConfig"].update(Sysctls={"net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0"},
+                               NanoCpus=1000000000, Memory=134217728, PidsLimit=128)
     relay["HostConfig"]["Mounts"].append({"Type": "bind", "Source": relay_config_ref["path"], "Target": "/fixture/relay.json", "ReadOnly": True})
     relay["Mounts"].append({"Type": "bind", "Source": "/host_mnt" + relay_config_ref["path"], "Destination": "/fixture/relay.json",
                             "Mode": "ro", "RW": False, "Propagation": "rprivate"})
@@ -363,6 +364,25 @@ class TimeProfileTest(unittest.TestCase):
                     if kind == "protected-metrics": row["HostConfig"]["PortBindings"]["9090/tcp"] = [{"HostIp": "127.0.0.1", "HostPort": "9390"}]
                 self.alter("pre", "relay", change)
             with self.subTest(kind=kind), self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+
+    def test_exact_container_forwarding_settings_and_actual_zero_read_facts(self):
+        self.assertEqual(profile.validate_case(self.root, self.expected)["verdict"], "pass")
+        expected = {"net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0"}
+        for settings in (None, {}, {"net.ipv4.ip_forward": "0"},
+                         {**expected, "net.ipv4.ip_forward": "1"},
+                         {**expected, "net.ipv6.conf.all.forwarding": "1"},
+                         {**expected, "net.ipv4.ip_forward": 0},
+                         {**expected, "net.ipv4.conf.all.forwarding": "0"}):
+            with self.subTest(settings=settings):
+                fixture(self.root)
+                self.alter("pre", "relay", lambda x: x["HostConfig"].update(Sysctls=settings))
+                with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+        for key, actual in (("ipv4_forwarding", "1\n"), ("ipv6_forwarding", "1\n"),
+                            ("ipv6_forwarding", "absent"), ("ipv4_forwarding", "0")):
+            fixture(self.root)
+            self.alter("pre", "relay_status", lambda x: x.update({key: actual}))
+            with self.subTest(key=key, actual=actual), self.assertRaises(profile.Incomplete):
+                profile.validate_case(self.root, self.expected)
 
 
 if __name__ == "__main__":

@@ -361,7 +361,7 @@ def _relay_status(value, config_sha):
          and type(value["pid"]) is int and value["pid"] == 1
          and type(value["start_nonce"]) is str and HEX64.fullmatch(value["start_nonce"])
          and value["config_sha256"] == config_sha and value["ipv4_forwarding"] == "0\n"
-         and value["ipv6_forwarding"] in ("0\n", "absent")
+         and value["ipv6_forwarding"] == "0\n"
          and all(integer(value[k]) and value[k] < 2**64 - 1 for k in
                  ("accepted", "active", "completed", "rejected", "dial_failure", "copy_failure"))
          and value["active"] <= 4096 and value["accepted"] == value["active"] + value["completed"],
@@ -406,7 +406,8 @@ def _relay(value, backend, frontend, expected, helper, config_path, routes):
     need(hc["ReadonlyRootfs"] is True and hc["Privileged"] is False and hc["AutoRemove"] is False
          and hc["CapDrop"] == ["ALL"] and hc["SecurityOpt"] == ["no-new-privileges:true"]
          and hc["PidMode"] == hc["UTSMode"] == hc["UsernsMode"] == "" and hc["IpcMode"] in ("", "private")
-         and hc["Sysctls"] in (None, {}) and hc["CpusetCpus"] == "4"
+         and hc["Sysctls"] == {"net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0"}
+         and hc["CpusetCpus"] == "4"
          and hc["NanoCpus"] == 1000000000 and type(hc["NanoCpus"]) is int
          and hc["Memory"] == 134217728 and type(hc["Memory"]) is int
          and hc["PidsLimit"] == 128 and type(hc["PidsLimit"]) is int

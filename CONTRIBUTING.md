@@ -166,7 +166,9 @@ An internal-only Docker backend cannot publish host ports. The controlled
 profile uses a separate fixed-destination raw TCP relay for localhost access;
 Servers and the time fixture retain their internal-only attachment. The relay
 does not terminate TLS or forward UDP/DNS/arbitrary destinations, and refuses
-enabled or unknown namespace IP forwarding without changing it. Its extra hop,
+enabled or unknown namespace IP forwarding. Docker sets only that relay
+container's namespaced IPv4/IPv6 forwarding to zero; the helper verifies the
+actual values before opening listeners. Its extra hop,
 remote-address change and fixed resources are declared in both lanes. No old
 direct-published measurement is carried into that profile, and no global Docker,
 OS, firewall, DNS, routing or clock configuration is changed.

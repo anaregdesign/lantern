@@ -181,8 +181,11 @@ the existing canonical OFF diagnostics). Relay destinations are immutable,
 literal private addresses observed from that cohort. TLS/HTTP2 bytes pass
 through without termination. There is no UDP, DNS, CONNECT or arbitrary-target
 forwarding; protected receipt metrics retain the existing Docker-exec collector.
-The relay refuses startup unless its own namespace already has IP forwarding
-disabled. It changes no host/daemon/global firewall, DNS, route or clock setting.
+The relay declares `net.ipv4.ip_forward: "0"` and
+`net.ipv6.conf.all.forwarding: "0"` through Docker's container-scoped sysctls.
+Its helper verifies actual namespace forwarding before opening listeners and
+refuses enabled or unknown values. It changes no host/daemon/global firewall,
+DNS, route or clock setting.
 
 The relay is an additional network hop and changes the connection's remote
 address. Its fixed code, configuration, resources and both network attachments
@@ -195,9 +198,10 @@ negative restart reads the new process's actual native-time refusal, rather than
 inferring refusal from a relay connection failure.
 
 Formal load runs require explicit `LANTERN_BENCH_CPUSET=0-3` and at least five
-Docker CPUs: all three Servers share CPUs 0–3 and the fixture uses CPU 4. The
+Docker CPUs: all three Servers share CPUs 0–3; the fixture (0.25 CPU, 64 MiB,
+64 PIDs) and relay (1 CPU, 128 MiB, 128 PIDs) use CPU 4. The
 short `search_qualification` correctness scenario may keep its existing Server
-placement and share a CPU with its fixture; it records that placement explicitly
+placement and share a CPU with its fixture and relay; it records that placement explicitly
 and cannot supply a formal matrix case. Its own correctness/performance checks
 remain blocking. No extra Server CPU capacity is inferred from fixture placement.
 
