@@ -3635,7 +3635,7 @@ func goroutinePolicyFragment(t *testing.T, start, end string) string {
 	return start + body
 }
 
-func runGoroutinePolicyShell(t *testing.T, fixture string, env ...string) ([]byte, error, int) {
+func runGoroutinePolicyShell(t *testing.T, fixture string, env ...string) ([]byte, int, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -3649,7 +3649,7 @@ func runGoroutinePolicyShell(t *testing.T, fixture string, env ...string) ([]byt
 	if command.ProcessState != nil {
 		code = command.ProcessState.ExitCode()
 	}
-	return output, err, code
+	return output, code, err
 }
 
 func TestReceiptGoroutinePolicyScope(t *testing.T) {
@@ -3827,7 +3827,7 @@ yq() {
 			for key, value := range values {
 				env = append(env, key+"="+value)
 			}
-			output, _, code := runGoroutinePolicyShell(t, fixture, env...)
+			output, code, _ := runGoroutinePolicyShell(t, fixture, env...)
 			admitted, err := os.ReadFile(filepath.Join(dir, "admitted"))
 			if test.want {
 				want := "0"
@@ -4033,7 +4033,7 @@ func TestReceiptGoroutinePolicyFamilyProfile(t *testing.T) {
 			fixture, env := goroutinePolicyShellFixture(t)
 			dir := strings.TrimPrefix(env[0], "OUTDIR=")
 			fixture += fmt.Sprintf("\nSCENARIO_NAME=%q\ntarget_driver=%q\ngoroutine_policy_profile \"$OUTDIR/profile.json\" 1\n", family.scenario, family.driver)
-			output, err, _ := runGoroutinePolicyShell(t, fixture, env...)
+			output, _, err := runGoroutinePolicyShell(t, fixture, env...)
 			if err != nil {
 				t.Fatalf("family profile: %v %s", err, output)
 			}
@@ -4103,7 +4103,7 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 			if test.badReturn {
 				env = append(env, "FIX_PHASE_FAILURE=steady")
 			}
-			output, err, _ := runGoroutinePolicyShell(t, fixture, env...)
+			output, _, err := runGoroutinePolicyShell(t, fixture, env...)
 			if err != nil {
 				t.Fatalf("fake post path: %v %s", err, output)
 			}
@@ -4181,7 +4181,7 @@ curl() {
  printf '%s\n' 'lantern_changes_active_streams 0' 'lantern_subscribe_active_streams 2' 'lantern_anti_entropy_cycles_total 1' 'lantern_peer_connected{peer="https://peer-1:6381"} 1' 'lantern_peer_connected{peer="https://peer-2:6381"} 1' 'arbitrary_private_metric{value="do-not-retain"} 1'
 }
 ` + receiptSnapshotShellFunctions(t) + "\nsnapshot_runtime \"$OUTDIR/runtime_pre.json\"\n"
-		output, err, _ := runGoroutinePolicyShell(t, fixture, "OUTDIR="+dir, "CONTEXT_METRICS="+receiptRuntimeContextMetrics)
+		output, _, err := runGoroutinePolicyShell(t, fixture, "OUTDIR="+dir, "CONTEXT_METRICS="+receiptRuntimeContextMetrics)
 		if err != nil {
 			t.Fatalf("same-response PRE: %v %s", err, output)
 		}
@@ -4244,7 +4244,7 @@ render_report() { printf 'versioned result\n' > "$OUTDIR/report.md"; }
 trap cleanup EXIT
 ` + final
 			env = append(env, "FIX_LEGACY_VERDICT="+test.legacy, "FIX_COMPOSED_VERDICT="+test.composed, "FIX_POLICY_VERDICT="+test.policy, "FIX_PERF_VERDICT="+test.perf)
-			output, _, code := runGoroutinePolicyShell(t, fixture, env...)
+			output, code, _ := runGoroutinePolicyShell(t, fixture, env...)
 			if code != test.want {
 				t.Fatalf("composed exit=%d want=%d output=%s", code, test.want, output)
 			}
