@@ -570,6 +570,34 @@ blocking. The natural POST +32 MiB comparison is recorded as an observation,
 separate from the retained verdict. A normal-only result requires its pair and
 cannot declare overall memory acceptance.
 
+Issue #1960 also has a local, normal-image EdgeDelete prototype, selected only
+with `LANTERN_BENCH_GOROUTINE_CANDIDATE=1` for `receipt_admission_lookup`.
+Its separate `receipt_goroutine_candidate_v1` result tests the candidate absolute
+sampled limit of 128 and baseline-relative +15 at the unchanged natural POST
+point AND both fixed t0+5s and t0+10s readings, each later reading within a 3s
+window. These numbers are not adopted release criteria
+and do not apply to the other receipt scenarios. The existing +15 evaluator,
+`leak_gate.json` and exit status remain unchanged; the candidate result always
+has `release_admission=false`.
+
+The prototype uses the exact existing PRE and steady samples. It anchors t0
+after the existing 10s cooldown, semantic verification and completion/reaping
+of the declared client work, immediately before the unchanged natural POST
+memory snapshot. That existing point is ordered after t0 and uses three
+sequential per-node scrapes; it is not an atomic t0+0 observation. The two fixed
+readings are approximately steady-end+15s/+20s, not +5s/+10s from the last RPC.
+Hash-bound warmup and steady coordinator-return records distinguish the two
+synchronously returned client phases from their two logical RPC report families.
+Its two later readings neither postpone that snapshot nor trigger GC. A missed
+window, unmatched process/configuration/peer/observer premise or missing work
+evidence is INCOMPLETE, without another reading or a shifted t0. Native owners
+and connections stay alive. Passive normal gauges describe only their existing
+stream/peer coverage; the bounded residual screen does not prove global idle,
+owner joins or absence of small leaks. Tagged memory runs cannot select this
+prototype. Historical failures, including the saved +16 steady growth, retain
+their original verdicts. See #1960 for the prospective review, calibration and
+adoption requirements before any criterion changes.
+
 Measurement runs use `symmetric_post_gc_2_v1`. After warmup and after the unchanged
 load/cooldown, each target performs exactly two synchronous completed full GC
 cycles, then immediately reads MemStats and last-marked-live metrics before

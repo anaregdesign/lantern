@@ -147,6 +147,12 @@ type resultSet struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "collect-goroutine-post" {
+		os.Exit(runGoroutinePostCollection(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "evaluate-goroutine-policy" {
+		os.Exit(runGoroutinePolicyEvaluation(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "evaluate-leak" {
 		os.Exit(runReceiptLeakEvaluation(os.Args[2:]))
 	}

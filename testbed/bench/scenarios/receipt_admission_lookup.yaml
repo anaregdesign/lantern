@@ -55,3 +55,12 @@ leak_gate:
   heap_alloc_max_delta_mb: 32
   steady_heap_alloc_max_delta_mb: 40
   steady_sample_interval: 5s
+
+# Local prototype only (#1960). The legacy leak_gate above stays operative.
+# These candidates are not adopted budgets or budgets for other operations.
+goroutine_candidate:
+  protocol: receipt_goroutine_candidate_v1
+  sampled_absolute_max: 128
+  post_max_delta: 15
+  post_offsets_seconds: [5, 10]
+  capture_window_seconds: 3
