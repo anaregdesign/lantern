@@ -753,7 +753,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		`-metrics-endpoints "$metrics_urls"`,
 		`-metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"`,
 		`-metrics-report "$OUTDIR/runtime_steady.json"`,
-		`go run ./testbed/bench/receiptprobe evaluate-leak`,
+		`"${leak_evaluator[@]}" evaluate-leak`,
 		`-steady "$OUTDIR/runtime_steady.json"`,
 		`-duration "$steady_duration"`,
 		`-max-goroutines "$g_thresh"`,
@@ -782,7 +782,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	}
 	steadySampling := strings.Index(string(runScript), `-metrics-report "$OUTDIR/runtime_steady.json"`)
 	optionalCapture := strings.LastIndex(string(runScript), `if [[ "${LEAK_GATE_ONLY:-0}" == "1" ]]`)
-	receiptEvaluation := strings.Index(string(runScript), `go run ./testbed/bench/receiptprobe evaluate-leak`)
+	receiptEvaluation := strings.Index(string(runScript), `"${leak_evaluator[@]}" evaluate-leak`)
 	if steadySampling < 0 || optionalCapture < 0 || receiptEvaluation < 0 ||
 		steadySampling >= optionalCapture || receiptEvaluation <= optionalCapture {
 		t.Error("receipt steady sampling and its leak verdict must stay active with LEAK_GATE_ONLY=1")
@@ -1702,7 +1702,7 @@ func receiptSnapshotShellFunctions(t *testing.T) string {
 	if !found {
 		t.Fatal("run.sh receipt_runtime_scalar and snapshot_runtime do not precede run_ghz")
 	}
-	return "goroutine_candidate=${goroutine_candidate:-0}\nreceipt_runtime_scalar() {\n" + body + "\n}\n"
+	return "goroutine_policy=${goroutine_policy:-0}\nreceipt_runtime_scalar() {\n" + body + "\n}\n"
 }
 
 func TestReceiptBenchEdgeAddPreparationBoundary(t *testing.T) {
@@ -3616,7 +3616,7 @@ exit 23
 	}
 }
 
-func goroutineCandidateFragment(t *testing.T, start, end string) string {
+func goroutinePolicyFragment(t *testing.T, start, end string) string {
 	t.Helper()
 	raw, err := os.ReadFile("run.sh")
 	if err != nil {
@@ -3624,18 +3624,18 @@ func goroutineCandidateFragment(t *testing.T, start, end string) string {
 	}
 	_, body, ok := strings.Cut(string(raw), start)
 	if !ok {
-		t.Fatalf("candidate source start missing: %q", start)
+		t.Fatalf("policy source start missing: %q", start)
 	}
 	if end != "" {
 		body, _, ok = strings.Cut(body, end)
 		if !ok {
-			t.Fatalf("candidate source end missing: %q", end)
+			t.Fatalf("policy source end missing: %q", end)
 		}
 	}
 	return start + body
 }
 
-func runGoroutineCandidateShell(t *testing.T, fixture string, env ...string) ([]byte, error, int) {
+func runGoroutinePolicyShell(t *testing.T, fixture string, env ...string) ([]byte, error, int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -3643,7 +3643,7 @@ func runGoroutineCandidateShell(t *testing.T, fixture string, env ...string) ([]
 	command.Env = append(os.Environ(), env...)
 	output, err := command.CombinedOutput()
 	if ctx.Err() != nil {
-		t.Fatalf("bounded fake candidate fixture timed out: %s", output)
+		t.Fatalf("bounded fake policy fixture timed out: %s", output)
 	}
 	code := -1
 	if command.ProcessState != nil {
@@ -3652,70 +3652,156 @@ func runGoroutineCandidateShell(t *testing.T, fixture string, env ...string) ([]
 	return output, err, code
 }
 
-func TestReceiptGoroutineCandidateScope(t *testing.T) {
+func TestReceiptGoroutinePolicyScope(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
-		t.Fatal("candidate scope fixture requires jq", err)
+		t.Fatal("policy scope fixture requires jq", err)
 	}
-	mode := goroutineCandidateFragment(t, `goroutine_candidate="${LANTERN_BENCH_GOROUTINE_CANDIDATE:-0}"`, "\nGOROUTINE_PROBE=")
-	guard := goroutineCandidateFragment(t, "if [[ \"$goroutine_candidate\" == \"1\" ]]; then\n  [[ \"$SCENARIO_NAME\"", "\nif [[ \"$retained_heap\" == \"1\" ]]; then")
-	raw, err := os.ReadFile("scenarios/receipt_admission_lookup.yaml")
-	if err != nil {
-		t.Fatal(err)
+	mode := goroutinePolicyFragment(t, "goroutine_policy=0\n", "\nGOROUTINE_PROBE=")
+	guard := goroutinePolicyFragment(t, "# The four normal receipt families require the operative policy.", "\nif [[ \"$retained_heap\" == \"1\" ]]; then")
+	families := []struct{ scenario, driver string }{
+		{"receipt_admission_lookup", "receipt_edge_delete"},
+		{"receipt_vertex_put_admission_lookup", "receipt_vertex_put"},
+		{"receipt_vertex_delete_admission_lookup", "receipt_vertex_delete"},
+		{"receipt_edge_add_admission_lookup", "receipt_edge_add"},
 	}
-	var scenario struct {
-		Candidate map[string]any `yaml:"goroutine_candidate"`
-		Leak      struct {
-			Goroutines int `yaml:"goroutine_max_delta"`
-		} `yaml:"leak_gate"`
+	var profile, scenarioProfile []byte
+	scenarioProfiles := map[string][]byte{}
+	for _, family := range families {
+		raw, err := os.ReadFile("scenarios/" + family.scenario + ".yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var scenario struct {
+			Policy map[string]any `yaml:"goroutine_policy"`
+			Leak   struct {
+				Goroutines int `yaml:"goroutine_max_delta"`
+			} `yaml:"leak_gate"`
+		}
+		if err := yaml.Unmarshal(raw, &scenario); err != nil {
+			t.Fatal(err)
+		}
+		if scenario.Leak.Goroutines != 15 {
+			t.Fatal("policy changed the legacy/tagged scenario budget")
+		}
+		var document map[string]any
+		if err := yaml.Unmarshal(raw, &document); err != nil {
+			t.Fatal(err)
+		}
+		scenarioProfiles[family.scenario], err = json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scenarioProfile == nil {
+			scenarioProfile = scenarioProfiles[family.scenario]
+		}
+		value, err := json.Marshal(scenario.Policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if profile == nil {
+			profile = value
+		} else if string(profile) != string(value) {
+			t.Fatal("four policy budgets differ")
+		}
 	}
-	if err := yaml.Unmarshal(raw, &scenario); err != nil {
-		t.Fatal(err)
-	}
-	if scenario.Leak.Goroutines != 15 {
-		t.Fatal("candidate changed the operative legacy scenario budget")
-	}
-	profile, err := json.Marshal(scenario.Candidate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
+	tests := []struct {
 		name     string
 		changes  map[string]string
 		budget   string
-		disabled bool
+		want     bool
+		selected bool
 	}{
-		{name: "normal EdgeDelete"},
-		{name: "disabled default ignores candidate prerequisites", disabled: true, changes: map[string]string{"FIX_RETAINED": "1", "FIX_KEEP": "1", "FIX_COMMIT": "", "FIX_DRIVER": "ghz"}, budget: "null"},
-		{name: "invalid mode", changes: map[string]string{"FIX_MODE": "2"}},
-		{name: "tagged", changes: map[string]string{"FIX_RETAINED": "1"}},
+		{name: "tagged has no normal policy", changes: map[string]string{"FIX_RETAINED": "1", "FIX_COMMIT": ""}, budget: "null", want: true},
+		{name: "nonreceipt has no normal policy", changes: map[string]string{"FIX_RECEIPT": "0", "FIX_DRIVER": "ghz", "FIX_COMMIT": ""}, budget: "null", want: true},
+		{name: "concurrency differs", changes: map[string]string{"FIX_PROFILE_MUTATION": "concurrency"}},
+		{name: "rate differs", changes: map[string]string{"FIX_PROFILE_MUTATION": "rate"}},
+		{name: "topology differs", changes: map[string]string{"FIX_PROFILE_MUTATION": "topology"}},
+		{name: "duration differs", changes: map[string]string{"FIX_PROFILE_MUTATION": "duration"}},
+		{name: "WAL differs", changes: map[string]string{"FIX_PROFILE_MUTATION": "wal"}},
+		{name: "perf differs", changes: map[string]string{"FIX_PROFILE_MUTATION": "perf"}},
+		{name: "extra metric_gate", changes: map[string]string{"FIX_PROFILE_MUTATION": "metric_gate"}},
+		{name: "extra semantic_gate", changes: map[string]string{"FIX_PROFILE_MUTATION": "semantic_gate"}},
+		{name: "extra lifecycle_gate", changes: map[string]string{"FIX_PROFILE_MUTATION": "lifecycle_gate"}},
+		{name: "extra preflight", changes: map[string]string{"FIX_PROFILE_MUTATION": "preflight"}},
 		{name: "keep up", changes: map[string]string{"FIX_KEEP": "1"}},
 		{name: "skip up", changes: map[string]string{"FIX_SKIP": "1"}},
-		{name: "different family", changes: map[string]string{"FIX_DRIVER": "receipt_vertex_put"}},
-		{name: "different case", changes: map[string]string{"FIX_SCENARIO": "receipt_edge_add_admission_lookup"}},
+		{name: "different case", changes: map[string]string{"FIX_SCENARIO": "write_heavy"}},
 		{name: "unpinned commit", changes: map[string]string{"FIX_COMMIT": ""}},
 		{name: "unpinned tree", changes: map[string]string{"FIX_TREE": ""}},
 		{name: "different cpuset", changes: map[string]string{"FIX_CPUSET": "0-7"}},
-		{name: "missing profile", budget: "null"},
-		{name: "changed budget", budget: `{"protocol":"receipt_goroutine_candidate_v1","sampled_absolute_max":129,"post_max_delta":15,"post_offsets_seconds":[5,10],"capture_window_seconds":3}`},
-		{name: "changed windows", budget: `{"protocol":"receipt_goroutine_candidate_v1","sampled_absolute_max":128,"post_max_delta":15,"post_offsets_seconds":[5,11],"capture_window_seconds":3}`},
-		{name: "changed residual", budget: `{"protocol":"receipt_goroutine_candidate_v1","sampled_absolute_max":128,"post_max_delta":16,"post_offsets_seconds":[5,10],"capture_window_seconds":3}`},
-		{name: "changed capture budget", budget: `{"protocol":"receipt_goroutine_candidate_v1","sampled_absolute_max":128,"post_max_delta":15,"post_offsets_seconds":[5,10],"capture_window_seconds":4}`},
+		{name: "missing policy", budget: "null"},
+		{name: "changed budget", budget: `{"protocol":"receipt_goroutine_operational_v1","sampled_absolute_max":129,"post_max_delta":15,"post_offsets_seconds":[5,10],"capture_window_seconds":3}`},
+		{name: "changed windows", budget: `{"protocol":"receipt_goroutine_operational_v1","sampled_absolute_max":128,"post_max_delta":15,"post_offsets_seconds":[5,11],"capture_window_seconds":3}`},
+		{name: "changed residual", budget: `{"protocol":"receipt_goroutine_operational_v1","sampled_absolute_max":128,"post_max_delta":16,"post_offsets_seconds":[5,10],"capture_window_seconds":3}`},
+		{name: "changed capture budget", budget: `{"protocol":"receipt_goroutine_operational_v1","sampled_absolute_max":128,"post_max_delta":15,"post_offsets_seconds":[5,10],"capture_window_seconds":4}`},
 		{name: "extra subscribers", changes: map[string]string{"FIX_SUBSCRIBERS": "1"}},
 		{name: "chaos", changes: map[string]string{"FIX_CHAOS": "lantern-1"}},
-	} {
+	}
+	for i, family := range families {
+		tests = append(tests, struct {
+			name     string
+			changes  map[string]string
+			budget   string
+			want     bool
+			selected bool
+		}{
+			name: family.driver + " required by default", changes: map[string]string{"FIX_SCENARIO": family.scenario, "FIX_DRIVER": family.driver}, want: true, selected: true})
+		tests = append(tests, struct {
+			name     string
+			changes  map[string]string
+			budget   string
+			want     bool
+			selected bool
+		}{
+			name: family.driver + " cross-family refusal", changes: map[string]string{"FIX_SCENARIO": family.scenario, "FIX_DRIVER": families[(i+1)%len(families)].driver}})
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
-			values := map[string]string{"FIX_MODE": "1", "FIX_RETAINED": "0", "FIX_KEEP": "0", "FIX_SKIP": "0", "FIX_DRIVER": "receipt_edge_delete", "FIX_SCENARIO": "receipt_admission_lookup", "FIX_COMMIT": strings.Repeat("a", 40), "FIX_TREE": strings.Repeat("b", 40), "FIX_CPUSET": "0-3", "FIX_SUBSCRIBERS": "0", "FIX_CHAOS": "", "FIX_PROFILE": string(profile)}
+			values := map[string]string{"FIX_RECEIPT": "1", "FIX_RETAINED": "0", "FIX_KEEP": "0", "FIX_SKIP": "0", "FIX_DRIVER": "receipt_edge_delete", "FIX_SCENARIO": "receipt_admission_lookup", "FIX_COMMIT": strings.Repeat("a", 40), "FIX_TREE": strings.Repeat("b", 40), "FIX_CPUSET": "0-3", "FIX_SUBSCRIBERS": "0", "FIX_CHAOS": "", "FIX_PROFILE": string(profile)}
 			for key, value := range test.changes {
 				values[key] = value
 			}
 			if test.budget != "" {
 				values["FIX_PROFILE"] = test.budget
 			}
+			var document map[string]any
+			sourceProfile := scenarioProfiles[values["FIX_SCENARIO"]]
+			if sourceProfile == nil {
+				sourceProfile = scenarioProfile
+			}
+			if err := json.Unmarshal(sourceProfile, &document); err != nil {
+				t.Fatal(err)
+			}
+			document["name"] = values["FIX_SCENARIO"]
+			target := document["target"].(map[string]any)
+			target["driver"] = values["FIX_DRIVER"]
+			call := map[string]string{"receipt_edge_delete": "DeleteEdge", "receipt_vertex_delete": "DeleteVertex", "receipt_vertex_put": "PutVertex", "receipt_edge_add": "AddEdge"}[values["FIX_DRIVER"]]
+			target["calls"].([]any)[0].(map[string]any)["call"] = "graph.v1.LanternService/" + call
+			switch values["FIX_PROFILE_MUTATION"] {
+			case "concurrency":
+				document["phases"].(map[string]any)["steady"].(map[string]any)["concurrency"] = 13
+			case "rate":
+				document["phases"].(map[string]any)["steady"].(map[string]any)["rps"] = 201
+			case "topology":
+				target["endpoints"] = []string{"localhost:6380", "localhost:6381"}
+			case "duration":
+				document["phases"].(map[string]any)["cooldown"] = "9s"
+			case "wal":
+				document["cluster"].(map[string]any)["receipt_wal"].(map[string]any)["max_entries"] = 8001
+			case "perf":
+				document["perf_gate"].(map[string]any)["min_steady_rps_total"] = 149
+			case "metric_gate", "semantic_gate", "lifecycle_gate", "preflight":
+				document[values["FIX_PROFILE_MUTATION"]] = map[string]any{}
+			}
+			raw, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values["FIX_SCENARIO_PROFILE"] = string(raw)
 			fixture := `set -euo pipefail
-unset LANTERN_BENCH_GOROUTINE_CANDIDATE
-if [[ "$FIX_DISABLED" == 0 ]]; then export LANTERN_BENCH_GOROUTINE_CANDIDATE="$FIX_MODE"; fi
 retained_heap="$FIX_RETAINED"
+receipt_driver="$FIX_RECEIPT"
 KEEP_UP="$FIX_KEEP"
 SKIP_UP="$FIX_SKIP"
 LEAK_GATE_ONLY=1
@@ -3728,26 +3814,31 @@ SCENARIO_FILE=fixture.yaml
 die() { printf 'refused: %s\n' "$*" >&2; exit 39; }
 yq() {
  case "$2" in
-  '.goroutine_candidate') printf '%s\n' "$FIX_PROFILE";;
+  '.goroutine_policy') printf '%s\n' "$FIX_PROFILE";;
+  '.') printf '%s\n' "$FIX_SCENARIO_PROFILE";;
   '.subscribe.count // 0') printf '%s\n' "$FIX_SUBSCRIBERS";;
   '.subscribe.consumers | length // 0') echo 0;;
   '.chaos.kill_target // ""') printf '%s\n' "$FIX_CHAOS";;
   *) return 91;;
  esac
 }
-` + mode + "\n" + guard + "\nprintf admitted > \"$OUTDIR/admitted\"\n"
-			env := []string{"OUTDIR=" + dir, "FIX_DISABLED=0"}
-			if test.disabled {
-				env[1] = "FIX_DISABLED=1"
-			}
+` + mode + "\n" + guard + "\nprintf '%s' \"$goroutine_policy\" > \"$OUTDIR/admitted\"\n"
+			env := []string{"OUTDIR=" + dir}
 			for key, value := range values {
 				env = append(env, key+"="+value)
 			}
-			output, _, code := runGoroutineCandidateShell(t, fixture, env...)
-			want := test.name == "normal EdgeDelete" || test.disabled
-			_, statErr := os.Stat(filepath.Join(dir, "admitted"))
-			if want && (code != 0 || statErr != nil) || !want && (code == 0 || !os.IsNotExist(statErr)) {
-				t.Fatalf("scope admitted=%v exit=%d output=%s", statErr == nil, code, output)
+			output, _, code := runGoroutinePolicyShell(t, fixture, env...)
+			admitted, err := os.ReadFile(filepath.Join(dir, "admitted"))
+			if test.want {
+				want := "0"
+				if test.selected {
+					want = "1"
+				}
+				if code != 0 || err != nil || string(admitted) != want {
+					t.Fatalf("default activation=%q exit=%d err=%v output=%s", admitted, code, err, output)
+				}
+			} else if code == 0 || !os.IsNotExist(err) {
+				t.Fatalf("invalid profile admitted=%q exit=%d output=%s", admitted, code, output)
 			}
 		})
 	}
@@ -3756,7 +3847,7 @@ yq() {
 // These fixtures run the actual Shell/Python producer with fake first-hand
 // Docker observations, a separate executable collector, and one shared fake
 // host clock. They do not serve RPCs, sleep in real time or execute Go tools.
-func goroutineCandidateShellFixture(t *testing.T) (string, []string) {
+func goroutinePolicyShellFixture(t *testing.T) (string, []string) {
 	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -3807,7 +3898,8 @@ args = sys.argv[1:]
 command = args[0]
 def value(flag): return args[args.index(flag) + 1]
 root = Path(os.environ["OUTDIR"])
-data = json.loads(Path(value("-input")).read_bytes())
+if command in ("collect-goroutine-post","evaluate-goroutine-policy"):
+    data = json.loads(Path(value("-input")).read_bytes())
 if command == "collect-goroutine-post":
     offset = data["offset_seconds"]
     with (root / "events").open("a") as output: output.write("capture" + str(offset) + "\n")
@@ -3817,8 +3909,17 @@ if command == "collect-goroutine-post":
     if os.environ.get("FIX_CAPTURE_FAIL") == "1": raise SystemExit(7)
 elif command == "evaluate-goroutine-policy":
     if data["legacy_post"]["path"] != str(root / "runtime_post.json"): raise SystemExit(81)
-    verdict = os.environ["FIX_CANDIDATE_VERDICT"]
-    Path(value("-out")).write_text(json.dumps({"verdict":verdict,"candidate_only":True,"qualification":False,"release_admission":False}))
+    verdict = os.environ["FIX_POLICY_VERDICT"]
+    Path(value("-out")).write_text(json.dumps({"verdict":verdict,"policy_role":"operative_normal_component","qualification":False,"release_admission":False}))
+    raise SystemExit(0 if verdict == "pass" else 1)
+elif command == "evaluate-leak":
+    if value("-snapshot-protocol") != "natural_reference_v2": raise SystemExit(83)
+    if value("-goroutine-policy-input") != str(root / "goroutine_policy_input.json"): raise SystemExit(84)
+    policy = json.loads(Path(value("-goroutine-policy-input")).read_bytes())
+    if policy["protocol"] != "receipt_goroutine_operational_v1": raise SystemExit(85)
+    with (root / "leak-evaluations").open("a") as output: output.write("prebuilt-normal-composition\n")
+    verdict = os.environ["FIX_COMPOSED_VERDICT"]
+    Path(value("-out")).write_text(json.dumps({"verdict":verdict,"snapshot_protocol":"natural_reference_v2","legacy_goroutine_observation":os.environ["FIX_LEGACY_VERDICT"]}))
     raise SystemExit(0 if verdict == "pass" else 1)
 else: raise SystemExit(82)
 `), 0o600)
@@ -3826,9 +3927,9 @@ else: raise SystemExit(82)
 	write("collector", collector, 0o700)
 	version := []byte("go version " + runtime.Version() + " fixture/fixture\n")
 	buildinfo := []byte("fake executable: Shell scheduling fixture, not a compiled qualification target\n")
-	write("goroutine_candidate_go_version.txt", version, 0o600)
-	write("goroutine_candidate_buildinfo.txt", buildinfo, 0o600)
-	writeJSON("goroutine_candidate_observer.json", map[string]any{"source_commit": strings.Repeat("a", 40), "source_tree": strings.Repeat("b", 40), "observer_sha256": fmt.Sprintf("%x", sha256.Sum256(collector)), "observer_go_version": runtime.Version(), "buildinfo_sha256": fmt.Sprintf("%x", sha256.Sum256(buildinfo))})
+	write("goroutine_policy_go_version.txt", version, 0o600)
+	write("goroutine_policy_buildinfo.txt", buildinfo, 0o600)
+	writeJSON("goroutine_policy_observer.json", map[string]any{"source_commit": strings.Repeat("a", 40), "source_tree": strings.Repeat("b", 40), "observer_sha256": fmt.Sprintf("%x", sha256.Sum256(collector)), "observer_go_version": runtime.Version(), "buildinfo_sha256": fmt.Sprintf("%x", sha256.Sum256(buildinfo))})
 	writeJSON("scenario.resolved.json", map[string]any{"fixture": "EdgeDelete"})
 	writeJSON("diagnostics-ready.json", map[string]any{"transport": "operator_docker_exec", "ports": []int{9390, 9391, 9392}})
 	var nodes, rows []map[string]any
@@ -3838,9 +3939,9 @@ else: raise SystemExit(82)
 		ids = append(ids, id)
 		nodes = append(nodes, map[string]any{"peer_origin": fmt.Sprintf("https://lantern-%d:6381", i)})
 		rows = append(rows, map[string]any{"Id": id, "Image": "sha256:" + strings.Repeat("a", 64), "RestartCount": 0,
-			"Config":     map[string]any{"User": "501:20", "Env": []string{"FAKE_AUTH_ENV_DO_NOT_SAVE=not-a-real-secret"}, "Labels": map[string]string{"com.docker.compose.project": "candidate-fixture", "com.docker.compose.service": fmt.Sprintf("lantern-%d", i)}},
+			"Config":     map[string]any{"User": "501:20", "Env": []string{"FAKE_AUTH_ENV_DO_NOT_SAVE=not-a-real-secret"}, "Labels": map[string]string{"com.docker.compose.project": "policy-fixture", "com.docker.compose.service": fmt.Sprintf("lantern-%d", i)}},
 			"HostConfig": map[string]any{"CpusetCpus": "0-3"}, "State": map[string]any{"Running": true, "Pid": 1001 + i, "StartedAt": "2026-10-30T00:00:00Z"}})
-		write(fmt.Sprintf("goroutine_candidate_pre_%d.prom", 9390+i), []byte("lantern_changes_active_streams 0\nlantern_subscribe_active_streams 2\nlantern_anti_entropy_cycles_total 1\n"), 0o600)
+		write(fmt.Sprintf("goroutine_policy_pre_%d.prom", 9390+i), []byte("lantern_changes_active_streams 0\nlantern_subscribe_active_streams 2\nlantern_anti_entropy_cycles_total 1\n"), 0o600)
 	}
 	writeJSON("trust/fixture.json", map[string]any{"nodes": nodes})
 	writeJSON("docker-rows.json", rows)
@@ -3855,7 +3956,7 @@ else: raise SystemExit(82)
 	for _, name := range []string{"server/internal/security/control_renewal_network_test.go", "server/service/replication_delivery_test.go", "server/replication/pump_test.go"} {
 		write("source/"+name, []byte("// source-test reference fixture only\n"), 0o644)
 	}
-	functions := goroutineCandidateFragment(t, "goroutine_candidate_profile() {\n", "# Extract a single Prom metric value")
+	functions := goroutinePolicyFragment(t, "goroutine_policy_profile() {\n", "# Extract a single Prom metric value")
 	preamble := `set -euo pipefail
 REPO_ROOT="$OUTDIR/source"
 PEER_TLS_DIR="$OUTDIR/trust"
@@ -3865,7 +3966,9 @@ EXPECTED_LANTERN_TREE="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 receipt_image_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 receipt_image_id=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 runtime_owner=501:20
-COMPOSE_PROJECT_NAME=candidate-fixture
+COMPOSE_PROJECT_NAME=policy-fixture
+SCENARIO_NAME=receipt_admission_lookup
+target_driver=receipt_edge_delete
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 receipt_container_ids=(` + strings.Join(ids, " ") + `)
 DIAGNOSTICS_PID=$$
@@ -3888,7 +3991,7 @@ docker() {
 log() { :; }
 die() { echo "$*" >&2; exit 77; }
 ` + functions
-	preamble += goroutineCandidateFragment(t, "run_receipt_probe() {\n", "\nsnapshot_search_lifecycle() {") + `
+	preamble += goroutinePolicyFragment(t, "run_receipt_probe() {\n", "\nsnapshot_search_lifecycle() {") + `
 target_driver=receipt_edge_delete
 SCENARIO_FILE=fixture.yaml
 endpoints=(localhost:6380 localhost:6381 localhost:6382)
@@ -3919,8 +4022,36 @@ go() {
 	return preamble, []string{"OUTDIR=" + dir, "REAL_PYTHON=" + python, "CLOCK_WRAPPER=" + filepath.Join(dir, "clock.py"), "FAKE_CLOCK=" + filepath.Join(dir, "clock"), "COLLECTOR_DRIVER=" + filepath.Join(dir, "collector.py")}
 }
 
-func TestReceiptGoroutineCandidateFixedPostWindows(t *testing.T) {
-	post := goroutineCandidateFragment(t, "# ----- POST snapshot ---------------------------------------------------------\n", "# pprof captures + Prometheus range queries")
+func TestReceiptGoroutinePolicyFamilyProfile(t *testing.T) {
+	for _, family := range []struct{ scenario, driver string }{
+		{"receipt_admission_lookup", "receipt_edge_delete"},
+		{"receipt_vertex_put_admission_lookup", "receipt_vertex_put"},
+		{"receipt_vertex_delete_admission_lookup", "receipt_vertex_delete"},
+		{"receipt_edge_add_admission_lookup", "receipt_edge_add"},
+	} {
+		t.Run(family.driver, func(t *testing.T) {
+			fixture, env := goroutinePolicyShellFixture(t)
+			dir := strings.TrimPrefix(env[0], "OUTDIR=")
+			fixture += fmt.Sprintf("\nSCENARIO_NAME=%q\ntarget_driver=%q\ngoroutine_policy_profile \"$OUTDIR/profile.json\" 1\n", family.scenario, family.driver)
+			output, err, _ := runGoroutinePolicyShell(t, fixture, env...)
+			if err != nil {
+				t.Fatalf("family profile: %v %s", err, output)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "profile.json"))
+			var profile struct {
+				Protocol string `json:"protocol"`
+				Scenario string `json:"scenario"`
+				Family   string `json:"family"`
+			}
+			if err != nil || json.Unmarshal(raw, &profile) != nil || profile.Protocol != "receipt_goroutine_operational_v1" || profile.Scenario != family.scenario || profile.Family != family.driver || strings.Contains(string(raw), "FAKE_AUTH_ENV_DO_NOT_SAVE") {
+				t.Fatalf("foreign family or unsafe profile: %s %v", raw, err)
+			}
+		})
+	}
+}
+
+func TestReceiptGoroutinePolicyFixedPostWindows(t *testing.T) {
+	post := goroutinePolicyFragment(t, "# ----- POST snapshot ---------------------------------------------------------\n", "# pprof captures + Prometheus range queries")
 	for _, test := range []struct {
 		name                                             string
 		mode                                             int
@@ -3928,7 +4059,7 @@ func TestReceiptGoroutineCandidateFixedPostWindows(t *testing.T) {
 		wantCalls                                        string
 	}{
 		{name: "two fixed flights", mode: 1, wantCalls: "capture5\ncapture10\n"},
-		{name: "disabled has no candidate side effects"},
+		{name: "non-policy path has no post flights"},
 		{name: "late first window has no replacement", mode: 1, late: true},
 		{name: "missing joined-work barrier has no capture", mode: 1, missing: true},
 		{name: "nonzero collector stops before second", mode: 1, nonzero: true, wantCalls: "capture5\n"},
@@ -3936,15 +4067,15 @@ func TestReceiptGoroutineCandidateFixedPostWindows(t *testing.T) {
 		{name: "nonzero phase return refuses barrier", mode: 1, badReturn: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fixture, env := goroutineCandidateShellFixture(t)
+			fixture, env := goroutinePolicyShellFixture(t)
 			dir := strings.TrimPrefix(env[0], "OUTDIR=")
-			fixture += fmt.Sprintf("\ngoroutine_candidate=%d\nretained_heap=0\nsemantic_kind=search\n", test.mode)
+			fixture += fmt.Sprintf("\ngoroutine_policy=%d\nretained_heap=0\nsemantic_kind=search\n", test.mode)
 			fixture += `
 run_receipt_probe warmup 12 200 10s "$OUTDIR/ghz_warmup_0_receipt_admission.json" "$OUTDIR/ghz_warmup_1_receipt_lookup.json" || true
 run_receipt_probe steady 12 200 45s "$OUTDIR/ghz_steady_0_receipt_admission.json" "$OUTDIR/ghz_steady_1_receipt_lookup.json" || true
 `
 			if test.missingReturn {
-				fixture += "rm \"$OUTDIR/goroutine_candidate_phase_steady_return.json\"\n"
+				fixture += "rm \"$OUTDIR/goroutine_policy_phase_steady_return.json\"\n"
 			}
 			if test.missing {
 				fixture += "prod_pids=(12345)\n"
@@ -3957,7 +4088,7 @@ snapshot_runtime() {
 import json, os, sys, time
 from pathlib import Path
 root = Path(sys.argv[1])
-barrier = root / "goroutine_candidate_barrier.json"
+barrier = root / "goroutine_policy_barrier.json"
 if barrier.exists():
     assert json.loads(barrier.read_bytes())["t0_ns"] == time.monotonic_ns()
 (root / "memory-point").write_text(str(time.monotonic_ns()))
@@ -3972,7 +4103,7 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 			if test.badReturn {
 				env = append(env, "FIX_PHASE_FAILURE=steady")
 			}
-			output, err, _ := runGoroutineCandidateShell(t, fixture, env...)
+			output, err, _ := runGoroutinePolicyShell(t, fixture, env...)
 			if err != nil {
 				t.Fatalf("fake post path: %v %s", err, output)
 			}
@@ -3983,13 +4114,13 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 			if string(events) != "semantic\nmemory\nretained-call\n"+test.wantCalls+"end" {
 				t.Fatalf("memory/post order or capture cardinality changed: %q output=%s", events, output)
 			}
-			_, barrierErr := os.Stat(filepath.Join(dir, "goroutine_candidate_barrier.json"))
+			_, barrierErr := os.Stat(filepath.Join(dir, "goroutine_policy_barrier.json"))
 			wantBarrier := test.mode == 1 && !test.missing && !test.missingReturn && !test.badReturn
 			if wantBarrier && barrierErr != nil || !wantBarrier && !os.IsNotExist(barrierErr) {
 				t.Fatalf("unexpected barrier state: %v", barrierErr)
 			}
 			if test.wantCalls == "capture5\ncapture10\n" {
-				barrierData, err := os.ReadFile(filepath.Join(dir, "goroutine_candidate_barrier.json"))
+				barrierData, err := os.ReadFile(filepath.Join(dir, "goroutine_policy_barrier.json"))
 				var barrier struct {
 					T0 int64 `json:"t0_ns"`
 				}
@@ -4001,7 +4132,7 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 					t.Fatalf("actual phase coordinator calls: %q %v", phases, err)
 				}
 				for _, phase := range []string{"warmup", "steady"} {
-					raw, err := os.ReadFile(filepath.Join(dir, "goroutine_candidate_phase_"+phase+"_return.json"))
+					raw, err := os.ReadFile(filepath.Join(dir, "goroutine_policy_phase_"+phase+"_return.json"))
 					var record struct {
 						Phase    string `json:"phase"`
 						Scope    string `json:"scope"`
@@ -4015,7 +4146,7 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 					}
 				}
 				for _, offset := range []int{5, 10} {
-					raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("goroutine_candidate_timing_%d.json", offset)))
+					raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("goroutine_policy_timing_%d.json", offset)))
 					var timing struct {
 						Start int64 `json:"start_ns"`
 						End   int64 `json:"end_ns"`
@@ -4023,12 +4154,12 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 					if err != nil || json.Unmarshal(raw, &timing) != nil || timing.Start != barrier.T0+int64(offset)*int64(time.Second) || timing.End-timing.Start != int64(200*time.Millisecond) {
 						t.Fatalf("fixed flight %d: %s %v", offset, raw, err)
 					}
-					profile, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("goroutine_candidate_post_%d_profile.json", offset)))
+					profile, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("goroutine_policy_post_%d_profile.json", offset)))
 					if err != nil || strings.Contains(string(profile), "FAKE_AUTH_ENV_DO_NOT_SAVE") {
 						t.Fatalf("safe Docker projection: %s %v", profile, err)
 					}
 				}
-			} else if _, err := os.Stat(filepath.Join(dir, "goroutine_candidate_control_10.json")); !os.IsNotExist(err) {
+			} else if _, err := os.Stat(filepath.Join(dir, "goroutine_policy_control_10.json")); !os.IsNotExist(err) {
 				t.Fatalf("a missing/failed first flight dispatched a second: %v", err)
 			}
 		})
@@ -4036,7 +4167,7 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 	t.Run("PRE reuses exactly one original response", func(t *testing.T) {
 		dir := t.TempDir()
 		fixture := `set -euo pipefail
-goroutine_candidate=1
+goroutine_policy=1
 receipt_driver=1
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 RUNTIME_METRIC_NAMES=()
@@ -4050,7 +4181,7 @@ curl() {
  printf '%s\n' 'lantern_changes_active_streams 0' 'lantern_subscribe_active_streams 2' 'lantern_anti_entropy_cycles_total 1' 'lantern_peer_connected{peer="https://peer-1:6381"} 1' 'lantern_peer_connected{peer="https://peer-2:6381"} 1' 'arbitrary_private_metric{value="do-not-retain"} 1'
 }
 ` + receiptSnapshotShellFunctions(t) + "\nsnapshot_runtime \"$OUTDIR/runtime_pre.json\"\n"
-		output, err, _ := runGoroutineCandidateShell(t, fixture, "OUTDIR="+dir, "CONTEXT_METRICS="+receiptRuntimeContextMetrics)
+		output, err, _ := runGoroutinePolicyShell(t, fixture, "OUTDIR="+dir, "CONTEXT_METRICS="+receiptRuntimeContextMetrics)
 		if err != nil {
 			t.Fatalf("same-response PRE: %v %s", err, output)
 		}
@@ -4059,7 +4190,7 @@ curl() {
 			t.Fatalf("PRE added a scrape: %s %v", calls, err)
 		}
 		for _, port := range []int{9390, 9391, 9392} {
-			raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("goroutine_candidate_pre_%d.prom", port)))
+			raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("goroutine_policy_pre_%d.prom", port)))
 			if err != nil || len(strings.Split(strings.TrimSpace(string(raw)), "\n")) != 5 || strings.Contains(string(raw), "arbitrary_private") || strings.Contains(string(raw), "do-not-retain") {
 				t.Fatalf("passive allowlist: %s %v", raw, err)
 			}
@@ -4067,16 +4198,27 @@ curl() {
 	})
 }
 
-func TestReceiptGoroutineCandidateCannotReplaceLegacyExit(t *testing.T) {
-	final := goroutineCandidateFragment(t, "if [[ \"$goroutine_candidate\" == \"1\" ]]; then\n  if ! goroutine_candidate_evaluate; then\n", "")
-	cleanup := goroutineCandidateFragment(t, "cleanup() {\n", "\ntrap cleanup EXIT")
-	for _, legacy := range []string{"pass", "fail"} {
-		for _, candidate := range []string{"pass", "fail"} {
-			t.Run("legacy_"+legacy+"_candidate_"+candidate, func(t *testing.T) {
-				fixture, env := goroutineCandidateShellFixture(t)
-				dir := strings.TrimPrefix(env[0], "OUTDIR=")
-				fixture += "\n" + naturalGCObservationShellFunctions(t) + "\n" + cleanup + `
-goroutine_candidate=1
+func TestReceiptGoroutinePolicyBlocksComposedExit(t *testing.T) {
+	final := goroutinePolicyFragment(t, "if [[ \"$goroutine_policy\" == \"1\" ]]; then\n  goroutine_policy_verdict=fail", "")
+	cleanup := goroutinePolicyFragment(t, "cleanup() {\n", "\ntrap cleanup EXIT")
+	evaluate := goroutinePolicyFragment(t, "  evaluate_receipt_leak() {\n", "\n  if [[ \"$goroutine_policy\" == \"0\" ]]; then evaluate_receipt_leak; fi")
+	for _, test := range []struct {
+		name, legacy, composed, policy, perf string
+		want                                 int
+	}{
+		{name: "legacy steady observation no longer vetoes new composed pass", legacy: "fail", composed: "pass", policy: "pass", perf: "pass"},
+		{name: "memory failure still blocks", legacy: "pass", composed: "fail", policy: "pass", perf: "pass", want: 1},
+		{name: "policy failure blocks even composed pass", legacy: "pass", composed: "pass", policy: "fail", perf: "pass", want: 1},
+		{name: "missing or late policy remains incomplete", legacy: "pass", composed: "pass", policy: "incomplete", perf: "pass", want: 1},
+		{name: "original POST residual failure remains blocking", legacy: "fail", composed: "fail", policy: "fail", perf: "pass", want: 1},
+		{name: "performance failure remains blocking", legacy: "pass", composed: "pass", policy: "pass", perf: "fail", want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, env := goroutinePolicyShellFixture(t)
+			dir := strings.TrimPrefix(env[0], "OUTDIR=")
+			fixture += "\n" + naturalGCObservationShellFunctions(t) + "\n" + cleanup + "\n" + evaluate + `
+goroutine_policy=1
+goroutine_policy_verdict=not_selected
 LANTERN_BENCH_NATURAL_GC_OBSERVE=0
 COMPOSE_STARTED=0
 NATIVE_WORK_DIR=""
@@ -4089,35 +4231,41 @@ ghz_capture_pids=()
 workload_verdict=pass
 metric_verdict=pass
 semantic_verdict=pass
-perf_verdict=pass
-verdict="$FIX_LEGACY_VERDICT"
+perf_verdict="$FIX_PERF_VERDICT"
+verdict=pending
+g_thresh=15
+h_thresh_mb=32
+steady_h_thresh_mb=40
+steady_duration=45s
+receipt_heap_protocol=natural_reference_v2
+retained_eval_args=()
 stop_owned_processes() { printf 'cleanup\n' >> "$OUTDIR/cleanup"; }
-render_report() { printf 'legacy result retained\n' > "$OUTDIR/report.md"; }
+render_report() { printf 'versioned result\n' > "$OUTDIR/report.md"; }
 trap cleanup EXIT
 ` + final
-				env = append(env, "FIX_LEGACY_VERDICT="+legacy, "FIX_CANDIDATE_VERDICT="+candidate)
-				output, _, code := runGoroutineCandidateShell(t, fixture, env...)
-				want := 0
-				if legacy == "fail" {
-					want = 1
-				}
-				if code != want {
-					t.Fatalf("candidate replaced legacy exit: %d want %d output=%s", code, want, output)
-				}
-				raw, err := os.ReadFile(filepath.Join(dir, "goroutine_candidate.json"))
-				var report struct {
-					Verdict       string `json:"verdict"`
-					Qualification bool   `json:"qualification"`
-					Release       bool   `json:"release_admission"`
-				}
-				if err != nil || json.Unmarshal(raw, &report) != nil || report.Verdict != candidate || report.Qualification || report.Release {
-					t.Fatalf("candidate result lost/qualified: %s %v output=%s", raw, err, output)
-				}
-				closed, err := os.ReadFile(filepath.Join(dir, "cleanup"))
-				if err != nil || string(closed) != "cleanup\n" {
-					t.Fatalf("actual EXIT cleanup did not run once: %q %v", closed, err)
-				}
-			})
-		}
+			env = append(env, "FIX_LEGACY_VERDICT="+test.legacy, "FIX_COMPOSED_VERDICT="+test.composed, "FIX_POLICY_VERDICT="+test.policy, "FIX_PERF_VERDICT="+test.perf)
+			output, _, code := runGoroutinePolicyShell(t, fixture, env...)
+			if code != test.want {
+				t.Fatalf("composed exit=%d want=%d output=%s", code, test.want, output)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "goroutine_policy.json"))
+			var report struct {
+				Verdict       string `json:"verdict"`
+				Role          string `json:"policy_role"`
+				Qualification bool   `json:"qualification"`
+				Release       bool   `json:"release_admission"`
+			}
+			if err != nil || json.Unmarshal(raw, &report) != nil || report.Verdict != test.policy || report.Role != "operative_normal_component" || report.Qualification || report.Release {
+				t.Fatalf("component lost/claimed qualification: %s %v", raw, err)
+			}
+			calls, err := os.ReadFile(filepath.Join(dir, "leak-evaluations"))
+			if err != nil || string(calls) != "prebuilt-normal-composition\n" {
+				t.Fatalf("expected one pinned normal composition, got %q %v output=%s", calls, err, output)
+			}
+			closed, err := os.ReadFile(filepath.Join(dir, "cleanup"))
+			if err != nil || string(closed) != "cleanup\n" {
+				t.Fatalf("EXIT cleanup not once: %q %v", closed, err)
+			}
+		})
 	}
 }

@@ -27,6 +27,7 @@ import (
 )
 
 const receiptReplicaCount = 3
+const normalReceiptProtocol = "natural_reference_v2"
 
 type metricsEndpoint struct {
 	url      string
@@ -546,15 +547,21 @@ type receiptLeakReplica struct {
 }
 
 type receiptLeakReport struct {
-	SnapshotProtocol                  string                `json:"snapshot_protocol,omitempty"`
-	NaturalChecksVerdict              string                `json:"natural_checks_verdict,omitempty"`
-	NaturalPostHeapObservationVerdict string                `json:"natural_post_heap_observation_verdict,omitempty"`
-	RetainedVerdict                   string                `json:"retained_verdict,omitempty"`
-	OverallMemoryVerdict              string                `json:"overall_memory_verdict,omitempty"`
-	PairRequired                      bool                  `json:"pair_required,omitempty"`
-	RetainedReplicas                  []retainedHeapReplica `json:"retained_replicas,omitempty"`
-	RetainedInputs                    *retainedHeapInputs   `json:"retained_inputs,omitempty"`
-	NaturalCheckFailures              []string              `json:"natural_check_failures,omitempty"`
+	SnapshotProtocol                  string                   `json:"snapshot_protocol,omitempty"`
+	NaturalSteadyMemoryVerdict        string                   `json:"natural_steady_memory_verdict,omitempty"`
+	GoroutineChecksVerdict            string                   `json:"goroutine_checks_verdict,omitempty"`
+	GoroutineSampledPeakLimit         int64                    `json:"goroutine_sampled_peak_limit,omitempty"`
+	GoroutinePostResidualLimit        int64                    `json:"goroutine_post_residual_limit,omitempty"`
+	GoroutinePolicyInput              *goroutineReference      `json:"goroutine_policy_input,omitempty"`
+	GoroutineReplicas                 []goroutinePolicyReplica `json:"goroutine_replicas,omitempty"`
+	NaturalChecksVerdict              string                   `json:"natural_checks_verdict,omitempty"`
+	NaturalPostHeapObservationVerdict string                   `json:"natural_post_heap_observation_verdict,omitempty"`
+	RetainedVerdict                   string                   `json:"retained_verdict,omitempty"`
+	OverallMemoryVerdict              string                   `json:"overall_memory_verdict,omitempty"`
+	PairRequired                      bool                     `json:"pair_required,omitempty"`
+	RetainedReplicas                  []retainedHeapReplica    `json:"retained_replicas,omitempty"`
+	RetainedInputs                    *retainedHeapInputs      `json:"retained_inputs,omitempty"`
+	NaturalCheckFailures              []string                 `json:"natural_check_failures,omitempty"`
 	Thresholds                        struct {
 		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
 		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
@@ -579,9 +586,10 @@ func runReceiptLeakEvaluation(args []string) int {
 	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica post-cooldown HeapAlloc delta in MiB")
 	maxSteadyHeapMB := fs.Int("max-steady-heap-mb", 0, "maximum per-replica unforced steady heap_alloc peak delta in MiB")
 	out := fs.String("out", "", "leak gate JSON output path")
-	protocol := fs.String("snapshot-protocol", "forced_gc_minimum", "forced_gc_minimum | natural_gc_single | natural_reference_v1 | symmetric_post_gc_2_v1")
+	protocol := fs.String("snapshot-protocol", "forced_gc_minimum", "forced_gc_minimum | natural_gc_single | natural_reference_v1 | natural_reference_v2 | symmetric_post_gc_2_v1")
 	retainedPre := fs.String("retained-pre", "", "retained_heap_pre.json with target completion receipts")
 	retainedPost := fs.String("retained-post", "", "retained_heap_post.json with target completion receipts")
+	goroutineInput := fs.String("goroutine-policy-input", "", "required raw normal operative goroutine input")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -589,10 +597,21 @@ func runReceiptLeakEvaluation(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if *protocol != "forced_gc_minimum" && *protocol != "natural_gc_single" && *protocol != "natural_reference_v1" && *protocol != "symmetric_post_gc_2_v1" {
+	if *protocol != "forced_gc_minimum" && *protocol != "natural_gc_single" && *protocol != "natural_reference_v1" && *protocol != normalReceiptProtocol && *protocol != "symmetric_post_gc_2_v1" {
 		return 2
 	}
+	if *protocol == normalReceiptProtocol {
+		root := filepath.Dir(*out)
+		if !goroutinePhysicalCaseRoot(root) || *out != filepath.Join(root, "leak_gate.json") || *pre != filepath.Join(root, "runtime_pre.json") || *post != filepath.Join(root, "runtime_post.json") || *steady != filepath.Join(root, "runtime_steady.json") {
+			return 2
+		}
+	}
 	report := evaluateReceiptLeakProtocol(*pre, *post, *steady, *duration, *interval, *maxGoroutines, *maxHeapMB, *maxSteadyHeapMB, *protocol)
+	if *protocol == normalReceiptProtocol {
+		composeNormalGoroutinePolicy(&report, *pre, *post, *steady, *goroutineInput)
+	} else if *goroutineInput != "" {
+		return 2
+	}
 	if *protocol == benchheap.Protocol {
 		evaluateRetainedHeap(&report, filepath.Dir(*pre), *retainedPre, *retainedPost, *maxHeapMB)
 	} else if *retainedPre != "" || *retainedPost != "" {
@@ -624,13 +643,20 @@ func evaluateReceiptLeakProtocol(
 	protocol string,
 ) receiptLeakReport {
 	report := receiptLeakReport{Verdict: "fail", SnapshotProtocol: protocol, SteadySampleInterval: interval.String()}
-	paired := protocol == "natural_reference_v1" || protocol == "symmetric_post_gc_2_v1"
+	paired := protocol == "natural_reference_v1" || protocol == "symmetric_post_gc_2_v1" || protocol == normalReceiptProtocol
 	if paired {
 		report.PairRequired = true
 		report.OverallMemoryVerdict = "requires_pair"
 		report.RetainedVerdict = "requires_pair"
 		report.NaturalChecksVerdict = "fail"
 		report.NaturalPostHeapObservationVerdict = "incomplete"
+	}
+	if protocol == normalReceiptProtocol {
+		report.NaturalChecksVerdict = ""
+		report.NaturalSteadyMemoryVerdict = "incomplete"
+		report.GoroutineChecksVerdict = "incomplete"
+		report.GoroutineSampledPeakLimit = 128
+		report.GoroutinePostResidualLimit = 15
 	}
 	report.Thresholds.GoroutineMaxDelta = maxGoroutines
 	report.Thresholds.HeapAllocMaxDeltaMB = maxHeapMB
@@ -703,7 +729,7 @@ func evaluateReceiptLeakProtocol(
 		replica.GoroutinePeakDelta = replica.GoroutinesPeak - replica.GoroutinesPre
 		replica.HeapAllocPeakDelta = replica.HeapAllocPeakBytes - replica.HeapAllocPreBytes
 		report.Replicas = append(report.Replicas, replica)
-		if replica.GoroutineDelta > int64(maxGoroutines) || replica.GoroutinePeakDelta > int64(maxGoroutines) {
+		if protocol != normalReceiptProtocol && (replica.GoroutineDelta > int64(maxGoroutines) || replica.GoroutinePeakDelta > int64(maxGoroutines)) {
 			report.Failures = append(report.Failures, fmt.Sprintf("%s goroutine post/steady growth exceeds +%d", p.Endpoint, maxGoroutines))
 		}
 		if replica.HeapAllocDeltaBytes > int64(maxHeapMB)<<20 {
@@ -725,8 +751,52 @@ func evaluateReceiptLeakProtocol(
 		if postHeapExceeded {
 			report.NaturalPostHeapObservationVerdict = "fail"
 		}
+		if protocol == normalReceiptProtocol {
+			report.NaturalSteadyMemoryVerdict = report.Verdict
+			report.NaturalChecksVerdict = ""
+			report.GoroutineChecksVerdict = "incomplete"
+			report.GoroutineSampledPeakLimit = 128
+			report.GoroutinePostResidualLimit = 15
+			report.Verdict = "fail" // Only the explicit raw-policy composition can pass.
+		}
 	}
 	return report
+}
+
+func composeNormalGoroutinePolicy(report *receiptLeakReport, prePath, postPath, steadyPath, inputPath string) {
+	fail := func(reason string) { report.Failures = append(report.Failures, "normal goroutine component: "+reason) }
+	root := filepath.Dir(prePath)
+	if !goroutinePhysicalCaseRoot(root) || inputPath != filepath.Join(root, "goroutine_policy_input.json") {
+		fail("missing current-case operative input")
+		return
+	}
+	data, err := readRetainedFile(inputPath, 256<<10)
+	var input goroutinePolicyInput
+	if err != nil || decodeGoroutineJSON(data, &input) != nil {
+		fail("invalid operative input")
+		return
+	}
+	if input.Pre.Path != prePath || input.LegacyPost.Path != postPath || input.Steady.Path != steadyPath {
+		fail("memory and goroutine raw references differ")
+		return
+	}
+	digest := sha256.Sum256(data)
+	report.GoroutinePolicyInput = &goroutineReference{Path: inputPath, SHA256: hex.EncodeToString(digest[:])}
+	component := evaluateGoroutinePolicyInCase(input, root)
+	var profile goroutineProfile
+	if !goroutineCaseReference(root, input.BaselineProfile) || goroutineDecode(input.BaselineProfile, &profile) != nil || goroutineObserverMatches(profile) != nil {
+		component.Verdict = "incomplete"
+		component.MissingPremises = append(component.MissingPremises, "observer executable differs")
+	}
+	report.GoroutineChecksVerdict = component.Verdict
+	report.GoroutineReplicas = component.Replicas
+	if component.Verdict != "pass" {
+		fail(strings.Join(append(component.Failures, component.MissingPremises...), "; "))
+		return
+	}
+	if report.NaturalSteadyMemoryVerdict == "pass" && len(report.Failures) == 0 {
+		report.Verdict = "pass"
+	}
 }
 
 func readRuntimeSnapshot(path string) ([]runtimeSnapshot, error) {

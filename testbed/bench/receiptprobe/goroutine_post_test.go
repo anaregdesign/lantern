@@ -32,7 +32,7 @@ func TestGoroutinePostRefusesRedirect(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	defer transport.CloseIdleConnections()
 	client := goroutineMetricsClient(transport)
-	result := collectGoroutinePost(context.Background(), goroutinePostControl{Schema: 1, Protocol: goroutineCandidateProtocol, OffsetSeconds: 5}, endpoints, time.Now, func(ctx context.Context, e metricsEndpoint) (goroutinePostReplica, error) {
+	result := collectGoroutinePost(context.Background(), goroutinePostControl{Schema: 1, Protocol: goroutineOperationalProtocol, OffsetSeconds: 5}, endpoints, time.Now, func(ctx context.Context, e metricsEndpoint) (goroutinePostReplica, error) {
 		return scrapeGoroutinePost(ctx, client, e)
 	})
 	if result.Verdict != "incomplete" || initial.Load() != 3 || redirected.Load() != 0 {
@@ -98,7 +98,7 @@ func TestGoroutinePostFlight(t *testing.T) {
 				}
 				return time.Unix(100, 0)
 			}
-			out := collectGoroutinePost(ctx, goroutinePostControl{Schema: 1, Protocol: goroutineCandidateProtocol, OffsetSeconds: 5}, endpoints, now, func(ctx context.Context, e metricsEndpoint) (goroutinePostReplica, error) {
+			out := collectGoroutinePost(ctx, goroutinePostControl{Schema: 1, Protocol: goroutineOperationalProtocol, OffsetSeconds: 5}, endpoints, now, func(ctx context.Context, e metricsEndpoint) (goroutinePostReplica, error) {
 				mu.Lock()
 				calls[e.endpoint]++
 				mu.Unlock()
@@ -133,7 +133,7 @@ func TestGoroutinePostFlight(t *testing.T) {
 					}
 				}
 			}
-			if !out.CandidateOnly || out.Qualification || out.ReleaseAdmission {
+			if out.PolicyRole != "operative_normal_component" || out.Qualification || out.ReleaseAdmission {
 				t.Fatal("flight claimed acceptance")
 			}
 		})

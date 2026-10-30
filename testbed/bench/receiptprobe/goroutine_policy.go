@@ -18,9 +18,9 @@ import (
 	"time"
 )
 
-// Issue1960 is an opt-in, normal EdgeDelete prototype. Its result is never a
-// replacement for the operative legacy leak gate or release acceptance.
-const goroutineCandidateProtocol = "receipt_goroutine_candidate_v1"
+// Issue1960 normal receipt goroutine component. A component PASS alone never
+// qualifies retained memory, the paired matrix or publication.
+const goroutineOperationalProtocol = "receipt_goroutine_operational_v1"
 
 type goroutineReference struct {
 	Path   string `json:"path"`
@@ -123,7 +123,7 @@ type goroutinePostReplica struct {
 type goroutinePostCapture struct {
 	Schema           int                    `json:"schema"`
 	Protocol         string                 `json:"protocol"`
-	CandidateOnly    bool                   `json:"candidate_only"`
+	PolicyRole       string                 `json:"policy_role"`
 	Qualification    bool                   `json:"qualification"`
 	ReleaseAdmission bool                   `json:"release_admission"`
 	OffsetSeconds    int                    `json:"offset_seconds"`
@@ -169,7 +169,7 @@ type goroutinePolicyReplica struct {
 	Delta10     int64  `json:"delta_10"`
 }
 
-// Candidate reads the existing snapshot's optional diagnostic object too,
+// The normal component reads the existing snapshot's optional diagnostic object too,
 // without changing runtimeSnapshot or any historical evaluator behavior.
 type goroutineSnapshot struct {
 	Endpoint           string `json:"endpoint"`
@@ -180,14 +180,14 @@ type goroutineSnapshot struct {
 	VertexHLCEntries   int64  `json:"vertex_hlc_entries"`
 	VertexHLCHighWater int64  `json:"vertex_hlc_high_water"`
 	// The old snapshot also retains optional nullable operational diagnostics.
-	// Candidate goroutine policy does not interpret/rewrite that memory context.
+	// The goroutine component does not interpret/rewrite that memory context.
 	Metrics json.RawMessage `json:"metrics,omitempty"`
 }
 
 type goroutinePolicyReport struct {
 	Schema             int                      `json:"schema"`
 	Protocol           string                   `json:"protocol"`
-	CandidateOnly      bool                     `json:"candidate_only"`
+	PolicyRole         string                   `json:"policy_role"`
 	Qualification      bool                     `json:"qualification"`
 	ReleaseAdmission   bool                     `json:"release_admission"`
 	SampledPeakLimit   int64                    `json:"sampled_peak_limit"`
@@ -279,10 +279,10 @@ func goroutineCaseReference(root string, ref goroutineReference) bool {
 func goroutineCLIPaths(input, output string) (string, error) {
 	root := filepath.Dir(input)
 	if !goroutineCaseReference(root, goroutineReference{Path: input}) || !filepath.IsAbs(output) || filepath.Clean(output) != output || filepath.Dir(output) != root {
-		return "", errors.New("candidate CLI requires one physical case root")
+		return "", errors.New("operative CLI requires one physical case root")
 	}
 	if _, err := os.Lstat(output); !os.IsNotExist(err) {
-		return "", errors.New("candidate output must be new")
+		return "", errors.New("operative output must be new")
 	}
 	return root, nil
 }
@@ -302,11 +302,11 @@ func goroutineGeneratedRefsInCase(input goroutinePolicyInput, root string) bool 
 
 func writeGoroutineArtifact(path string, value any) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return errors.New("candidate output must be physical absolute path")
+		return errors.New("operative output must be physical absolute path")
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil || parent != filepath.Dir(path) {
-		return errors.New("candidate output parent differs")
+		return errors.New("operative output parent differs")
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -322,10 +322,72 @@ func writeGoroutineArtifact(path string, value any) error {
 	return errors.Join(writeErr, syncErr, closeErr)
 }
 
+func goroutineScenarioFamily(scenario, family string) bool {
+	expected := map[string]string{"receipt_vertex_put_admission_lookup": "receipt_vertex_put", "receipt_vertex_delete_admission_lookup": "receipt_vertex_delete", "receipt_admission_lookup": "receipt_edge_delete", "receipt_edge_add_admission_lookup": "receipt_edge_add"}
+	value, ok := expected[scenario]
+	return ok && value == family
+}
+
+// The budget belongs to this reviewed traffic/native/WAL profile, not merely
+// to a list of RPC names. The literal resolved file is shared with pairing.
+func validateGoroutineScenario(caseRoot string, p goroutineProfile) error {
+	data, err := goroutineRead(goroutineReference{Path: filepath.Join(caseRoot, "scenario.resolved.json"), SHA256: p.ScenarioSHA256}, 1<<20)
+	if err != nil {
+		return errors.New("resolved goroutine profile unavailable")
+	}
+	var doc map[string]json.RawMessage
+	if decodeGoroutineJSON(data, &doc) != nil || len(doc) != 8 {
+		return errors.New("resolved goroutine profile shape")
+	}
+	for _, key := range []string{"name", "description", "target", "cluster", "phases", "perf_gate", "leak_gate", "goroutine_policy"} {
+		if _, ok := doc[key]; !ok {
+			return errors.New("resolved profile field missing")
+		}
+	}
+	var name string
+	if json.Unmarshal(doc["name"], &name) != nil || name != p.Scenario || !goroutineScenarioFamily(name, p.Family) {
+		return errors.New("resolved scenario/family differs")
+	}
+	action := map[string]string{"receipt_vertex_put": "PutVertex", "receipt_vertex_delete": "DeleteVertex", "receipt_edge_delete": "DeleteEdge", "receipt_edge_add": "AddEdge"}[p.Family]
+	expected := map[string]string{
+		"target":           fmt.Sprintf(`{"driver":%q,"endpoints":["localhost:6380","localhost:6381","localhost:6382"],"calls":[{"name":"receipt_admission","call":%q,"rps":100},{"name":"receipt_lookup","call":"graph.v1.LanternService/GetReceiptStatus","rps":100}]}`, p.Family, "graph.v1.LanternService/"+action),
+		"cluster":          `{"receipt_wal":{"enabled":true,"retention":"1h","max_entries":8000,"max_bytes":16777216}}`,
+		"phases":           `{"warmup":{"duration":"10s","rps":200,"concurrency":12},"steady":{"duration":"45s","rps":200,"concurrency":12},"cooldown":"10s"}`,
+		"perf_gate":        `{"min_steady_rps_total":150,"max_p99_ms":500,"max_non_ok_ratio":0,"producers":{"receipt_admission":{"min_steady_rps":75,"max_p99_ms":500,"max_non_ok_ratio":0},"receipt_lookup":{"min_steady_rps":75,"max_p99_ms":200,"max_non_ok_ratio":0}}}`,
+		"leak_gate":        `{"goroutine_max_delta":15,"heap_alloc_max_delta_mb":32,"steady_heap_alloc_max_delta_mb":40,"steady_sample_interval":"5s"}`,
+		"goroutine_policy": `{"protocol":"receipt_goroutine_operational_v1","sampled_absolute_max":128,"post_max_delta":15,"post_offsets_seconds":[5,10],"capture_window_seconds":3}`,
+	}
+	for key, want := range expected {
+		var a, b any
+		if json.Unmarshal(doc[key], &a) != nil || json.Unmarshal([]byte(want), &b) != nil || !reflect.DeepEqual(a, b) {
+			return errors.New("resolved workload/resource profile differs")
+		}
+	}
+	return nil
+}
+
+func validGoroutineRuntimeUser(value string) bool {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[0][0] == '0' {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || len(part) > 1 && part[0] == '0' {
+			return false
+		}
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func validateGoroutineProfile(p goroutineProfile, baseline bool) error {
-	if p.Schema != 1 || p.Protocol != goroutineCandidateProtocol || p.Scenario != "receipt_admission_lookup" || p.Family != "receipt_edge_delete" || p.ImageScope != "normal" || p.MeasurementProtocol != "none" || p.CPUSet != "0-3" || p.RuntimeUser != "501:20" ||
+	if p.Schema != 1 || p.Protocol != goroutineOperationalProtocol || !goroutineScenarioFamily(p.Scenario, p.Family) || p.ImageScope != "normal" || p.MeasurementProtocol != "none" || p.CPUSet != "0-3" || !validGoroutineRuntimeUser(p.RuntimeUser) ||
 		!retainedHex(p.SourceCommit, 40) || !retainedHex(p.SourceTree, 40) || !strings.HasPrefix(p.ImageID, "sha256:") || !retainedHex(strings.TrimPrefix(p.ImageID, "sha256:"), 64) || !retainedHex(p.ConfigSHA256, 64) || !retainedHex(p.ScenarioSHA256, 64) || !retainedHex(p.ObserverSHA256, 64) || !strings.HasPrefix(p.ObserverGoVersion, "go1.") || len(p.Nodes) != 3 || p.MetricsTransport != "operator_docker_exec" || p.BridgePID <= 0 || len(p.BridgePorts) != 3 {
-		return errors.New("normal profile identity missing or outside candidate scope")
+		return errors.New("normal profile identity missing or outside operative profile")
 	}
 	endpoints, ids, pids := map[string]bool{}, map[string]bool{}, map[int64]bool{}
 	for i, n := range p.Nodes {
@@ -396,7 +458,7 @@ func validateGoroutinePassive(p goroutinePassive, n goroutineNodeProfile) bool {
 // The barrier proves only what the host harness explicitly waited. It is not a
 // census or certification that all normal server queues/watchers have joined.
 func validateGoroutineBarrier(b goroutineBarrier, caseRoot string) (bool, error) {
-	if b.Schema != 1 || b.Protocol != goroutineCandidateProtocol || b.Scope != "declared_client_work_only_not_global_idle" || b.T0NS <= 0 || b.SemanticComplete == nil || b.PendingRPC == nil || len(b.OwnedWork) != 3 || len(b.WorkReports) != 2 {
+	if b.Schema != 1 || b.Protocol != goroutineOperationalProtocol || b.Scope != "declared_client_work_only_not_global_idle" || b.T0NS <= 0 || b.SemanticComplete == nil || b.PendingRPC == nil || len(b.OwnedWork) != 3 || len(b.WorkReports) != 2 {
 		return false, errors.New("declared work barrier incomplete")
 	}
 	failed := !*b.SemanticComplete || *b.PendingRPC != 0
@@ -428,7 +490,7 @@ func validateGoroutineBarrier(b goroutineBarrier, caseRoot string) (bool, error)
 			return false, errors.New("duplicate phase")
 		}
 		var returned goroutinePhaseReturn
-		if goroutineDecode(work.CoordinatorReturn, &returned) != nil || returned.Schema != 1 || returned.Protocol != goroutineCandidateProtocol || returned.Scope != "synchronous_receipt_phase_only" || returned.Phase != work.Phase || returned.StartedNS <= 0 || returned.FinishedNS <= returned.StartedNS || returned.FinishedNS > b.T0NS || returned.ExitCode == nil || returned.CoordinatorReturned == nil {
+		if goroutineDecode(work.CoordinatorReturn, &returned) != nil || returned.Schema != 1 || returned.Protocol != goroutineOperationalProtocol || returned.Scope != "synchronous_receipt_phase_only" || returned.Phase != work.Phase || returned.StartedNS <= 0 || returned.FinishedNS <= returned.StartedNS || returned.FinishedNS > b.T0NS || returned.ExitCode == nil || returned.CoordinatorReturned == nil {
 			return false, errors.New("phase coordinator return evidence incomplete")
 		}
 		phases[work.Phase] = returned
@@ -466,7 +528,7 @@ func evaluateGoroutinePolicy(input goroutinePolicyInput) goroutinePolicyReport {
 }
 
 func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) goroutinePolicyReport {
-	r := goroutinePolicyReport{Schema: 1, Protocol: goroutineCandidateProtocol, CandidateOnly: true, SampledPeakLimit: 128, PostResidualLimit: 15, OperationalVerdict: "incomplete", ResidualVerdict: "incomplete", Verdict: "incomplete", Scope: "sampled_normal_operational_and_declared_client_residual_screen_not_leak_free", Inputs: input}
+	r := goroutinePolicyReport{Schema: 1, Protocol: goroutineOperationalProtocol, PolicyRole: "operative_normal_component", SampledPeakLimit: 128, PostResidualLimit: 15, OperationalVerdict: "incomplete", ResidualVerdict: "incomplete", Verdict: "incomplete", Scope: "sampled_normal_operational_and_declared_client_residual_screen_not_leak_free", Inputs: input}
 	missing := func(reason string) goroutinePolicyReport {
 		r.MissingPremises = append(r.MissingPremises, reason)
 		if len(r.Failures) > 0 {
@@ -474,8 +536,8 @@ func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) 
 		}
 		return r
 	}
-	if input.Schema != 1 || input.Protocol != goroutineCandidateProtocol || len(input.Posts) != 2 || len(input.OwnerEvidence) == 0 {
-		return missing("candidate inputs or source-lifecycle evidence absent")
+	if input.Schema != 1 || input.Protocol != goroutineOperationalProtocol || len(input.Posts) != 2 || len(input.OwnerEvidence) == 0 {
+		return missing("operative inputs or source-lifecycle evidence absent")
 	}
 	if !goroutineGeneratedRefsInCase(input, caseRoot) {
 		return missing("generated references outside physical current case root or missing")
@@ -483,6 +545,9 @@ func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) 
 	var profile, before goroutineProfile
 	if goroutineDecode(input.BaselineProfile, &profile) != nil || validateGoroutineProfile(profile, true) != nil {
 		return missing("baseline normal profile incomplete")
+	}
+	if validateGoroutineScenario(caseRoot, profile) != nil {
+		return missing("reviewed resolved workload profile differs")
 	}
 	if goroutineDecode(input.BeforePostProfile, &before) != nil || validateGoroutineProfile(before, false) != nil || !sameGoroutineProfile(profile, before) {
 		return missing("post identity/configuration differs from baseline")
@@ -575,7 +640,7 @@ func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) 
 		if goroutineDecode(post.Profile, &metadata) != nil || validateGoroutineProfile(metadata, false) != nil || !sameGoroutineProfile(profile, metadata) {
 			return missing("post target restarted or profile changed")
 		}
-		if goroutineDecode(post.Capture, &capture) != nil || capture.Schema != 1 || capture.Protocol != goroutineCandidateProtocol || !capture.CandidateOnly || capture.Qualification || capture.ReleaseAdmission || capture.OffsetSeconds != offset || capture.Verdict != "captured" || capture.Failure != "" || capture.DurationNS < 0 || capture.DurationNS > int64(3*time.Second) || capture.DurationNS > post.EndNS-post.StartNS || len(capture.Replicas) != 3 || capture.Profile != input.BeforePostProfile {
+		if goroutineDecode(post.Capture, &capture) != nil || capture.Schema != 1 || capture.Protocol != goroutineOperationalProtocol || capture.PolicyRole != "operative_normal_component" || capture.Qualification || capture.ReleaseAdmission || capture.OffsetSeconds != offset || capture.Verdict != "captured" || capture.Failure != "" || capture.DurationNS < 0 || capture.DurationNS > int64(3*time.Second) || capture.DurationNS > post.EndNS-post.StartNS || len(capture.Replicas) != 3 || capture.Profile != input.BeforePostProfile {
 			return missing("post collector flight incomplete or foreign")
 		}
 		if _, err := time.Parse(time.RFC3339Nano, capture.StartedUTC); err != nil {
@@ -585,6 +650,8 @@ func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) 
 			if v.Runtime.Endpoint != profile.Nodes[i].Endpoint || v.Runtime.Goroutines <= 0 || !validateGoroutinePassive(v.Passive, profile.Nodes[i]) || v.Passive.AntiEntropyCycles < baselinePassive[i].AntiEntropyCycles {
 				return missing("post passive profile or endpoint correspondence differs")
 			}
+			// Counter.Inc cannot roll back between accepted same-process cuts.
+			baselinePassive[i].AntiEntropyCycles = v.Passive.AntiEntropyCycles
 			r.Replicas[i].SampledPeak = max(r.Replicas[i].SampledPeak, v.Runtime.Goroutines)
 			if index == 0 {
 				r.Replicas[i].Post5 = v.Runtime.Goroutines
@@ -618,8 +685,8 @@ func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) 
 
 func runGoroutinePolicyEvaluation(args []string) int {
 	fs := flag.NewFlagSet("evaluate-goroutine-policy", flag.ContinueOnError)
-	input := fs.String("input", "", "candidate-only typed input")
-	out := fs.String("out", "", "candidate-only JSON report")
+	input := fs.String("input", "", "normal operative typed input")
+	out := fs.String("out", "", "normal operative JSON report")
 	if fs.Parse(args) != nil || *input == "" || *out == "" {
 		return 2
 	}
@@ -639,7 +706,7 @@ func runGoroutinePolicyEvaluation(args []string) int {
 		report.MissingPremises = append(report.MissingPremises, "actual observer executable/Go binding differs")
 	}
 	if err := writeGoroutineArtifact(*out, report); err != nil {
-		fmt.Fprintln(os.Stderr, "candidate goroutine report write failed")
+		fmt.Fprintln(os.Stderr, "operative goroutine report write failed")
 		return 1
 	}
 	if report.Verdict != "pass" {

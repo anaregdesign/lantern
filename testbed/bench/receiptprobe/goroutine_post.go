@@ -21,7 +21,7 @@ var goroutinePeerMetric = regexp.MustCompile(`^lantern_peer_connected\{peer=("(?
 
 // Only existing passive gauges are retained. Labels come from declared fixture
 // peer origins; arbitrary metrics, tokens and the remainder of a scrape are not
-// serialized by this candidate collector.
+// serialized by this collector.
 func parseGoroutinePassive(data []byte) (goroutinePassive, error) {
 	p := goroutinePassive{Peers: map[string]int64{}}
 	seen := map[string]bool{}
@@ -120,9 +120,9 @@ func goroutineMetricsClient(transport *http.Transport) *http.Client {
 // validation/metadata costs too; this duration alone never certifies the window.
 func collectGoroutinePost(ctx context.Context, c goroutinePostControl, endpoints []metricsEndpoint, now func() time.Time, scrape func(context.Context, metricsEndpoint) (goroutinePostReplica, error)) goroutinePostCapture {
 	start := now()
-	out := goroutinePostCapture{Schema: 1, Protocol: goroutineCandidateProtocol, CandidateOnly: true, OffsetSeconds: c.OffsetSeconds, Profile: c.Profile, StartedUTC: start.UTC().Format(time.RFC3339Nano), Verdict: "incomplete"}
-	if c.Schema != 1 || c.Protocol != goroutineCandidateProtocol || (c.OffsetSeconds != 5 && c.OffsetSeconds != 10) || len(endpoints) != 3 {
-		out.Failure = "invalid candidate flight"
+	out := goroutinePostCapture{Schema: 1, Protocol: goroutineOperationalProtocol, PolicyRole: "operative_normal_component", OffsetSeconds: c.OffsetSeconds, Profile: c.Profile, StartedUTC: start.UTC().Format(time.RFC3339Nano), Verdict: "incomplete"}
+	if c.Schema != 1 || c.Protocol != goroutineOperationalProtocol || (c.OffsetSeconds != 5 && c.OffsetSeconds != 10) || len(endpoints) != 3 {
+		out.Failure = "invalid operative flight"
 		return out
 	}
 	if ctx.Err() != nil {
@@ -157,7 +157,7 @@ func collectGoroutinePost(ctx context.Context, c goroutinePostControl, endpoints
 
 func runGoroutinePostCollection(args []string) int {
 	fs := flag.NewFlagSet("collect-goroutine-post", flag.ContinueOnError)
-	input := fs.String("input", "", "candidate flight control")
+	input := fs.String("input", "", "operative flight control")
 	outPath := fs.String("out", "", "one post-flight artifact")
 	if fs.Parse(args) != nil || *input == "" || *outPath == "" {
 		return 2
@@ -172,9 +172,9 @@ func runGoroutinePostCollection(args []string) int {
 		return 2
 	}
 	fail := func(reason string) int {
-		result := goroutinePostCapture{Schema: 1, Protocol: goroutineCandidateProtocol, CandidateOnly: true, OffsetSeconds: c.OffsetSeconds, Profile: c.Profile, Verdict: "incomplete", Failure: reason}
+		result := goroutinePostCapture{Schema: 1, Protocol: goroutineOperationalProtocol, PolicyRole: "operative_normal_component", OffsetSeconds: c.OffsetSeconds, Profile: c.Profile, Verdict: "incomplete", Failure: reason}
 		if writeGoroutineArtifact(*outPath, result) != nil {
-			fmt.Fprintln(os.Stderr, "candidate incomplete artifact write failed")
+			fmt.Fprintln(os.Stderr, "operative incomplete artifact write failed")
 		}
 		return 1
 	}
@@ -184,6 +184,9 @@ func runGoroutinePostCollection(args []string) int {
 	}
 	if goroutineDecode(c.Profile, &profile) != nil || validateGoroutineProfile(profile, false) != nil || goroutineObserverMatches(profile) != nil {
 		return fail("normal profile or observer binding differs")
+	}
+	if validateGoroutineScenario(caseRoot, profile) != nil {
+		return fail("reviewed resolved workload profile differs")
 	}
 	endpoints, err := parseRuntimeMetricsEndpoints(strings.Join(c.MetricsURLs, ","))
 	if err != nil {
@@ -212,7 +215,7 @@ func runGoroutinePostCollection(args []string) int {
 		return scrapeGoroutinePost(ctx, client, e)
 	})
 	if err := writeGoroutineArtifact(*outPath, result); err != nil {
-		fmt.Fprintln(os.Stderr, "candidate post artifact write failed")
+		fmt.Fprintln(os.Stderr, "operative post artifact write failed")
 		return 1
 	}
 	if result.Verdict != "captured" {

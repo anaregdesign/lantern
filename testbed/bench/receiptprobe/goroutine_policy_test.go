@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,20 @@ type goroutinePolicyFixture struct {
 	steady      steadyMetricsReport
 	captures    []goroutinePostCapture
 	profiles    []goroutineProfile
+	scenario    map[string]any
+}
+
+func goroutineReviewedScenario(t *testing.T, name string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "scenarios", name+".yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc
 }
 
 func goroutineTestInt(v int64) *int64 { return &v }
@@ -47,14 +62,15 @@ func goroutineFixtureRef(t *testing.T, path string, value any, mode os.FileMode)
 func newGoroutinePolicyFixture(t *testing.T) *goroutinePolicyFixture {
 	t.Helper()
 	if !retainedEvidenceSupported {
-		t.Skip("candidate owned evidence supports Linux/Darwin")
+		t.Skip("operative owned evidence supports Linux/Darwin")
 	}
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := &goroutinePolicyFixture{dir: dir}
-	f.profile = goroutineProfile{Schema: 1, Protocol: goroutineCandidateProtocol, Scenario: "receipt_admission_lookup", Family: "receipt_edge_delete", ImageScope: "normal", MeasurementProtocol: "none", SourceCommit: strings.Repeat("a", 40), SourceTree: strings.Repeat("b", 40), ImageID: "sha256:" + strings.Repeat("c", 64), ConfigSHA256: strings.Repeat("d", 64), ScenarioSHA256: strings.Repeat("e", 64), ObserverSHA256: strings.Repeat("f", 64), ObserverGoVersion: "go1.27.3", MetricsTransport: "operator_docker_exec", BridgePID: 100, BridgePorts: []int{9390, 9391, 9392}, CPUSet: "0-3", RuntimeUser: "501:20"}
+	f.scenario = goroutineReviewedScenario(t, "receipt_admission_lookup")
+	f.profile = goroutineProfile{Schema: 1, Protocol: goroutineOperationalProtocol, Scenario: "receipt_admission_lookup", Family: "receipt_edge_delete", ImageScope: "normal", MeasurementProtocol: "none", SourceCommit: strings.Repeat("a", 40), SourceTree: strings.Repeat("b", 40), ImageID: "sha256:" + strings.Repeat("c", 64), ConfigSHA256: strings.Repeat("d", 64), ScenarioSHA256: strings.Repeat("e", 64), ObserverSHA256: strings.Repeat("f", 64), ObserverGoVersion: "go1.27.3", MetricsTransport: "operator_docker_exec", BridgePID: 100, BridgePorts: []int{9390, 9391, 9392}, CPUSet: "0-3", RuntimeUser: "501:20"}
 	for i := 0; i < 3; i++ {
 		path := filepath.Join(dir, fmt.Sprintf("passive-%d.txt", i))
 		data := []byte(goroutineTestPassive())
@@ -82,7 +98,7 @@ func newGoroutinePolicyFixture(t *testing.T) *goroutinePolicyFixture {
 		f.steady.Samples = append(f.steady.Samples, round)
 	}
 	complete := true
-	f.barrier = goroutineBarrier{Schema: 1, Protocol: goroutineCandidateProtocol, Scope: "declared_client_work_only_not_global_idle", T0NS: int64(time.Second), SemanticComplete: &complete, PendingRPC: goroutineTestInt(0)}
+	f.barrier = goroutineBarrier{Schema: 1, Protocol: goroutineOperationalProtocol, Scope: "declared_client_work_only_not_global_idle", T0NS: int64(time.Second), SemanticComplete: &complete, PendingRPC: goroutineTestInt(0)}
 	for _, kind := range []string{"producer", "subscriber", "chaos"} {
 		count := int64(0)
 		if kind == "producer" {
@@ -96,11 +112,11 @@ func newGoroutinePolicyFixture(t *testing.T) *goroutinePolicyFixture {
 	}
 	for i, phase := range []string{"warmup", "steady"} {
 		returned := true
-		f.returns = append(f.returns, goroutinePhaseReturn{Schema: 1, Protocol: goroutineCandidateProtocol, Phase: phase, Scope: "synchronous_receipt_phase_only", StartedNS: int64(100 + i*200), FinishedNS: int64(200 + i*200), ExitCode: goroutineTestExit(0), CoordinatorReturned: &returned})
+		f.returns = append(f.returns, goroutinePhaseReturn{Schema: 1, Protocol: goroutineOperationalProtocol, Phase: phase, Scope: "synchronous_receipt_phase_only", StartedNS: int64(100 + i*200), FinishedNS: int64(200 + i*200), ExitCode: goroutineTestExit(0), CoordinatorReturned: &returned})
 	}
-	f.input = goroutinePolicyInput{Schema: 1, Protocol: goroutineCandidateProtocol, WorkloadReport: goroutineFixtureRef(t, filepath.Join(dir, "workload.json"), map[string]string{"verdict": "pass"}, 0o644), OwnerEvidence: []goroutineReference{goroutineFixtureRef(t, filepath.Join(dir, "source-test-ref.json"), map[string]string{"scope": "source reference only, not normal join certification"}, 0o644)}}
+	f.input = goroutinePolicyInput{Schema: 1, Protocol: goroutineOperationalProtocol, WorkloadReport: goroutineFixtureRef(t, filepath.Join(dir, "workload.json"), map[string]string{"verdict": "pass"}, 0o644), OwnerEvidence: []goroutineReference{goroutineFixtureRef(t, filepath.Join(dir, "source-test-ref.json"), map[string]string{"scope": "source reference only, not normal join certification"}, 0o644)}}
 	for _, offset := range []int{5, 10} {
-		capture := goroutinePostCapture{Schema: 1, Protocol: goroutineCandidateProtocol, CandidateOnly: true, OffsetSeconds: offset, StartedUTC: "2026-10-30T00:00:01Z", DurationNS: int64(time.Millisecond), Verdict: "captured"}
+		capture := goroutinePostCapture{Schema: 1, Protocol: goroutineOperationalProtocol, PolicyRole: "operative_normal_component", OffsetSeconds: offset, StartedUTC: "2026-10-30T00:00:01Z", DurationNS: int64(time.Millisecond), Verdict: "captured"}
 		for _, n := range f.profile.Nodes {
 			p, err := parseGoroutinePassive([]byte(goroutineTestPassive()))
 			if err != nil {
@@ -119,6 +135,12 @@ func (f *goroutinePolicyFixture) persist(t *testing.T) {
 	t.Helper()
 	write := func(name string, value any, mode os.FileMode) goroutineReference {
 		return goroutineFixtureRef(t, filepath.Join(f.dir, name), value, mode)
+	}
+	scenario := write("scenario.resolved.json", f.scenario, 0o644)
+	f.profile.ScenarioSHA256 = scenario.SHA256
+	f.before.ScenarioSHA256 = scenario.SHA256
+	for i := range f.profiles {
+		f.profiles[i].ScenarioSHA256 = scenario.SHA256
 	}
 	f.input.Pre = write("runtime_pre.json", f.pre, 0o644)
 	f.input.LegacyPost = write("runtime_post.json", f.legacy, 0o644)
@@ -139,7 +161,7 @@ func (f *goroutinePolicyFixture) persist(t *testing.T) {
 	}
 }
 
-func TestGoroutinePolicyCandidateBoundaries(t *testing.T) {
+func TestGoroutinePolicyOperationalBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		change func(*goroutinePolicyFixture)
@@ -175,8 +197,71 @@ func TestGoroutinePolicyCandidateBoundaries(t *testing.T) {
 			if r.Verdict != test.want {
 				t.Fatal(r.Verdict, r.Failures, r.MissingPremises)
 			}
-			if !r.CandidateOnly || r.Qualification || r.ReleaseAdmission {
-				t.Fatal("prototype claimed qualification")
+			if r.PolicyRole != "operative_normal_component" || r.Qualification || r.ReleaseAdmission {
+				t.Fatal("component claimed whole qualification")
+			}
+		})
+	}
+}
+
+func TestGoroutinePolicyReviewedFamilyProfile(t *testing.T) {
+	for _, test := range []struct {
+		user string
+		want string
+	}{
+		{"1000:1000", "pass"}, {"0:0", "incomplete"}, {"0:1000", "incomplete"},
+		{"1000", "incomplete"}, {"1000:-1", "incomplete"}, {"01:1000", "incomplete"}, {"1000:01000", "incomplete"},
+	} {
+		t.Run("runtime_user_"+test.user, func(t *testing.T) {
+			f := newGoroutinePolicyFixture(t)
+			f.profile.RuntimeUser, f.before.RuntimeUser = test.user, test.user
+			for i := range f.profiles {
+				f.profiles[i].RuntimeUser = test.user
+			}
+			f.persist(t)
+			if got := evaluateGoroutinePolicy(f.input); got.Verdict != test.want {
+				t.Fatal(got)
+			}
+		})
+	}
+	for scenario, family := range map[string]string{"receipt_vertex_put_admission_lookup": "receipt_vertex_put", "receipt_vertex_delete_admission_lookup": "receipt_vertex_delete", "receipt_admission_lookup": "receipt_edge_delete", "receipt_edge_add_admission_lookup": "receipt_edge_add"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newGoroutinePolicyFixture(t)
+			f.scenario = goroutineReviewedScenario(t, scenario)
+			f.profile.Scenario, f.profile.Family = scenario, family
+			f.before.Scenario, f.before.Family = scenario, family
+			for i := range f.profiles {
+				f.profiles[i].Scenario, f.profiles[i].Family = scenario, family
+			}
+			f.persist(t)
+			if got := evaluateGoroutinePolicy(f.input); got.Verdict != "pass" {
+				t.Fatal(got)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name   string
+		change func(map[string]any)
+	}{
+		{"rps", func(d map[string]any) { d["phases"].(map[string]any)["steady"].(map[string]any)["rps"] = 201 }},
+		{"workers", func(d map[string]any) { d["phases"].(map[string]any)["steady"].(map[string]any)["concurrency"] = 13 }},
+		{"duration", func(d map[string]any) { d["phases"].(map[string]any)["cooldown"] = "9s" }},
+		{"WAL", func(d map[string]any) {
+			d["cluster"].(map[string]any)["receipt_wal"].(map[string]any)["retention"] = "2h"
+		}},
+		{"perf", func(d map[string]any) { d["perf_gate"].(map[string]any)["min_steady_rps_total"] = 149 }},
+		{"endpoints", func(d map[string]any) {
+			d["target"].(map[string]any)["endpoints"] = []string{"localhost:6380", "localhost:6381"}
+		}},
+		{"policy", func(d map[string]any) { d["goroutine_policy"].(map[string]any)["sampled_absolute_max"] = 129 }},
+		{"extra_native_override", func(d map[string]any) { d["environment"] = map[string]any{"LANTERN_AUTH_MODE": "off"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newGoroutinePolicyFixture(t)
+			test.change(f.scenario)
+			f.persist(t)
+			if got := evaluateGoroutinePolicy(f.input); got.Verdict != "incomplete" {
+				t.Fatal(got)
 			}
 		})
 	}
@@ -192,6 +277,10 @@ func TestGoroutinePolicyIncompletePremises(t *testing.T) {
 			f.profiles[1].Nodes[0].PID++
 		}},
 		{"configuration", func(f *goroutinePolicyFixture) { f.profiles[1].ConfigSHA256 = strings.Repeat("0", 64) }},
+		{"same_PID_counter_1_3_2", func(f *goroutinePolicyFixture) {
+			f.captures[0].Replicas[0].Passive.AntiEntropyCycles = 3
+			f.captures[1].Replicas[0].Passive.AntiEntropyCycles = 2
+		}},
 		{"tagged", func(f *goroutinePolicyFixture) { f.profile.ImageScope = "tagged" }},
 		{"foreign_observer", func(f *goroutinePolicyFixture) { f.profiles[0].ObserverSHA256 = strings.Repeat("0", 64) }},
 		{"missing_peer", func(f *goroutinePolicyFixture) {

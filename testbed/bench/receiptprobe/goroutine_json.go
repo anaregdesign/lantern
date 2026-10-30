@@ -9,18 +9,18 @@ import (
 	"strings"
 )
 
-// Candidate evidence has optional companion references, unlike the fixed
+// Operational evidence has optional companion references, unlike the fixed
 // benchheap wire schema. Preserve canonical keys, presence and duplicate
 // rejection without changing that schema or the historical readers.
 func decodeGoroutineJSON(data []byte, value any) error {
 	if len(data) == 0 || len(data) > 1<<20 {
-		return errors.New("candidate JSON bound")
+		return errors.New("operative JSON bound")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	var unique func(int) error
 	unique = func(depth int) error {
 		if depth > 32 {
-			return errors.New("candidate JSON depth")
+			return errors.New("operative JSON depth")
 		}
 		token, err := d.Token()
 		if err != nil {
@@ -40,7 +40,7 @@ func decodeGoroutineJSON(data []byte, value any) error {
 				}
 				name, ok := key.(string)
 				if !ok || keys[name] {
-					return errors.New("candidate duplicate key")
+					return errors.New("operative duplicate key")
 				}
 				keys[name] = true
 				if err := unique(depth + 1); err != nil {
@@ -54,23 +54,23 @@ func decodeGoroutineJSON(data []byte, value any) error {
 				}
 			}
 		default:
-			return errors.New("candidate JSON delimiter")
+			return errors.New("operative JSON delimiter")
 		}
 		_, err = d.Token()
 		return err
 	}
 	if unique(0) != nil {
-		return errors.New("candidate JSON structure")
+		return errors.New("operative JSON structure")
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return errors.New("candidate trailing JSON")
+		return errors.New("operative trailing JSON")
 	}
 	typ := reflect.TypeOf(value)
 	if typ == nil || typ.Kind() != reflect.Pointer {
-		return errors.New("candidate JSON target")
+		return errors.New("operative JSON target")
 	}
 	if goroutineJSONFields(data, typ.Elem()) != nil {
-		return errors.New("candidate canonical fields")
+		return errors.New("operative canonical fields")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -80,7 +80,7 @@ func decodeGoroutineJSON(data []byte, value any) error {
 func goroutineJSONFields(data []byte, typ reflect.Type) error {
 	if typ == reflect.TypeOf(json.RawMessage{}) {
 		if !json.Valid(data) {
-			return errors.New("candidate raw context")
+			return errors.New("operative raw context")
 		}
 		return nil
 	}
@@ -88,7 +88,7 @@ func goroutineJSONFields(data []byte, typ reflect.Type) error {
 		if typ.Kind() == reflect.Slice {
 			return nil
 		}
-		return errors.New("candidate null")
+		return errors.New("operative null")
 	}
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
@@ -97,7 +97,7 @@ func goroutineJSONFields(data []byte, typ reflect.Type) error {
 	case reflect.Struct:
 		var object map[string]json.RawMessage
 		if json.Unmarshal(data, &object) != nil || object == nil {
-			return errors.New("candidate object")
+			return errors.New("operative object")
 		}
 		allowed := map[string]bool{}
 		for i := 0; i < typ.NumField(); i++ {
@@ -122,35 +122,35 @@ func goroutineJSONFields(data []byte, typ reflect.Type) error {
 				if optional {
 					continue
 				}
-				return errors.New("candidate required field")
+				return errors.New("operative required field")
 			}
 			if goroutineJSONFields(raw, field.Type) != nil {
-				return errors.New("candidate nested field")
+				return errors.New("operative nested field")
 			}
 		}
 		for name := range object {
 			if !allowed[name] {
-				return errors.New("candidate unknown field")
+				return errors.New("operative unknown field")
 			}
 		}
 	case reflect.Slice, reflect.Array:
 		var rows []json.RawMessage
 		if json.Unmarshal(data, &rows) != nil {
-			return errors.New("candidate array")
+			return errors.New("operative array")
 		}
 		for _, row := range rows {
 			if goroutineJSONFields(row, typ.Elem()) != nil {
-				return errors.New("candidate array element")
+				return errors.New("operative array element")
 			}
 		}
 	case reflect.Map:
 		var object map[string]json.RawMessage
 		if json.Unmarshal(data, &object) != nil {
-			return errors.New("candidate map")
+			return errors.New("operative map")
 		}
 		for _, raw := range object {
 			if goroutineJSONFields(raw, typ.Elem()) != nil {
-				return errors.New("candidate map value")
+				return errors.New("operative map value")
 			}
 		}
 	}

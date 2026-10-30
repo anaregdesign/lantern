@@ -39,8 +39,23 @@ import (
 // sustained churn, heap_inuse drifts upward as the allocator opens new
 // spans even when live memory is flat, producing false-positive verdicts.
 type LeakGate struct {
-	SnapshotProtocol                  string            `json:"snapshot_protocol"`
-	NaturalChecksVerdict              string            `json:"natural_checks_verdict"`
+	SnapshotProtocol           string `json:"snapshot_protocol"`
+	NaturalChecksVerdict       string `json:"natural_checks_verdict"`
+	NaturalSteadyMemoryVerdict string `json:"natural_steady_memory_verdict"`
+	GoroutineChecksVerdict     string `json:"goroutine_checks_verdict"`
+	GoroutineSampledPeakLimit  int64  `json:"goroutine_sampled_peak_limit"`
+	GoroutinePostResidualLimit int64  `json:"goroutine_post_residual_limit"`
+	GoroutineReplicas          []struct {
+		Endpoint    string `json:"endpoint"`
+		Baseline    int64  `json:"baseline"`
+		SampledPeak int64  `json:"sampled_peak"`
+		LegacyPost  int64  `json:"legacy_post"`
+		LegacyDelta int64  `json:"legacy_post_delta"`
+		Post5       int64  `json:"post_5"`
+		Post10      int64  `json:"post_10"`
+		Delta5      int64  `json:"delta_5"`
+		Delta10     int64  `json:"delta_10"`
+	} `json:"goroutine_replicas"`
 	NaturalPostHeapObservationVerdict string            `json:"natural_post_heap_observation_verdict"`
 	RetainedVerdict                   string            `json:"retained_verdict"`
 	OverallMemoryVerdict              string            `json:"overall_memory_verdict"`
@@ -378,17 +393,30 @@ func RenderReport(w io.Writer, in Input) error {
 	if in.LeakGate == nil {
 		bw.printf("_not captured_\n\n")
 	} else {
-		paired := in.LeakGate.SnapshotProtocol == "natural_reference_v1" || in.LeakGate.SnapshotProtocol == "symmetric_post_gc_2_v1"
+		operative := in.LeakGate.SnapshotProtocol == "natural_reference_v2"
+		paired := operative || in.LeakGate.SnapshotProtocol == "natural_reference_v1" || in.LeakGate.SnapshotProtocol == "symmetric_post_gc_2_v1"
 		if paired {
 			bw.printf("This is one lane of the source-paired measurement protocol. Overall memory verdict: `%s`; a matching normal-image and tagged-image pair is required.\n\n", in.LeakGate.OverallMemoryVerdict)
-			bw.printf("Natural steady/goroutine checks: `%s`; natural POST heap observation (advisory): `%s`; retained check: `%s`.\n\n", in.LeakGate.NaturalChecksVerdict, in.LeakGate.NaturalPostHeapObservationVerdict, in.LeakGate.RetainedVerdict)
+			if operative {
+				bw.printf("Natural steady memory: `%s`; operative goroutine component: `%s`; natural POST heap observation (advisory): `%s`; retained check: `%s`.\n\n", in.LeakGate.NaturalSteadyMemoryVerdict, in.LeakGate.GoroutineChecksVerdict, in.LeakGate.NaturalPostHeapObservationVerdict, in.LeakGate.RetainedVerdict)
+			} else {
+				bw.printf("Natural steady/goroutine checks: `%s`; natural POST heap observation (advisory): `%s`; retained check: `%s`.\n\n", in.LeakGate.NaturalChecksVerdict, in.LeakGate.NaturalPostHeapObservationVerdict, in.LeakGate.RetainedVerdict)
+			}
 		}
 		hMB := in.LeakGate.Thresholds.HeapAllocMaxDeltaMB
 		if hMB == 0 {
 			hMB = in.LeakGate.Thresholds.HeapInuseMaxDeltaMB
 		}
-		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
-			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
+		if operative {
+			bw.printf("Active goroutine limits: sampled absolute peak ≤%d; residual ≤+%d at the original POST and both fixed t0+5s/+10s readings (3s windows). t0 follows the existing cooldown and verification; the original sequential POST is not an atomic t0 sample.\n\n", in.LeakGate.GoroutineSampledPeakLimit, in.LeakGate.GoroutinePostResidualLimit)
+			bw.printf("| replica | PRE | sampled absolute peak | original POST (Δ) | fixed +5s (Δ) | fixed +10s (Δ) |\n| --- | --- | --- | --- | --- | --- |\n")
+			for _, r := range in.LeakGate.GoroutineReplicas {
+				bw.printf("| `%s` | %d | %d | %d (%+d) | %d (%+d) | %d (%+d) |\n", r.Endpoint, r.Baseline, r.SampledPeak, r.LegacyPost, r.LegacyDelta, r.Post5, r.Delta5, r.Post10, r.Delta10)
+			}
+			bw.printf("\nRelative steady goroutine deltas below are raw observations, not an active +15 steady limit. This bounded screen does not prove global idle or absence of small leaks.\n\n")
+		} else {
+			bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n", in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
+		}
 		if in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB > 0 {
 			if paired {
 				bw.printf("Normal-image unforced steady heap threshold: +%d MiB. Natural POST +%d MiB comparison is observation-only; the distinct tagged-image retained check uses the unchanged +%d MiB limit.\n\n", in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB, hMB)

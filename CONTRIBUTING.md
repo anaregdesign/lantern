@@ -137,6 +137,18 @@ configuration and runtime correspondence are required for acceptance. A missing
 pair is incomplete. This does not assert normal/measurement binary equivalence
 or relabel any historical `natural_gc_single` failure.
 
+The #1960 normal receipt goroutine contract separates an absolute sampled
+process ceiling (128) from the original POST and two fixed later residual
+checks (+15). It applies only through the explicit versioned four-family normal
+receipt protocol. Workload, performance, natural steady memory, retained-memory
+pairing and native guards remain independent requirements. The normal memory
+POST point and tagged measurement procedure are unchanged. Historical reports
+keep their original protocol and verdict; the old steady-relative goroutine
+check is not an additional veto on a valid new-protocol result. Calibration is
+not acceptance. Adoption still requires the ordinary full local contract,
+required source CI and fresh exact-source normal/measurement qualification;
+no pilot or historical diagnostic result carries into those exits.
+
 ## Before every `git push` — local quality gate
 
 Lantern is a pre-production beta. During edits run focused tests, resolve meaningful

@@ -19,7 +19,7 @@ func TestGoroutineCanonicalJSON(t *testing.T) {
 	for _, bad := range []string{`{"Schema":1}`, `{"schema":1,"schema":1}`, `{"schema":1,"unknown":0}`, `{}`, `{"schema":1} {}`, `{"schema":1,"optional":null}`, `{"schema":1,"optional":{"Count":0}}`, `{"schema":1,"optional":{"count":0,"count":0}}`, `{"schema":1,"optional":{}}`} {
 		var v value
 		if decodeGoroutineJSON([]byte(bad), &v) == nil {
-			t.Fatal("noncanonical candidate JSON accepted")
+			t.Fatal("noncanonical operative JSON accepted")
 		}
 	}
 }

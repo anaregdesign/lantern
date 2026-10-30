@@ -46,9 +46,15 @@ def fixture(directory, receipt=False):
     for phase in ("pre", "post"):
         put(directory / f"runtime_{phase}.json", runtime())
         put(directory / f"image_provenance_{phase}.json", provenance(receipt))
-    put(directory / "leak_gate.json", {"verdict": "pass", "snapshot_protocol": "natural_reference_v1",
-        "natural_checks_verdict": "pass", "retained_verdict": "requires_pair", "pair_required": True,
+    put(directory / "leak_gate.json", {"verdict": "pass", "snapshot_protocol": "natural_reference_v2",
+        "natural_steady_memory_verdict": "pass", "goroutine_checks_verdict": "pass", "retained_verdict": "requires_pair", "pair_required": True,
         "overall_memory_verdict": "requires_pair", "steady_sample_interval": "5s", "steady_sample_count": 9})
+    policy_input = directory / "goroutine_policy_input.json"
+    put(policy_input, {"fixture": "raw input reference; independent consumer tested separately"})
+    os.chmod(policy_input, 0o600)
+    leak = json.loads((directory / "leak_gate.json").read_text())
+    leak["goroutine_policy_input"] = {"path": str(policy_input), "sha256": qualification.digest(policy_input)}
+    put(directory / "leak_gate.json", leak)
     put(directory / "workload_gate.json", {"verdict": "pass", "producer_failed": 0,
         "producer_diagnostics_failed": 0, "failed_consumers": 0, "chaos_failed": 0})
     put(directory / "perf_gate.json", {"verdict": "pass", "producer_results": [
@@ -120,7 +126,7 @@ class ArtifactTest(unittest.TestCase):
         original = json.loads(path.read_text())
         for field, value in (("snapshot_protocol", "natural_gc_single"),
                              ("overall_memory_verdict", "pass"), ("pair_required", False),
-                             ("retained_verdict", "pass"), ("natural_checks_verdict", "fail")):
+                             ("retained_verdict", "pass"), ("natural_steady_memory_verdict", "fail"), ("goroutine_checks_verdict", "incomplete"), ("snapshot_protocol", "natural_reference_v1")):
             with self.subTest(field=field):
                 bad = dict(original)
                 bad[field] = value
@@ -152,6 +158,26 @@ class ArtifactTest(unittest.TestCase):
         consumer.write_text("raise AssertionError('changed consumer executed')\n")
         with self.assertRaisesRegex(qualification.Refused, "frozen pair consumer differs"):
             qualification.validate_retained_pair(self.directory, self.directory, {}, {}, source, inventory)
+
+    def test_normal_policy_consumer_is_inventory_bound(self):
+        document = fixture(self.directory, True)
+        source = self.directory / "frozen"
+        consumer = source / ".github/scripts/retained_heap_pair.py"
+        consumer.parent.mkdir(parents=True)
+        consumer.write_text("class Incomplete(ValueError): pass\ndef validate_normal_policy(root, scenario, expected, report):\n    if report['goroutine_checks_verdict'] != 'pass': raise Incomplete('raw component failed')\n    return {'selected':'frozen-normal','protocol':report['snapshot_protocol']}\n")
+        inventory = {".github/scripts/retained_heap_pair.py": {"sha256": qualification.digest(consumer), "mode": consumer.stat().st_mode & 0o777}}
+        result = qualification.validate_normal_policy(self.directory, document, {}, source, inventory)
+        self.assertEqual(result, {"selected":"frozen-normal", "protocol":"natural_reference_v2"})
+        leak = qualification.read_json(self.directory / "leak_gate.json")
+        put(self.directory / "leak_gate.json", leak | {"goroutine_checks_verdict":"fail"})
+        with self.assertRaisesRegex(qualification.Refused, "normal goroutine component incomplete"):
+            qualification.validate_normal_policy(self.directory, document, {}, source, inventory)
+
+    def test_composed_pass_requires_actual_policy_input_reference(self):
+        document = fixture(self.directory, True)
+        (self.directory / "goroutine_policy_input.json").unlink()
+        with self.assertRaisesRegex(qualification.Refused, "regular|evidence"):
+            self.validate(document, True)
 
     def test_frozen_consumer_fifo_replacement_cannot_block_open(self):
         source = self.directory / "frozen"

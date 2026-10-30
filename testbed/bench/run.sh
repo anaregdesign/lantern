@@ -12,8 +12,6 @@
 #   SKIP_UP=1         assume the cluster is already running; skip compose up
 #   LANTERN_BENCH_CPUSET=0-3  pin the three replicas to one shared local CPU set;
 #                     the load generator must be pinned separately on Linux
-#   LANTERN_BENCH_GOROUTINE_CANDIDATE=1  local normal-image EdgeDelete prototype
-#                     only (#1960); never changes the operative leak gate.
 #   PPROF_CPU=1       also capture a 30s CPU profile per replica post-steady
 #   PROM_URL          override Prometheus URL (default http://localhost:9091)
 #   LANTERN_BENCH_NATURAL_GC_OBSERVE=1  after sealing the receipt Edge Add
@@ -62,8 +60,8 @@ AUTHFIXTURE=""
 CHANGEPROBE=""
 retained_heap="${LANTERN_BENCH_RETAINED_HEAP:-0}"
 [[ "$retained_heap" == "0" || "$retained_heap" == "1" ]] || { echo "invalid retained heap mode" >&2; exit 2; }
-goroutine_candidate="${LANTERN_BENCH_GOROUTINE_CANDIDATE:-0}"
-[[ "$goroutine_candidate" == "0" || "$goroutine_candidate" == "1" ]] || { echo "invalid goroutine candidate mode" >&2; exit 2; }
+goroutine_policy=0
+goroutine_policy_verdict=not_selected
 GOROUTINE_PROBE=""
 GOROUTINE_PHASE_EVIDENCE_FAILED=0
 sub_pids=()
@@ -271,7 +269,6 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 # The conditional family has its own owned native standalone topology. It
 # must not enter the three-replica Compose route while HA Create is disabled.
 if [[ $# -eq 1 && "$1" == "edge_create" ]]; then
-  [[ "$goroutine_candidate" == "0" ]] || die "goroutine candidate requires the normal EdgeDelete receipt scenario"
   exec python3 "$HERE/createprobe/run.py" "$SCENARIO_DIR/edge_create.yaml"
 fi
 need docker
@@ -322,21 +319,47 @@ case "$target_driver" in
     receipt_driver=1 ;;
   *) die "unknown target.driver $target_driver in $SCENARIO_FILE" ;;
 esac
-if [[ "$goroutine_candidate" == "1" ]]; then
-  [[ "$SCENARIO_NAME" == "receipt_admission_lookup" && "$target_driver" == "receipt_edge_delete" &&
-     "$retained_heap" == "0" && "${KEEP_UP:-0}" == "0" && "${SKIP_UP:-0}" == "0" &&
+# The four normal receipt families require the operative policy. Tagged memory
+# runs keep their original observation and completed-GC collection path.
+if [[ "$receipt_driver" == "1" && "$retained_heap" == "0" ]]; then
+  goroutine_policy=1
+  case "$SCENARIO_NAME:$target_driver" in
+    receipt_admission_lookup:receipt_edge_delete | \
+    receipt_vertex_put_admission_lookup:receipt_vertex_put | \
+    receipt_vertex_delete_admission_lookup:receipt_vertex_delete | \
+    receipt_edge_add_admission_lookup:receipt_edge_add) ;;
+    *) die "goroutine policy scenario/family differs from the four declared profiles" ;;
+  esac
+  [[ "${KEEP_UP:-0}" == "0" && "${SKIP_UP:-0}" == "0" &&
      "${LEAK_GATE_ONLY:-0}" == "1" && "${LANTERN_BENCH_CPUSET:-}" == "0-3" &&
      "${EXPECTED_LANTERN_COMMIT:-}" =~ ^[0-9a-f]{40}$ &&
      "${EXPECTED_LANTERN_TREE:-}" =~ ^[0-9a-f]{40}$ ]] ||
-    die "goroutine candidate requires one fresh pinned normal EdgeDelete cohort on cpuset 0-3"
-  yq -o=json '.goroutine_candidate' "$SCENARIO_FILE" | jq -e '
-    . == {protocol:"receipt_goroutine_candidate_v1",sampled_absolute_max:128,
+    die "goroutine policy requires a fresh pinned normal receipt cohort on cpuset 0-3"
+  yq -o=json '.goroutine_policy' "$SCENARIO_FILE" | jq -e '
+    . == {protocol:"receipt_goroutine_operational_v1",sampled_absolute_max:128,
       post_max_delta:15,post_offsets_seconds:[5,10],capture_window_seconds:3}
-  ' >/dev/null || die "goroutine candidate profile differs from the unadopted #1960 prototype"
+  ' >/dev/null || die "goroutine policy differs from the declared #1960 contract"
+  yq -o=json '.' "$SCENARIO_FILE" | jq -e --arg scenario "$SCENARIO_NAME" --arg driver "$target_driver" '
+    {receipt_edge_delete:"DeleteEdge",receipt_vertex_delete:"DeleteVertex",
+     receipt_vertex_put:"PutVertex",receipt_edge_add:"AddEdge"}[$driver] as $call |
+    (keys == ["cluster","description","goroutine_policy","leak_gate","name","perf_gate","phases","target"]) and
+    .name == $scenario and
+    .target == {driver:$driver,endpoints:["localhost:6380","localhost:6381","localhost:6382"],
+      calls:[{name:"receipt_admission",call:("graph.v1.LanternService/"+$call),rps:100},
+             {name:"receipt_lookup",call:"graph.v1.LanternService/GetReceiptStatus",rps:100}]} and
+    .phases == {warmup:{duration:"10s",rps:200,concurrency:12},
+                steady:{duration:"45s",rps:200,concurrency:12},cooldown:"10s"} and
+    .cluster == {receipt_wal:{enabled:true,retention:"1h",max_entries:8000,max_bytes:16777216}} and
+    .perf_gate == {min_steady_rps_total:150,max_p99_ms:500,max_non_ok_ratio:0,
+      producers:{receipt_admission:{min_steady_rps:75,max_p99_ms:500,max_non_ok_ratio:0},
+                 receipt_lookup:{min_steady_rps:75,max_p99_ms:200,max_non_ok_ratio:0}}} and
+    .leak_gate == {goroutine_max_delta:15,heap_alloc_max_delta_mb:32,
+                  steady_heap_alloc_max_delta_mb:40,steady_sample_interval:"5s"}
+  ' >/dev/null || die "goroutine policy workload/profile differs from the reviewed receipt budget"
   [[ "$(yq -r '.subscribe.count // 0' "$SCENARIO_FILE")" == "0" &&
      "$(yq -r '.subscribe.consumers | length // 0' "$SCENARIO_FILE")" == "0" &&
      "$(yq -r '.chaos.kill_target // ""' "$SCENARIO_FILE")" == "" ]] ||
-    die "goroutine candidate profile has undeclared subscribers or chaos"
+    die "goroutine policy profile has undeclared subscribers or chaos"
 fi
 if [[ "$retained_heap" == "1" ]]; then
   [[ "$receipt_driver" == "1" && "${KEEP_UP:-0}" == "0" && "${SKIP_UP:-0}" == "0" && "${LEAK_GATE_ONLY:-0}" == "1" ]] || die "retained measurement requires a fresh owned receipt cohort"
@@ -446,20 +469,20 @@ if [[ "$receipt_driver" == "1" ]]; then
 fi
 CHANGEPROBE="$NATIVE_WORK_DIR/changeprobe"
 go -C "$REPO_ROOT" build -o "$CHANGEPROBE" ./testbed/bench/changeprobe || die "cannot build public CDC consumer"
-if [[ "$goroutine_candidate" == "1" ]]; then
-  GOROUTINE_PROBE="$NATIVE_WORK_DIR/goroutine-candidate-probe"
-  go -C "$REPO_ROOT" build -o "$GOROUTINE_PROBE" ./testbed/bench/receiptprobe || die "cannot build goroutine candidate observer"
-  go -C "$REPO_ROOT" version > "$OUTDIR/goroutine_candidate_go_version.txt" || die "cannot record goroutine candidate toolchain"
-  go -C "$REPO_ROOT" version -m "$GOROUTINE_PROBE" > "$OUTDIR/goroutine_candidate_buildinfo.txt" || die "cannot record goroutine candidate observer build"
+if [[ "$goroutine_policy" == "1" ]]; then
+  GOROUTINE_PROBE="$NATIVE_WORK_DIR/goroutine-policy-probe"
+  go -C "$REPO_ROOT" build -o "$GOROUTINE_PROBE" ./testbed/bench/receiptprobe || die "cannot build goroutine policy observer"
+  go -C "$REPO_ROOT" version > "$OUTDIR/goroutine_policy_go_version.txt" || die "cannot record goroutine policy toolchain"
+  go -C "$REPO_ROOT" version -m "$GOROUTINE_PROBE" > "$OUTDIR/goroutine_policy_buildinfo.txt" || die "cannot record goroutine policy observer build"
   python3 - "$OUTDIR" "$GOROUTINE_PROBE" "$EXPECTED_LANTERN_COMMIT" "$EXPECTED_LANTERN_TREE" <<'PY'
 import hashlib, json, os, sys
 from pathlib import Path
 root, binary, commit, tree = sys.argv[1:]
 root = Path(root)
 record = {"source_commit":commit,"source_tree":tree,"observer_sha256":hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
-          "observer_go_version":(root / "goroutine_candidate_go_version.txt").read_text().split()[2],
-          "buildinfo_sha256":hashlib.sha256((root / "goroutine_candidate_buildinfo.txt").read_bytes()).hexdigest()}
-fd = os.open(root / "goroutine_candidate_observer.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+          "observer_go_version":(root / "goroutine_policy_go_version.txt").read_text().split()[2],
+          "buildinfo_sha256":hashlib.sha256((root / "goroutine_policy_buildinfo.txt").read_bytes()).hexdigest()}
+fd = os.open(root / "goroutine_policy_observer.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream: json.dump(record,stream,separators=(",",":")); stream.write("\n")
 PY
 fi
@@ -562,9 +585,9 @@ if [[ "$retained_heap" == "1" ]]; then
 else
   [[ "$heap_image_protocol" == "" || "$heap_image_protocol" == "<no value>" ]] || die "normal lane cannot use a measurement image"
 fi
-if [[ "$goroutine_candidate" == "1" ]]; then
-  census_image_protocol="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "io.lantern.bench-goroutines.protocol"}}{{end}}' "$receipt_image_id")" || die "cannot inspect goroutine candidate image scope"
-  [[ "$census_image_protocol" == "" || "$census_image_protocol" == "<no value>" ]] || die "goroutine candidate cannot use a private census image"
+if [[ "$goroutine_policy" == "1" ]]; then
+  census_image_protocol="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "io.lantern.bench-goroutines.protocol"}}{{end}}' "$receipt_image_id")" || die "cannot inspect goroutine policy image scope"
+  [[ "$census_image_protocol" == "" || "$census_image_protocol" == "<no value>" ]] || die "goroutine policy cannot use a private census image"
 fi
 # The release image retains its non-root default. This local fixture uses
 # the publisher's non-root identity, preserving owner-only replacement files.
@@ -856,7 +879,7 @@ esac
 
 # Host-only #1960 prototype. Docker Config/Env is fingerprinted in memory;
 # only the fixed identity projection is retained. No Server option is added.
-goroutine_candidate_profile() {
+goroutine_policy_profile() {
   local out="$1" baseline="${2:-0}" observed
   kill -0 "$DIAGNOSTICS_PID" 2>/dev/null || return 1
   kill -0 "$MEMBERSHIP_PID" 2>/dev/null || return 1
@@ -864,19 +887,19 @@ goroutine_candidate_profile() {
   python3 -c '
 import hashlib, json, os, re, sys
 from pathlib import Path
-out, baseline, root, fixture, binary, commit, tree, image, owner, project, ports, ready, bridge_pid = sys.argv[1:]
+out, baseline, root, fixture, binary, commit, tree, image, owner, project, ports, ready, bridge_pid, scenario, family = sys.argv[1:]
 raw = sys.stdin.buffer.read((16 << 20) + 1)
-if len(raw) > 16 << 20: raise ValueError("candidate inspect bound")
+if len(raw) > 16 << 20: raise ValueError("policy inspect bound")
 rows = json.loads(raw)
-if not isinstance(rows, list) or len(rows) != 3: raise ValueError("candidate node count")
+if not isinstance(rows, list) or len(rows) != 3: raise ValueError("policy node count")
 root = Path(root)
 bridge = json.loads(Path(ready).read_bytes())
 if bridge != {"transport":"operator_docker_exec","ports":[int(p) for p in ports.split(",")]}:
- raise ValueError("candidate observer transport or ports")
+ raise ValueError("policy observer transport or ports")
 fixture_nodes = json.loads(Path(fixture).read_bytes())["nodes"]
-if len(fixture_nodes) != 3: raise ValueError("candidate topology")
+if len(fixture_nodes) != 3: raise ValueError("policy topology")
 origins = [x["peer_origin"] for x in fixture_nodes]
-if len(set(origins)) != 3: raise ValueError("candidate peer origins")
+if len(set(origins)) != 3: raise ValueError("policy peer origins")
 nodes = []
 for i, (row, port) in enumerate(zip(rows, ports.split(","))):
  config, host, state = row["Config"], row["HostConfig"], row["State"]
@@ -889,22 +912,22 @@ for i, (row, port) in enumerate(zip(rows, ports.split(","))):
      or labels["com.docker.compose.service"] != "lantern-" + str(i)
      or labels.get("io.lantern.bench-heap.protocol")
      or labels.get("io.lantern.bench-goroutines.protocol")):
-  raise ValueError("candidate identity or normal profile")
+  raise ValueError("policy identity or normal profile")
  node = {"endpoint":"localhost:" + port, "container_id":row["Id"], "pid":state["Pid"],
          "started_at":state["StartedAt"], "expected_peers":[x for j,x in enumerate(origins) if j != i]}
  if baseline == "1":
-  p = root / ("goroutine_candidate_pre_" + port + ".prom")
+  p = root / ("goroutine_policy_pre_" + port + ".prom")
   node["passive_metrics"] = {"path":str(p), "sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
  nodes.append(node)
-go_version = (root / "goroutine_candidate_go_version.txt").read_text().split()[2]
-observer = json.loads((root / "goroutine_candidate_observer.json").read_bytes())
+go_version = (root / "goroutine_policy_go_version.txt").read_text().split()[2]
+observer = json.loads((root / "goroutine_policy_observer.json").read_bytes())
 binary_sha = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
 if (observer["observer_sha256"] != binary_sha or observer["observer_go_version"] != go_version
     or observer["source_commit"] != commit or observer["source_tree"] != tree
-    or observer["buildinfo_sha256"] != hashlib.sha256((root / "goroutine_candidate_buildinfo.txt").read_bytes()).hexdigest()):
- raise ValueError("candidate observer changed after pre-workload binding")
-profile = {"schema":1,"protocol":"receipt_goroutine_candidate_v1", "scenario":"receipt_admission_lookup",
- "family":"receipt_edge_delete","image_scope":"normal","measurement_protocol":"none",
+    or observer["buildinfo_sha256"] != hashlib.sha256((root / "goroutine_policy_buildinfo.txt").read_bytes()).hexdigest()):
+ raise ValueError("policy observer changed after pre-workload binding")
+profile = {"schema":1,"protocol":"receipt_goroutine_operational_v1", "scenario":scenario,
+ "family":family,"image_scope":"normal","measurement_protocol":"none",
  "source_commit":commit,"source_tree":tree,"image_id":image,
  "config_sha256":hashlib.sha256(json.dumps([[x["Config"],x["HostConfig"]] for x in rows],sort_keys=True,separators=(",",":")).encode()).hexdigest(),
  "scenario_sha256":hashlib.sha256((root / "scenario.resolved.json").read_bytes()).hexdigest(),
@@ -916,10 +939,10 @@ with os.fdopen(fd,"w") as stream: json.dump(profile,stream,separators=(",",":"))
 ' "$out" "$baseline" "$OUTDIR" "$PEER_TLS_DIR/fixture.json" "$GOROUTINE_PROBE" \
     "$receipt_image_commit" "$EXPECTED_LANTERN_TREE" "$receipt_image_id" "$runtime_owner" \
     "$COMPOSE_PROJECT_NAME" "$(IFS=,; echo "${REPLICA_METRICS_PORTS[*]}")" \
-    "$NATIVE_WORK_DIR/diagnostics-ready.json" "$DIAGNOSTICS_PID" <<<"$observed"
+    "$NATIVE_WORK_DIR/diagnostics-ready.json" "$DIAGNOSTICS_PID" "$SCENARIO_NAME" "$target_driver" <<<"$observed"
 }
 
-goroutine_candidate_barrier() {
+goroutine_policy_barrier() {
   # This scope covers declared client work, not native/background joins.
   [[ ${#prod_pids[@]} == 0 && ${#sub_pids[@]} == 0 && -z "$chaos_pid" &&
      "$producer_failed" == 0 && "$consumer_failed" == 0 && "$chaos_failed" == 0 &&
@@ -933,57 +956,57 @@ def ref(path):
     return {"path":str(path),"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
 reports, returns = [], []
 for phase in ("warmup","steady"):
-    path = root / ("goroutine_candidate_phase_" + phase + "_return.json")
+    path = root / ("goroutine_policy_phase_" + phase + "_return.json")
     record = json.loads(path.read_bytes())
-    if (record["schema"] != 1 or record["protocol"] != "receipt_goroutine_candidate_v1"
+    if (record["schema"] != 1 or record["protocol"] != "receipt_goroutine_operational_v1"
         or record["phase"] != phase or record["scope"] != "synchronous_receipt_phase_only"
         or record["coordinator_returned"] is not True or type(record["exit_code"]) is not int
         or record["exit_code"] != 0 or type(record["started_ns"]) is not int
         or type(record["finished_ns"]) is not int or not 0 < record["started_ns"] < record["finished_ns"]):
-        raise ValueError("candidate phase-return evidence incomplete")
+        raise ValueError("policy phase-return evidence incomplete")
     returns.append(record)
     reports.append({"phase":phase,"admission":ref(root / ("ghz_" + phase + "_0_receipt_admission.json")),
                     "lookup":ref(root / ("ghz_" + phase + "_1_receipt_lookup.json")),"coordinator_return":ref(path)})
 if returns[0]["finished_ns"] > returns[1]["started_ns"]:
-    raise ValueError("candidate phase-return order differs")
-barrier = {"schema":1,"protocol":"receipt_goroutine_candidate_v1",
+    raise ValueError("policy phase-return order differs")
+barrier = {"schema":1,"protocol":"receipt_goroutine_operational_v1",
            "scope":"declared_client_work_only_not_global_idle", "semantic_complete":True,"pending_rpc":0,
            "owned_work":[{"kind":kind,"declared":count,"reaped":count,"pending_rpc":0,"exit_failures":0}
                          for kind,count in (("producer",len(returns)),("subscriber",0),("chaos",0))],"work_reports":reports}
 # Same host clock as the two call wrappers; no wall-clock conversion/reset.
 barrier["t0_ns"] = time.monotonic_ns()
 if returns[-1]["finished_ns"] > barrier["t0_ns"]:
-    raise ValueError("candidate phase returned after barrier")
-fd = os.open(root / "goroutine_candidate_barrier.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+    raise ValueError("policy phase returned after barrier")
+fd = os.open(root / "goroutine_policy_barrier.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream: json.dump(barrier,stream,separators=(",",":")); stream.write("\n")
 PY
 }
 
-goroutine_candidate_posts() {
+goroutine_policy_posts() {
   local offset control capture start_ns end_ns capture_status
-  goroutine_candidate_profile "$OUTDIR/goroutine_candidate_before_post_profile.json" || return 1
+  goroutine_policy_profile "$OUTDIR/goroutine_policy_before_post_profile.json" || return 1
   for offset in 5 10; do
-    control="$OUTDIR/goroutine_candidate_control_${offset}.json"
-    capture="$OUTDIR/goroutine_candidate_post_${offset}.json"
+    control="$OUTDIR/goroutine_policy_control_${offset}.json"
+    capture="$OUTDIR/goroutine_policy_post_${offset}.json"
     python3 - "$OUTDIR" "$offset" "${REPLICA_METRICS_PORTS[*]}" <<'PY' || return 1
 import hashlib, json, os, sys
 from pathlib import Path
 root, offset = Path(sys.argv[1]), int(sys.argv[2])
-profile = root / "goroutine_candidate_before_post_profile.json"
-control = {"schema":1,"protocol":"receipt_goroutine_candidate_v1","offset_seconds":offset,
+profile = root / "goroutine_policy_before_post_profile.json"
+control = {"schema":1,"protocol":"receipt_goroutine_operational_v1","offset_seconds":offset,
            "metrics_urls":["http://localhost:" + p + "/metrics" for p in sys.argv[3].split()],
            "operator_loopback":True,"profile":{"path":str(profile),"sha256":hashlib.sha256(profile.read_bytes()).hexdigest()}}
-fd = os.open(root / ("goroutine_candidate_control_" + str(offset) + ".json"),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+fd = os.open(root / ("goroutine_policy_control_" + str(offset) + ".json"),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream: json.dump(control,stream,separators=(",",":")); stream.write("\n")
 PY
     # Preparation and launch delays consume the fixed window. Never shift t0.
-    start_ns="$(python3 - "$OUTDIR/goroutine_candidate_barrier.json" "$offset" <<'PY'
+    start_ns="$(python3 - "$OUTDIR/goroutine_policy_barrier.json" "$offset" <<'PY'
 import json, sys, time
 t0 = json.load(open(sys.argv[1]))["t0_ns"]
 target = t0 + int(sys.argv[2]) * 1000000000
 time.sleep(max(0, (target - time.monotonic_ns()) / 1e9))
 now = time.monotonic_ns()
-if now >= target + 3000000000: raise SystemExit("candidate fixed capture window missed")
+if now >= target + 3000000000: raise SystemExit("policy fixed capture window missed")
 print(now)
 PY
 )" || return 1
@@ -994,17 +1017,17 @@ PY
 import json, os, sys
 from pathlib import Path
 root, offset, start, end = sys.argv[1:]
-fd = os.open(Path(root) / ("goroutine_candidate_timing_" + offset + ".json"),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+fd = os.open(Path(root) / ("goroutine_policy_timing_" + offset + ".json"),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream:
     json.dump({"offset_seconds":int(offset),"start_ns":int(start),"end_ns":int(end)},stream,separators=(",",":"))
     stream.write("\n")
 PY
     (( capture_status == 0 )) || return 1
-    goroutine_candidate_profile "$OUTDIR/goroutine_candidate_post_${offset}_profile.json" || return 1
+    goroutine_policy_profile "$OUTDIR/goroutine_policy_post_${offset}_profile.json" || return 1
   done
 }
 
-goroutine_candidate_evaluate() {
+goroutine_policy_evaluate() {
   python3 - "$OUTDIR" "$REPO_ROOT" <<'PY' || return 1
 import hashlib, json, os, sys
 from pathlib import Path
@@ -1014,24 +1037,24 @@ def ref(path):
     return {"path":str(path),"sha256":hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""}
 posts = []
 for offset in (5,10):
-    timing = root / ("goroutine_candidate_timing_" + str(offset) + ".json")
+    timing = root / ("goroutine_policy_timing_" + str(offset) + ".json")
     if timing.is_file():
         post = json.loads(timing.read_bytes())
-        post.update(capture=ref(root / ("goroutine_candidate_post_" + str(offset) + ".json")),
-                    profile=ref(root / ("goroutine_candidate_post_" + str(offset) + "_profile.json")))
+        post.update(capture=ref(root / ("goroutine_policy_post_" + str(offset) + ".json")),
+                    profile=ref(root / ("goroutine_policy_post_" + str(offset) + "_profile.json")))
         posts.append(post)
-data = {"schema":1,"protocol":"receipt_goroutine_candidate_v1",
+data = {"schema":1,"protocol":"receipt_goroutine_operational_v1",
         "pre":ref(root / "runtime_pre.json"),"steady":ref(root / "runtime_steady.json"),"legacy_post":ref(root / "runtime_post.json"),
-        "baseline_profile":ref(root / "goroutine_candidate_baseline_profile.json"),
-        "before_post_profile":ref(root / "goroutine_candidate_before_post_profile.json"),
-        "barrier":ref(root / "goroutine_candidate_barrier.json"),"posts":posts,"workload_report":ref(root / "workload_gate.json"),
+        "baseline_profile":ref(root / "goroutine_policy_baseline_profile.json"),
+        "before_post_profile":ref(root / "goroutine_policy_before_post_profile.json"),
+        "barrier":ref(root / "goroutine_policy_barrier.json"),"posts":posts,"workload_report":ref(root / "workload_gate.json"),
         "owner_evidence":[ref(source / p) for p in ("server/internal/security/control_renewal_network_test.go",
           "server/service/replication_delivery_test.go","server/replication/pump_test.go")]}
-fd = os.open(root / "goroutine_candidate_input.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+fd = os.open(root / "goroutine_policy_input.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream: json.dump(data,stream,separators=(",",":")); stream.write("\n")
 PY
-  "$GOROUTINE_PROBE" evaluate-goroutine-policy -input "$OUTDIR/goroutine_candidate_input.json" \
-    -out "$OUTDIR/goroutine_candidate.json"
+  "$GOROUTINE_PROBE" evaluate-goroutine-policy -input "$OUTDIR/goroutine_policy_input.json" \
+    -out "$OUTDIR/goroutine_policy.json"
 }
 
 # Extract a single Prom metric value from a /metrics text exposition.
@@ -1141,11 +1164,11 @@ snapshot_runtime() {
         text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
           die "OFF runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
       fi
-      if [[ "$goroutine_candidate" == "1" && "$out" == "$OUTDIR/runtime_pre.json" ]]; then
+      if [[ "$goroutine_policy" == "1" && "$out" == "$OUTDIR/runtime_pre.json" ]]; then
         # Reuse the exact old PRE response, retaining no arbitrary labels/data.
         (umask 077; awk '$1 ~ /^(lantern_changes_active_streams|lantern_subscribe_active_streams|lantern_peer_connected|lantern_anti_entropy_cycles_total)(\{|$)/ {print}' \
-          <<<"$text" > "$OUTDIR/goroutine_candidate_pre_${port}.prom") ||
-          die "cannot retain goroutine candidate PRE passive metrics"
+          <<<"$text" > "$OUTDIR/goroutine_policy_pre_${port}.prom") ||
+          die "cannot retain goroutine policy PRE passive metrics"
       fi
       local rg rhi rha rho rvhe rvhw
       # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
@@ -1376,29 +1399,29 @@ run_receipt_probe() {
     )
   fi
   local phase_started_ns=0 phase_finished_ns=0 phase_status=0
-  if [[ "${goroutine_candidate:-0}" == "1" ]]; then
+  if [[ "${goroutine_policy:-0}" == "1" ]]; then
     phase_started_ns="$(python3 -c 'import time; print(time.monotonic_ns())')" || GOROUTINE_PHASE_EVIDENCE_FAILED=1
   fi
   (
     cd "$REPO_ROOT"
     go run ./testbed/bench/receiptprobe "${args[@]}"
   ) || phase_status=$?
-  if [[ "${goroutine_candidate:-0}" == "1" ]]; then
+  if [[ "${goroutine_policy:-0}" == "1" ]]; then
     phase_finished_ns="$(python3 -c 'import time; print(time.monotonic_ns())')" || GOROUTINE_PHASE_EVIDENCE_FAILED=1
     if ! python3 - "$OUTDIR" "$phase" "$phase_started_ns" "$phase_finished_ns" "$phase_status" <<'PY'
 import json, os, sys
 from pathlib import Path
 root, phase, started, finished, status = sys.argv[1:]
-if phase not in ("warmup","steady"): raise ValueError("candidate phase outside fixed pair")
-record = {"schema":1,"protocol":"receipt_goroutine_candidate_v1","phase":phase,
+if phase not in ("warmup","steady"): raise ValueError("policy phase outside fixed pair")
+record = {"schema":1,"protocol":"receipt_goroutine_operational_v1","phase":phase,
           "scope":"synchronous_receipt_phase_only","started_ns":int(started),"finished_ns":int(finished),
           "exit_code":int(status),"coordinator_returned":True}
-fd = os.open(Path(root) / ("goroutine_candidate_phase_" + phase + "_return.json"),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+fd = os.open(Path(root) / ("goroutine_policy_phase_" + phase + "_return.json"),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream: json.dump(record,stream,separators=(",",":")); stream.write("\n")
 PY
     then
       GOROUTINE_PHASE_EVIDENCE_FAILED=1
-      log "goroutine candidate phase-return evidence missing; candidate will be INCOMPLETE"
+      log "goroutine policy phase-return evidence missing; policy will be INCOMPLETE"
     fi
   fi
   return "$phase_status"
@@ -1456,9 +1479,9 @@ if [[ "$semantic_kind" == "search" ]]; then
 fi
 snapshot_runtime "$OUTDIR/runtime_pre.json"
 capture_retained_heap baseline
-if [[ "$goroutine_candidate" == "1" ]]; then
-  if ! goroutine_candidate_profile "$OUTDIR/goroutine_candidate_baseline_profile.json" 1; then
-    log "goroutine candidate baseline premise missing; candidate will be INCOMPLETE"
+if [[ "$goroutine_policy" == "1" ]]; then
+  if ! goroutine_policy_profile "$OUTDIR/goroutine_policy_baseline_profile.json" 1; then
+    log "goroutine policy baseline premise missing; policy will be INCOMPLETE"
   fi
 fi
 if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
@@ -1651,16 +1674,16 @@ if [[ "$semantic_kind" == "search" ]]; then
     semantic_verdict="fail"
   fi
 fi
-if [[ "$goroutine_candidate" == "1" ]]; then
-  if ! goroutine_candidate_barrier; then
-    log "goroutine candidate client-work barrier missing; candidate will be INCOMPLETE"
+if [[ "$goroutine_policy" == "1" ]]; then
+  if ! goroutine_policy_barrier; then
+    log "goroutine policy client-work barrier missing; policy will be INCOMPLETE"
   fi
 fi
 snapshot_runtime "$OUTDIR/runtime_post.json"
 capture_retained_heap post
-if [[ "$goroutine_candidate" == "1" ]]; then
-  if ! goroutine_candidate_posts; then
-    log "goroutine candidate fixed post evidence incomplete; no replacement reading"
+if [[ "$goroutine_policy" == "1" ]]; then
+  if ! goroutine_policy_posts; then
+    log "goroutine policy fixed post evidence incomplete; no replacement reading"
   fi
 fi
 
@@ -1712,28 +1735,38 @@ if [[ "$receipt_driver" == "1" ]]; then
   # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
   # to the fixed post-warmup/post-cooldown natural-GC snapshots.
   receipt_heap_protocol="natural_reference_v1"
+  if [[ "$goroutine_policy" == "1" ]]; then receipt_heap_protocol="natural_reference_v2"; fi
   retained_eval_args=()
   if [[ "$retained_heap" == "1" ]]; then
     receipt_heap_protocol="symmetric_post_gc_2_v1"
     retained_eval_args=(-retained-pre "$OUTDIR/retained_heap_pre.json" -retained-post "$OUTDIR/retained_heap_post.json")
   fi
-  if ! (
-    cd "$REPO_ROOT"
-    go run ./testbed/bench/receiptprobe evaluate-leak \
-      -pre "$OUTDIR/runtime_pre.json" \
-      -post "$OUTDIR/runtime_post.json" \
-      -steady "$OUTDIR/runtime_steady.json" \
-      -duration "$steady_duration" \
-      -interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")" \
-      -max-goroutines "$g_thresh" \
-      -max-heap-mb "$h_thresh_mb" \
-      -max-steady-heap-mb "$steady_h_thresh_mb" \
-      -snapshot-protocol "$receipt_heap_protocol" \
-      "${retained_eval_args[@]}" \
-      -out "$OUTDIR/leak_gate.json"
-  ); then
-    log "receipt leak gate reported failure"
-  fi
+  evaluate_receipt_leak() {
+    local -a goroutine_eval_args=() leak_evaluator=(go run ./testbed/bench/receiptprobe)
+    if [[ "$goroutine_policy" == "1" ]]; then
+      leak_evaluator=("$GOROUTINE_PROBE")
+      goroutine_eval_args=(-goroutine-policy-input "$OUTDIR/goroutine_policy_input.json")
+    fi
+    if ! (
+      cd "$REPO_ROOT"
+      "${leak_evaluator[@]}" evaluate-leak \
+        -pre "$OUTDIR/runtime_pre.json" \
+        -post "$OUTDIR/runtime_post.json" \
+        -steady "$OUTDIR/runtime_steady.json" \
+        -duration "$steady_duration" \
+        -interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")" \
+        -max-goroutines "$g_thresh" \
+        -max-heap-mb "$h_thresh_mb" \
+        -max-steady-heap-mb "$steady_h_thresh_mb" \
+        -snapshot-protocol "$receipt_heap_protocol" \
+        "${retained_eval_args[@]}" \
+        "${goroutine_eval_args[@]}" \
+        -out "$OUTDIR/leak_gate.json"
+    ); then
+      log "receipt leak gate reported failure"
+    fi
+  }
+  if [[ "$goroutine_policy" == "0" ]]; then evaluate_receipt_leak; fi
 else
   h_thresh_bytes=$(( h_thresh_mb * 1024 * 1024 ))
   leak_json="$(jq -n \
@@ -1772,8 +1805,11 @@ else
   }')"
   printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
 fi
-verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
-log "leak gate verdict: $verdict"
+verdict=pending
+if [[ "$goroutine_policy" == "0" ]]; then
+  verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
+  log "leak gate verdict: $verdict"
+fi
 
 # ----- Metric gate -----------------------------------------------------------
 # Generic pre/post contracts over the unlabeled gauges captured in every
@@ -1859,20 +1895,27 @@ jq -n --arg verdict "$workload_verdict" --argjson producer_failed "$producer_fai
   --argjson producer_diagnostics_failed "$producer_diagnostics_failed" \
   --argjson consumer_failed "$consumer_failed" --argjson chaos_failed "$chaos_failed" \
   '{verdict:$verdict,producer_failed:$producer_failed,producer_diagnostics_failed:$producer_diagnostics_failed,failed_consumers:$consumer_failed,chaos_failed:$chaos_failed}' > "$OUTDIR/workload_gate.json"
-if [[ "$goroutine_candidate" == "1" ]]; then
-  if ! goroutine_candidate_evaluate; then
-    log "goroutine candidate reported fail/incomplete; operative legacy result unchanged"
+if [[ "$goroutine_policy" == "1" ]]; then
+  goroutine_policy_verdict=fail
+  if goroutine_policy_evaluate; then
+    goroutine_policy_verdict=pass
+  else
+    log "goroutine policy reported fail/incomplete; normal receipt run is unqualified"
   fi
+  evaluate_receipt_leak
+  verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
+  log "composed receipt gate verdict: $verdict"
 fi
 render_report
 printf '\n**Workload gate verdict:** `%s` (producer failure: %s; producer diagnostics failure: %s; failed consumers: %s; chaos failure: %s).\n' \
   "$workload_verdict" "$producer_failed" "$producer_diagnostics_failed" "$consumer_failed" "$chaos_failed" >> "$OUTDIR/report.md"
-if [[ "$goroutine_candidate" == "1" ]]; then
-  printf '\n**Local goroutine candidate (#1960):** see `goroutine_candidate.json`; unadopted, not release admission. The operative legacy verdict above is unchanged.\n' >> "$OUTDIR/report.md"
+if [[ "$goroutine_policy" == "1" ]]; then
+  printf '\n**Normal goroutine policy (#1960):** see `goroutine_policy.json`; the versioned component is mandatory alongside the unchanged memory, performance and workload checks.\n' >> "$OUTDIR/report.md"
 fi
 
 formal_status=1
 # Tagged load must still meet the existing perf/workload floors so an
 # underloaded retained sample cannot pass. It does not qualify normal perf.
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then formal_status=0; fi
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" &&
+     ( "$goroutine_policy" == "0" || "$goroutine_policy_verdict" == "pass" ) ]]; then formal_status=0; fi
 if finish_with_natural_gc_observation "$formal_status"; then exit 0; else exit 1; fi

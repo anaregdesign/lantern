@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +28,66 @@ import (
 )
 
 const testHeapBaseline = int64(100 << 20)
+
+func TestNormalOperativeCompositionPreservesLegacyMeaning(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*goroutinePolicyFixture)
+		want   string
+	}{
+		{"steady_delta16", func(*goroutinePolicyFixture) {}, "pass"},
+		{"absolute129_recovers", func(f *goroutinePolicyFixture) { f.steady.Samples[2].Replicas[0].Goroutines = 129 }, "fail"},
+		{"originalPOST16_later0", func(f *goroutinePolicyFixture) {
+			f.legacy[0].Goroutines = goroutineTestInt(66)
+			for i := range f.captures {
+				f.captures[i].Replicas[0].Runtime.Goroutines = 50
+			}
+		}, "fail"},
+		{"steadyHeap41", func(f *goroutinePolicyFixture) { f.steady.Samples[2].Replicas[0].HeapAllocBytes = 100 + 41*(1<<20) }, "fail"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newGoroutinePolicyFixture(t)
+			test.change(f)
+			path, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(data)
+			for _, profile := range []*goroutineProfile{&f.profile, &f.before, &f.profiles[0], &f.profiles[1]} {
+				profile.ObserverSHA256 = hex.EncodeToString(digest[:])
+				profile.ObserverGoVersion = runtime.Version()
+			}
+			f.persist(t)
+			old := evaluateReceiptLeakProtocol(f.input.Pre.Path, f.input.LegacyPost.Path, f.input.Steady.Path, 45*time.Second, 5*time.Second, 15, 32, 40, "natural_reference_v1")
+			if old.Verdict != "fail" {
+				t.Fatal("old steady+16 contract was weakened", old)
+			}
+			report := evaluateReceiptLeakProtocol(f.input.Pre.Path, f.input.LegacyPost.Path, f.input.Steady.Path, 45*time.Second, 5*time.Second, 15, 32, 40, normalReceiptProtocol)
+			if report.Verdict != "fail" || report.GoroutineChecksVerdict != "incomplete" {
+				t.Fatal("memory-only component qualified without policy", report)
+			}
+			input := goroutineFixtureRef(t, filepath.Join(f.dir, "goroutine_policy_input.json"), f.input, 0o600)
+			composeNormalGoroutinePolicy(&report, f.input.Pre.Path, f.input.LegacyPost.Path, f.input.Steady.Path, input.Path)
+			if report.Verdict != test.want || report.OverallMemoryVerdict != "requires_pair" || report.RetainedVerdict != "requires_pair" {
+				t.Fatal(report)
+			}
+		})
+	}
+	t.Run("missing_or_foreign_input", func(t *testing.T) {
+		f := newGoroutinePolicyFixture(t)
+		for _, input := range []string{"", filepath.Join(t.TempDir(), "goroutine_policy_input.json")} {
+			report := evaluateReceiptLeakProtocol(f.input.Pre.Path, f.input.LegacyPost.Path, f.input.Steady.Path, 45*time.Second, 5*time.Second, 15, 32, 40, normalReceiptProtocol)
+			composeNormalGoroutinePolicy(&report, f.input.Pre.Path, f.input.LegacyPost.Path, f.input.Steady.Path, input)
+			if report.Verdict != "fail" || report.GoroutineChecksVerdict != "incomplete" {
+				t.Fatal(report)
+			}
+		}
+	})
+}
 
 func TestNaturalReferenceSeparatesAdvisoryPostFromMandatoryChecks(t *testing.T) {
 	t.Parallel()
