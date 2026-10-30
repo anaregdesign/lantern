@@ -762,6 +762,14 @@ class CleanupAndOrderTest(unittest.TestCase):
                                    (10, "True"), (12, '["/bin/sh"]')):
                 bad = list(row); bad[index] = changed
                 self.assertFalse(driver.owned_row(bad))
+            relay = qualification.read_json(case / "time-source-evidence/pre/relay.json")
+            row = [relay["Id"], driver.image_id, driver.owner, "true", driver.args.campaign,
+                   "time-relay", "4", driver.image_id, relay["Name"], "bench-local-tcp-relay", "False", "<no value>",
+                   '["/fixture/ntpfixture"]', json.dumps(relay)]
+            self.assertTrue(driver.owned_row(row))
+            bad = dict(relay); bad["Config"] = dict(relay["Config"], Cmd=["-proxy", "http://foreign.invalid"])
+            row[13] = json.dumps(bad)
+            self.assertFalse(driver.owned_row(row))
 
     def make_driver(self, directory):
         args = argparse.Namespace(repo=directory, evidence_dir=directory / "evidence", source_sha=SHA,

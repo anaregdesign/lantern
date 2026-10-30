@@ -736,16 +736,18 @@ class Qualification:
     def owned_row(self, row):
         if len(row) != 14 or row[4] != self.args.campaign:
             return False
-        if row[9] == "bench-local-udp-fixture":
+        if row[9] in ("bench-local-udp-fixture", "bench-local-tcp-relay"):
+            service = "time-fixture" if row[9] == "bench-local-udp-fixture" else "time-relay"
             if not (HEX64.fullmatch(row[0]) and row[1] == row[7] == self.image_id
-                    and row[2] == self.owner and row[3] == "true" and row[5] == "time-fixture"
-                    and row[6] == "4" and row[8] == f"/{self.args.campaign}-time-fixture"
+                    and row[2] == self.owner and row[3] == "true" and row[5] == service
+                    and row[6] == "4" and row[8] == f"/{self.args.campaign}-{service}"
                     and row[10] == "False" and row[11] in ("", "<no value>")
                     and row[12] == '["/fixture/ntpfixture"]'):
                 return False
             try:
                 consumer = frozen_time_consumer(self.source, self.inventory)
-                return consumer.owned_fixture(json.loads(row[13]), {
+                validator = consumer.owned_fixture if service == "time-fixture" else consumer.owned_relay
+                return validator(json.loads(row[13]), {
                     "project": self.args.campaign, "image_id": self.image_id,
                     "runtime_user": self.owner, "container_id": row[0],
                     "source_root": str(self.source), "helper_sha256": self.time_helper_sha256})
@@ -887,7 +889,7 @@ class Qualification:
                     '"Mounts":[{{range $i,$mount := .Mounts}}{{if $i}},{{end}}'
                     '{"Type":{{json $mount.Type}},"Destination":{{json $mount.Destination}},'
                     '"RW":{{json $mount.RW}},"Mode":{{json $mount.Mode}},"Propagation":{{json $mount.Propagation}}}{{end}}]}'
-                    '{{else if eq (index .Config.Labels "lantern.owner") "bench-local-udp-fixture"}}' + fixture +
+                    '{{else if or (eq (index .Config.Labels "lantern.owner") "bench-local-udp-fixture") (eq (index .Config.Labels "lantern.owner") "bench-local-tcp-relay")}}' + fixture +
                     '{{else}}{{json .Config.Cmd}}{{end}}')
         rows = self.tool("docker", "inspect", "--format", template, *ids,
                          timeout=15, cleanup=True, custody=custody).splitlines()
@@ -1113,6 +1115,9 @@ class Qualification:
             require(time_proof["fixture_container_id"] not in {
                 row["fixture_container_id"] for row in self.state.get("time_profiles", {}).values()},
                 "time fixture replayed across fresh matrix cases")
+            for identity in ("relay_container_id", "fixture_start_nonce", "relay_start_nonce"):
+                require(time_proof[identity] not in {row[identity] for row in self.state.get("time_profiles", {}).values()},
+                        "time relay/fixture identity replayed across fresh matrix cases")
             self.state.setdefault("time_profiles", {})[key] = time_proof
             self.state["scenario_verdicts"][key] = validate_run(
                 runs[0], self.documents[name], self.args.source_sha, self.image_ref, self.image_id,

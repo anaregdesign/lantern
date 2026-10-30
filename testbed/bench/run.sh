@@ -295,6 +295,9 @@ need python3
 SCENARIO_NAME="$1"
 SCENARIO_FILE="$SCENARIO_DIR/${SCENARIO_NAME}.yaml"
 [[ -f "$SCENARIO_FILE" ]] || die "no such scenario: $SCENARIO_FILE"
+if [[ "$local_time_mechanism" == 0 ]]; then
+  [[ "$(yq -r 'has("chaos")' "$SCENARIO_FILE")" == false ]] || die "fixed local relay profile does not qualify chaos recreation"
+fi
 
 # Private authority inputs are replaced atomically by the host publisher.
 # Use the same explicitly non-root UID/GID for this local Compose cohort.
@@ -739,6 +742,8 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   fi
 fi
 
+local_time_start_relay || die "fixed local TCP relay setup refused"
+
 # ----- discover actual published ports ---------------------------------------
 # Ports are pinned in the canonical compose (6380-6382 / 9390-9392) since
 # #435, but we keep the discovery step as a belt-and-suspenders check that
@@ -746,19 +751,25 @@ fi
 # ranges. Query the live containers and rewrite REPLICA_*_PORTS + scenario
 # endpoints from the live mapping.
 discover_ports() {
-  local ps_json grpc metrics
-  ps_json="$(docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null)"
-  # Sort by service name so lantern-0/1/2 map to deterministic slots.
-  grpc=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="127.0.0.1") | .PublishedPort' <<<"$ps_json") )
-  metrics=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="127.0.0.1") | .PublishedPort' <<<"$ps_json") )
-  if [[ "$receipt_driver" == "1" ]]; then
-    [[ ${#metrics[@]} -eq 0 ]] || die "protected metrics must not be container-published"
-    metrics=("${REPLICA_METRICS_PORTS[@]}")
+  local published index api metric
+  local -a grpc=() metrics=()
+  published="$(local_time_relay_publishers)" || die "cannot bind actual relay publishers"
+  for index in 0 1 2; do
+    api="$((6380 + index))/tcp"
+    grpc+=("$(jq -er --arg port "$api" '.[$port][0].HostPort' <<<"$published")")
+    if [[ "$receipt_driver" == 0 ]]; then
+      metric="$((9090 + index))/tcp"
+      metrics+=("$(jq -er --arg port "$metric" '.[$port][0].HostPort' <<<"$published")")
+    else
+      metrics+=("${REPLICA_METRICS_PORTS[$index]}")
+    fi
+  done
+  if [[ "$receipt_driver" == 0 ]]; then
+    PROM_URL="http://127.0.0.1:$(jq -er '.["9093/tcp"][0].HostPort' <<<"$published")"
   fi
-  [[ ${#grpc[@]} -eq 3 && ${#metrics[@]} -eq 3 ]] || die "could not discover 3 grpc+metrics ports (grpc=${grpc[*]} metrics=${metrics[*]})"
-  REPLICA_GRPC_PORTS=( "${grpc[@]}" )
-  REPLICA_METRICS_PORTS=( "${metrics[@]}" )
-  log "discovered grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
+  REPLICA_GRPC_PORTS=("${grpc[@]}")
+  REPLICA_METRICS_PORTS=("${metrics[@]}")
+  log "discovered fixed TCP relay grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
 }
 discover_ports
 verify_native_workload_settings

@@ -263,8 +263,23 @@ func run(ctx context.Context, arguments []string) error {
 	flags := flag.NewFlagSet("ntpfixture", flag.ContinueOnError)
 	udpAddress := flags.String("listen", ":123", "UDP listen address (literal IP or wildcard)")
 	httpAddress := flags.String("status", ":8080", "HTTP status listen address (literal IP or wildcard)")
+	relayConfig := flags.String("relay-config", "", "read-only fixed TCP relay configuration; exclusive of NTP flags")
 	if err := flags.Parse(arguments); err != nil {
 		return err
+	}
+	relayMode, exclusive := false, flags.NArg() == 0
+	flags.Visit(func(option *flag.Flag) {
+		if option.Name == "relay-config" {
+			relayMode = true
+		} else {
+			exclusive = false
+		}
+	})
+	if relayMode {
+		if *relayConfig == "" || !exclusive {
+			return errors.New("relay configuration cannot be combined with NTP flags or positional arguments")
+		}
+		return runTCPRelay(ctx, *relayConfig)
 	}
 	if flags.NArg() != 0 || !listenAddress(*udpAddress) || !listenAddress(*httpAddress) {
 		return errors.New("literal listen addresses and no positional arguments required")

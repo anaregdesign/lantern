@@ -16,6 +16,7 @@ import stat
 
 
 PROFILE = "bench_local_udp_v1"
+TRANSPORT = "bench_local_tcp_relay_v1"
 HOST = "time.asia.apple.com"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -170,12 +171,13 @@ def _inspect(value):
     return value
 
 
-def _network(value):
-    keys(value, ("Id", "Name", "Driver", "Internal", "Labels", "Containers"))
+def _network(value, internal=True):
+    keys(value, ("Id", "Name", "Driver", "Internal", "EnableIPv6", "Labels", "Containers"))
     need(type(value["Id"]) is str and HEX64.fullmatch(value["Id"])
          and type(value["Name"]) is str and value["Name"]
-         and value["Driver"] == "bridge" and value["Internal"] is True,
-         "time source network is not an internal bridge")
+         and value["Driver"] == "bridge" and value["Internal"] is internal
+         and value["EnableIPv6"] is False,
+         "time source network bridge/egress/IPv6 scope differs")
     keys(value["Labels"], ("com.docker.compose.project", "com.docker.compose.network"))
     need(all(type(x) is str and x for x in value["Labels"].values())
          and type(value["Containers"]) is dict, "time source network ownership missing")
@@ -271,7 +273,15 @@ def _target(value, network, expected, service, initial=False):
                  and hc["Mounts"][0].get("Target") == "/etc/ntp.conf" and hc["Mounts"][0].get("ReadOnly") is True)
     need(via_bind or via_mount, "time source hash is not bound to the requested config mount")
     _attached(value, network, not initial)
+    _no_publication(value)
     return value
+
+
+def _no_publication(value):
+    ports = value["NetworkSettings"]["Ports"]
+    need(value["HostConfig"]["PortBindings"] in (None, {})
+         and (ports is None or type(ports) is dict and all(v in (None, []) for v in ports.values())),
+         "internal-only time source target published a host port")
 
 
 def _fixture(value, network, expected, helper):
@@ -302,18 +312,7 @@ def _fixture(value, network, expected, helper):
          and hc["PidsLimit"] == 64 and type(hc["PidsLimit"]) is int
          and hc["ExtraHosts"] in (None, []),
          "time fixture resource/containment profile differs")
-    requested, published = hc["PortBindings"], value["NetworkSettings"]["Ports"]
-    need(type(requested) is dict and set(requested) == {"8080/tcp"}
-         and type(published) is dict and "8080/tcp" in published
-         and all(v in (None, []) for k, v in published.items() if k != "8080/tcp")
-         and type(requested["8080/tcp"]) is list and len(requested["8080/tcp"]) == 1
-         and type(published["8080/tcp"]) is list and len(published["8080/tcp"]) == 1,
-         "time fixture may publish only loopback status TCP")
-    request, actual = requested["8080/tcp"][0], published["8080/tcp"][0]
-    keys(request, ("HostIp", "HostPort")); keys(actual, ("HostIp", "HostPort"))
-    need(actual["HostIp"] == request["HostIp"] == "127.0.0.1" and type(actual["HostPort"]) is str
-         and re.fullmatch(r"[1-9][0-9]{0,4}", actual["HostPort"]) and int(actual["HostPort"]) <= 65535
-         and request["HostPort"] in ("", "0", actual["HostPort"]), "time fixture status port is not private")
+    _no_publication(value)
     mounts = value["Mounts"]
     need(type(mounts) is list and len(mounts) == 1 and mounts[0].get("Type") == "bind"
          and mounts[0].get("Destination") == "/fixture/ntpfixture" and mounts[0].get("RW") is False
@@ -351,6 +350,109 @@ def _diagnostic(value, network, expected):
          and value["Mounts"][0].get("Type") == "bind" and value["Mounts"][0].get("RW") is False,
          "time network diagnostic is not the frozen Prometheus")
     _attached(value, network, True)
+    _no_publication(value)
+    return value
+
+
+def _relay_status(value, config_sha):
+    keys(value, ("schema", "protocol", "pid", "start_nonce", "config_sha256", "ipv4_forwarding", "ipv6_forwarding",
+                 "accepted", "active", "completed", "rejected", "dial_failure", "copy_failure"))
+    need(type(value["schema"]) is int and value["schema"] == 1 and value["protocol"] == TRANSPORT
+         and type(value["pid"]) is int and value["pid"] == 1
+         and type(value["start_nonce"]) is str and HEX64.fullmatch(value["start_nonce"])
+         and value["config_sha256"] == config_sha and value["ipv4_forwarding"] == "0\n"
+         and value["ipv6_forwarding"] in ("0\n", "absent")
+         and all(integer(value[k]) and value[k] < 2**64 - 1 for k in
+                 ("accepted", "active", "completed", "rejected", "dial_failure", "copy_failure"))
+         and value["active"] <= 4096 and value["accepted"] == value["active"] + value["completed"],
+         "relay health, forwarding read facts or connection counters differ")
+    return value
+
+
+def _relay_routes(config, backend, serving, diagnostics, receipt):
+    keys(config, ("schema", "protocol", "max_connections", "routes", "frontend_ipv6", "backend_ipv6"))
+    ips = [row["NetworkSettings"]["Networks"][backend["Name"]]["IPAddress"] for row in serving]
+    routes = [{"listen_port": 6380 + i, "backend_ip": ip, "backend_port": 6380} for i, ip in enumerate(ips)]
+    if not receipt:
+        routes += [{"listen_port": 9090 + i, "backend_ip": ip, "backend_port": 9090} for i, ip in enumerate(ips)]
+        routes += [{"listen_port": 9093, "backend_ip": diagnostics[0]["NetworkSettings"]["Networks"][backend["Name"]]["IPAddress"],
+                    "backend_port": 9090}]
+    need(type(config["schema"]) is int and config["schema"] == 1 and config["protocol"] == TRANSPORT
+         and type(config["max_connections"]) is int and config["max_connections"] == 4096
+         and config["frontend_ipv6"] is False and config["backend_ipv6"] is False
+         and type(config["routes"]) is list and config["routes"] == routes,
+         "relay routes differ from actual role-specific backend targets")
+    for route in config["routes"]:
+        keys(route, ("listen_port", "backend_ip", "backend_port"))
+        need(type(route["listen_port"]) is int and type(route["backend_port"]) is int,
+             "relay port type differs")
+        _address(route["backend_ip"])
+    return routes
+
+
+def _relay(value, backend, frontend, expected, helper, config_path, routes):
+    value = _inspect(value)
+    labels, hc, st = value["Config"]["Labels"], value["HostConfig"], value["State"]
+    project = expected["project"]
+    need(labels == {"com.docker.compose.project": project, "com.docker.compose.service": "time-relay",
+                    "com.docker.compose.oneoff": "False", "lantern.owner": "bench-local-tcp-relay",
+                    "io.lantern.bench-time.profile": PROFILE}
+         and value["Name"] == f"/{project}-time-relay" and value["Image"] == expected["image_id"]
+         and value["Config"]["Image"] == expected["image_id"] and value["Config"]["User"] == expected["runtime_user"]
+         and value["Config"]["Entrypoint"] == ["/fixture/ntpfixture"]
+         and value["Config"]["Cmd"] == ["-relay-config", "/fixture/relay.json"]
+         and st["Status"] == "running" and st["Running"] is True and st["Pid"] > 0,
+         "relay process/image/config identity differs")
+    need(hc["ReadonlyRootfs"] is True and hc["Privileged"] is False and hc["AutoRemove"] is False
+         and hc["CapDrop"] == ["ALL"] and hc["SecurityOpt"] == ["no-new-privileges:true"]
+         and hc["PidMode"] == hc["UTSMode"] == hc["UsernsMode"] == "" and hc["IpcMode"] in ("", "private")
+         and hc["Sysctls"] in (None, {}) and hc["CpusetCpus"] == "4"
+         and hc["NanoCpus"] == 1000000000 and type(hc["NanoCpus"]) is int
+         and hc["Memory"] == 134217728 and type(hc["Memory"]) is int
+         and hc["PidsLimit"] == 128 and type(hc["PidsLimit"]) is int
+         and all(hc[k] in (None, []) for k in ("CapAdd", "Devices", "DeviceRequests", "DeviceCgroupRules", "VolumesFrom", "ExtraHosts", "Binds"))
+         and hc["Tmpfs"] in (None, {}) and hc["PublishAllPorts"] is False
+         and hc["RestartPolicy"] == {"Name": "no", "MaximumRetryCount": 0}
+         and type(hc["RestartPolicy"].get("MaximumRetryCount")) is int,
+         "relay resource/namespace profile differs")
+    sources = {"/fixture/ntpfixture": helper["path"], "/fixture/relay.json": str(config_path)}
+    need(type(hc["Mounts"]) is list and len(hc["Mounts"]) == 2
+         and type(value["Mounts"]) is list and len(value["Mounts"]) == 2, "relay must have only helper/config binds")
+    need({row.get("Target") for row in hc["Mounts"]} == set(sources)
+         and {row.get("Destination") for row in value["Mounts"]} == set(sources), "relay mounts duplicated or replaced")
+    for mount in hc["Mounts"]:
+        need(type(mount) is dict and set(mount) <= {"Type", "Source", "Target", "ReadOnly", "Consistency", "BindOptions"}
+             and mount.get("Type") == "bind" and mount.get("Source") == sources[mount["Target"]]
+             and mount.get("ReadOnly") is True and mount.get("Consistency", "") == ""
+             and mount.get("BindOptions", {}) in ({}, {"Propagation": "rprivate"}, {"Propagation": "rprivate", "CreateMountpoint": False}),
+             "relay requested readonly mount differs")
+    need(all(row.get("Type") == "bind" and row.get("RW") is False and row.get("Propagation") == "rprivate"
+             and row.get("Mode", "") in ("", "ro") for row in value["Mounts"]), "relay effective binds differ")
+    nets = value["NetworkSettings"]["Networks"]
+    need(set(nets) == {backend["Name"], frontend["Name"]}
+         and hc["NetworkMode"] in (backend["Name"], frontend["Name"], backend["Id"], frontend["Id"]),
+         "relay must have exactly the two owned networks")
+    addresses = []
+    for network in (backend, frontend):
+        attachment = nets[network["Name"]]
+        need(attachment.get("NetworkID") == network["Id"], "relay network ID differs")
+        ip = _address(attachment.get("IPAddress")); addresses.append(ip)
+        member = network["Containers"].get(value["Id"])
+        keys(member, ("Name", "IPv4Address"))
+        need(member["Name"] == value["Name"][1:] and str(ipaddress.IPv4Interface(member["IPv4Address"]).ip) == ip,
+             "relay effective network membership differs")
+    need(addresses[0] != addresses[1] and set(frontend["Containers"]) == {value["Id"]}, "relay frontend has another member")
+    wanted = {str(row["listen_port"]) + "/tcp": str(row["listen_port"] if row["listen_port"] < 9000 else
+              9390 + row["listen_port"] - 9090 if row["listen_port"] < 9093 else 9091) for row in routes}
+    requested, actual = hc["PortBindings"], value["NetworkSettings"]["Ports"]
+    need(type(requested) is dict and set(requested) == set(wanted) and type(actual) is dict
+         and all(rows in (None, []) for port, rows in actual.items() if port not in wanted), "relay published unexpected ports")
+    for port, host_port in wanted.items():
+        for bindings in (requested, actual):
+            rows = bindings.get(port)
+            need(type(rows) is list and len(rows) == 1, "relay TCP publisher missing/duplicated")
+            keys(rows[0], ("HostIp", "HostPort"))
+            need(rows[0] == {"HostIp": "127.0.0.1", "HostPort": host_port}, "relay publisher differs from fixed host mapping")
     return value
 
 
@@ -369,7 +471,8 @@ def _validate_case(root, expected):
         receipt, digest = read(root, f"time_source_{phase}.json")
         keys(receipt, ("schema", "profile", "phase", "source_commit", "source_tree", "scenario", "run_id", "scope",
                        "image_id", "runtime_user", "server_cpuset", "fixture_placement", "helper", "helper_executable", "ntp_config",
-                       "fixture", "network", "status", "serving", "initializers", "diagnostics", "source_configs"))
+                       "fixture", "network", "status", "serving", "initializers", "diagnostics", "source_configs",
+                       "transport_profile", "relay", "frontend", "relay_status", "relay_config", "relay_executable"))
         need(type(receipt["schema"]) is int and receipt["schema"] == 1 and receipt["profile"] == PROFILE
              and receipt["phase"] == phase
              and all(receipt[k] == expected[k] for k in
@@ -377,6 +480,7 @@ def _validate_case(root, expected):
              and receipt["scope"] == expected["image_scope"] and receipt["server_cpuset"] == expected["cpuset"],
              "time receipt case/source/scope differs")
         need(receipt["fixture_placement"] == "isolated", "correctness-only fixture placement cannot qualify performance")
+        need(receipt["transport_profile"] == TRANSPORT, "controlled-local transport profile missing")
         base = f"time-source-evidence/{phase}"
         helper = _helper(root, receipt["helper"], expected)
         need(reference(root, receipt["ntp_config"], "time-source-evidence/ntp.conf", 4096, False,
@@ -398,6 +502,10 @@ def _validate_case(root, expected):
              and network["Labels"]["com.docker.compose.network"] == "default"
              and network["Name"] == expected["project"] + "_default",
              "time source network belongs to another project")
+        frontend = _network(reference(root, receipt["frontend"], f"{base}/frontend.json"), False)
+        need(frontend["Labels"] == {"com.docker.compose.project": expected["project"], "com.docker.compose.network": "frontend"}
+             and frontend["Name"] == expected["project"] + "_frontend"
+             and frontend["Id"] != network["Id"], "relay frontend belongs to another project")
         fixture, ip = _fixture(reference(root, receipt["fixture"], f"{base}/fixture.json"), network, expected, helper)
         status = _status(reference(root, receipt["status"], f"{base}/status.json"))
         need(status["responses"] >= (6 if expected["receipt"] else 3),
@@ -424,33 +532,60 @@ def _validate_case(root, expected):
              "time receipt targets differ from actual workload provenance")
         need(all(row["Config"]["Image"] == provenance.get("image_ref", expected["image_id"]) for row in serving),
              "time source requested image differs from workload provenance")
-        containers = [fixture] + serving + initializers + diagnostics
+        config_path = root / "time-source-evidence/relay.json"
+        config = reference(root, receipt["relay_config"], "time-source-evidence/relay.json", 16 << 10)
+        routes = _relay_routes(config, network, serving, diagnostics, expected["receipt"])
+        relay = _relay(reference(root, receipt["relay"], f"{base}/relay.json"), network, frontend, expected, helper, config_path, routes)
+        relay_status = _relay_status(reference(root, receipt["relay_status"], f"{base}/relay-status.json"),
+                                     receipt["relay_config"]["sha256"])
+        need(reference(root, receipt["relay_executable"], "time-source-evidence/relay-executable.sha256", decode=False) ==
+             (helper["sha256"] + "  /proc/1/exe\n").encode(), "relay executed helper bytes differ")
+        containers = [fixture, relay] + serving + initializers + diagnostics
+        running = [fixture, relay] + serving + diagnostics
         need(len({row["Id"] for row in containers}) == len(containers)
-             and len({row["State"]["Pid"] for row in [fixture] + serving + diagnostics}) == 4 + len(diagnostics)
+             and len({row["State"]["Pid"] for row in running}) == 5 + len(diagnostics)
+             and len({row["NetworkSettings"]["Networks"][network["Name"]]["IPAddress"] for row in running}) == len(running)
              and set(network["Containers"]) <= {row["Id"] for row in containers},
              "time source network has duplicate or foreign members")
         executable = reference(root, receipt["helper_executable"],
                                "time-source-evidence/helper-executable.sha256", decode=False)
         need(executable == (helper["sha256"] + "  /proc/1/exe\n").encode(),
              "time fixture executed helper content differs")
-        output.extend((receipt, fixture, network, status, serving, initializers, ip, diagnostics))
+        output.extend((receipt, fixture, network, status, serving, initializers, ip, diagnostics, relay, frontend, relay_status))
         hashes[phase] = {"path": str(root / f"time_source_{phase}.json"), "sha256": digest}
     pre, post = before[0], after[0]
-    need(all(pre[k] == post[k] for k in pre if k not in ("phase", "fixture", "network", "status", "serving", "diagnostics"))
-         and before[1] == after[1] and before[4:] == after[4:]
+    need(all(pre[k] == post[k] for k in pre if k not in
+             ("phase", "fixture", "network", "status", "serving", "diagnostics", "relay", "frontend", "relay_status"))
+         and before[1] == after[1] and before[4:9] == after[4:9]
          and {k: v for k, v in before[2].items() if k != "Containers"} ==
-             {k: v for k, v in after[2].items() if k != "Containers"}, "time source process/routing changed")
+             {k: v for k, v in after[2].items() if k != "Containers"}
+         and before[9] == after[9], "time source process/routing changed")
     need(all(before[3][k] == after[3][k] for k in ("pid", "start_nonce", "clock_kind", "seed_utc"))
          and after[3]["elapsed_ns"] > before[3]["elapsed_ns"]
          and all(after[3][k] >= before[3][k] for k in ("requests", "responses")),
          "time fixture restarted, clock/counters rolled back or no elapsed observation")
+    need(all(before[10][k] == after[10][k] for k in
+             ("pid", "start_nonce", "config_sha256", "ipv4_forwarding", "ipv6_forwarding"))
+         and all(after[10][k] >= before[10][k] for k in ("accepted", "completed", "rejected", "dial_failure", "copy_failure")),
+         "relay restarted or connection counters rolled back")
     return {"schema": 1, "profile": PROFILE, "verdict": "pass", "external_time_qualified": False,
             "receipts": hashes, "fixture_container_id": before[1]["Id"],
             "fixture_pid": before[1]["State"]["Pid"], "network_id": before[2]["Id"],
+            "relay_container_id": before[8]["Id"], "frontend_id": before[9]["Id"],
+            "fixture_start_nonce": before[3]["start_nonce"], "relay_start_nonce": before[10]["start_nonce"],
+            "relay_counter_observations": {phase: {key: row[key] for key in
+                ("accepted", "active", "completed", "rejected", "dial_failure", "copy_failure")}
+                for phase, row in (("pre", before[10]), ("post", after[10]))},
+            "relay_counter_scope": "Observations only; workload/non-OK/performance gates remain authoritative, no zero-peer-abort claim",
             "pairing": {"helper_sha256": pre["helper"]["sha256"], "sources": pre["helper"]["sources"],
                         "go_tool_sha256": pre["helper"]["go_tool_sha256"], "go_version": pre["helper"]["go_version"],
                         "goarch": pre["helper"]["goarch"], "clock_kind": before[3]["clock_kind"],
-                        "profile": PROFILE, "fixture_cpuset": "4", "server_cpuset": "0-3"}}
+                        "profile": PROFILE, "transport_profile": TRANSPORT,
+                        "fixture_cpuset": "4", "relay_cpuset": "4", "server_cpuset": "0-3",
+                        "relay_resources": {"nano_cpus": 1000000000, "memory": 134217728, "pids": 128, "max_connections": 4096},
+                        "routes": [{"service": SERVICES[row["listen_port"] - 6380] if row["listen_port"] < 9000 else
+                                    SERVICES[row["listen_port"] - 9090] if row["listen_port"] < 9093 else "prometheus",
+                                    "listen_port": row["listen_port"], "backend_port": row["backend_port"]} for row in routes]}}
 
 
 def validate_case(root, expected):
@@ -462,23 +597,28 @@ def validate_case(root, expected):
         raise Incomplete("missing or malformed controlled-local time evidence") from error
 
 
+def _owned_helper(value, expected):
+    requests = value["HostConfig"]["Mounts"]
+    need(type(requests) is list, "cleanup helper mount missing")
+    helpers = [row for row in requests if row.get("Target") == "/fixture/ntpfixture"]
+    need(len(helpers) == 1, "cleanup helper duplicated")
+    path = Path(helpers[0]["Source"])
+    relative = path.relative_to(Path(expected["source_root"]) / "testbed/bench/out")
+    parts = relative.parts[1:] if relative.parts[0] == "retained" else relative.parts
+    need(len(parts) == 4 and parts[0] in SCENARIOS and re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", parts[1])
+         and parts[2:] == ("time-source-evidence", "ntpfixture.bin"), "cleanup path is not an owned case")
+    _, digest = read(path.parent.parent, path, 16 << 20, False, modes=(0o700, 0o755))
+    if expected.get("helper_sha256") is not None:
+        need(digest == expected["helper_sha256"], "cleanup helper changed")
+    return path
+
+
 def owned_fixture(value, expected):
     """Ownership-only cleanup predicate; it never admits execution/qualification."""
     try:
         value = _inspect(value)
         need(value["Id"] == expected["container_id"], "fixture cleanup CID differs")
-        requests = value["HostConfig"]["Mounts"]
-        need(type(requests) is list and len(requests) == 1, "fixture cleanup helper mount missing")
-        path = Path(requests[0]["Source"])
-        out = Path(expected["source_root"]) / "testbed/bench/out"
-        relative = path.relative_to(out)
-        parts = relative.parts[1:] if relative.parts[0] == "retained" else relative.parts
-        need(len(parts) == 4 and parts[0] in SCENARIOS
-             and re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", parts[1])
-             and parts[2:] == ("time-source-evidence", "ntpfixture.bin"), "fixture cleanup path is not an owned case")
-        _, digest = read(path.parent.parent, path, 16 << 20, False, modes=(0o700, 0o755))
-        if expected.get("helper_sha256") is not None:
-            need(digest == expected["helper_sha256"], "fixture cleanup helper changed")
+        path = _owned_helper(value, expected)
         name = expected["project"] + "_default"
         attachment = value["NetworkSettings"]["Networks"][name]
         need(type(attachment.get("NetworkID")) is str and HEX64.fullmatch(attachment["NetworkID"]),
@@ -488,6 +628,37 @@ def owned_fixture(value, expected):
                    "Containers": {value["Id"]: {"Name": value["Name"][1:],
                        "IPv4Address": attachment["IPAddress"] + "/32"}}}
         _fixture(value, network, expected, {"path": str(path)})
+        return True
+    except (Incomplete, OSError, KeyError, TypeError, AttributeError, ValueError, IndexError):
+        return False
+
+
+def owned_relay(value, expected):
+    """Exact cleanup-only relay ownership; no synthetic execution admission."""
+    try:
+        value = _inspect(value)
+        need(value["Id"] == expected["container_id"], "relay cleanup CID differs")
+        path = _owned_helper(value, expected)
+        config_path = path.parent / "relay.json"
+        config = read(path.parent.parent, config_path, 16 << 10)[0]
+        rows = config["routes"]
+        need(type(rows) is list and len(rows) == (3 if path.parent.parent.parent.name.startswith("receipt_") else 7),
+             "relay cleanup route count differs")
+        fake_targets = [{"NetworkSettings": {"Networks": {"backend": {"IPAddress": row["backend_ip"]}}}} for row in rows[:3]]
+        diagnostics = [] if len(rows) == 3 else [{"NetworkSettings": {"Networks": {"backend": {"IPAddress": rows[6]["backend_ip"]}}}}]
+        routes = _relay_routes(config, {"Name": "backend"}, fake_targets, diagnostics, len(rows) == 3)
+        need(len({row["backend_ip"] for row in rows[:3]}) == 3, "relay cleanup targets duplicated")
+        need(len(rows) == 3 or rows[6]["backend_ip"] not in {row["backend_ip"] for row in rows[:3]},
+             "relay cleanup diagnostic target duplicated")
+        networks = []
+        for suffix in ("default", "frontend"):
+            name = expected["project"] + "_" + suffix
+            attachment = value["NetworkSettings"]["Networks"][name]
+            need(type(attachment.get("NetworkID")) is str and HEX64.fullmatch(attachment["NetworkID"]), "relay cleanup network missing")
+            networks.append({"Name": name, "Id": attachment["NetworkID"], "Labels": {"com.docker.compose.project": expected["project"]},
+                             "Containers": {value["Id"]: {"Name": value["Name"][1:], "IPv4Address": attachment["IPAddress"] + "/32"}}})
+        need(networks[0]["Id"] != networks[1]["Id"], "relay cleanup network duplicated")
+        _relay(value, networks[0], networks[1], expected, {"path": str(path)}, config_path, routes)
         return True
     except (Incomplete, OSError, KeyError, TypeError, AttributeError, ValueError, IndexError):
         return False

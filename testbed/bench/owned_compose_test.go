@@ -2070,3 +2070,72 @@ initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$LOCAL_TIME_IMAGE_ID"
 		})
 	}
 }
+
+func TestOwnedComposeLocalTimeRelayDiscovery(t *testing.T) {
+	source, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const start = "discover_ports() {\n"
+	begin := strings.Index(string(source), start)
+	if begin < 0 {
+		t.Fatal("actual discover_ports function missing")
+	}
+	end := strings.Index(string(source[begin:]), "\n}\ndiscover_ports\n")
+	if end < 0 {
+		t.Fatal("actual discover_ports function boundary missing")
+	}
+	function := string(source[begin : begin+end+3])
+	for _, tc := range []struct {
+		name     string
+		receipt  string
+		accepted bool
+	}{
+		{"canonical", "0", true},
+		{"receipt", "1", true},
+		{"missing-api", "1", false},
+		{"missing-metrics", "0", false},
+		{"publisher-refused", "1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := `set -euo pipefail
+receipt_driver="$1"
+case_name="$2"
+REPLICA_GRPC_PORTS=(6380 6381 6382)
+REPLICA_METRICS_PORTS=(19390 19391 19392)
+PROM_URL=original
+log() { :; }
+die() { printf '%s\n' "$*" >&2; exit 2; }
+local_time_relay_publishers() {
+ [[ "$case_name" != publisher-refused ]] || return 1
+ jq -nc --arg case "$case_name" '
+   ([range(0;3)|{key:((6380+.|tostring)+"/tcp"),value:[{HostIp:"127.0.0.1",HostPort:(16380+.|tostring)}]}]+
+    [range(0;3)|{key:((9090+.|tostring)+"/tcp"),value:[{HostIp:"127.0.0.1",HostPort:(29390+.|tostring)}]}]+
+    [{key:"9093/tcp",value:[{HostIp:"127.0.0.1",HostPort:"29091"}]}]|from_entries) |
+   if $case=="missing-api" then del(."6381/tcp")
+   elif $case=="missing-metrics" then del(."9091/tcp") else . end'
+}
+` + function + `
+discover_ports
+[[ "${REPLICA_GRPC_PORTS[*]}" == '16380 16381 16382' ]]
+if [[ "$receipt_driver" == 1 ]]; then
+ [[ "${REPLICA_METRICS_PORTS[*]}" == '19390 19391 19392' && "$PROM_URL" == original ]]
+else
+ [[ "${REPLICA_METRICS_PORTS[*]}" == '29390 29391 29392' && "$PROM_URL" == http://127.0.0.1:29091 ]]
+fi
+printf 'complete\n' > "$OUTDIR/discovery-complete"
+`
+			fixture := runOwnedComposeFixture(t, script, []string{tc.receipt, tc.name}, nil, 10*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("discovery fixture custody failed: %v %s", fixture.controlErr, fixture.output)
+			}
+			if (fixture.commandErr == nil) != tc.accepted {
+				t.Fatalf("discovery result=%v want accepted=%t: %s", fixture.commandErr, tc.accepted, fixture.output)
+			}
+			_, completed := os.Stat(filepath.Join(fixture.directory, "discovery-complete"))
+			if (completed == nil) != tc.accepted {
+				t.Fatalf("discovery completion differs: %v %s", completed, fixture.output)
+			}
+		})
+	}
+}

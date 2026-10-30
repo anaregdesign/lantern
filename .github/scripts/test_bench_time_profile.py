@@ -23,7 +23,8 @@ def fixture(root, expected=None, receipt=True):
                 "image_id": "sha256:" + "c" * 64, "image_scope": "normal",
                 "runtime_user": "1000:1000", "cpuset": "0-3", "scenario": "receipt_admission_lookup" if receipt else "broad_rw",
                 "run_id": root.name, "receipt": receipt, "goarch": "arm64", "project": "benchcase",
-                "helper_sources": {"testbed/bench/ntpfixture/main.go": "d" * 64}, "go_tool_sha256": "e" * 64,
+                "helper_sources": {"testbed/bench/ntpfixture/main.go": "d" * 64,
+                                   "testbed/bench/ntpfixture/relay.go": "f" * 64}, "go_tool_sha256": "e" * 64,
                 "diagnostic": {"image_id": "sha256:" + "9" * 64, "runtime_user": "nobody"}}
     for k, v in defaults.items():
         expected.setdefault(k, v)
@@ -42,7 +43,10 @@ def fixture(root, expected=None, receipt=True):
                            (helper["sha256"] + "  /proc/1/exe\n").encode(), True)
     config_ref = write(root / "time-source-evidence/ntp.conf", b"server time.asia.apple.com\n", True)
     name = expected["project"] + "_default"
-    ip = "172.20.0.2"
+    retained = expected["image_scope"] == "retained"
+    subnet = "172.22.0." if retained else "172.20.0."
+    network_id = ("a" if retained else "8") * 64
+    ip = subnet + "2"
     source_configs = [{"service": s, "path": str(root.parent / "tls" / s / "ntp.conf"),
                        "sha256": config_ref["sha256"]} for s in profile.SERVICES]
     base = {"Id": ("e" if expected["image_scope"] == "retained" else "f") * 64,
@@ -58,7 +62,7 @@ def fixture(root, expected=None, receipt=True):
                            "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges:true"],
                            "Sysctls": {"net.ipv4.ip_unprivileged_port_start": "0"}, "CpusetCpus": "4",
                            "NanoCpus": 250000000, "Memory": 67108864, "PidsLimit": 64,
-                           "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]},
+                           "PortBindings": {},
                            "Mounts": [{"Type": "bind", "Source": str(helper_path), "Target": "/fixture/ntpfixture", "ReadOnly": True}],
                            "Binds": [], "Privileged": False, "AutoRemove": False, "PidMode": "", "IpcMode": "private",
                            "UTSMode": "", "UsernsMode": "", "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
@@ -66,8 +70,8 @@ def fixture(root, expected=None, receipt=True):
                            "VolumesFrom": None, "Tmpfs": {}, "PublishAllPorts": False},
             "Mounts": [{"Type": "bind", "Source": "/host_mnt" + str(helper_path), "Destination": "/fixture/ntpfixture",
                         "Mode": "ro", "RW": False, "Propagation": "rprivate"}],
-            "NetworkSettings": {"Networks": {name: {"NetworkID": "8" * 64, "IPAddress": ip}},
-                                "Ports": {"6380/tcp": None, "8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "32111"}]}}}
+            "NetworkSettings": {"Networks": {name: {"NetworkID": network_id, "IPAddress": ip}},
+                                "Ports": {"6380/tcp": None, "8080/tcp": None}}}
     serving, initializers = [], []
     for i, service in enumerate(profile.SERVICES):
         row = copy.deepcopy(base)
@@ -80,7 +84,7 @@ def fixture(root, expected=None, receipt=True):
         row["HostConfig"].update(CpusetCpus="0-3", ExtraHosts=[profile.HOST + ":" + ip], Mounts=[],
                                   Binds=[source_configs[i]["path"] + ":/etc/ntp.conf:ro"])
         row["Mounts"] = [{"Type": "bind", "Source": "/private/example/ntp.conf", "Destination": "/etc/ntp.conf", "RW": False}]
-        row["NetworkSettings"]["Networks"][name]["IPAddress"] = f"172.20.0.{i + 3}"
+        row["NetworkSettings"]["Networks"][name]["IPAddress"] = subnet + str(i + 3)
         serving.append(row)
         init = copy.deepcopy(row)
         init.update(Id=str(i + 4) * 64, Name=f"/{expected['project']}-{service}-security-init")
@@ -98,22 +102,61 @@ def fixture(root, expected=None, receipt=True):
     diagnostic["State"]["Pid"] = 103
     diagnostic["HostConfig"]["ExtraHosts"] = []
     diagnostic["Mounts"] = [{"Type": "bind", "Destination": "/etc/prometheus/prometheus.yml", "RW": False}]
-    diagnostic["NetworkSettings"]["Networks"][name]["IPAddress"] = "172.20.0.6"
-    network = {"Id": "8" * 64, "Name": name, "Driver": "bridge", "Internal": True,
+    diagnostic["NetworkSettings"]["Networks"][name]["IPAddress"] = subnet + "6"
+    relay = copy.deepcopy(base)
+    relay.update(Id=("c" if retained else "d") * 64, Name=f"/{expected['project']}-time-relay")
+    relay["Config"]["Labels"].update({"com.docker.compose.service": "time-relay", "lantern.owner": "bench-local-tcp-relay"})
+    relay["Config"]["Cmd"] = ["-relay-config", "/fixture/relay.json"]
+    relay["State"]["Pid"] = 104
+    routes = [{"listen_port": 6380 + i, "backend_ip": subnet + str(i + 3), "backend_port": 6380} for i in range(3)]
+    if not receipt:
+        routes += [{"listen_port": 9090 + i, "backend_ip": subnet + str(i + 3), "backend_port": 9090} for i in range(3)]
+        routes += [{"listen_port": 9093, "backend_ip": subnet + "6", "backend_port": 9090}]
+    relay_config = {"schema": 1, "protocol": profile.TRANSPORT, "max_connections": 4096,
+                    "frontend_ipv6": False, "backend_ipv6": False, "routes": routes}
+    relay_config_ref = write(root / "time-source-evidence/relay.json", relay_config)
+    relay_executable_ref = write(root / "time-source-evidence/relay-executable.sha256",
+                                 (helper["sha256"] + "  /proc/1/exe\n").encode(), True)
+    relay["HostConfig"].update(Sysctls={}, NanoCpus=1000000000, Memory=134217728, PidsLimit=128)
+    relay["HostConfig"]["Mounts"].append({"Type": "bind", "Source": relay_config_ref["path"], "Target": "/fixture/relay.json", "ReadOnly": True})
+    relay["Mounts"].append({"Type": "bind", "Source": "/host_mnt" + relay_config_ref["path"], "Destination": "/fixture/relay.json",
+                            "Mode": "ro", "RW": False, "Propagation": "rprivate"})
+    publishers = {str(r["listen_port"]) + "/tcp": [{"HostIp": "127.0.0.1", "HostPort":
+                  str(r["listen_port"] if r["listen_port"] < 9000 else 9390 + r["listen_port"] - 9090 if r["listen_port"] < 9093 else 9091)}]
+                  for r in routes}
+    relay["HostConfig"]["PortBindings"] = publishers
+    relay["NetworkSettings"]["Ports"] = copy.deepcopy(publishers)
+    relay["NetworkSettings"]["Networks"][name]["IPAddress"] = subnet + "7"
+    front_name = expected["project"] + "_frontend"
+    front_ip = "172.23.0.2" if retained else "172.21.0.2"
+    front_id = ("b" if retained else "9") * 64
+    relay["NetworkSettings"]["Networks"][front_name] = {"NetworkID": front_id, "IPAddress": front_ip}
+    frontend = {"Id": front_id, "Name": front_name, "Driver": "bridge", "Internal": False, "EnableIPv6": False,
+                "Labels": {"com.docker.compose.project": expected["project"], "com.docker.compose.network": "frontend"},
+                "Containers": {relay["Id"]: {"Name": relay["Name"][1:], "IPv4Address": front_ip + "/16"}}}
+    network = {"Id": network_id, "Name": name, "Driver": "bridge", "Internal": True, "EnableIPv6": False,
                "Labels": {"com.docker.compose.project": expected["project"], "com.docker.compose.network": "default"},
                "Containers": {r["Id"]: {"Name": r["Name"][1:], "IPv4Address":
                    r["NetworkSettings"]["Networks"][name]["IPAddress"] + "/16"}
-                   for r in [base] + serving + ([] if receipt else [diagnostic])}}
+                   for r in [base, relay] + serving + ([] if receipt else [diagnostic])}}
     init_refs = [write(root / f"time-source-evidence/init-{i}.json", row) for i, row in enumerate(initializers)] if receipt else []
     for phase in ("pre", "post"):
         path = root / f"time-source-evidence/{phase}"
-        status = {"schema": 1, "protocol": "lantern_bench_ntp_fixture_v1", "pid": 1, "start_nonce": "a" * 64,
+        status = {"schema": 1, "protocol": "lantern_bench_ntp_fixture_v1", "pid": 1, "start_nonce": ("c" if retained else "a") * 64,
                   "clock_kind": "seed_utc_plus_monotonic", "seed_utc": "2026-10-30T00:00:00Z",
                   "elapsed_ns": 10 if phase == "pre" else 100, "requests": 6, "responses": 6, "invalid": 0, "clock_failure": 0}
+        relay_status = {"schema": 1, "protocol": profile.TRANSPORT, "pid": 1,
+                        "start_nonce": ("d" if retained else "b") * 64, "config_sha256": relay_config_ref["sha256"],
+                        "ipv4_forwarding": "0\n", "ipv6_forwarding": "0\n",
+                        "accepted": 4 if phase == "pre" else 14, "active": 1 if phase == "pre" else 2,
+                        "completed": 3 if phase == "pre" else 12, "rejected": 1, "dial_failure": 2, "copy_failure": 3}
         packet = {"schema": 1, "profile": profile.PROFILE, "phase": phase,
                   **{k: expected[k] for k in ("source_commit", "source_tree", "scenario", "run_id", "image_id", "runtime_user")},
                   "scope": expected["image_scope"], "server_cpuset": "0-3", "fixture_placement": "isolated",
                   "helper": helper, "helper_executable": executable_ref, "ntp_config": config_ref, "source_configs": source_configs,
+                  "transport_profile": profile.TRANSPORT, "relay_config": relay_config_ref, "relay_executable": relay_executable_ref,
+                  "relay": write(path / "relay.json", relay), "frontend": write(path / "frontend.json", frontend),
+                  "relay_status": write(path / "relay-status.json", relay_status),
                   "fixture": write(path / "fixture.json", base), "network": write(path / "network.json", network),
                   "status": write(path / "status.json", status),
                   "serving": [write(path / f"serving-{i}.json", row) for i, row in enumerate(serving)],
@@ -259,6 +302,67 @@ class TimeProfileTest(unittest.TestCase):
             fixture(self.root)
             self.alter("pre", "fixture", lambda row: row["HostConfig"]["PortBindings"].update({field: value}))
             with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+
+    def test_relay_role_targets_raw_config_and_forwarding_guards(self):
+        for kind in ("public-target", "metrics-in-receipt", "unknown-key", "forwarding", "ipv6", "frontend-member", "wrong-image", "restart"):
+            with self.subTest(kind=kind):
+                fixture(self.root)
+                if kind in ("public-target", "metrics-in-receipt", "unknown-key"):
+                    path = self.root / "time_source_pre.json"; packet = json.loads(path.read_text())
+                    target = Path(packet["relay_config"]["path"]); value = json.loads(target.read_text())
+                    if kind == "public-target": value["routes"][0]["backend_ip"] = "8.8.8.8"
+                    if kind == "metrics-in-receipt": value["routes"].append({"listen_port": 9090, "backend_ip": "172.20.0.3", "backend_port": 9090})
+                    if kind == "unknown-key": value["proxy"] = "http://outside.invalid"
+                    packet["relay_config"] = write(target, value); write(path, packet)
+                elif kind == "forwarding": self.alter("pre", "relay_status", lambda x: x.update(ipv4_forwarding="1\n"))
+                elif kind == "ipv6": self.alter("post", "frontend", lambda x: x.update(EnableIPv6=True))
+                elif kind == "frontend-member": self.alter("post", "frontend", lambda x: x["Containers"].update({"0" * 64: {"Name": "foreign", "IPv4Address": "172.21.0.4/16"}}))
+                elif kind == "wrong-image": self.alter("pre", "relay", lambda x: x.update(Image="sha256:" + "0" * 64))
+                elif kind == "restart": self.alter("post", "relay_status", lambda x: x.update(start_nonce="0" * 64))
+                with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+
+    def test_relay_failure_counters_are_observations_not_new_zero_thresholds(self):
+        proof = profile.validate_case(self.root, self.expected)
+        self.assertEqual(proof["verdict"], "pass")
+        self.assertGreater(proof["relay_counter_observations"]["post"]["copy_failure"], 0)
+        self.alter("post", "relay_status", lambda x: x.update(copy_failure=2))
+        with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+
+    def test_relay_config_duplicate_case_alias_and_hash_replacement_refuse(self):
+        for raw in (b'{"schema":1,"schema":1}', b'{"Schema":1}', b'{}'):
+            fixture(self.root)
+            packet_path = self.root / "time_source_pre.json"; packet = json.loads(packet_path.read_text())
+            packet["relay_config"] = write(Path(packet["relay_config"]["path"]), raw, True)
+            write(packet_path, packet)
+            with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+
+    def test_relay_cleanup_has_the_same_narrow_owned_shape(self):
+        source = self.root / "source"
+        root = source / "testbed/bench/out/receipt_admission_lookup/20261030T000000Z"
+        expected = fixture(root)
+        row = json.loads((root / "time-source-evidence/pre/relay.json").read_text())
+        binding = dict(expected, container_id=row["Id"], source_root=str(source), helper_sha256=None)
+        self.assertTrue(profile.owned_relay(row, binding))
+        for key, changed in (("Privileged", True), ("Sysctls", {"net.ipv4.ip_forward": "0"}),
+                             ("NetworkMode", "host"), ("CapAdd", ["NET_ADMIN"])):
+            value = copy.deepcopy(row); value["HostConfig"][key] = changed
+            self.assertFalse(profile.owned_relay(value, binding))
+
+    def test_actual_relay_publishers_are_required_and_servers_stay_internal(self):
+        for kind in ("server-publisher", "wrong-published-port", "public-host", "protected-metrics"):
+            fixture(self.root)
+            if kind == "server-publisher":
+                packet_path = self.root / "time_source_pre.json"; packet = json.loads(packet_path.read_text())
+                ref = packet["serving"][0]; row = json.loads(Path(ref["path"]).read_text())
+                row["HostConfig"]["PortBindings"] = {"6380/tcp": [{"HostIp": "127.0.0.1", "HostPort": "6380"}]}
+                packet["serving"][0] = write(Path(ref["path"]), row); write(packet_path, packet)
+            else:
+                def change(row):
+                    if kind == "wrong-published-port": row["NetworkSettings"]["Ports"]["6380/tcp"][0]["HostPort"] = "6389"
+                    if kind == "public-host": row["HostConfig"]["PortBindings"]["6380/tcp"][0]["HostIp"] = "0.0.0.0"
+                    if kind == "protected-metrics": row["HostConfig"]["PortBindings"]["9090/tcp"] = [{"HostIp": "127.0.0.1", "HostPort": "9390"}]
+                self.alter("pre", "relay", change)
+            with self.subTest(kind=kind), self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
 
 
 if __name__ == "__main__":

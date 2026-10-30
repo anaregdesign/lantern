@@ -973,6 +973,9 @@ def _validate_pair(normal_root, retained_root, scenario, expected):
              "normal and retained time fixture profiles differ")
         need(time_profiles[0]["fixture_container_id"] != time_profiles[1]["fixture_container_id"],
              "time fixture was replayed across fresh paired cases")
+        need(all(time_profiles[0][key] != time_profiles[1][key] for key in
+                 ("relay_container_id", "fixture_start_nonce", "relay_start_nonce")),
+             "time relay/fixture process identity replayed across fresh paired cases")
     normal, _ = read(normal_root, "leak_gate.json")
     retained, _ = read(retained_root, "leak_gate.json")
     need(normal.get("snapshot_protocol") == OPERATIVE_NORMAL_PROTOCOL and normal.get("verdict") == "pass"

@@ -173,6 +173,27 @@ that prevents public fallback. Missing or changed routing/fixture evidence makes
 the case incomplete. Normal and retained lanes require the same declared local
 time profile. The short release Search scenario uses this profile too.
 
+Docker does not publish host ports for containers attached only to internal
+networks. The benchmark therefore uses one separate raw TCP relay: Servers and
+the NTP fixture keep only the internal backend, while the relay also joins a
+task-owned frontend and publishes only the existing localhost API ports (plus
+the existing canonical OFF diagnostics). Relay destinations are immutable,
+literal private addresses observed from that cohort. TLS/HTTP2 bytes pass
+through without termination. There is no UDP, DNS, CONNECT or arbitrary-target
+forwarding; protected receipt metrics retain the existing Docker-exec collector.
+The relay refuses startup unless its own namespace already has IP forwarding
+disabled. It changes no host/daemon/global firewall, DNS, route or clock setting.
+
+The relay is an additional network hop and changes the connection's remote
+address. Its fixed code, configuration, resources and both network attachments
+are part of the new profile in both lanes. It provides no performance equivalence
+to historical direct-published measurements. Server CPU placement, workloads,
+GC cuts and numerical floors remain unchanged. Fixed backend addresses also
+exclude the separate manual chaos/recreation scenario from this profile; the
+canonical16 and short Search contain no such scenario. The bounded mechanism's
+negative restart reads the new process's actual native-time refusal, rather than
+inferring refusal from a relay connection failure.
+
 Formal load runs require explicit `LANTERN_BENCH_CPUSET=0-3` and at least five
 Docker CPUs: all three Servers share CPUs 0–3 and the fixture uses CPU 4. The
 short `search_qualification` correctness scenario may keep its existing Server

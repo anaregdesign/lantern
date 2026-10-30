@@ -789,6 +789,11 @@ class PairTest(unittest.TestCase):
             proof = self.validate()
             self.assertEqual(proof["protocol"], "source_paired_retained_v3")
             self.assertFalse(proof["time_profile"]["normal"]["external_time_qualified"])
+            normal = json.loads((self.normal / "time_source_pre.json").read_text())
+            retained = json.loads((self.tagged / "time_source_pre.json").read_text())
+            self.assertNotEqual(normal["relay_config"]["sha256"], retained["relay_config"]["sha256"])
+            self.assertNotEqual(proof["time_profile"]["normal"]["frontend_id"], proof["time_profile"]["retained"]["frontend_id"])
+            self.assertEqual(proof["time_profile"]["normal"]["pairing"], proof["time_profile"]["retained"]["pairing"])
             (self.tagged / "time_source_post.json").unlink()
             with self.assertRaisesRegex(pair.Incomplete, "paired time source incomplete"):
                 self.validate()
