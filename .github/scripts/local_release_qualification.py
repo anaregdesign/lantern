@@ -465,13 +465,21 @@ def validate_run(directory, document, sha, image_ref, image_id, owner, receipt, 
                 raw = list(directory.glob(pattern))
                 require(len(raw) == 1 and positive(read_json(raw[0]).get("count")), "raw producer evidence missing")
         if gate == "leak_gate" and receipt:
-            protocol = "symmetric_post_gc_2_v1" if retained else "natural_reference_v1"
+            protocol = "symmetric_post_gc_2_v1" if retained else "natural_reference_v2"
             require(value.get("snapshot_protocol") == protocol and
                     value.get("pair_required") is True and value.get("overall_memory_verdict") == "requires_pair" and
                     value.get("retained_verdict") == ("pass" if retained else "requires_pair") and
-                    (retained or value.get("natural_checks_verdict") == "pass") and
+                    (retained or (value.get("natural_steady_memory_verdict") == "pass" and value.get("goroutine_checks_verdict") == "pass")) and
                     value.get("steady_sample_interval") == "5s" and value.get("steady_sample_count", 0) >= 9,
                     "receipt lane sampling or pairing scope incomplete")
+            if not retained:
+                ref = value.get("goroutine_policy_input", {})
+                try:
+                    require(set(ref) == {"path", "sha256"} and ref.get("path") == str(directory / "goroutine_policy_input.json")
+                            and HEX64.fullmatch(ref.get("sha256", "")) and digest(regular(Path(ref["path"]))) == ref["sha256"],
+                            "normal operative goroutine evidence missing or foreign")
+                except OSError as error:
+                    raise Refused("normal operative goroutine evidence missing, unreadable or changed") from error
     for phase in ("pre", "post"):
         validate_runtime(read_json(directory / f"runtime_{phase}.json"))
     before, after = [read_json(directory / f"image_provenance_{phase}.json") for phase in ("pre", "post")]
@@ -518,7 +526,7 @@ def validate_run(directory, document, sha, image_ref, image_id, owner, receipt, 
     return verdicts
 
 
-def validate_retained_pair(normal, retained, document, expected, source, inventory):
+def frozen_pair_consumer(source, inventory):
     # Lazy loading keeps the reviewed HostLock/Supervisor usable by other local
     # owners without importing measurement code or changing their behavior.
     name = ".github/scripts/retained_heap_pair.py"
@@ -542,11 +550,23 @@ def validate_retained_pair(normal, retained, document, expected, source, invento
     # Execute exactly the checked bytes, without consulting a launcher sibling
     # or a bytecode cache after the inventory check.
     exec(compile(code, str(path), "exec"), consumer.__dict__)
+    return consumer
+
+
+def validate_normal_policy(directory, document, expected, source, inventory):
+    consumer = frozen_pair_consumer(source, inventory)
+    try:
+        return consumer.validate_normal_policy(directory, document, expected, read_json(directory / "leak_gate.json"))
+    except consumer.Incomplete as error:
+        raise Refused("normal goroutine component incomplete: " + str(error)) from error
+
+
+def validate_retained_pair(normal, retained, document, expected, source, inventory):
+    consumer = frozen_pair_consumer(source, inventory)
     try:
         return consumer.validate_pair(normal, retained, document, expected)
     except consumer.Incomplete as error:
         raise Refused("retained pair incomplete: " + str(error)) from error
-
 
 def capture_bind_proof(path, target, expected):
     """Bound a flat private proof to its opened directory and unchanged files."""
@@ -1014,6 +1034,12 @@ class Qualification:
                 atomic_json(path, proof)
                 self.state.setdefault("retained_pairs", {})[name] = {"path": str(path), "sha256": digest(path), "verdict": "pass"}
             else:
+                if name in RECEIPTS:
+                    proof = validate_normal_policy(runs[0], self.documents[name], {
+                        "source_commit": self.args.source_sha, "source_tree": self.args.source_tree,
+                        "normal_image_id": self.image_id, "runtime_user": self.owner, "cpuset": self.args.cpuset},
+                        self.source, self.inventory)
+                    self.state.setdefault("normal_goroutine_policies", {})[name] = proof
                 self.normal_runs[name] = runs[0]
             self.save()
         self.absent()

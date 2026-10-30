@@ -4,6 +4,8 @@ Normal-image checks and tagged retained-memory checks have separate scopes.
 This consumer checks their literal evidence; it never runs GC or a workload.
 """
 
+import datetime
+import decimal
 import hashlib
 import json
 import os
@@ -71,7 +73,7 @@ def directory(path):
         raise
 
 
-def read(root, path, limit=1024 * 1024, decode_json=True):
+def read(root, path, limit=1024 * 1024, decode_json=True, modes=None):
     """Require a stable regular evidence file below the declared case root."""
     root, path = Path(root).absolute(), Path(path)
     if not path.is_absolute():
@@ -82,6 +84,9 @@ def read(root, path, limit=1024 * 1024, decode_json=True):
         before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
         need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= limit,
              "unsafe or oversized evidence file")
+        if modes is not None:
+            need(before.st_uid == os.getuid() and stat.S_IMODE(before.st_mode) in modes,
+                 "goroutine evidence ownership or mode differs")
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         with os.fdopen(fd, "rb") as stream:
             opened = os.fstat(stream.fileno())
@@ -565,7 +570,7 @@ def cut(root, filename, phase, expected, scenario):
     return value, digest
 
 
-def normal_observations(root, report):
+def normal_observations(root, report, operative=False):
     """Recompute the normal lane's mandatory natural checks from raw samples."""
     need(report.get("thresholds") == {"goroutine_max_delta": 15, "heap_alloc_max_delta_mb": 32,
          "steady_heap_alloc_max_delta_mb": 40}, "paired thresholds changed")
@@ -597,13 +602,350 @@ def normal_observations(root, report):
     need(steady["duration_ms"] - previous <= 7500, "natural steady tail missing")
     observed_post_failure = False
     for slot, (pre, post) in enumerate(zip(before, after)):
-        need(max(peaks_goroutines[slot], post["goroutines"]) - pre["goroutines"] <= 15,
-             "normal goroutine growth exceeds 15")
+        if not operative:
+            need(max(peaks_goroutines[slot], post["goroutines"]) - pre["goroutines"] <= 15,
+                 "normal goroutine growth exceeds 15")
         need(peaks_heap[slot] - pre["heap_alloc_bytes"] <= 40 * MIB,
              "normal natural steady growth exceeds 40 MiB")
         observed_post_failure |= post["heap_alloc_bytes"] - pre["heap_alloc_bytes"] > 32 * MIB
     need(report.get("natural_post_heap_observation_verdict") == ("fail" if observed_post_failure else "pass"),
          "normal post observation was reclassified")
+
+
+# The old NORMAL_PROTOCOL reader remains an immutable interpretation of saved
+# evidence. Only fresh normal runs use this independently recomputed component.
+OPERATIVE_NORMAL_PROTOCOL = "natural_reference_v2"
+GOROUTINE_PROTOCOL = "receipt_goroutine_operational_v1"
+RECEIPT_FAMILIES = {
+    "receipt_vertex_put_admission_lookup": ("receipt_vertex_put", "PutVertex"),
+    "receipt_vertex_delete_admission_lookup": ("receipt_vertex_delete", "DeleteVertex"),
+    "receipt_admission_lookup": ("receipt_edge_delete", "DeleteEdge"),
+    "receipt_edge_add_admission_lookup": ("receipt_edge_add", "AddEdge"),
+}
+
+
+def _policy_keys(value, required, optional=()):
+    need(type(value) is dict and set(required) <= set(value)
+         and set(value) <= set(required) | set(optional), "goroutine policy JSON shape differs")
+
+
+def _policy_equal(left, right):
+    # In particular, JSON false is not an integer zero and aliases cannot
+    # silently stand in for a canonical field.
+    return json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False) == json.dumps(
+        right, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _policy_ref(root, ref, *, private=True, raw=False, external=False, name=None):
+    _policy_keys(ref, ("path", "sha256"))
+    need(isinstance(ref["path"], str) and isinstance(ref["sha256"], str)
+         and HEX64.fullmatch(ref["sha256"]), "invalid goroutine reference")
+    path = Path(ref["path"])
+    need(path.is_absolute() and str(path) == ref["path"] and ".." not in path.parts
+         and (external or path.parent == root) and (name is None or path.name == name),
+         "goroutine reference is outside the physical current case root")
+    value, digest = read(path.parent if external else root, path, 1 << 20,
+                         decode_json=not raw, modes=(0o600,) if private else (0o600, 0o644))
+    need(digest == ref["sha256"], "goroutine raw evidence hash differs")
+    return value
+
+
+def _policy_file(root, name, *, private=True, raw=False):
+    return read(root, name, 1 << 20, decode_json=not raw,
+                modes=(0o600,) if private else (0o600, 0o644))
+
+
+def _policy_scenario(scenario):
+    _policy_keys(scenario, ("name", "description", "target", "cluster", "phases", "perf_gate",
+                            "leak_gate", "goroutine_policy"))
+    need(scenario["name"] in RECEIPT_FAMILIES and isinstance(scenario["description"], str),
+         "goroutine scenario/family is not declared")
+    family, method = RECEIPT_FAMILIES[scenario["name"]]
+    expected = {
+        "target": {"driver": family, "endpoints": ["localhost:6380", "localhost:6381", "localhost:6382"],
+                   "calls": [{"name": "receipt_admission", "call": "graph.v1.LanternService/" + method, "rps": 100},
+                             {"name": "receipt_lookup", "call": "graph.v1.LanternService/GetReceiptStatus", "rps": 100}]},
+        "cluster": {"receipt_wal": {"enabled": True, "retention": "1h", "max_entries": 8000, "max_bytes": 16777216}},
+        "phases": {"warmup": {"duration": "10s", "rps": 200, "concurrency": 12},
+                   "steady": {"duration": "45s", "rps": 200, "concurrency": 12}, "cooldown": "10s"},
+        "perf_gate": {"min_steady_rps_total": 150, "max_p99_ms": 500, "max_non_ok_ratio": 0,
+                      "producers": {"receipt_admission": {"min_steady_rps": 75, "max_p99_ms": 500, "max_non_ok_ratio": 0},
+                                    "receipt_lookup": {"min_steady_rps": 75, "max_p99_ms": 200, "max_non_ok_ratio": 0}}},
+        "leak_gate": {"goroutine_max_delta": 15, "heap_alloc_max_delta_mb": 32,
+                      "steady_heap_alloc_max_delta_mb": 40, "steady_sample_interval": "5s"},
+        "goroutine_policy": {"protocol": GOROUTINE_PROTOCOL, "sampled_absolute_max": 128, "post_max_delta": 15,
+                             "post_offsets_seconds": [5, 10], "capture_window_seconds": 3},
+    }
+    need(all(_policy_equal(scenario[key], value) for key, value in expected.items()),
+         "goroutine reviewed workload/resource profile differs")
+    return family
+
+
+def _policy_time(value):
+    need(isinstance(value, str) and re.fullmatch(
+        r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)", value),
+        "goroutine process/capture clock identity missing")
+    datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _policy_profile(value, baseline, expected, scenario, scenario_sha):
+    keys = ("schema", "protocol", "scenario", "family", "image_scope", "measurement_protocol",
+            "source_commit", "source_tree", "image_id", "config_sha256", "scenario_sha256",
+            "observer_sha256", "observer_go_version", "metrics_transport", "bridge_pid", "bridge_ports",
+            "cpuset", "runtime_user", "nodes")
+    _policy_keys(value, keys)
+    need(type(value["schema"]) is int and value["schema"] == 1 and value["protocol"] == GOROUTINE_PROTOCOL
+         and value["scenario"] == scenario["name"] and value["family"] == RECEIPT_FAMILIES[scenario["name"]][0]
+         and value["image_scope"] == "normal" and value["measurement_protocol"] == "none"
+         and value["source_commit"] == expected["source_commit"] and value["source_tree"] == expected["source_tree"]
+         and HEX40.fullmatch(value["source_commit"]) and HEX40.fullmatch(value["source_tree"])
+         and IMAGE.fullmatch(value["image_id"]) and value["image_id"] == expected["normal_image_id"]
+         and value["cpuset"] == expected["cpuset"] == "0-3"
+         and value["runtime_user"] == expected["runtime_user"]
+         and isinstance(value["runtime_user"], str) and re.fullmatch(r"[1-9][0-9]*:[0-9]+", value["runtime_user"])
+         and value["scenario_sha256"] == scenario_sha
+         and all(isinstance(value[k], str) and HEX64.fullmatch(value[k])
+                 for k in ("config_sha256", "scenario_sha256", "observer_sha256"))
+         and isinstance(value["observer_go_version"], str) and value["observer_go_version"].startswith("go1.")
+         and value["metrics_transport"] == "operator_docker_exec" and integer(value["bridge_pid"], 1)
+         and value["bridge_ports"] == [9390, 9391, 9392]
+         and all(type(x) is int for x in value["bridge_ports"])
+         and isinstance(value["nodes"], list) and len(value["nodes"]) == 3,
+         "goroutine source/image/observer/native profile differs")
+    for i, node in enumerate(value["nodes"]):
+        _policy_keys(node, ("endpoint", "container_id", "pid", "started_at", "expected_peers") +
+                     (("passive_metrics",) if baseline else ()))
+        need(node["endpoint"] == ENDPOINTS[i] and isinstance(node["container_id"], str)
+             and HEX64.fullmatch(node["container_id"]) and integer(node["pid"], 1)
+             and isinstance(node["expected_peers"], list) and len(node["expected_peers"]) == 2
+             and len(set(node["expected_peers"])) == 2
+             and all(isinstance(x, str) and 0 < len(x) <= 512 and not any(c in x for c in "\r\n\x00")
+                     for x in node["expected_peers"]), "goroutine three-node/peer identity incomplete")
+        _policy_time(node["started_at"])
+    need(len({n["container_id"] for n in value["nodes"]}) == 3
+         and len({n["pid"] for n in value["nodes"]}) == 3, "goroutine duplicate target identity")
+    stripped = json.loads(json.dumps(value))
+    for node in stripped["nodes"]:
+        node.pop("passive_metrics", None)
+    return stripped
+
+
+def _policy_passive(value, node):
+    _policy_keys(value, ("subscribe_active", "changes_active", "anti_entropy_cycles", "peers"))
+    need(integer(value["subscribe_active"]) and value["subscribe_active"] == 2
+         and integer(value["changes_active"]) and value["changes_active"] == 0
+         and integer(value["anti_entropy_cycles"]) and type(value["peers"]) is dict
+         and set(value["peers"]) == set(node["expected_peers"])
+         and all(type(x) is int and x == 1 for x in value["peers"].values()),
+         "goroutine passive peer/stream profile differs")
+
+
+def _policy_passive_text(raw, node):
+    selected, peers = {}, {}
+    names = {"lantern_subscribe_active_streams": "subscribe_active",
+             "lantern_changes_active_streams": "changes_active",
+             "lantern_anti_entropy_cycles_total": "anti_entropy_cycles"}
+    for line in raw.decode().splitlines():
+        need(len(line) <= 64 << 10, "passive metric line bound")
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        name = fields[0]
+        if name not in names and not name.startswith("lantern_peer_connected"):
+            continue
+        need(len(fields) == 2, "passive metric syntax differs")
+        number = decimal.Decimal(fields[1])
+        need(number.is_finite() and 0 <= number <= 9223372036854775807 and number == number.to_integral_value(),
+             "passive metric is not a nonnegative integer")
+        if name in names:
+            key = names[name]
+            need(key not in selected, "duplicate passive metric")
+            selected[key] = int(number)
+        else:
+            match = re.fullmatch(r'lantern_peer_connected\{peer=("(?:[^"\\]|\\.)*")\}', name)
+            need(match is not None, "passive peer label differs")
+            peer = json.loads(match[1])
+            need(peer not in peers, "duplicate passive peer")
+            peers[peer] = int(number)
+    selected["peers"] = peers
+    _policy_passive(selected, node)
+    return selected
+
+
+def _validate_normal_policy(root, scenario, expected, report):
+    root = Path(root).absolute()
+    fd = directory(root)
+    os.close(fd)
+    family = _policy_scenario(scenario)
+    need(report.get("snapshot_protocol") == OPERATIVE_NORMAL_PROTOCOL and report.get("verdict") == "pass"
+         and report.get("natural_steady_memory_verdict") == "pass" and report.get("goroutine_checks_verdict") == "pass"
+         and type(report.get("goroutine_sampled_peak_limit")) is int and report["goroutine_sampled_peak_limit"] == 128
+         and type(report.get("goroutine_post_residual_limit")) is int and report["goroutine_post_residual_limit"] == 15,
+         "normal operative component verdict incomplete")
+    need(_policy_equal(report.get("thresholds"), {"goroutine_max_delta": 15, "heap_alloc_max_delta_mb": 32,
+                         "steady_heap_alloc_max_delta_mb": 40}), "normal report thresholds differ")
+    normal_observations(root, report, operative=True)
+    resolved, scenario_sha = _policy_file(root, "scenario.resolved.json", private=False)
+    need(_policy_equal(resolved, scenario), "resolved goroutine scenario differs")
+    input_ref = report.get("goroutine_policy_input")
+    data = _policy_ref(root, input_ref, name="goroutine_policy_input.json")
+    _policy_keys(data, ("schema", "protocol", "pre", "steady", "legacy_post", "baseline_profile", "before_post_profile",
+                        "barrier", "posts", "workload_report", "owner_evidence"))
+    need(type(data["schema"]) is int and data["schema"] == 1 and data["protocol"] == GOROUTINE_PROTOCOL,
+         "goroutine input protocol missing")
+    baseline = _policy_ref(root, data["baseline_profile"], name="goroutine_policy_baseline_profile.json")
+    identity = _policy_profile(baseline, True, expected, scenario, scenario_sha)
+    before = _policy_ref(root, data["before_post_profile"], name="goroutine_policy_before_post_profile.json")
+    need(_policy_profile(before, False, expected, scenario, scenario_sha) == identity,
+         "goroutine before-post process/config profile changed")
+    observer, _ = _policy_file(root, "goroutine_policy_observer.json")
+    _policy_keys(observer, ("source_commit", "source_tree", "observer_sha256", "observer_go_version", "buildinfo_sha256"))
+    version, _ = _policy_file(root, "goroutine_policy_go_version.txt", private=False, raw=True)
+    _, build_sha = _policy_file(root, "goroutine_policy_buildinfo.txt", private=False, raw=True)
+    need(observer["source_commit"] == expected["source_commit"] and observer["source_tree"] == expected["source_tree"]
+         and observer["observer_sha256"] == baseline["observer_sha256"]
+         and observer["observer_go_version"] == baseline["observer_go_version"] == version.decode().split()[2]
+         and observer["buildinfo_sha256"] == build_sha, "prebuilt goroutine observer evidence differs")
+    source_names = ("server/internal/security/control_renewal_network_test.go",
+                    "server/service/replication_delivery_test.go", "server/replication/pump_test.go")
+    need(isinstance(data["owner_evidence"], list) and len(data["owner_evidence"]) == 3,
+         "source-lifecycle reference scope missing")
+    for ref, suffix in zip(data["owner_evidence"], source_names):
+        need(isinstance(ref.get("path"), str) and ref["path"].endswith("/" + suffix),
+             "source-test reference is outside declared lifecycle scope")
+        _policy_ref(root, ref, private=False, raw=True, external=True)
+    workload = _policy_ref(root, data["workload_report"], private=False, name="workload_gate.json")
+    need(workload.get("verdict") == "pass", "normal workload did not pass")
+    barrier = _policy_ref(root, data["barrier"], name="goroutine_policy_barrier.json")
+    _policy_keys(barrier, ("schema", "protocol", "scope", "t0_ns", "semantic_complete", "pending_rpc", "owned_work", "work_reports"))
+    need(type(barrier["schema"]) is int and barrier["schema"] == 1 and barrier["protocol"] == GOROUTINE_PROTOCOL
+         and barrier["scope"] == "declared_client_work_only_not_global_idle" and integer(barrier["t0_ns"], 1)
+         and barrier["semantic_complete"] is True and type(barrier["pending_rpc"]) is int and barrier["pending_rpc"] == 0,
+         "declared client work barrier incomplete")
+    need(isinstance(barrier["owned_work"], list) and len(barrier["owned_work"]) == 3, "owned work inventory incomplete")
+    owned = {}
+    for row in barrier["owned_work"]:
+        _policy_keys(row, ("kind", "declared", "reaped", "pending_rpc", "exit_failures"))
+        need(row["kind"] in ("producer", "subscriber", "chaos") and row["kind"] not in owned
+             and all(integer(row[k]) for k in ("declared", "reaped", "pending_rpc", "exit_failures"))
+             and row["declared"] == row["reaped"] and row["pending_rpc"] == row["exit_failures"] == 0,
+             "declared client work did not join")
+        owned[row["kind"]] = row["declared"]
+    need(owned == {"producer": 2, "subscriber": 0, "chaos": 0}
+         and isinstance(barrier["work_reports"], list) and len(barrier["work_reports"]) == 2,
+         "declared client work profile differs")
+    phases = {}
+    for row in barrier["work_reports"]:
+        _policy_keys(row, ("phase", "admission", "lookup", "coordinator_return"))
+        phase = row["phase"]
+        need(phase in ("warmup", "steady") and phase not in phases, "duplicate or missing client phase")
+        returned = _policy_ref(root, row["coordinator_return"], name=f"goroutine_policy_phase_{phase}_return.json")
+        _policy_keys(returned, ("schema", "protocol", "phase", "scope", "started_ns", "finished_ns", "exit_code", "coordinator_returned"))
+        need(type(returned["schema"]) is int and returned["schema"] == 1 and returned["protocol"] == GOROUTINE_PROTOCOL
+             and returned["phase"] == phase and returned["scope"] == "synchronous_receipt_phase_only"
+             and integer(returned["started_ns"], 1) and integer(returned["finished_ns"], 1)
+             and returned["started_ns"] < returned["finished_ns"] <= barrier["t0_ns"]
+             and type(returned["exit_code"]) is int and returned["exit_code"] == 0
+             and returned["coordinator_returned"] is True, "phase coordinator return incomplete")
+        a = _policy_ref(root, row["admission"], private=False, name=f"ghz_{phase}_0_receipt_admission.json")
+        b = _policy_ref(root, row["lookup"], private=False, name=f"ghz_{phase}_1_receipt_lookup.json")
+        need(integer(a.get("count"), 1) and integer(b.get("count"), 1) and a["count"] == b.get("count")
+             and _policy_equal(a.get("statusCodeDistribution"), {"OK": a["count"]})
+             and _policy_equal(b.get("statusCodeDistribution"), {"OK": a["count"]}),
+             "raw admission/lookup work incomplete")
+        phases[phase] = returned
+    need(phases["warmup"]["finished_ns"] <= phases["steady"]["started_ns"], "client phase return order differs")
+    pre = _policy_ref(root, data["pre"], private=False, name="runtime_pre.json")
+    steady = _policy_ref(root, data["steady"], private=False, name="runtime_steady.json")
+    need(integer(steady.get("duration_ms"), 45000) and steady["duration_ms"] <= 55000,
+         "steady sampling duration outside the existing coverage bound")
+    post = _policy_ref(root, data["legacy_post"], private=False, name="runtime_post.json")
+    peaks, bases = [], []
+    passive = []
+    for i, node in enumerate(baseline["nodes"]):
+        need(pre[i]["endpoint"] == post[i]["endpoint"] == node["endpoint"]
+             and integer(pre[i].get("goroutines"), 1) and integer(post[i].get("goroutines"), 1),
+             "original PRE/POST target differs")
+        bases.append(pre[i]["goroutines"])
+        peaks.append(max(pre[i]["goroutines"], post[i]["goroutines"],
+                         *(x["replicas"][i]["goroutines"] for x in steady["samples"])))
+        need(post[i]["goroutines"] - bases[i] <= 15, "original POST goroutine residual exceeds 15")
+        raw = _policy_ref(root, node["passive_metrics"], raw=True, name=f"goroutine_policy_pre_{9390+i}.prom")
+        passive.append(_policy_passive_text(raw, node))
+    need(isinstance(data["posts"], list) and len(data["posts"]) == 2, "fixed goroutine post observations missing")
+    residuals = []
+    cycles = [value["anti_entropy_cycles"] for value in passive]
+    for i, row in enumerate(data["posts"]):
+        offset = 5 + i * 5
+        _policy_keys(row, ("offset_seconds", "start_ns", "end_ns", "capture", "profile"))
+        need(type(row["offset_seconds"]) is int and row["offset_seconds"] == offset
+             and integer(row["start_ns"]) and integer(row["end_ns"])
+             and barrier["t0_ns"] + offset * 10**9 <= row["start_ns"] <= row["end_ns"]
+             and row["end_ns"] <= barrier["t0_ns"] + (offset + 3) * 10**9,
+             "fixed goroutine window late, duplicate or unordered")
+        timing, _ = _policy_file(root, f"goroutine_policy_timing_{offset}.json")
+        need(_policy_equal(timing, {k: row[k] for k in ("offset_seconds", "start_ns", "end_ns")}),
+             "goroutine host call bracket differs")
+        control, _ = _policy_file(root, f"goroutine_policy_control_{offset}.json")
+        need(_policy_equal(control, {"schema": 1, "protocol": GOROUTINE_PROTOCOL, "offset_seconds": offset,
+             "metrics_urls": ["http://" + x + "/metrics" for x in ENDPOINTS], "operator_loopback": True,
+             "profile": data["before_post_profile"]}), "goroutine collector route/control differs")
+        profile = _policy_ref(root, row["profile"], name=f"goroutine_policy_post_{offset}_profile.json")
+        need(_policy_profile(profile, False, expected, scenario, scenario_sha) == identity,
+             "goroutine target restarted or profile changed")
+        capture = _policy_ref(root, row["capture"], name=f"goroutine_policy_post_{offset}.json")
+        _policy_keys(capture, ("schema", "protocol", "policy_role", "qualification", "release_admission", "offset_seconds",
+                              "profile", "started_utc", "duration_ns", "replicas", "verdict"), ("failure",))
+        need(type(capture["schema"]) is int and capture["schema"] == 1 and capture["protocol"] == GOROUTINE_PROTOCOL
+             and capture["policy_role"] == "operative_normal_component" and capture["qualification"] is False
+             and capture["release_admission"] is False and type(capture["offset_seconds"]) is int
+             and capture["offset_seconds"] == offset and capture["profile"] == data["before_post_profile"]
+             and capture["verdict"] == "captured" and not capture.get("failure")
+             and integer(capture["duration_ns"]) and capture["duration_ns"] <= min(3 * 10**9, row["end_ns"] - row["start_ns"])
+             and isinstance(capture["replicas"], list) and len(capture["replicas"]) == 3,
+             "goroutine collector flight incomplete or foreign")
+        _policy_time(capture["started_utc"])
+        values = []
+        for slot, replica in enumerate(capture["replicas"]):
+            _policy_keys(replica, ("runtime", "passive"))
+            runtime = replica["runtime"]
+            _policy_keys(runtime, ("endpoint", "goroutines", "heap_alloc_bytes"), ("metrics",))
+            need(runtime["endpoint"] == ENDPOINTS[slot] and integer(runtime["goroutines"], 1)
+                 and integer(runtime["heap_alloc_bytes"], 1), "goroutine post target/runtime differs")
+            _policy_passive(replica["passive"], baseline["nodes"][slot])
+            need(replica["passive"]["anti_entropy_cycles"] >= cycles[slot],
+                 "passive cycle counter rolled back")
+            cycles[slot] = replica["passive"]["anti_entropy_cycles"]
+            peaks[slot] = max(peaks[slot], runtime["goroutines"])
+            values.append(runtime["goroutines"] - bases[slot])
+            need(values[-1] <= 15, "fixed POST goroutine residual exceeds 15")
+        residuals.append(values)
+    need(all(x <= 128 for x in peaks), "normal sampled goroutines exceed absolute 128")
+    for suffix in ("pre", "post"):
+        provenance, _ = _policy_file(root, f"image_provenance_{suffix}.json", private=False)
+        need(provenance.get("source_commit") == expected["source_commit"]
+             and provenance.get("image_id") == expected["normal_image_id"]
+             and provenance.get("runtime_user") == expected["runtime_user"], "normal provenance differs")
+        rows = {x["service"]: x for x in provenance["replicas"]}
+        need(len(provenance["replicas"]) == 3 and len(rows) == 3 and all(rows[f"lantern-{i}"]["container_id"] == node["container_id"]
+             and rows[f"lantern-{i}"]["image_id"] == baseline["image_id"]
+             and rows[f"lantern-{i}"]["runtime_user"] == baseline["runtime_user"]
+             and rows[f"lantern-{i}"]["cpuset"] == baseline["cpuset"]
+             for i, node in enumerate(baseline["nodes"])), "normal profile/provenance container differs")
+    return {"protocol": GOROUTINE_PROTOCOL, "verdict": "pass", "sampled_peak_limit": 128, "post_residual_limit": 15,
+            "sampled_peaks": peaks, "original_post_deltas": [post[i]["goroutines"] - bases[i] for i in range(3)],
+            "fixed_post_deltas": residuals, "goroutine_policy_input": input_ref,
+            "scope": "normal sampled ceiling and declared-client residual screen; source-test refs are not runtime joins"}
+
+
+def validate_normal_policy(root, scenario, expected, report):
+    """Pure independent raw validation; a sidecar PASS is never sufficient."""
+    try:
+        return _validate_normal_policy(root, scenario, expected, report)
+    except Incomplete:
+        raise
+    except (OSError, KeyError, TypeError, AttributeError, ValueError, IndexError, UnicodeError, decimal.InvalidOperation) as error:
+        raise Incomplete("missing or malformed operative goroutine evidence") from error
 
 
 def _validate_pair(normal_root, retained_root, scenario, expected):
@@ -616,11 +958,11 @@ def _validate_pair(normal_root, retained_root, scenario, expected):
          and expected.get("cpuset") == "0-3", "unbound pair expectation")
     normal, _ = read(normal_root, "leak_gate.json")
     retained, _ = read(retained_root, "leak_gate.json")
-    need(normal.get("snapshot_protocol") == NORMAL_PROTOCOL and normal.get("verdict") == "pass"
-         and normal.get("natural_checks_verdict") == "pass" and normal.get("retained_verdict") == "requires_pair"
+    need(normal.get("snapshot_protocol") == OPERATIVE_NORMAL_PROTOCOL and normal.get("verdict") == "pass"
+         and normal.get("retained_verdict") == "requires_pair"
          and normal.get("pair_required") is True and normal.get("overall_memory_verdict") == "requires_pair",
          "normal lane cannot independently qualify retained memory")
-    normal_observations(normal_root, normal)
+    normal_policy = validate_normal_policy(normal_root, scenario, expected, normal)
     need(retained.get("snapshot_protocol") == PROTOCOL and retained.get("verdict") == "pass"
          and retained.get("retained_verdict") == "pass" and retained.get("pair_required") is True
          and retained.get("overall_memory_verdict") == "requires_pair", "retained lane did not pass")
@@ -682,11 +1024,11 @@ def _validate_pair(normal_root, retained_root, scenario, expected):
         delta = b["memory"]["heap_alloc"] - a["memory"]["heap_alloc"]
         need(delta <= 32 * MIB, "retained HeapAlloc exceeds 32 MiB")
         deltas.append({"endpoint": pre["endpoint"], "heap_alloc_delta_bytes": delta})
-    return {"schema": 1, "protocol": "source_paired_retained_v1", "verdict": "pass",
+    return {"schema": 1, "protocol": "source_paired_retained_v2", "verdict": "pass",
             "scope": "normal-image checks plus same-source tagged retained measurement; no binary equivalence",
             "source_commit": expected["source_commit"], "source_tree": expected["source_tree"],
             "scenario_sha256": canonical_sha(scenario), "normal_image_id": expected["normal_image_id"],
-            "retained_image_id": expected["retained_image_id"], "replicas": deltas}
+            "retained_image_id": expected["retained_image_id"], "goroutine_policy": normal_policy, "replicas": deltas}
 
 
 def validate_pair(normal_root, retained_root, scenario, expected):

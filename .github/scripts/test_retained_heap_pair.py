@@ -88,6 +88,133 @@ def mount_fixture(root, index, phase, context, session):
                for position in ("before", "after")}}
 
 
+def policy_scenario(name="receipt_admission_lookup"):
+    family, method = {
+        "receipt_admission_lookup": ("receipt_edge_delete", "DeleteEdge"),
+        "receipt_vertex_put_admission_lookup": ("receipt_vertex_put", "PutVertex"),
+        "receipt_vertex_delete_admission_lookup": ("receipt_vertex_delete", "DeleteVertex"),
+        "receipt_edge_add_admission_lookup": ("receipt_edge_add", "AddEdge"),
+    }[name]
+    return {"name": name, "description": "Synthetic independent reader fixture; not runtime evidence",
+            "target": {"driver": family, "endpoints": ["localhost:6380", "localhost:6381", "localhost:6382"],
+                       "calls": [{"name": "receipt_admission", "call": "graph.v1.LanternService/" + method, "rps": 100},
+                                 {"name": "receipt_lookup", "call": "graph.v1.LanternService/GetReceiptStatus", "rps": 100}]},
+            "cluster": {"receipt_wal": {"enabled": True, "retention": "1h", "max_entries": 8000, "max_bytes": 16777216}},
+            "phases": {"warmup": {"duration": "10s", "rps": 200, "concurrency": 12},
+                       "steady": {"duration": "45s", "rps": 200, "concurrency": 12}, "cooldown": "10s"},
+            "perf_gate": {"min_steady_rps_total": 150, "max_p99_ms": 500, "max_non_ok_ratio": 0,
+                          "producers": {"receipt_admission": {"min_steady_rps": 75, "max_p99_ms": 500, "max_non_ok_ratio": 0},
+                                        "receipt_lookup": {"min_steady_rps": 75, "max_p99_ms": 200, "max_non_ok_ratio": 0}}},
+            "leak_gate": {"goroutine_max_delta": 15, "heap_alloc_max_delta_mb": 32,
+                          "steady_heap_alloc_max_delta_mb": 40, "steady_sample_interval": "5s"},
+            "goroutine_policy": {"protocol": "receipt_goroutine_operational_v1", "sampled_absolute_max": 128,
+                                 "post_max_delta": 15, "post_offsets_seconds": [5, 10], "capture_window_seconds": 3}}
+
+
+def file_ref(path):
+    return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def refresh_policy(root):
+    path = root / "goroutine_policy_input.json"
+    value = json.loads(path.read_bytes())
+    def refresh(obj):
+        if isinstance(obj, dict):
+            if set(obj) == {"path", "sha256"}:
+                obj["sha256"] = file_ref(Path(obj["path"]))["sha256"]
+            else:
+                for child in obj.values(): refresh(child)
+        elif isinstance(obj, list):
+            for child in obj: refresh(child)
+    refresh(value)
+    ref = write(path, value)
+    report = json.loads((root / "leak_gate.json").read_bytes())
+    report["goroutine_policy_input"] = ref
+    write(root / "leak_gate.json", report)
+    return value
+
+
+def policy_fixture(root, expected, scenario):
+    # Every retained raw reference is written independently; assertions call the
+    # consumer on these files rather than accepting a supplied sidecar verdict.
+    scenario_ref = write(root / "scenario.resolved.json", scenario)
+    observer_sha = "e" * 64
+    buildinfo = root / "goroutine_policy_buildinfo.txt"
+    buildinfo.write_text("synthetic prebuilt observer fixture, not a binary qualification\n"); buildinfo.chmod(0o644)
+    version = root / "goroutine_policy_go_version.txt"
+    version.write_text("go version go1.27.3 fixture/fixture\n"); version.chmod(0o644)
+    write(root / "goroutine_policy_observer.json", {"source_commit": expected["source_commit"], "source_tree": expected["source_tree"],
+        "observer_sha256": observer_sha, "observer_go_version": "go1.27.3", "buildinfo_sha256": file_ref(buildinfo)["sha256"]})
+    profile = {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL, "scenario": scenario["name"],
+        "family": scenario["target"]["driver"], "image_scope": "normal", "measurement_protocol": "none",
+        "source_commit": expected["source_commit"], "source_tree": expected["source_tree"], "image_id": expected["normal_image_id"],
+        "config_sha256": "f" * 64, "scenario_sha256": scenario_ref["sha256"], "observer_sha256": observer_sha,
+        "observer_go_version": "go1.27.3", "metrics_transport": "operator_docker_exec", "bridge_pid": 5011,
+        "bridge_ports": [9390, 9391, 9392], "cpuset": "0-3", "runtime_user": expected["runtime_user"], "nodes": []}
+    passive = []
+    for i, endpoint in enumerate(pair.ENDPOINTS):
+        peers = [f"https://lantern-{j}:6381" for j in range(3) if j != i]
+        node = {"endpoint": endpoint, "container_id": str(i + 1) * 64, "pid": 1001+i,
+                "started_at": "2026-10-30T00:00:00Z", "expected_peers": peers}
+        profile["nodes"].append(node)
+        passive.append({"subscribe_active": 2, "changes_active": 0, "anti_entropy_cycles": 1, "peers": {p: 1 for p in peers}})
+    before = write(root / "goroutine_policy_before_post_profile.json", profile)
+    baseline = copy.deepcopy(profile)
+    for i, node in enumerate(baseline["nodes"]):
+        path = root / f"goroutine_policy_pre_{9390+i}.prom"
+        path.write_text("lantern_subscribe_active_streams 2\nlantern_changes_active_streams 0\nlantern_anti_entropy_cycles_total 1\n" +
+                        "".join('lantern_peer_connected{peer="' + p + '"} 1\n' for p in node["expected_peers"]))
+        path.chmod(0o600)
+        node["passive_metrics"] = file_ref(path)
+    baseline_ref = write(root / "goroutine_policy_baseline_profile.json", baseline)
+    reports = []
+    for i, phase in enumerate(("warmup", "steady")):
+        count = 10 if phase == "warmup" else 20
+        reports.append({"phase": phase,
+            "admission": write(root / f"ghz_{phase}_0_receipt_admission.json", {"count": count, "statusCodeDistribution": {"OK": count}}),
+            "lookup": write(root / f"ghz_{phase}_1_receipt_lookup.json", {"count": count, "statusCodeDistribution": {"OK": count}}),
+            "coordinator_return": write(root / f"goroutine_policy_phase_{phase}_return.json", {
+                "schema": 1, "protocol": pair.GOROUTINE_PROTOCOL, "phase": phase, "scope": "synchronous_receipt_phase_only",
+                "started_ns": 1000+i*2000, "finished_ns": 2000+i*2000, "exit_code": 0, "coordinator_returned": True})})
+    t0 = 10**12
+    barrier = write(root / "goroutine_policy_barrier.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
+        "scope": "declared_client_work_only_not_global_idle", "t0_ns": t0, "semantic_complete": True, "pending_rpc": 0,
+        "owned_work": [{"kind": k, "declared": n, "reaped": n, "pending_rpc": 0, "exit_failures": 0}
+                       for k,n in (("producer", 2), ("subscriber", 0), ("chaos", 0))], "work_reports": reports})
+    posts = []
+    for offset in (5, 10):
+        timing = {"offset_seconds": offset, "start_ns": t0+offset*10**9, "end_ns": t0+offset*10**9+200000000}
+        write(root / f"goroutine_policy_timing_{offset}.json", timing)
+        write(root / f"goroutine_policy_control_{offset}.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
+            "offset_seconds": offset, "metrics_urls": ["http://"+x+"/metrics" for x in pair.ENDPOINTS],
+            "operator_loopback": True, "profile": before})
+        capture = write(root / f"goroutine_policy_post_{offset}.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
+            "policy_role": "operative_normal_component", "qualification": False, "release_admission": False,
+            "offset_seconds": offset, "profile": before, "started_utc": "2026-10-30T00:00:00Z", "duration_ns": 100000000,
+            "replicas": [{"runtime": {"endpoint": endpoint, "goroutines": 10, "heap_alloc_bytes": 1000}, "passive": passive[i]}
+                         for i, endpoint in enumerate(pair.ENDPOINTS)], "verdict": "captured"})
+        posts.append({**timing, "capture": capture, "profile": write(root / f"goroutine_policy_post_{offset}_profile.json", profile)})
+    source_refs = []
+    for suffix in ("server/internal/security/control_renewal_network_test.go", "server/service/replication_delivery_test.go", "server/replication/pump_test.go"):
+        path = root.parent / "source" / suffix
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("// synthetic source-reference fixture; not a runtime join proof\n"); path.chmod(0o644)
+        source_refs.append(file_ref(path))
+    workload = write(root / "workload_gate.json", {"verdict": "pass", "producer_failed": 0,
+        "producer_diagnostics_failed": 0, "failed_consumers": 0, "chaos_failed": 0})
+    input_ref = write(root / "goroutine_policy_input.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
+        "pre": file_ref(root / "runtime_pre.json"), "steady": file_ref(root / "runtime_steady.json"),
+        "legacy_post": file_ref(root / "runtime_post.json"), "baseline_profile": baseline_ref,
+        "before_post_profile": before, "barrier": barrier, "posts": posts, "workload_report": workload, "owner_evidence": source_refs})
+    report = json.loads((root / "leak_gate.json").read_bytes())
+    report.pop("natural_checks_verdict", None)
+    report.update(snapshot_protocol=pair.OPERATIVE_NORMAL_PROTOCOL, natural_steady_memory_verdict="pass",
+                  goroutine_checks_verdict="pass", goroutine_sampled_peak_limit=128, goroutine_post_residual_limit=15,
+                  goroutine_policy_input=input_ref)
+    write(root / "leak_gate.json", report)
+    return input_ref
+
+
 class PairTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -98,7 +225,7 @@ class PairTest(unittest.TestCase):
                          "normal_image_id": "sha256:" + "c" * 64,
                          "retained_image_id": "sha256:" + "d" * 64,
                          "runtime_user": "501:20", "cpuset": "0-3"}
-        self.scenario = {"name": "receipt", "steady": {"duration": "45s"}}
+        self.scenario = policy_scenario()
         for root, image in ((self.normal, self.expected["normal_image_id"]),
                             (self.tagged, self.expected["retained_image_id"])):
             write(root / "scenario.resolved.json", self.scenario)
@@ -130,6 +257,7 @@ class PairTest(unittest.TestCase):
             for i, name in enumerate(("receipt_admission", "receipt_lookup")):
                 write(self.tagged / f"ghz_{phase}_{i}_{name}.json",
                       {"count": count, "statusCodeDistribution": {"OK": count}})
+        policy_fixture(self.normal, self.expected, self.scenario)
         self.cuts = {}
         for phase in ("baseline", "post"):
             count, forced, cycle = (10, 0, 5) if phase == "baseline" else (30, 2, 10)
@@ -265,11 +393,12 @@ class PairTest(unittest.TestCase):
     def test_natural_peak_and_goroutine_cannot_hide_behind_pair_pass(self):
         path = self.normal / "runtime_steady.json"
         original = json.loads(path.read_text())
-        for key, value in (("heap_alloc_bytes", 1001 + 40 * pair.MIB), ("goroutines", 26)):
+        for key, value in (("heap_alloc_bytes", 1001 + 40 * pair.MIB), ("goroutines", 129)):
             with self.subTest(key=key):
                 bad = copy.deepcopy(original)
                 bad["samples"][2]["replicas"][1][key] = value
                 write(path, bad)
+                refresh_policy(self.normal)
                 with self.assertRaises(pair.Incomplete):
                     self.validate()
 
@@ -457,3 +586,191 @@ class PairTest(unittest.TestCase):
                     self.assertEqual(self.validate()["verdict"], "pass")
                 else:
                     with self.assertRaises(pair.Incomplete): self.validate()
+
+    def policy_report(self):
+        return json.loads((self.normal / "leak_gate.json").read_bytes())
+
+    def validate_policy(self):
+        return pair.validate_normal_policy(self.normal, self.scenario, self.expected, self.policy_report())
+
+    def change_policy_file(self, name, change):
+        path = self.normal / name
+        value = json.loads(path.read_bytes())
+        change(value)
+        write(path, value)
+        refresh_policy(self.normal)
+
+    def test_operative_four_family_profiles_and_legacy_interpretation_are_distinct(self):
+        for name in ("receipt_admission_lookup", "receipt_vertex_put_admission_lookup",
+                     "receipt_vertex_delete_admission_lookup", "receipt_edge_add_admission_lookup"):
+            with self.subTest(name=name):
+                self.scenario = policy_scenario(name)
+                policy_fixture(self.normal, self.expected, self.scenario)
+                self.change_policy_file("runtime_steady.json", lambda v: v["samples"][2]["replicas"][1].update(goroutines=26))
+                self.assertEqual(self.validate_policy()["verdict"], "pass")
+                old = self.policy_report()
+                old["snapshot_protocol"] = pair.NORMAL_PROTOCOL
+                with self.assertRaisesRegex(pair.Incomplete, "goroutine growth exceeds 15"):
+                    pair.normal_observations(self.normal, old)
+
+    def test_operative_absolute_boundary_and_recovered_peak_are_recomputed(self):
+        self.change_policy_file("runtime_steady.json", lambda v: v["samples"][2]["replicas"][1].update(goroutines=128))
+        self.assertEqual(self.validate_policy()["sampled_peaks"][1], 128)
+        # A forged sidecar cannot hide a recovered active peak of 129.
+        write(self.normal / "goroutine_policy.json", {"verdict": "pass"})
+        self.change_policy_file("runtime_steady.json", lambda v: v["samples"][2]["replicas"][1].update(goroutines=129))
+        with self.assertRaisesRegex(pair.Incomplete, "absolute 128"):
+            self.validate_policy()
+
+    def test_operative_original_and_both_fixed_residuals_block_even_after_recovery(self):
+        original = (self.normal / "runtime_post.json").read_bytes()
+        self.change_policy_file("runtime_post.json", lambda v: v[0].update(goroutines=26))
+        with self.assertRaisesRegex(pair.Incomplete, "original POST"):
+            self.validate_policy()
+        (self.normal / "runtime_post.json").write_bytes(original)
+        refresh_policy(self.normal)
+        for offset in (5, 10):
+            with self.subTest(offset=offset):
+                path = self.normal / f"goroutine_policy_post_{offset}.json"
+                raw = path.read_bytes()
+                self.change_policy_file(path.name, lambda v: v["replicas"][0]["runtime"].update(goroutines=26))
+                with self.assertRaisesRegex(pair.Incomplete, "fixed POST"):
+                    self.validate_policy()
+                path.write_bytes(raw)
+                refresh_policy(self.normal)
+        self.assertEqual(self.validate_policy()["verdict"], "pass")
+
+    def test_operative_missing_late_duplicate_and_unjoined_work_refuse(self):
+        cases = [
+            ("goroutine_policy_input.json", lambda v: v["posts"].pop()),
+            ("goroutine_policy_input.json", lambda v: v["posts"][0].update(end_ns=10**12+8*10**9+1)),
+            ("goroutine_policy_input.json", lambda v: v["posts"][1].update(offset_seconds=5)),
+            ("goroutine_policy_barrier.json", lambda v: v["owned_work"][0].update(reaped=1)),
+            ("goroutine_policy_barrier.json", lambda v: v.update(pending_rpc=1)),
+            ("goroutine_policy_barrier.json", lambda v: v["work_reports"][1].update(phase="warmup")),
+            ("goroutine_policy_phase_steady_return.json", lambda v: v.update(exit_code=1)),
+            ("goroutine_policy_phase_steady_return.json", lambda v: v.update(finished_ns=10**12+1)),
+        ]
+        for name, change in cases:
+            with self.subTest(name=name, change=change):
+                policy_fixture(self.normal, self.expected, self.scenario)
+                self.change_policy_file(name, change)
+                with self.assertRaises(pair.Incomplete): self.validate_policy()
+
+    def test_operative_source_image_observer_process_passive_and_profile_mismatch_refuse(self):
+        cases = [
+            ("goroutine_policy_before_post_profile.json", lambda v: v.update(source_commit="d"*40)),
+            ("goroutine_policy_before_post_profile.json", lambda v: v.update(image_id=self.expected["retained_image_id"])),
+            ("goroutine_policy_before_post_profile.json", lambda v: v.update(config_sha256="a"*64)),
+            ("goroutine_policy_before_post_profile.json", lambda v: v.update(image_scope="tagged")),
+            ("goroutine_policy_before_post_profile.json", lambda v: v.update(family="receipt_vertex_put")),
+            ("goroutine_policy_post_5_profile.json", lambda v: v["nodes"][1].update(pid=999)),
+            ("goroutine_policy_post_5_profile.json", lambda v: v["nodes"][1].update(started_at="2026-10-30T00:00:01Z")),
+            ("goroutine_policy_post_5_profile.json", lambda v: v.update(bridge_pid=999)),
+            ("goroutine_policy_observer.json", lambda v: v.update(observer_sha256="a"*64)),
+            ("goroutine_policy_post_5.json", lambda v: v["replicas"][0]["passive"].update(subscribe_active=3)),
+            ("goroutine_policy_post_5.json", lambda v: v["replicas"][0]["passive"].update(anti_entropy_cycles=0)),
+            ("goroutine_policy_post_5.json", lambda v: v.update(release_admission=True)),
+        ]
+        for name, change in cases:
+            with self.subTest(name=name, change=change):
+                policy_fixture(self.normal, self.expected, self.scenario)
+                self.change_policy_file(name, change)
+                with self.assertRaises(pair.Incomplete): self.validate_policy()
+
+    def test_operative_reviewed_profile_cannot_be_rebound_to_other_work(self):
+        cases = [lambda v: v["target"].update(driver="receipt_vertex_put"),
+                 lambda v: v["target"].update(endpoints=["localhost:6380"]),
+                 lambda v: v["phases"]["steady"].update(concurrency=13),
+                 lambda v: v["phases"]["steady"].update(rps=201),
+                 lambda v: v["cluster"]["receipt_wal"].update(max_entries=8001),
+                 lambda v: v["perf_gate"].update(max_non_ok_ratio=False),
+                 lambda v: v.update(metric_gate={}),
+                 lambda v: v["goroutine_policy"].update(protocol="receipt_goroutine_candidate_v1")]
+        for change in cases:
+            with self.subTest(change=change):
+                self.scenario = policy_scenario()
+                change(self.scenario)
+                policy_fixture(self.normal, self.expected, self.scenario)
+                with self.assertRaises(pair.Incomplete): self.validate_policy()
+
+    def test_operative_foreign_snapshot_profile_and_phase_return_refs_refuse(self):
+        original = (self.normal / "goroutine_policy_input.json").read_bytes()
+        foreign = self.normal.parent / "foreign"
+        for key in ("pre", "baseline_profile", "barrier"):
+            with self.subTest(key=key):
+                (self.normal / "goroutine_policy_input.json").write_bytes(original)
+                value = json.loads(original)
+                ref = value[key]
+                path = foreign / Path(ref["path"]).name
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(Path(ref["path"]).read_bytes()); path.chmod(0o600)
+                value[key] = file_ref(path)
+                write(self.normal / "goroutine_policy_input.json", value)
+                refresh_policy(self.normal)
+                with self.assertRaisesRegex(pair.Incomplete, "physical current case"):
+                    self.validate_policy()
+        (self.normal / "goroutine_policy_input.json").write_bytes(original)
+        policy_fixture(self.normal, self.expected, self.scenario)
+        path = self.normal / "goroutine_policy_barrier.json"
+        barrier = json.loads(path.read_bytes())
+        ref = barrier["work_reports"][0]["coordinator_return"]
+        dest = foreign / Path(ref["path"]).name
+        dest.write_bytes(Path(ref["path"]).read_bytes()); dest.chmod(0o600)
+        barrier["work_reports"][0]["coordinator_return"] = file_ref(dest)
+        write(path, barrier); refresh_policy(self.normal)
+        with self.assertRaisesRegex(pair.Incomplete, "physical current case"):
+            self.validate_policy()
+
+    def test_operative_private_modes_aliases_and_missing_original_post_refuse(self):
+        path = self.normal / "goroutine_policy_input.json"
+        raw = path.read_bytes()
+        path.chmod(0o644)
+        with self.assertRaisesRegex(pair.Incomplete, "mode"):
+            self.validate_policy()
+        path.chmod(0o600)
+        value = json.loads(raw)
+        value["Schema"] = 1
+        write(path, value); refresh_policy(self.normal)
+        with self.assertRaisesRegex(pair.Incomplete, "shape"):
+            self.validate_policy()
+        policy_fixture(self.normal, self.expected, self.scenario)
+        (self.normal / "runtime_post.json").unlink()
+        with self.assertRaises(pair.Incomplete): self.validate_policy()
+
+    def test_fresh_pair_rejects_saved_old_normal_protocol_without_reinterpreting_it(self):
+        value = self.policy_report()
+        value["snapshot_protocol"] = pair.NORMAL_PROTOCOL
+        write(self.normal / "leak_gate.json", value)
+        with self.assertRaises(pair.Incomplete): self.validate()
+
+
+    def test_operative_passive_counter_is_monotonic_across_both_fixed_posts(self):
+        for offset in (5, 10):
+            self.change_policy_file(f"goroutine_policy_post_{offset}.json",
+                lambda value: value["replicas"][0]["passive"].update(anti_entropy_cycles=3))
+        self.assertEqual(self.validate_policy()["verdict"], "pass")
+        # PRE1 -> post5=3 -> post10=2 is a rollback even with stable PID/start.
+        self.change_policy_file("goroutine_policy_post_10.json",
+            lambda value: value["replicas"][0]["passive"].update(anti_entropy_cycles=2))
+        with self.assertRaisesRegex(pair.Incomplete, "cycle counter rolled back"):
+            self.validate_policy()
+
+    def test_operative_nonroot_runtime_owner_is_portable_and_identity_bound(self):
+        self.expected["runtime_user"] = "1000:1000"
+        for suffix in ("pre", "post"):
+            path = self.normal / f"image_provenance_{suffix}.json"
+            value = json.loads(path.read_bytes())
+            value["runtime_user"] = "1000:1000"
+            for node in value["replicas"]:
+                node["runtime_user"] = "1000:1000"
+            write(path, value)
+        policy_fixture(self.normal, self.expected, self.scenario)
+        self.assertEqual(self.validate_policy()["verdict"], "pass")
+        self.expected["runtime_user"] = "1001:1000"
+        with self.assertRaises(pair.Incomplete):
+            self.validate_policy()
+        self.expected["runtime_user"] = "0:1000"
+        policy_fixture(self.normal, self.expected, self.scenario)
+        with self.assertRaises(pair.Incomplete):
+            self.validate_policy()

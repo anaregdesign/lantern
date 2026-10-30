@@ -55,3 +55,11 @@ leak_gate:
   heap_alloc_max_delta_mb: 32
   steady_heap_alloc_max_delta_mb: 40
   steady_sample_interval: 5s
+
+# Normal-image operational goroutine policy (#1960); tagged memory cuts stay separate.
+goroutine_policy:
+  protocol: receipt_goroutine_operational_v1
+  sampled_absolute_max: 128
+  post_max_delta: 15
+  post_offsets_seconds: [5, 10]
+  capture_window_seconds: 3

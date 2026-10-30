@@ -188,6 +188,25 @@ func TestRenderReport_ShowsReceiptSteadyPeaks(t *testing.T) {
 	}
 }
 
+func TestRenderReport_OperativeGoroutineComponents(t *testing.T) {
+	var gate LeakGate
+	if err := json.Unmarshal([]byte(`{"snapshot_protocol":"natural_reference_v2","verdict":"pass","pair_required":true,"overall_memory_verdict":"requires_pair","retained_verdict":"requires_pair","natural_steady_memory_verdict":"pass","goroutine_checks_verdict":"pass","goroutine_sampled_peak_limit":128,"goroutine_post_residual_limit":15,"thresholds":{"goroutine_max_delta":15,"heap_alloc_max_delta_mb":32,"steady_heap_alloc_max_delta_mb":40},"goroutine_replicas":[{"endpoint":"localhost:9390","baseline":50,"sampled_peak":66,"legacy_post":52,"legacy_post_delta":2,"post_5":50,"delta_5":0,"post_10":50,"delta_10":0}]}`), &gate); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Input{LeakGate: &gate}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"sampled absolute peak ≤128", "residual ≤+15", "Natural steady memory: `pass`", "operative goroutine component: `pass`", "not an active +15 steady limit", "not an atomic t0 sample", "| `localhost:9390` | 50 | 66 | 52 (+2) | 50 (+0) | 50 (+0) |", "requires_pair"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("missing %q: %s", want, buf.String())
+		}
+	}
+	if strings.Contains(buf.String(), "Thresholds: goroutine_max_delta=15") {
+		t.Fatal("legacy steady budget mislabeled active", buf.String())
+	}
+}
+
 func TestRenderReport_NativeSamplingDoesNotClaimForcedGC(t *testing.T) {
 	gate := &LeakGate{SnapshotProtocol: "natural_gc_single", Verdict: "pass"}
 	gate.SteadySampleInterval = "5s"

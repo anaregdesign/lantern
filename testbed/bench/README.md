@@ -562,13 +562,65 @@ The normal production binary has no measurement control, signal handler or
 forced-GC behavior. OIDC still rejects pprof; its diagnostics bridge still
 forwards only metrics/readiness. Each lane keeps its own immutable image.
 
-Normal receipt runs use `natural_reference_v1`: one natural PRE/POST snapshot
-and unforced steady samples on all three replicas every 5s. Complete finite
-integral samples remain mandatory (at least nine rounds over 45s, with no gap
-above 7.5s). Performance, +15 goroutines and +40 MiB natural steady growth remain
-blocking. The natural POST +32 MiB comparison is recorded as an observation,
-separate from the retained verdict. A normal-only result requires its pair and
-cannot declare overall memory acceptance.
+Normal receipt reports use `natural_reference_v2`. They keep the natural PRE/POST
+memory snapshots and unforced steady samples on all three replicas every 5s.
+Complete finite integral samples
+remain mandatory (at least nine rounds over 45s, with no gap above 7.5s).
+Performance and +40 MiB natural steady growth remain blocking. The natural POST
++32 MiB comparison is an observation, separate from the retained verdict.
+A normal-only result requires its measurement pair and cannot declare overall
+memory acceptance.
+
+The #1960 normal receipt contract uses `receipt_goroutine_operational_v1` for
+VertexPut, VertexDelete, EdgeDelete and EdgeAdd. Each process must remain at or
+below 128 goroutines at PRE, every steady sample, the existing natural POST and
+both fixed later readings. The baseline-relative residual must also stay at or
+below +15 at that existing POST and both later readings. `goroutine_policy.json`
+records the raw-validated goroutine component;
+`leak_gate.json` exposes `goroutine_checks_verdict` and
+`natural_steady_memory_verdict`. The combined normal result also requires the
+unchanged workload, performance, native and natural steady memory gates. The eight
+nonreceipt scenarios and the tagged memory procedure retain their existing
+contracts. Old reports retain their old meaning, including the old steady +15
+check; a new protocol does not reclassify saved results.
+
+The 128 ceiling is an engineering allocation per process: 32 resident owners,
+32 public-work/transport owners, 16 authority owners, 16 peer-work owners and
+32 reserve. The four families share one cluster-wide pool of 12 serial
+admission/status pair workers and the same three-node traffic profile. Admission
+binds those three endpoints, 200 aggregate requested RPC/s, warmup10s/steady45s/
+cooldown10s, and the existing WAL, performance and native configuration. A changed
+profile cannot inherit the ceiling by scenario name. The families retain
+different mutation, indexing and retained-state behavior, which each require
+fresh family-specific results. The allocation is neither a proven
+owner bound nor a statistical tail estimate. The +15 residual allowance retains
+the previous sensitivity; it does not assert that smaller leaks are absent.
+
+The collector uses the exact existing PRE and steady samples. It anchors t0
+after the existing 10s cooldown, semantic verification and completion/reaping of
+the declared client work, immediately before the unchanged natural POST memory
+snapshot. That existing point is ordered after t0 and uses three sequential
+per-node scrapes; it is not an atomic t0+0 observation. Each later capture must
+start and finish within its fixed window: [t0+5s, t0+8s] and [t0+10s, t0+13s].
+Their nominal targets correspond to approximately steady-end+15s/+20s, rather
+than 5s/10s from the last RPC. Hash-bound warmup and
+steady coordinator-return records prove the two synchronous client phases have
+returned; the two logical RPC report families are not two additional producers.
+
+Neither later reading postpones the original memory snapshot or triggers GC.
+A missed window, unmatched process/configuration/peer/observer premise or missing
+work evidence is INCOMPLETE, without another reading or a shifted t0. Native
+owners and connections stay alive. Passive gauges describe only their existing
+stream/peer coverage. This bounded screen does not prove global idle, complete
+owner joins, leak freedom or OOM safety. Its blind spots include sub-5s spikes,
+leaks within +15, unobserved owners, slower growth and a few goroutines retaining
+large allocations. Memory criteria remain independent. The normal contract
+rejects tagged measurement and census images.
+
+The single declared EdgeDelete pilot checked collection/composition mechanics;
+it does not qualify the other families or carry into release acceptance. Adoption
+requires reviewed source, ordinary checks and fresh final-source normal and
+paired-memory results. See #1960 for the scope and retained historical failures.
 
 Measurement runs use `symmetric_post_gc_2_v1`. After warmup and after the unchanged
 load/cooldown, each target performs exactly two synchronous completed full GC
