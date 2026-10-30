@@ -37,7 +37,13 @@ run_local_time_mechanism() {
   docker stop --time 10 "$LOCAL_TIME_FIXTURE_ID" >/dev/null || return 1
   docker inspect --format '{{json .State}}' "$LOCAL_TIME_FIXTURE_ID" |
     jq -e '.Running==false and .ExitCode==0 and .Status=="exited"' >/dev/null || return 1
-  docker compose "${COMPOSE_FILES[@]}" create --no-deps --force-recreate "$service" >/dev/null || return 1
+  # Compose create has no --no-deps option. Prove the selected service has no
+  # dependency edges, then recreate only it without building or pulling.
+  docker compose "${COMPOSE_FILES[@]}" config --format json |
+    jq -e --arg service "$service" '.services[$service] | type=="object" and
+      ((.depends_on // {})|length)==0 and ((.links // [])|length)==0 and
+      ((.volumes_from // [])|length)==0' >/dev/null || return 1
+  docker compose "${COMPOSE_FILES[@]}" create --force-recreate --no-build --pull never "$service" >/dev/null || return 1
   replacement="$(docker compose "${COMPOSE_FILES[@]}" ps -aq "$service")" || return 1
   [[ "$replacement" =~ ^[0-9a-f]{64}$ && "$replacement" != "$original" ]] || return 1
   raw="$(docker inspect --format '{{json .}}' "$replacement")" || return 1
