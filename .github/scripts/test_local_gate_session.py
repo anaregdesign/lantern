@@ -90,6 +90,9 @@ class SessionTest(unittest.TestCase):
             "LANTERN_QUERY_CLI_ARGS": "-mode oidc -serve /untrusted/server",
             "LANTERN_TEST_BENCH_HEAP_DIR": "/untrusted/heap-control",
             "LANTERN_BENCH_RETAINED_HEAP": "1",
+            "RUN_BENCH_LOCAL_TIME_GATE": "1",
+            "LANTERN_BENCH_LOCAL_TIME_MECHANISM": "1",
+            "LANTERN_BENCH_LOCAL_TIME_RESULT": "/untrusted/extra-mechanism.json",
         }
         retained = {"GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org",
                     "GOCACHE": "/fixture/cache", "LANTERN_DEFAULT_TTL_SECONDS": "42",

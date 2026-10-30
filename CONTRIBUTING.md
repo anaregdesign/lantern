@@ -149,6 +149,30 @@ not acceptance. Adoption still requires the ordinary full local contract,
 required source CI and fresh exact-source normal/measurement qualification;
 no pilot or historical diagnostic result carries into those exits.
 
+The owner-approved #1963 benchmark migration uses a separate local UDP fixture
+with the ordinary Server image and native validation path. Exact local routing
+and restricted egress cover both explicit initialization clones and serving
+containers; normal and retained lanes carry an explicit controlled-local time
+profile. This removes external NTP from performance qualification, including the
+short release Search scenario, without changing workload, GC, numerical floors,
+native security, production source selection, timeout/backoff or sound holdover.
+Fixture evidence never substitutes for normal configured-source-integration or
+public OIDC acceptance. First prove the bounded local wiring/initialization and
+fresh-unanchored source-loss mechanism, then qualify one fresh exact-source
+normal12/retained4 matrix. No extra performance pilot or old-case PASS carry is
+part of that budget. An executed failure remains a failure; no automatic replay.
+
+An internal-only Docker backend cannot publish host ports. The controlled
+profile uses a separate fixed-destination raw TCP relay for localhost access;
+Servers and the time fixture retain their internal-only attachment. The relay
+does not terminate TLS or forward UDP/DNS/arbitrary destinations, and refuses
+enabled or unknown namespace IP forwarding. Docker sets only that relay
+container's namespaced IPv4/IPv6 forwarding to zero; the helper verifies the
+actual values before opening listeners. Its extra hop,
+remote-address change and fixed resources are declared in both lanes. No old
+direct-published measurement is carried into that profile, and no global Docker,
+OS, firewall, DNS, routing or clock configuration is changed.
+
 ## Before every `git push` — local quality gate
 
 Lantern is a pre-production beta. During edits run focused tests, resolve meaningful

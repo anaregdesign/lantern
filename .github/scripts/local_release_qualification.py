@@ -152,7 +152,7 @@ def clean_environment(original, source, campaign, cpuset):
              "GOEXPERIMENT", "GO111MODULE", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
              "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}
     exact.update({"PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP", "PYTHONINSPECT",
-                  "PYTHONOPTIMIZE", "PYTHONPYCACHEPREFIX", "PYTHONWARNINGS"})
+                  "PYTHONOPTIMIZE", "PYTHONPYCACHEPREFIX", "PYTHONWARNINGS", "RUN_BENCH_LOCAL_TIME_GATE"})
     for key in list(env):
         if key in exact or key.startswith(("LANTERN_", "EXPECTED_LANTERN_", "GIT_CONFIG_KEY_",
                                           "GIT_CONFIG_VALUE_", "BASH_FUNC_")):
@@ -529,28 +529,49 @@ def validate_run(directory, document, sha, image_ref, image_id, owner, receipt, 
 def frozen_pair_consumer(source, inventory):
     # Lazy loading keeps the reviewed HostLock/Supervisor usable by other local
     # owners without importing measurement code or changing their behavior.
-    name = ".github/scripts/retained_heap_pair.py"
+    return frozen_consumer(source, inventory, ".github/scripts/retained_heap_pair.py", "pair")
+
+
+def frozen_consumer(source, inventory, name, label):
     path = source / name
     pinned = inventory.get(name, {})
     require(HEX64.fullmatch(pinned.get("sha256", "")) and type(pinned.get("mode")) is int,
-            "frozen pair consumer is not inventory-bound")
+            "frozen " + label + " consumer is not inventory-bound")
     before = regular(path).stat()
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
         require(stat.S_ISREG(opened.st_mode) and os.path.samestat(before, opened) and stat.S_IMODE(opened.st_mode) == pinned["mode"]
-                and opened.st_size <= 256 * 1024, "frozen pair consumer changed before reading")
+                and opened.st_size <= 256 * 1024, "frozen " + label + " consumer changed before reading")
         code = stream.read(256 * 1024 + 1)
         after = os.fstat(stream.fileno())
         require(opened.st_size == len(code) == after.st_size and opened.st_mtime_ns == after.st_mtime_ns
                 and os.path.samestat(before, path.lstat()) and
-                hashlib.sha256(code).hexdigest() == pinned["sha256"], "frozen pair consumer differs")
-    spec = importlib.util.spec_from_file_location("retained_heap_pair", path)
+                hashlib.sha256(code).hexdigest() == pinned["sha256"], "frozen " + label + " consumer differs")
+    spec = importlib.util.spec_from_file_location(Path(name).stem, path)
     consumer = importlib.util.module_from_spec(spec)
     # Execute exactly the checked bytes, without consulting a launcher sibling
     # or a bytecode cache after the inventory check.
     exec(compile(code, str(path), "exec"), consumer.__dict__)
     return consumer
+
+
+def frozen_time_consumer(source, inventory):
+    return frozen_consumer(source, inventory, ".github/scripts/bench_time_profile.py", "time profile")
+
+
+def validate_time_profile(directory, expected, source, inventory):
+    consumer = frozen_time_consumer(source, inventory)
+    try:
+        return consumer.validate_case(directory, expected)
+    except consumer.Incomplete as error:
+        raise Refused("controlled-local time profile incomplete: " + str(error)) from error
+
+
+def require_fixture_cpu(docker_description, cpuset):
+    match = re.search(r"(?:^| )cpus=([0-9]+)(?: |$)", docker_description)
+    require(cpuset == "0-3" and match is not None and int(match.group(1)) >= 5,
+            "formal local time fixture requires CPU4 outside Server CPU0-3")
 
 
 def validate_normal_policy(directory, document, expected, source, inventory):
@@ -563,6 +584,8 @@ def validate_normal_policy(directory, document, expected, source, inventory):
 
 def validate_retained_pair(normal, retained, document, expected, source, inventory):
     consumer = frozen_pair_consumer(source, inventory)
+    if expected.get("time_profile") == "bench_local_udp_v1":
+        consumer.bench_time_profile = frozen_time_consumer(source, inventory)
     try:
         return consumer.validate_pair(normal, retained, document, expected)
     except consumer.Incomplete as error:
@@ -670,12 +693,14 @@ class Qualification:
                       "scope": {"canonical": CANONICAL, "receipts": RECEIPTS, "attempts": 1,
                                 "publication": "not performed by this driver", "existing_main_ci_sdk4": "not_repeated",
                                 "retained_receipts": RECEIPTS,
+                                "time_profile": "bench_local_udp_v1; controlled local UDP, not external-source qualification",
                                 "gc": "normal-image natural references; tagged symmetric2GC per cut; no steady GC",
                                 "limits": "paired normal12/tagged4; no binary equivalence; separate RSS/CPU/provider/device/SLO"}}
         self.tools = {}
         self.image_ref, self.image_id = "", ""
         self.using_retained = False
         self.normal_runs = {}
+        self.time_helper_sha256 = None
         self.inventory = {}
         self.auxiliary_images = {}
         self.prometheus_ref = None
@@ -711,6 +736,23 @@ class Qualification:
     def owned_row(self, row):
         if len(row) != 14 or row[4] != self.args.campaign:
             return False
+        if row[9] in ("bench-local-udp-fixture", "bench-local-tcp-relay"):
+            service = "time-fixture" if row[9] == "bench-local-udp-fixture" else "time-relay"
+            if not (HEX64.fullmatch(row[0]) and row[1] == row[7] == self.image_id
+                    and row[2] == self.owner and row[3] == "true" and row[5] == service
+                    and row[6] == "4" and row[8] == f"/{self.args.campaign}-{service}"
+                    and row[10] == "False" and row[11] in ("", "<no value>")
+                    and row[12] == '["/fixture/ntpfixture"]'):
+                return False
+            try:
+                consumer = frozen_time_consumer(self.source, self.inventory)
+                validator = consumer.owned_fixture if service == "time-fixture" else consumer.owned_relay
+                return validator(json.loads(row[13]), {
+                    "project": self.args.campaign, "image_id": self.image_id,
+                    "runtime_user": self.owner, "container_id": row[0],
+                    "source_root": str(self.source), "helper_sha256": self.time_helper_sha256})
+            except (Refused, OSError, ValueError, TypeError, AttributeError):
+                return False
         if row[9] == "compose-bind-identity-probe":
             try:
                 profile = json.loads(row[13])
@@ -798,6 +840,24 @@ class Qualification:
         if not ids:
             return []
         require(all(re.fullmatch(r"[0-9a-f]{12,64}", value) for value in ids), "invalid container identity")
+        # The fixture cleanup projection contains no Env, arbitrary labels or
+        # logging configuration. Source-bound validation keeps this one owned
+        # auxiliary service separate from ordinary Server ownership.
+        host_fields = ("NetworkMode", "ExtraHosts", "ReadonlyRootfs", "CapDrop", "SecurityOpt", "Sysctls",
+                       "CpusetCpus", "NanoCpus", "Memory", "PidsLimit", "PortBindings", "Mounts", "Binds",
+                       "Privileged", "AutoRemove", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "RestartPolicy",
+                       "CapAdd", "Devices", "DeviceRequests", "DeviceCgroupRules", "VolumesFrom", "Tmpfs", "PublishAllPorts")
+        fixture = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},"RestartCount":{{json .RestartCount}},'
+                   '"Config":{"Image":{{json .Config.Image}},"User":{{json .Config.User}},'
+                   '"Entrypoint":{{json .Config.Entrypoint}},"Cmd":{{json .Config.Cmd}},"Labels":{' +
+                   ','.join('"' + key + '":{{json (index .Config.Labels "' + key + '")}}' for key in
+                            ("com.docker.compose.project", "com.docker.compose.service", "com.docker.compose.oneoff",
+                             "lantern.owner", "io.lantern.bench-time.profile")) + '}},"State":{' +
+                   ','.join('"' + key + '":{{json .State.' + key + '}}' for key in
+                            ("Status", "Running", "Pid", "StartedAt", "OOMKilled", "ExitCode")) + '},"HostConfig":{' +
+                   ','.join('"' + key + '":{{json .HostConfig.' + key + '}}' for key in host_fields) +
+                   '},"Mounts":{{json .Mounts}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}},'
+                   '"Ports":{{json .NetworkSettings.Ports}}}')
         template = ('{{.Id}}|{{.Image}}|{{.Config.User}}|{{.State.Running}}|'
                     '{{index .Config.Labels "com.docker.compose.project"}}|'
                     '{{index .Config.Labels "com.docker.compose.service"}}|{{.HostConfig.CpusetCpus}}|'
@@ -829,6 +889,7 @@ class Qualification:
                     '"Mounts":[{{range $i,$mount := .Mounts}}{{if $i}},{{end}}'
                     '{"Type":{{json $mount.Type}},"Destination":{{json $mount.Destination}},'
                     '"RW":{{json $mount.RW}},"Mode":{{json $mount.Mode}},"Propagation":{{json $mount.Propagation}}}{{end}}]}'
+                    '{{else if or (eq (index .Config.Labels "lantern.owner") "bench-local-udp-fixture") (eq (index .Config.Labels "lantern.owner") "bench-local-tcp-relay")}}' + fixture +
                     '{{else}}{{json .Config.Cmd}}{{end}}')
         rows = self.tool("docker", "inspect", "--format", template, *ids,
                          timeout=15, cleanup=True, custody=custody).splitlines()
@@ -936,6 +997,8 @@ class Qualification:
                               "runtime_provenance": "existing harness pre/post inspect only; no periodic driver observer",
                               "docker": self.tool("docker", "info", "--format",
                                   "engine={{.ServerVersion}} os={{.OSType}} arch={{.Architecture}} cpus={{.NCPU}} memory={{.MemTotal}}", timeout=30)}
+        require_fixture_cpu(self.state["host"]["docker"], self.args.cpuset)
+        self.state["host"]["time_fixture_cpuset"] = "4"
         self.absent()
         self.project_preflight_passed = True
         self.documents = {}
@@ -1022,6 +1085,40 @@ class Qualification:
             resolved = self.tool("yq", "-o=json", ".", runs[0] / "scenario.resolved.yaml", timeout=30)
             require(json.loads(resolved) == self.documents[name], "resolved workload/configuration changed")
             key = "retained:" + name if self.using_retained else name
+            time_expected = {
+                "time_profile": "bench_local_udp_v1", "source_commit": self.args.source_sha,
+                "source_tree": self.args.source_tree, "image_id": self.image_id,
+                "image_scope": "retained" if self.using_retained else "normal",
+                "runtime_user": self.owner, "cpuset": self.args.cpuset,
+                "scenario": name, "run_id": runs[0].name, "receipt": name in RECEIPTS,
+                "helper_sources": {path: row["sha256"] for path, row in self.inventory.items()
+                    if path.startswith("testbed/bench/ntpfixture/") and path.endswith(".go")
+                    and not path.endswith("_test.go")},
+                "go_tool_sha256": self.state["tools"]["go"]["sha256"],
+                "goarch": self.state["image"]["platform"].split("/")[-1],
+                "project": self.args.campaign,
+            }
+            if name not in RECEIPTS:
+                if self.prometheus_ref not in self.auxiliary_images:
+                    diagnostic = self.tool("docker", "image", "inspect", "--format", "{{.Id}}|{{.Config.User}}",
+                                           self.prometheus_ref, timeout=15).split("|")
+                    require(len(diagnostic) == 2 and IMAGE_ID.fullmatch(diagnostic[0]),
+                            "time network diagnostic image identity missing")
+                    self.auxiliary_images[self.prometheus_ref] = {"id": diagnostic[0], "runtime_user": diagnostic[1]}
+                pin = self.auxiliary_images[self.prometheus_ref]
+                time_expected["diagnostic"] = {"image_id": pin["id"], "runtime_user": pin["runtime_user"]}
+            time_proof = validate_time_profile(runs[0], time_expected, self.source, self.inventory)
+            if self.time_helper_sha256 is None:
+                self.time_helper_sha256 = time_proof["pairing"]["helper_sha256"]
+            require(time_proof["pairing"]["helper_sha256"] == self.time_helper_sha256,
+                    "local time helper binary changed across matrix")
+            require(time_proof["fixture_container_id"] not in {
+                row["fixture_container_id"] for row in self.state.get("time_profiles", {}).values()},
+                "time fixture replayed across fresh matrix cases")
+            for identity in ("relay_container_id", "fixture_start_nonce", "relay_start_nonce"):
+                require(time_proof[identity] not in {row[identity] for row in self.state.get("time_profiles", {}).values()},
+                        "time relay/fixture identity replayed across fresh matrix cases")
+            self.state.setdefault("time_profiles", {})[key] = time_proof
             self.state["scenario_verdicts"][key] = validate_run(
                 runs[0], self.documents[name], self.args.source_sha, self.image_ref, self.image_id,
                 self.owner, name in RECEIPTS, self.using_retained)
@@ -1029,7 +1126,10 @@ class Qualification:
                 proof = validate_retained_pair(self.normal_runs[name], runs[0], self.documents[name], {
                     "source_commit": self.args.source_sha, "source_tree": self.args.source_tree,
                     "normal_image_id": self.state["image"]["id"], "retained_image_id": self.image_id,
-                    "runtime_user": self.owner, "cpuset": self.args.cpuset}, self.source, self.inventory)
+                    "runtime_user": self.owner, "cpuset": self.args.cpuset,
+                    "time_profile": "bench_local_udp_v1", "helper_sources": time_expected["helper_sources"],
+                    "go_tool_sha256": time_expected["go_tool_sha256"], "goarch": time_expected["goarch"],
+                    "project": time_expected["project"]}, self.source, self.inventory)
                 path = self.evidence / ("retained-pair-" + name + ".json")
                 atomic_json(path, proof)
                 self.state.setdefault("retained_pairs", {})[name] = {"path": str(path), "sha256": digest(path), "verdict": "pass"}

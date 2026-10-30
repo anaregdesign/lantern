@@ -73,6 +73,11 @@ chaos_pid=""
 source "$HERE/owned_processes.sh"
 source "$HERE/owned_compose.sh"
 source "$HERE/compose_provisioner.sh"
+source "$HERE/local_time.sh"
+LOCAL_TIME_ACTIVE=0
+LOCAL_TIME_FIXTURE_ID=""
+local_time_mechanism="${LANTERN_BENCH_LOCAL_TIME_MECHANISM:-0}"
+[[ "$local_time_mechanism" == 0 || "$local_time_mechanism" == 1 ]] || { echo "invalid local time mechanism mode" >&2; exit 2; }
 
 REPLICA_METRICS_PORTS=("${LANTERN_BENCH_METRICS_PORT_0:-9390}" "${LANTERN_BENCH_METRICS_PORT_1:-9391}" "${LANTERN_BENCH_METRICS_PORT_2:-9392}")
 REPLICA_GRPC_PORTS=("${LANTERN_BENCH_PUBLIC_PORT_0:-6380}" "${LANTERN_BENCH_PUBLIC_PORT_1:-6381}" "${LANTERN_BENCH_PUBLIC_PORT_2:-6382}")
@@ -207,6 +212,14 @@ cleanup() {
       echo "run.sh: failed to create private startup/runtime evidence; workload status preserved" >&2
     fi
   fi
+  if [[ "$COMPOSE_STARTED" == 1 && -n "${LOCAL_TIME_FIXTURE_ID:-}" ]]; then
+    if ! local_time_stop; then
+      echo "run.sh: local time client/source inactivity unproved; retaining named resources" >&2
+      KEEP_UP=1
+      tls_in_use=1
+      if (( status == 0 )); then status=1; fi
+    fi
+  fi
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
     log "compose down -v (project=$COMPOSE_PROJECT_NAME)"
     if ! down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"; then
@@ -282,6 +295,9 @@ need python3
 SCENARIO_NAME="$1"
 SCENARIO_FILE="$SCENARIO_DIR/${SCENARIO_NAME}.yaml"
 [[ -f "$SCENARIO_FILE" ]] || die "no such scenario: $SCENARIO_FILE"
+if [[ "$local_time_mechanism" == 0 ]]; then
+  [[ "$(yq -r 'has("chaos")' "$SCENARIO_FILE")" == false ]] || die "fixed local relay profile does not qualify chaos recreation"
+fi
 
 # Private authority inputs are replaced atomically by the host publisher.
 # Use the same explicitly non-root UID/GID for this local Compose cohort.
@@ -294,6 +310,9 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTDIR="$HERE/out/${SCENARIO_NAME}/${TS}"
 if [[ "$retained_heap" == "1" ]]; then OUTDIR="$HERE/out/retained/${SCENARIO_NAME}/${TS}"; fi
 mkdir -p "$OUTDIR/prom" "$OUTDIR/pprof"
+if [[ "$local_time_mechanism" == 1 ]]; then
+  [[ "$SCENARIO_NAME" == receipt_admission_lookup && "$retained_heap" == 0 && "${KEEP_UP:-0}" != 1 && "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" == 0 ]] || die "invalid local time mechanism profile"
+fi
 
 render_report() {
   (
@@ -670,6 +689,7 @@ verify_native_workload_settings() {
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
   owned_compose_project_absent "$COMPOSE_PROJECT_NAME" || die "fresh native Compose project is already present or its absence cannot be verified"
+  local_time_prepare || die "controlled local time fixture setup refused before native construction"
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
   # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
   # services with pinned host ports, so `--scale lantern=3` is no longer
@@ -714,13 +734,15 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
         --cpuset "${LANTERN_BENCH_CPUSET:-}" --scenario-json "$OUTDIR/scenario.heap-input.json" || die "measurement target binding failed before start"
       docker compose "${COMPOSE_FILES[@]}" up -d --no-recreate --wait lantern-0 lantern-1 lantern-2
     else
-      docker compose "${COMPOSE_FILES[@]}" up -d --wait lantern-0 lantern-1 lantern-2
+      docker compose "${COMPOSE_FILES[@]}" up -d --no-recreate --wait lantern-0 lantern-1 lantern-2
     fi
   else
     KEEP_UP="$receipt_keep_up"
-    docker compose "${COMPOSE_FILES[@]}" --profile off-diagnostics up -d --wait
+    docker compose "${COMPOSE_FILES[@]}" --profile off-diagnostics up -d --no-recreate --wait
   fi
 fi
+
+local_time_start_relay || die "fixed local TCP relay setup refused"
 
 # ----- discover actual published ports ---------------------------------------
 # Ports are pinned in the canonical compose (6380-6382 / 9390-9392) since
@@ -729,19 +751,25 @@ fi
 # ranges. Query the live containers and rewrite REPLICA_*_PORTS + scenario
 # endpoints from the live mapping.
 discover_ports() {
-  local ps_json grpc metrics
-  ps_json="$(docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null)"
-  # Sort by service name so lantern-0/1/2 map to deterministic slots.
-  grpc=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="127.0.0.1") | .PublishedPort' <<<"$ps_json") )
-  metrics=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="127.0.0.1") | .PublishedPort' <<<"$ps_json") )
-  if [[ "$receipt_driver" == "1" ]]; then
-    [[ ${#metrics[@]} -eq 0 ]] || die "protected metrics must not be container-published"
-    metrics=("${REPLICA_METRICS_PORTS[@]}")
+  local published index api metric
+  local -a grpc=() metrics=()
+  published="$(local_time_relay_publishers)" || die "cannot bind actual relay publishers"
+  for index in 0 1 2; do
+    api="$((6380 + index))/tcp"
+    grpc+=("$(jq -er --arg port "$api" '.[$port][0].HostPort' <<<"$published")")
+    if [[ "$receipt_driver" == 0 ]]; then
+      metric="$((9090 + index))/tcp"
+      metrics+=("$(jq -er --arg port "$metric" '.[$port][0].HostPort' <<<"$published")")
+    else
+      metrics+=("${REPLICA_METRICS_PORTS[$index]}")
+    fi
+  done
+  if [[ "$receipt_driver" == 0 ]]; then
+    PROM_URL="http://127.0.0.1:$(jq -er '.["9093/tcp"][0].HostPort' <<<"$published")"
   fi
-  [[ ${#grpc[@]} -eq 3 && ${#metrics[@]} -eq 3 ]] || die "could not discover 3 grpc+metrics ports (grpc=${grpc[*]} metrics=${metrics[*]})"
-  REPLICA_GRPC_PORTS=( "${grpc[@]}" )
-  REPLICA_METRICS_PORTS=( "${metrics[@]}" )
-  log "discovered grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
+  REPLICA_GRPC_PORTS=("${grpc[@]}")
+  REPLICA_METRICS_PORTS=("${metrics[@]}")
+  log "discovered fixed TCP relay grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
 }
 discover_ports
 verify_native_workload_settings
@@ -813,6 +841,13 @@ wait_ready() {
   done
 }
 wait_ready
+if [[ "$local_time_mechanism" == 1 ]]; then
+  [[ "$SCENARIO_NAME" == receipt_admission_lookup && "$receipt_driver" == 1 && "$retained_heap" == 0 &&
+     "${KEEP_UP:-0}" != 1 && "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" == 0 ]] || die "local time mechanism requires the one normal receipt admission cohort"
+  source "$HERE/local_time_mechanism.sh"
+  run_local_time_mechanism || die "local time mechanism failed"
+  exit 0
+fi
 
 semantic_kind="$(yq -r '.semantic_gate.kind // ""' "$SCENARIO_FILE")"
 semantic_endpoints=""
@@ -1455,6 +1490,7 @@ capture_retained_heap() {
 }
 
 # ----- WARMUP ----------------------------------------------------------------
+local_time_capture pre || die "local time PRE evidence refused"
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"
 if [[ "$receipt_driver" == "1" ]]; then
   run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" \
@@ -1686,6 +1722,8 @@ if [[ "$goroutine_policy" == "1" ]]; then
     log "goroutine policy fixed post evidence incomplete; no replacement reading"
   fi
 fi
+
+local_time_capture post || die "local time POST evidence refused"
 
 # pprof captures + Prometheus range queries are throughput/diagnostic extras the
 # leak-gate verdict never consumes (it reads only runtime_pre/post.json), and

@@ -1625,6 +1625,30 @@ source owned_compose.sh
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 log() { :; }
 stop_owned_processes() { :; }
+local_time_prepare() {
+ [[ "$COMPOSE_STARTED" == 0 && "$KEEP_UP" == 0 && ! -e "$OUTDIR/actions" && ! -e "$OUTDIR/local-time-actions" ]] || return 90
+ printf 'prepare\n' >> "$OUTDIR/local-time-actions"
+ LOCAL_TIME_FIXTURE_ID=owned-fixture
+ COMPOSE_STARTED=1
+}
+local_time_start_relay() {
+ if [[ "$SKIP_UP" == 1 ]]; then
+  [[ "$COMPOSE_STARTED" == 0 && ! -e "$OUTDIR/actions" && ! -e "$OUTDIR/local-time-actions" ]] || return 90
+  printf 'relay-skip\n' >> "$OUTDIR/local-time-actions"
+ else
+  [[ "$COMPOSE_STARTED" == 1 && "$(cat "$OUTDIR/local-time-actions")" == prepare && "$(tail -n 1 "$OUTDIR/actions")" == up ]] || return 90
+  printf 'relay\n' >> "$OUTDIR/local-time-actions"
+ fi
+}
+local_time_stop() {
+ [[ "$COMPOSE_STARTED" == 1 && "$LOCAL_TIME_FIXTURE_ID" == owned-fixture ]] || return 90
+ if [[ "$CASE" == "initialization failure" ]]; then
+  [[ "$(cat "$OUTDIR/local-time-actions")" == prepare ]] || return 90
+ else
+  [[ "$(cat "$OUTDIR/local-time-actions")" == $'prepare\nrelay' ]] || return 90
+ fi
+ printf 'stop\n' >> "$OUTDIR/local-time-actions"
+}
 owned_compose_volume_layout() { printf '{"count":%s}\n' "$((receipt_driver == 1 ? 6 : 9))"; }
 initialize_owned_compose_volumes() {
  [[ "$COMPOSE_STARTED" == 1 && "$KEEP_UP" == 1 ]] || return 88
@@ -1665,6 +1689,21 @@ cleanup() {
 			}
 			if tc.wantCode != 0 && tc.name != "initialization failure" && !strings.Contains(string(output), "already present or its absence cannot be verified") {
 				t.Fatalf("existing project was not refused at absence boundary: %s", output)
+			}
+			timeActions, timeErr := os.ReadFile(filepath.Join(outDir, "local-time-actions"))
+			if tc.wantOwn || tc.name == "skip startup" {
+				wantTime := "prepare\nrelay\nstop\n"
+				switch tc.name {
+				case "initialization failure":
+					wantTime = "prepare\nstop\n"
+				case "skip startup":
+					wantTime = "relay-skip\n"
+				}
+				if timeErr != nil || string(timeActions) != wantTime {
+					t.Fatalf("local time hook order=%q err=%v, want %q", timeActions, timeErr, wantTime)
+				}
+			} else if !os.IsNotExist(timeErr) {
+				t.Fatalf("refused startup reached a local time hook: %q err=%v", timeActions, timeErr)
 			}
 			actions, readErr := os.ReadFile(filepath.Join(outDir, "actions"))
 			if tc.wantOwn {
@@ -1825,6 +1864,10 @@ warmup_duration=10s
 endpoints=(localhost:6380 localhost:6381 localhost:6382)
 log() { :; }
 die() { echo "unexpected receipt wrapper failure" >&2; exit 91; }
+local_time_capture() {
+ [[ "$1" == pre && ! -e "$OUTDIR/warmup-order" && ! -e "$OUTDIR/ghz_warmup_0_receipt_admission.json" && ! -e "$OUTDIR/ghz_warmup_1_receipt_lookup.json" ]] || return 97
+ printf 'time-pre\n' >> "$OUTDIR/warmup-order"
+}
 yq() {
  case "$2" in
   '.target.calls | length') echo 2;;
@@ -1853,6 +1896,8 @@ go() {
   shift 2
  done
  [[ "$phase/$duration/$pair/$concurrency" == 'warmup/10s/100/12' ]] || return 95
+ [[ "$(cat "$OUTDIR/warmup-order")" == time-pre ]] || return 97
+ printf 'warmup\n' >> "$OUTDIR/warmup-order"
  [[ "$admission" == "$OUTDIR/ghz_warmup_0_receipt_admission.json" &&
     "$lookup" == "$OUTDIR/ghz_warmup_1_receipt_lookup.json" ]] || return 96
  if [[ "$FIXTURE_EXIT" == 0 ]]; then
@@ -1871,6 +1916,10 @@ run_receipt_probe() {
 			output, err := command.CombinedOutput()
 			if command.ProcessState == nil || command.ProcessState.ExitCode() != exitCode {
 				t.Fatalf("warmup exit=%v err=%v output=%s, want %d", command.ProcessState, err, output, exitCode)
+			}
+			order, orderErr := os.ReadFile(filepath.Join(out, "warmup-order"))
+			if orderErr != nil || string(order) != "time-pre\nwarmup\n" {
+				t.Fatalf("time evidence must precede exactly one warmup: %q %v", order, orderErr)
 			}
 			wantAdmission, wantLookup := 1000, 1000
 			if exitCode != 0 {
@@ -2740,7 +2789,7 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 	}
 	run := string(runScript)
 	clusterOverride := strings.Index(run, `cluster_ttl="$(yq -r '.cluster.default_ttl_seconds`)
-	composeUp := strings.Index(run, `docker compose "${COMPOSE_FILES[@]}" up -d --wait`)
+	composeUp := strings.Index(run, `docker compose "${COMPOSE_FILES[@]}" up -d --no-recreate --wait`)
 	composeDown := strings.Index(run, `down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`)
 	if clusterOverride < 0 || composeUp < 0 || clusterOverride > composeUp {
 		t.Error("run.sh must apply scenario cluster overrides before compose up")
@@ -4098,6 +4147,10 @@ if os.environ.get("FIX_LATE") == "1":
 PY
 }
 capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 79; printf 'retained-call\n' >> "$OUTDIR/events"; }
+local_time_capture() {
+ [[ "$1" == post && -f "$OUTDIR/memory-point" ]] || return 80
+ printf 'time-post\n' >> "$OUTDIR/events"
+}
 ` + post + "\nprintf end >> \"$OUTDIR/events\"\n"
 			env = append(env, fmt.Sprintf("FIX_LATE=%d", map[bool]int{true: 1}[test.late]), fmt.Sprintf("FIX_CAPTURE_FAIL=%d", map[bool]int{true: 1}[test.nonzero]))
 			if test.badReturn {
@@ -4111,7 +4164,7 @@ capture_retained_heap() { [[ "$1" == post && "$retained_heap" == 0 ]] || return 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(events) != "semantic\nmemory\nretained-call\n"+test.wantCalls+"end" {
+			if string(events) != "semantic\nmemory\nretained-call\n"+test.wantCalls+"time-post\nend" {
 				t.Fatalf("memory/post order or capture cardinality changed: %q output=%s", events, output)
 			}
 			_, barrierErr := os.Stat(filepath.Join(dir, "goroutine_policy_barrier.json"))

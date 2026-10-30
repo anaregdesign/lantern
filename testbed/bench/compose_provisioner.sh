@@ -42,7 +42,8 @@ prepare_compose_authority_exporter() {
 }
 
 # This is a declared deployment input, not an OS clock update or a time
-# measurement. The normal production producer still contacts and validates it.
+# measurement. The benchmark maps this unchanged production hostname to its
+# isolated UDP fixture; the normal producer still parses and validates packets.
 write_compose_time_source() {
   local directory="$1" service
   [[ "$directory" == /* && -d "$directory" && ! -L "$directory" ]] || return 1

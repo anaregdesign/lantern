@@ -63,7 +63,8 @@ QUALIFICATION_ENV_KEYS = frozenset({"LANTERN_TEST_CONFIGURED_TIME_UPSTREAM", "LA
                                    "LANTERN_RUST_TEST_AUTH_FIXTURE", "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD",
                                    "LANTERN_FIXTURE_STOP_CHILD", "LANTERN_QUERY_CLI_TEST",
                                    "LANTERN_QUERY_CLI_ARGS", "LANTERN_TEST_BENCH_HEAP_DIR",
-                                   "LANTERN_BENCH_RETAINED_HEAP"})
+                                   "LANTERN_BENCH_RETAINED_HEAP", "RUN_BENCH_LOCAL_TIME_GATE",
+                                   "LANTERN_BENCH_LOCAL_TIME_MECHANISM", "LANTERN_BENCH_LOCAL_TIME_RESULT"})
 
 
 def ordinary_environment(environment: Mapping[str, str]) -> dict[str, str]:

@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import retained_heap_pair as pair
+import bench_time_profile
+from test_bench_time_profile import fixture as time_fixture
 
 
 def write(path, value):
@@ -774,3 +777,23 @@ class PairTest(unittest.TestCase):
         policy_fixture(self.normal, self.expected, self.scenario)
         with self.assertRaises(pair.Incomplete):
             self.validate_policy()
+
+    def test_local_time_pair_v3_recomputes_both_case_receipts(self):
+        for root, image, scope in ((self.normal, self.expected["normal_image_id"], "normal"),
+                                   (self.tagged, self.expected["retained_image_id"], "retained")):
+            binding = time_fixture(root, dict(self.expected, image_id=image, image_scope=scope,
+                                              run_id=root.name, scenario=self.scenario["name"]))
+            self.expected.update({k: binding[k] for k in
+                ("time_profile", "helper_sources", "go_tool_sha256", "goarch", "project")})
+        with patch.object(pair, "bench_time_profile", bench_time_profile, create=True):
+            proof = self.validate()
+            self.assertEqual(proof["protocol"], "source_paired_retained_v3")
+            self.assertFalse(proof["time_profile"]["normal"]["external_time_qualified"])
+            normal = json.loads((self.normal / "time_source_pre.json").read_text())
+            retained = json.loads((self.tagged / "time_source_pre.json").read_text())
+            self.assertNotEqual(normal["relay_config"]["sha256"], retained["relay_config"]["sha256"])
+            self.assertNotEqual(proof["time_profile"]["normal"]["frontend_id"], proof["time_profile"]["retained"]["frontend_id"])
+            self.assertEqual(proof["time_profile"]["normal"]["pairing"], proof["time_profile"]["retained"]["pairing"])
+            (self.tagged / "time_source_post.json").unlink()
+            with self.assertRaisesRegex(pair.Incomplete, "paired time source incomplete"):
+                self.validate()

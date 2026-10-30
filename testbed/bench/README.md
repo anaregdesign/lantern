@@ -163,16 +163,69 @@ provisioning container. This preserves the Linux time-profile binding when the
 driver host is macOS. Only the new private fixture workspace is mounted there;
 operator signing keys never enter a serving container. Each private-plane Server, including OFF,
 receives `server time.asia.apple.com` as its declared read-only `/etc/ntp.conf`.
-The normal production native counter and live upstream checks remain required;
-this file does not set OS time or qualify the upstream. OFF adds one owned
-clock per process; OIDC borrowing adds no owner. The original configured-source
-three-owner/schema-3 <=12 attempts/writes proof is unchanged. Any additional OFF
-proof uses a separate, predeclared finite cohort/counter receipt; zero or missing
-OFF counter rows cannot qualify it. The proposed bounded OFF proof is one fresh
-three-node cohort, aggregate <=12 attempts/writes, 120s from first launch and no
-restart/automatic rerun. These finite proof limits do not cap runtime refresh or
-change the canonical 8+4 workload, failure accounting or performance floors. Preparation refuses an
-unsupported image, unsafe/existing exporter workspace or changed image identity.
+The benchmark uses an explicitly controlled local UDP source (#1963). A separate
+fixture supplies synthetic UTC over UDP/123; the ordinary Server image still
+executes its production resolver, native sampler, nonce/packet/RTT validation,
+interval arithmetic, expiry, timeout and backoff. The fixture is outside the
+measured Server processes and CPU set. Exact local routing applies to all
+initialization clones, serving containers and restarts, on an isolated network
+that prevents public fallback. Missing or changed routing/fixture evidence makes
+the case incomplete. Normal and retained lanes require the same declared local
+time profile. The short release Search scenario uses this profile too.
+
+Docker does not publish host ports for containers attached only to internal
+networks. The benchmark therefore uses one separate raw TCP relay: Servers and
+the NTP fixture keep only the internal backend, while the relay also joins a
+task-owned frontend and publishes only the existing localhost API ports (plus
+the existing canonical OFF diagnostics). Relay destinations are immutable,
+literal private addresses observed from that cohort. TLS/HTTP2 bytes pass
+through without termination. There is no UDP, DNS, CONNECT or arbitrary-target
+forwarding; protected receipt metrics retain the existing Docker-exec collector.
+The relay declares `net.ipv4.ip_forward: "0"` and
+`net.ipv6.conf.all.forwarding: "0"` through Docker's container-scoped sysctls.
+Its helper verifies actual namespace forwarding before opening listeners and
+refuses enabled or unknown values. It changes no host/daemon/global firewall,
+DNS, route or clock setting.
+
+The relay is an additional network hop and changes the connection's remote
+address. Its fixed code, configuration, resources and both network attachments
+are part of the new profile in both lanes. It provides no performance equivalence
+to historical direct-published measurements. Server CPU placement, workloads,
+GC cuts and numerical floors remain unchanged. Fixed backend addresses also
+exclude the separate manual chaos/recreation scenario from this profile; the
+canonical16 and short Search contain no such scenario. The bounded mechanism's
+negative restart reads the new process's actual native-time refusal, rather than
+inferring refusal from a relay connection failure.
+
+Formal load runs require explicit `LANTERN_BENCH_CPUSET=0-3` and at least five
+Docker CPUs: all three Servers share CPUs 0–3; the fixture (0.25 CPU, 64 MiB,
+64 PIDs) and relay (1 CPU, 128 MiB, 128 PIDs) use CPU 4. The
+short `search_qualification` correctness scenario may keep its existing Server
+placement and share a CPU with its fixture and relay; it records that placement explicitly
+and cannot supply a formal matrix case. Its own correctness/performance checks
+remain blocking. No extra Server CPU capacity is inferred from fixture placement.
+
+This is performance evidence with controlled UTC, not external time-source
+qualification. The independent normal-build configured-source-integration gate
+retains its single three-member cohort, six init/resume acquisitions, schema 3,
+SDK4, native 15s checks and final export revocation. Its aggregate <=12 attempts
+and <=12 writes are checked after owners stop: they are PASS-admission limits,
+not a physical send quota for a failed run. Required PR, main, release and chosen
+environment gates remain separate. Public OIDC acceptance is not implicitly
+migrated to fixture time. This input never sets OS time. OFF owns one clock per
+private-plane process; OIDC peer leases borrow their current authority clock.
+Production source selection, sound holdover and all other security checks remain.
+Preparation refuses an unsupported image, unsafe/existing exporter workspace or
+changed image identity.
+
+A full benchmark matrix formerly created at least 72 time owners: canonical
+OFF `8*3`, normal receipt `4*(3 init+3 serve)`, and retained receipt
+`4*(3 init+3 serve)`. Refresh/retry could add external writes. The controlled
+profile makes those benchmark writes local. The 5s refresh goal describes an
+interval width, not a 5s polling interval. A lost fixture does not immediately
+invalidate a still-sound anchor; a fresh unanchored process must refuse instead
+of falling back to a public source. Historical external-source PASS/FAIL results
+retain their meaning and cannot be mixed into the new profile's qualification.
 
 The local cohort explicitly runs under the driver's non-root UID/GID so the
 host publisher and serving processes can read the same owner-only authority
@@ -250,7 +303,7 @@ docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$LANT
   grep -Fx "LANTERN_COMMIT=$SOURCE_SHA"
 printf 'image_id=%s\n' "$EXPECTED_LANTERN_IMAGE_ID" | tee -a "$EVIDENCE_DIR/host.txt"
 
-# The optional Compose overlay pins every replica to the same four CPUs.
+# Formal qualification pins every replica to the same four CPUs.
 # On macOS the host generator is NOT in that Docker CPU set; state this
 # limitation on the tracking Issue. Use the same exact image for all 12 runs.
 export LANTERN_BENCH_CPUSET=0-3
