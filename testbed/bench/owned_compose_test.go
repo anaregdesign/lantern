@@ -1883,3 +1883,190 @@ initialize_owned_compose_security "$project" "$image" "$owner" -f fixture.yml
 		})
 	}
 }
+
+func TestOwnedComposeLocalTimeInitializerRouting(t *testing.T) {
+	helper, err := filepath.Abs("owned_compose.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeHelper, err := filepath.Abs("local_time.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name         string
+		ip           string
+		accepted     bool
+		cloneRefusal bool
+	}{
+		{"private10", "10.31.0.2", true, false},
+		{"private172", "172.23.0.2", true, false},
+		{"private192", "192.168.33.2", true, false},
+		{"created-network-pending", "172.23.0.2", true, false},
+		{"missing-map", "172.23.0.2", false, false},
+		{"wrong-map", "172.23.0.2", false, false},
+		{"multiple-map", "172.23.0.2", false, false},
+		{"extra-network", "172.23.0.2", false, false},
+		{"wrong-network-id", "172.23.0.2", false, false},
+		{"wrong-network-mode", "172.23.0.2", false, false},
+		{"foreign-profile", "172.23.0.2", false, false},
+		{"writable-time-input", "172.23.0.2", false, false},
+		{"public-ip", "8.8.8.8", false, false},
+		{"loopback-ip", "127.0.0.1", false, false},
+		{"link-local-ip", "169.254.1.2", false, false},
+		{"invalid-octet", "172.23.999.2", false, false},
+		{"noncanonical-ip", "10.031.0.2", false, false},
+		{"clone-missing-map", "172.23.0.2", false, true},
+		{"clone-wrong-map", "172.23.0.2", false, true},
+		{"clone-extra-network", "172.23.0.2", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const script = `set -euo pipefail
+umask 077
+source "$1"
+source "$2"
+case_name="$3"
+export COMPOSE_PROJECT_NAME=lantern-local-time-fixture
+export LANTERN_BENCH_RETAINED_HEAP=0
+LOCAL_TIME_ACTIVE=1
+LOCAL_TIME_FIXTURE_IP="$4"
+LOCAL_TIME_NETWORK_ID="$(printf 'c%.0s' {1..64})"
+LOCAL_TIME_NETWORK_NAME="$COMPOSE_PROJECT_NAME-default"
+LOCAL_TIME_IMAGE_ID="sha256:$(printf 'a%.0s' {1..64})"
+fixture_owner="$(id -u):$(id -g)"
+fixture_configuration="$(jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg image "$LOCAL_TIME_IMAGE_ID" --arg owner "$fixture_owner" '
+ {name:$project,services:([range(0;3)|. as $i|("lantern-"+tostring) as $s|
+   {key:$s,value:{image:$image,user:$owner,environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:"secret-value"},
+    volumes:[{type:"volume",source:("state-"+($i|tostring)),target:"/state",volume:{nocopy:true}},
+             {type:"volume",source:("backup-"+($i|tostring)),target:"/data",volume:{nocopy:true}}]}}]|from_entries),
+  volumes:([range(0;3)|("state-"+tostring),("backup-"+tostring)]|map({key:.,value:{name:.}})|from_entries)}')"
+for index in 0 1 2; do
+ jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg image "$LOCAL_TIME_IMAGE_ID" --arg owner "$fixture_owner" \
+   --arg ip "$LOCAL_TIME_FIXTURE_IP" --arg network "$LOCAL_TIME_NETWORK_NAME" --arg id "$LOCAL_TIME_NETWORK_ID" --arg case "$case_name" --argjson i "$index" '
+  ("lantern-"+($i|tostring)) as $service |
+  {Id:(("0"*63)+(($i+1)|tostring)),Image:$image,Name:("/"+$project+"-"+$service+"-1"),RestartCount:0,
+   Config:{Image:$image,User:$owner,WorkingDir:"/app",Entrypoint:["/app/lantern"],Cmd:null,
+    Env:["LANTERN_AUTH_MODE=oidc","LANTERN_SECURITY_CONFIG_JSON=secret-value"],
+    Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$service,"com.docker.compose.oneoff":"False","io.lantern.bench-time.profile":"bench_local_udp_v1"}},
+   HostConfig:{NetworkMode:$network,ExtraHosts:[("time.asia.apple.com:"+$ip)],
+    Binds:["/private/config:/run/lantern-config:ro","/private/config/ntp.conf:/etc/ntp.conf:ro"],
+    Mounts:[{Type:"volume",Source:("state-"+($i|tostring)),Target:"/state",VolumeOptions:{NoCopy:true}},
+            {Type:"volume",Source:("backup-"+($i|tostring)),Target:"/data",VolumeOptions:{NoCopy:true}}]},
+   Mounts:[{Type:"bind",Source:"/private/config",Destination:"/run/lantern-config",RW:false,Mode:"ro",Propagation:"rprivate"},
+           {Type:"bind",Source:"/private/config/ntp.conf",Destination:"/etc/ntp.conf",RW:false,Mode:"ro",Propagation:"rprivate"},
+           {Type:"volume",Name:("state-"+($i|tostring)),Destination:"/state",RW:true},
+           {Type:"volume",Name:("backup-"+($i|tostring)),Destination:"/data",RW:true}],
+   NetworkSettings:{Networks:{($network):{NetworkID:$id}}},State:{Status:"created",Running:false,Pid:0,ExitCode:0,OOMKilled:false}} |
+  if $case=="created-network-pending" then .NetworkSettings.Networks[$network].NetworkID=""
+  elif $i!=2 then .
+  elif $case=="missing-map" then .HostConfig.ExtraHosts=[]
+  elif $case=="wrong-map" then .HostConfig.ExtraHosts=["time.asia.apple.com:172.23.0.99"]
+  elif $case=="multiple-map" then .HostConfig.ExtraHosts+=["other.invalid:172.23.0.2"]
+  elif $case=="extra-network" then .NetworkSettings.Networks.foreign={NetworkID:("d"*64)}
+  elif $case=="wrong-network-id" then .NetworkSettings.Networks[$network].NetworkID=("d"*64)
+  elif $case=="wrong-network-mode" then .HostConfig.NetworkMode="bridge"
+  elif $case=="foreign-profile" then .Config.Labels["io.lantern.bench-time.profile"]="foreign"
+  elif $case=="writable-time-input" then .Mounts[1].RW=true
+  else . end' > "$OUTDIR/original-$index.json"
+done
+printf 'complete\n' > "$OUTDIR/fixture-assembled"
+# Keep only the fake CLI scheduling fast; production custody code and its
+# identity/validator calls execute unchanged.
+sleep() { command sleep 0.005; }
+docker() {
+ if [[ "$1" == compose ]]; then
+  if [[ "$*" == *"config --format json" ]]; then printf '%s\n' "$fixture_configuration"
+  else local node="${@: -1}"; printf '%064d\n' "$(( ${node##*-}+1 ))"; fi
+  return
+ fi
+ if [[ "$1" == create ]]; then
+  local previous="" argument name="" nonce_value="" service_value="" network_value="" profile_value=""
+  local -a hosts=() profiles=()
+  for argument in "$@"; do
+   case "$previous" in
+    --name) name="$argument";; --network) network_value="$argument";;
+    --add-host) hosts+=("$argument");;
+    --label) case "$argument" in
+      lantern.initializer=*) nonce_value="${argument#*=}";;
+      com.docker.compose.service=*) service_value="${argument#*=}";;
+      io.lantern.bench-time.profile=*) profiles+=("${argument#*=}");;
+     esac;;
+   esac
+   previous="$argument"
+  done
+  [[ "${#hosts[@]}" == 1 && "${hosts[0]}" == "time.asia.apple.com:$LOCAL_TIME_FIXTURE_IP" &&
+     "${#profiles[@]}" == 1 && "${profiles[0]}" == bench_local_udp_v1 && "$network_value" == "$LOCAL_TIME_NETWORK_NAME" ]] || return 91
+  local i="${service_value##*-}" clone
+  clone="$(printf '%064d' "$((i+11))")"
+  jq -c --arg id "$clone" --arg name "$name" --arg nonce "$nonce_value" --arg case "$case_name" \
+    --argjson hosts "$(jq -nc --args '$ARGS.positional' -- "${hosts[@]}")" --arg profile "${profiles[0]}" '
+   .Id=$id | .Name=("/"+$name) | .Config.Cmd=["init-security"] |
+   .Config.Labels["com.docker.compose.oneoff"]="True" | .Config.Labels["lantern.owner"]="compose-security-initializer" |
+   .Config.Labels["lantern.initializer"]=$nonce | .Config.Labels["io.lantern.bench-time.profile"]=$profile |
+   .HostConfig.ExtraHosts=$hosts |
+   if $case=="clone-missing-map" then .HostConfig.ExtraHosts=[]
+   elif $case=="clone-wrong-map" then .HostConfig.ExtraHosts=["time.asia.apple.com:172.23.0.99"]
+   elif $case=="clone-extra-network" then .NetworkSettings.Networks.foreign={NetworkID:("d"*64)}
+   else . end' <<<"$original" > "$OUTDIR/clone-$i.json"
+  printf 'create %s host=%s\n' "$i" "${hosts[0]}" >> "$OUTDIR/actions"
+  printf '%s\n' "$clone"
+  return
+ fi
+ local target="${@: -1}"
+ local number="$((10#${target: -2}))"
+ if [[ "$1" == inspect ]]; then
+  if ((number<=3)); then
+   printf 'original %s\n' "$((number-1))" >> "$OUTDIR/actions"
+   cat "$OUTDIR/original-$((number-1)).json"
+  else cat "$OUTDIR/clone-$((number-11)).json"; fi
+ elif [[ "$1" == start ]]; then
+  printf 'start %s\n' "$((number-11))" >> "$OUTDIR/actions"
+  jq -c '.State.Status="exited" | .State.StartedAt="2026-10-30T00:00:00Z"' "$OUTDIR/clone-$((number-11)).json" > "$OUTDIR/completed.json"
+  mv "$OUTDIR/completed.json" "$OUTDIR/clone-$((number-11)).json"
+ elif [[ "$1" == wait ]]; then printf '0\n'
+ elif [[ "$1" == rm ]]; then printf 'remove %s\n' "$((number-11))" >> "$OUTDIR/actions"
+ elif [[ "$1" == logs ]]; then printf 'bounded fake initializer log\n'
+ else return 92; fi
+}
+prove_owned_compose_bind_identity() { printf 'unexpected-proof\n' >> "$OUTDIR/actions"; return 93; }
+mkdir -m 700 "$OUTDIR/time-source-evidence"
+initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$LOCAL_TIME_IMAGE_ID" "$fixture_owner" -f fixture.yml
+`
+			fixture := runOwnedComposeFixture(t, script, []string{helper, timeHelper, tc.name, tc.ip}, nil, 10*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("local time fixture custody failed: %v %s", fixture.controlErr, fixture.output)
+			}
+			if raw, err := os.ReadFile(filepath.Join(fixture.directory, "fixture-assembled")); err != nil || string(raw) != "complete\n" {
+				t.Fatalf("route fixture was not assembled: %v %s", err, fixture.output)
+			}
+			if (fixture.commandErr == nil) != tc.accepted {
+				t.Fatalf("route admission=%v want %v: %s", fixture.commandErr, tc.accepted, fixture.output)
+			}
+			actions, _ := os.ReadFile(filepath.Join(fixture.directory, "actions"))
+			if strings.Contains(string(fixture.output), "secret-value") || strings.Contains(string(actions), "unexpected-proof") {
+				t.Fatalf("route check leaked material or entered a mount fallback: %s", actions)
+			}
+			if tc.accepted {
+				if strings.Count(string(actions), "create ") != 3 || strings.Count(string(actions), "start ") != 3 || strings.Count(string(actions), " host=time.asia.apple.com:"+tc.ip) != 3 {
+					t.Fatalf("three exact mappings were not replayed by actual initializer custody: %s", actions)
+				}
+				before, first := strings.Index(string(actions), "original 2\n"), strings.Index(string(actions), "create 0 ")
+				if before < 0 || first < 0 || before > first {
+					t.Fatalf("native clone was created before all three routes were admitted: %s", actions)
+				}
+				for i := range 3 {
+					if _, err := os.Stat(filepath.Join(fixture.directory, "time-source-evidence", fmt.Sprintf("init-%d.json", i))); err != nil {
+						t.Fatalf("successful initializer route proof missing: %v", err)
+					}
+				}
+			} else {
+				if strings.Contains(string(actions), "start ") || !tc.cloneRefusal && strings.Contains(string(actions), "create ") {
+					t.Fatalf("unadmitted route reached native initialization: %s", actions)
+				}
+				if tc.cloneRefusal && strings.Count(string(actions), "create ") != 1 {
+					t.Fatalf("negative clone case did not reach its created-object route check: %s", actions)
+				}
+			}
+		})
+	}
+}

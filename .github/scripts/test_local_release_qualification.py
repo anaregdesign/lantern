@@ -358,6 +358,34 @@ class ArtifactTest(unittest.TestCase):
 
 
 class EnvironmentAndEvidenceTest(unittest.TestCase):
+    def test_formal_fixture_has_a_separate_cpu_without_fallback(self):
+        qualification.require_fixture_cpu("engine=x cpus=5 memory=1000000", "0-3")
+        for description, cpuset in (("engine=x cpus=4 memory=1000", "0-3"),
+                                    ("engine=x", "0-3"), ("engine=x cpus=16", "0-4")):
+            with self.subTest(description=description, cpuset=cpuset), self.assertRaises(qualification.Refused):
+                qualification.require_fixture_cpu(description, cpuset)
+
+    def test_inherited_local_time_gate_is_not_an_ordinary_run_opt_in(self):
+        env, removed = qualification.clean_environment({"RUN_BENCH_LOCAL_TIME_GATE": "1",
+            "LANTERN_BENCH_LOCAL_TIME_MECHANISM": "1", "LANTERN_BENCH_LOCAL_TIME_MECHANISM_RESULT": "1"},
+            Path("/frozen"), "manual-test", "0-3")
+        self.assertEqual(set(removed), {"RUN_BENCH_LOCAL_TIME_GATE", "LANTERN_BENCH_LOCAL_TIME_MECHANISM",
+                                       "LANTERN_BENCH_LOCAL_TIME_MECHANISM_RESULT"})
+        self.assertNotIn("RUN_BENCH_LOCAL_TIME_GATE", env)
+
+    def test_time_reader_is_pinned_to_frozen_source_and_reports_incomplete(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            path = source / ".github/scripts/bench_time_profile.py"
+            path.parent.mkdir(parents=True)
+            path.write_text("class Incomplete(ValueError): pass\ndef validate_case(root, expected): return {'selected':'frozen-time'}\n")
+            inventory = {".github/scripts/bench_time_profile.py": {
+                "sha256": qualification.digest(path), "mode": path.stat().st_mode & 0o777}}
+            self.assertEqual(qualification.validate_time_profile(source, {}, source, inventory), {"selected": "frozen-time"})
+            path.write_text("raise AssertionError('changed time reader executed')\n")
+            with self.assertRaisesRegex(qualification.Refused, "frozen time profile consumer differs"):
+                qualification.validate_time_profile(source, {}, source, inventory)
+
     def test_stable_compose_v2_v5_and_desktop_versions_are_supported(self):
         for version in ("2.24.4", "v2.37.2-desktop.1", "2.40.3-desktop.1",
                         "5.0.0", "5.1.4", "v5.1.4", "v5.1.4-desktop.1"):
@@ -713,6 +741,28 @@ class SupervisorTest(unittest.TestCase):
 
 
 class CleanupAndOrderTest(unittest.TestCase):
+    def test_fixture_cleanup_admits_only_the_exact_owned_auxiliary_profile(self):
+        from test_bench_time_profile import fixture as time_fixture
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            path = driver.source / ".github/scripts/bench_time_profile.py"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(Path(qualification.__file__).with_name("bench_time_profile.py").read_bytes())
+            driver.inventory = {".github/scripts/bench_time_profile.py": {
+                "sha256": qualification.digest(path), "mode": path.stat().st_mode & 0o777}}
+            case = driver.source / "testbed/bench/out/receipt_admission_lookup/20261030T000000Z"
+            time_fixture(case, {"image_id": driver.image_id, "runtime_user": driver.owner,
+                                "project": driver.args.campaign})
+            value = qualification.read_json(case / "time-source-evidence/pre/fixture.json")
+            row = [value["Id"], driver.image_id, driver.owner, "true", driver.args.campaign,
+                   "time-fixture", "4", driver.image_id, value["Name"], "bench-local-udp-fixture",
+                   "False", "<no value>", '["/fixture/ntpfixture"]', json.dumps(value)]
+            self.assertTrue(driver.owned_row(row))
+            for index, changed in ((1, "sha256:" + "0" * 64), (5, "foreign"), (6, "0"), (8, "/foreign"),
+                                   (10, "True"), (12, '["/bin/sh"]')):
+                bad = list(row); bad[index] = changed
+                self.assertFalse(driver.owned_row(bad))
+
     def make_driver(self, directory):
         args = argparse.Namespace(repo=directory, evidence_dir=directory / "evidence", source_sha=SHA,
             source_tree=TREE, campaign="manual-test", budget_seconds=10800, cleanup_seconds=600,

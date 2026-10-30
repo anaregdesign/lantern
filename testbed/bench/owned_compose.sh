@@ -61,7 +61,11 @@ initialize_owned_compose_volumes() {
   local project="$1" image="$2" owner="$3"
   shift 3
   [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ && "$owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
-  owned_compose_project_absent "$project" || return 1
+  if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then
+    local_time_assert_fixture_only || return 1
+  else
+    owned_compose_project_absent "$project" || return 1
+  fi
   local configuration layout expected expected_count existing name
   configuration="$(docker compose "$@" config --format json)" || return 1
   layout="$(owned_compose_volume_layout "$project" "$owner" <<<"$configuration")" || return 1
@@ -78,6 +82,7 @@ initialize_owned_compose_volumes() {
     container="$(docker compose "$@" ps -aq "$service")" || return 1
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
     identity="$(docker inspect --format '{{json .}}' "$container")" || return 1
+    if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then local_time_assert_route <<<"$identity" || return 1; fi
     wanted="$(jq -ec --arg service "$service" '.services[] | select(.service==$service) | .mounts | map({target,volume}) | sort_by(.target)' <<<"$layout")" || return 1
     volumes="$(jq -er --arg project "$project" --arg image "$image" --arg owner "$owner" --arg service "$service" --argjson wanted "$wanted" '
       select(.Config.Labels["com.docker.compose.project"]==$project and
@@ -280,6 +285,9 @@ run_owned_compose_initializer() {
     initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/created.json" || exit 1
     initialized="$(cat "$private/created.json")"
     initializer_identity && "$validator" && jq -e '.State.Status=="created" and .State.Running==false' <<<"$initialized" >/dev/null || exit 1
+    if [[ "$kind" == compose-security-initializer && "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then
+      local_time_assert_route <<<"$initialized" || exit 1
+    fi
     baseline="$(initializer_fingerprint)" || exit 1
     initializer_command_rounds="$start_rounds" initializer_command docker start --attach "$initializer_id" > "$private/start.log" 2>&1 || exit 1
     initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/completed.json" || exit 1
@@ -290,6 +298,9 @@ run_owned_compose_initializer() {
         --directory "$heap_root" --service "${service%-security-init}" || exit 1
     fi
     initializer_command docker wait "$initializer_id" > "$private/wait.log" 2>&1 || exit 1
+    if [[ "$kind" == compose-security-initializer && "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then
+      local_time_record_initializer "${service%-security-init}" <<<"$initialized" || exit 1
+    fi
     if [[ "$kind" == compose-bind-identity-probe ]]; then
       retain_owned_compose_bind_probe "$private" || exit 1
     fi
@@ -603,7 +614,7 @@ initialize_owned_compose_security() {
   shift 3
   [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ && "$owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
   local configuration layout service container original network binding index=0 heap_root="" heap_source="" heap_label
-  local -a originals=() mounts=()
+  local -a originals=() mounts=() time_arguments=()
   if [[ "${LANTERN_BENCH_RETAINED_HEAP:-0}" == "1" ]]; then
     heap_label="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "io.lantern.bench-heap.protocol"}}{{end}}' "$image")" || return 1
     [[ "$heap_label" == "symmetric_post_gc_2_v1" ]] || return 1
@@ -626,6 +637,7 @@ initialize_owned_compose_security() {
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
     original="$(docker inspect --format '{{json .}}' "$container")" || return 1
     validate_owned_compose_heap_mount <<<"$original" >/dev/null || return 1
+    if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then local_time_assert_route <<<"$original" || return 1; fi
     printf '%s\n%s\n' "$original" "$configuration" |
       jq -se --arg project "$project" --arg service "$service" --arg image "$image" --arg owner "$owner" --arg heap_source "$heap_source" '
         .[0] as $original | .[1] as $configuration | $configuration.services[$service].environment as $settings |
@@ -669,8 +681,12 @@ initialize_owned_compose_security() {
     while IFS= read -r binding; do mounts+=("--mount=$binding"); done < <(jq -r '.HostConfig.Mounts[]|
       if .Type=="volume" then "type=volume,source="+.Source+",target="+.Target+",volume-nocopy"
       else "type=bind,source="+.Source+",target="+.Target+",bind-propagation=rprivate" end' <<<"$original")
+    time_arguments=()
+    if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then
+      time_arguments=(--add-host "time.asia.apple.com:$LOCAL_TIME_FIXTURE_IP" --label io.lantern.bench-time.profile=bench_local_udp_v1)
+    fi
     run_owned_compose_initializer "$project" "$image" "$owner" compose-security-initializer "${service}-security-init" 900 validate_owned_compose_security_initializer \
-      --network "$network" "${mounts[@]}" --entrypoint /app/lantern "$image" init-security || return "$?"
+      --network "$network" "${time_arguments[@]}" "${mounts[@]}" --entrypoint /app/lantern "$image" init-security || return "$?"
     index=$((index + 1))
   done
 }

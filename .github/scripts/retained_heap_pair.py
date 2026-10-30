@@ -956,6 +956,23 @@ def _validate_pair(normal_root, retained_root, scenario, expected):
          and expected["normal_image_id"] != expected["retained_image_id"]
          and re.fullmatch(r"[1-9][0-9]*:[0-9]+", expected.get("runtime_user", ""))
          and expected.get("cpuset") == "0-3", "unbound pair expectation")
+    time_profiles = None
+    if "time_profile" in expected:
+        need(expected["time_profile"] == "bench_local_udp_v1", "unknown paired time profile")
+        need("bench_time_profile" in globals(), "source-bound time profile consumer missing")
+        time_profiles = []
+        for root, image, scope in ((normal_root, expected["normal_image_id"], "normal"),
+                                   (retained_root, expected["retained_image_id"], "retained")):
+            binding = dict(expected, image_id=image, image_scope=scope, scenario=scenario["name"],
+                           run_id=Path(root).name, receipt=True)
+            try:
+                time_profiles.append(bench_time_profile.validate_case(root, binding))
+            except bench_time_profile.Incomplete as error:
+                raise Incomplete("paired time source incomplete: " + str(error)) from error
+        need(time_profiles[0]["pairing"] == time_profiles[1]["pairing"],
+             "normal and retained time fixture profiles differ")
+        need(time_profiles[0]["fixture_container_id"] != time_profiles[1]["fixture_container_id"],
+             "time fixture was replayed across fresh paired cases")
     normal, _ = read(normal_root, "leak_gate.json")
     retained, _ = read(retained_root, "leak_gate.json")
     need(normal.get("snapshot_protocol") == OPERATIVE_NORMAL_PROTOCOL and normal.get("verdict") == "pass"
@@ -1024,11 +1041,14 @@ def _validate_pair(normal_root, retained_root, scenario, expected):
         delta = b["memory"]["heap_alloc"] - a["memory"]["heap_alloc"]
         need(delta <= 32 * MIB, "retained HeapAlloc exceeds 32 MiB")
         deltas.append({"endpoint": pre["endpoint"], "heap_alloc_delta_bytes": delta})
-    return {"schema": 1, "protocol": "source_paired_retained_v2", "verdict": "pass",
+    result = {"schema": 1, "protocol": "source_paired_retained_v3" if time_profiles else "source_paired_retained_v2", "verdict": "pass",
             "scope": "normal-image checks plus same-source tagged retained measurement; no binary equivalence",
             "source_commit": expected["source_commit"], "source_tree": expected["source_tree"],
             "scenario_sha256": canonical_sha(scenario), "normal_image_id": expected["normal_image_id"],
             "retained_image_id": expected["retained_image_id"], "goroutine_policy": normal_policy, "replicas": deltas}
+    if time_profiles:
+        result["time_profile"] = {"normal": time_profiles[0], "retained": time_profiles[1]}
+    return result
 
 
 def validate_pair(normal_root, retained_root, scenario, expected):

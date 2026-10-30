@@ -149,6 +149,19 @@ not acceptance. Adoption still requires the ordinary full local contract,
 required source CI and fresh exact-source normal/measurement qualification;
 no pilot or historical diagnostic result carries into those exits.
 
+The owner-approved #1963 benchmark migration uses a separate local UDP fixture
+with the ordinary Server image and native validation path. Exact local routing
+and restricted egress cover both explicit initialization clones and serving
+containers; normal and retained lanes carry an explicit controlled-local time
+profile. This removes external NTP from performance qualification, including the
+short release Search scenario, without changing workload, GC, numerical floors,
+native security, production source selection, timeout/backoff or sound holdover.
+Fixture evidence never substitutes for normal configured-source-integration or
+public OIDC acceptance. First prove the bounded local wiring/initialization and
+fresh-unanchored source-loss mechanism, then qualify one fresh exact-source
+normal12/retained4 matrix. No extra performance pilot or old-case PASS carry is
+part of that budget. An executed failure remains a failure; no automatic replay.
+
 ## Before every `git push` — local quality gate
 
 Lantern is a pre-production beta. During edits run focused tests, resolve meaningful
