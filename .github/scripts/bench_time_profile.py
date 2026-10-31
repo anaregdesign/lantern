@@ -6,6 +6,7 @@ No Docker, network, clock mutation or workload is performed by this reader.
 """
 
 import datetime
+import argparse
 import hashlib
 import ipaddress
 import json
@@ -25,6 +26,9 @@ SERVICES = tuple(f"lantern-{i}" for i in range(3))
 SCENARIOS = {"broad_rw", "broad_illuminate", "broad_mutate", "edge_contrib_idempotent", "ttl_churn",
              "many_subscribers", "search_churn", "replication_apply_churn", "receipt_vertex_put_admission_lookup",
              "receipt_vertex_delete_admission_lookup", "receipt_admission_lookup", "receipt_edge_add_admission_lookup"}
+NTP_BIND_PROFILE = "bench_local_ntp_file_bind_v1"
+NTP_BYTES = ("server " + HOST + "\n").encode()
+NTP_SHA = hashlib.sha256(NTP_BYTES).hexdigest()
 
 
 class Incomplete(ValueError):
@@ -236,6 +240,243 @@ def _helper(root, value, expected):
     return value
 
 
+def _ntp_source(value):
+    need(type(value) is str and value.startswith("/") and len(value) > 1
+         and ".." not in Path(value).parts and not any(ord(c) < 32 or ord(c) == 127 or c in ',":' for c in value),
+         "unsafe requested time source")
+    return value
+
+
+def _ntp_sources(value, strict=False):
+    mounts, hc = value["Mounts"], value["HostConfig"]
+    need(type(mounts) is list and len(mounts) == 1 and mounts[0].get("Type") == "bind"
+         and mounts[0].get("Destination") == "/etc/ntp.conf" and mounts[0].get("RW") is False,
+         "time source configuration bind differs")
+    effective = _ntp_source(mounts[0].get("Source"))
+    if type(hc["Binds"]) is list and len(hc["Binds"]) == 1 and hc["Mounts"] in (None, []):
+        bind = hc["Binds"][0]
+        suffix = ":/etc/ntp.conf:ro"
+        need(type(bind) is str and bind.endswith(suffix), "time source requested bind differs")
+        requested = _ntp_source(bind[:-len(suffix)])
+    else:
+        need(hc["Binds"] in (None, []) and type(hc["Mounts"]) is list and len(hc["Mounts"]) == 1,
+             "time source requested mount membership differs")
+        request = hc["Mounts"][0]
+        need(type(request) is dict and request.get("Type") == "bind" and request.get("Target") == "/etc/ntp.conf"
+             and request.get("ReadOnly") is True, "time source requested mount differs")
+        requested = _ntp_source(request.get("Source"))
+        if strict:
+            need(set(request) in ({"Type", "Source", "Target", "ReadOnly"},
+                                 {"Type", "Source", "Target", "ReadOnly", "BindOptions"})
+                 and request.get("BindOptions") in (None, {}, {"Propagation": "rprivate"},
+                     {"Propagation": "rprivate", "CreateMountpoint": False}), "time source request options differ")
+    if strict:
+        keys(mounts[0], ("Type", "Source", "Destination", "Mode", "RW", "Propagation"))
+        need(mounts[0]["Mode"] in ("", "ro") and mounts[0]["Propagation"] == "rprivate",
+             "time source effective options differ")
+    return requested, effective
+
+
+def _ntp_fingerprint(value):
+    hc = dict(value["HostConfig"])
+    if hc["Binds"]:
+        hc["Binds"] = ["<bound-source>:/etc/ntp.conf:ro"]
+    if hc["Mounts"]:
+        hc["Mounts"] = [{k: v for k, v in m.items() if k != "Source"} for m in hc["Mounts"]]
+    return {"Id": value["Id"], "Name": value["Name"], "Image": value["Image"], "Config": value["Config"],
+            "HostConfig": hc, "Mounts": [{k: v for k, v in m.items() if k != "Source"} for m in value["Mounts"]]}
+
+
+def _ntp_created(value, network, expected, service, initial):
+    value = _inspect(value)
+    labels = value["Config"]["Labels"]
+    need(labels.get("com.docker.compose.project") == expected["project"]
+         and labels.get("com.docker.compose.service") == service
+         and labels.get("io.lantern.bench-time.profile") == PROFILE
+         and labels.get("com.docker.compose.oneoff") == ("True" if initial else "False")
+         and labels.get("lantern.owner", "") == ("compose-security-initializer" if initial else "")
+         and value["Name"] == f"/{expected['project']}-{service}-" + ("security-init" if initial else "1")
+         and value["Image"] == expected["image_id"] and value["Config"]["User"] == expected["runtime_user"]
+         and value["Config"]["Entrypoint"] == ["/app/lantern"],
+         "time source created target identity differs")
+    need(value["Config"]["Cmd"] == ["init-security"] if initial else value["Config"]["Cmd"] in (None, []),
+         "time source created command differs")
+    need(not initial or value["Config"]["Image"] == expected["image_id"], "time source initializer image differs")
+    need(value["State"]["Status"] == "created" and value["State"]["Running"] is False and value["State"]["Pid"] == 0
+         and value["HostConfig"]["ExtraHosts"] == [f"{HOST}:{expected['fixture_ip']}"],
+         "time source alias proof did not precede native start")
+    _attached(value, network, False)
+    _no_publication(value)
+    _ntp_sources(value, True)
+    return value
+
+
+def _ntp_binding(root, entry, value, network, expected, service, initial):
+    keys(entry, ("binding", "host", "daemon"))
+    index = SERVICES.index(service)
+    base = f"time-source-evidence/ntp-mounts/{service}"
+    binding = reference(root, entry["binding"], base + "/binding.json", 16 << 10)
+    keys(binding, ("schema", "profile", "source_commit", "source_tree", "scenario", "run_id", "scope", "project",
+         "image_id", "runtime_user", "service", "original_container_id", "canonical_source", "alternate_source",
+         "config_sha256", "alias_role", "host_before", "host_after", "original_before", "original_after",
+         "alias_target_before", "daemon_id", "daemon_before", "daemon_after", "pairs_file", "image_environment",
+         "probe_created", "probe_completed", "probe_output", "probe_wait", "probe_remove"))
+    canonical = expected["source_configs"][index]["path"]
+    need(type(binding["schema"]) is int and binding["schema"] == 1 and binding["profile"] == NTP_BIND_PROFILE
+         and all(binding[k] == expected[k] for k in ("source_commit", "source_tree", "scenario", "image_id", "runtime_user", "project"))
+         and binding["scope"] == expected["image_scope"] and binding["run_id"] == Path(root).name
+         and binding["service"] == service and binding["canonical_source"] == canonical
+         and binding["config_sha256"] == NTP_SHA and binding["alias_role"] in ("serving", "initializer")
+         and type(binding["original_container_id"]) is str and HEX64.fullmatch(binding["original_container_id"]),
+         "time source alias binding belongs to another case or target")
+    alternate = _ntp_source(binding["alternate_source"])
+    need(alternate != canonical and Path(alternate).parts[-2:] == (service, "ntp.conf"),
+         "time source alias proof has no alternate for this node")
+    allowed = {canonical, alternate}
+
+    def raw(key, filename, limit=128 << 10, decode=True):
+        return reference(root, binding[key], base + "/" + filename, limit, decode)
+
+    def host(record):
+        keys(record, ("schema", "profile", "path", "device", "inode", "type", "uid", "gid", "mode", "nlink", "size",
+                      "mtime_ns", "ctime_ns", "sha256"))
+        need(type(record["schema"]) is int and record["schema"] == 1 and record["profile"] == NTP_BIND_PROFILE
+             and record["path"] == canonical and integer(record["device"]) and integer(record["inode"], 1)
+             and record["type"] == "regular file" and type(record["uid"]) is int and record["uid"] == os.getuid() != 0
+             and integer(record["gid"]) and type(record["mode"]) is int and record["mode"] == 0o644
+             and type(record["nlink"]) is int and record["nlink"] == 1
+             and type(record["size"]) is int and record["size"] == len(NTP_BYTES)
+             and integer(record["mtime_ns"]) and integer(record["ctime_ns"]) and record["sha256"] == NTP_SHA,
+             "time source canonical file identity differs")
+        return record
+
+    identity = host(raw("host_before", "host-before.json", 4096))
+    need(host(raw("host_after", "host-after.json", 4096)) == identity
+         and host(reference(root, entry["host"], f"time-source-evidence/{expected['phase']}/ntp-host-{index}.json", 4096)) == identity,
+         "time source canonical file replaced")
+    daemon = binding["daemon_id"]
+    need(type(daemon) is str and 0 < len(daemon) <= 128 and all(32 < ord(c) < 127 for c in daemon),
+         "time source daemon identity differs")
+    daemon_bytes = (daemon + "\n").encode()
+    need(raw("daemon_before", "daemon-before.txt", 256, False) == daemon_bytes
+         and raw("daemon_after", "daemon-after.txt", 256, False) == daemon_bytes
+         and reference(root, entry["daemon"], f"time-source-evidence/{expected['phase']}/ntp-daemon.txt", 256, False) == daemon_bytes,
+         "time source daemon changed")
+    original = _ntp_created(raw("original_before", "original-before.json", 64 << 10), network, expected, service, False)
+    after = _ntp_created(raw("original_after", "original-after.json", 64 << 10), network, expected, service, False)
+    alias = _ntp_created(raw("alias_target_before", "alias-target-before.json", 64 << 10), network, expected,
+                         service, binding["alias_role"] == "initializer")
+    need(original["Id"] == binding["original_container_id"] == after["Id"]
+         and _ntp_fingerprint(original) == _ntp_fingerprint(after)
+         and set(_ntp_sources(original, True)) <= allowed and set(_ntp_sources(after, True)) <= allowed
+         and set(_ntp_sources(alias, True)) <= allowed and alternate in _ntp_sources(alias, True),
+         "time source original/alias observation changed")
+    if binding["alias_role"] == "serving":
+        need(alias == original, "time source serving alias is not its original")
+    else:
+        need(alias["Id"] != original["Id"] and set(_ntp_sources(original, True)) == {canonical},
+             "time source initializer did not introduce the first alias")
+    need(set(_ntp_sources(value, True)) <= allowed, "time source introduced an unproved third path")
+    if initial:
+        if binding["alias_role"] == "initializer":
+            need(_ntp_fingerprint(value) == _ntp_fingerprint(alias), "time source initializer proof replayed")
+    else:
+        need(_ntp_fingerprint(value) == _ntp_fingerprint(original), "time source original proof replayed")
+    need(raw("pairs_file", "requested-pairs.json", 4096) == [
+        {"original_source": canonical, "clone_source": alternate, "expected_type": "regular file"}],
+         "time source proof paths differ")
+    environment = raw("image_environment", "image-environment.json", 4096)
+    env_keys = {"PATH", "LANTERN_DEFAULT_TTL_SECONDS", "LANTERN_PORT", "LANTERN_METRICS_ADDR", "LANTERN_LOG_FORMAT",
+                "LANTERN_LOG_LEVEL", "LANTERN_VERSION", "LANTERN_COMMIT"}
+    need(type(environment) is list and all(type(x) is str and "=" in x and x.split("=", 1)[0] in env_keys
+         and not any(ord(c) < 32 or ord(c) == 127 for c in x) for x in environment)
+         and len({x.split("=", 1)[0] for x in environment}) == len(environment), "time source utility environment differs")
+    created = raw("probe_created", "probe-created.json")
+    completed = raw("probe_completed", "probe-completed.json")
+    cid = created.get("Id")
+    need(type(cid) is str and HEX64.fullmatch(cid) and cid not in {original["Id"], alias["Id"]},
+         "time source utility CID differs")
+    targets = ["/proof/original-0", "/proof/clone-0"]
+
+    def probe_fingerprint(row):
+        hc = dict(row["HostConfig"])
+        need(hc.get("OomKillDisable") is None or type(hc["OomKillDisable"]) is bool, "invalid utility OOM setting")
+        hc["OomKillDisable"] = hc.get("OomKillDisable") or False
+        return {"Id": row["Id"], "Name": row["Name"], "Image": row["Image"], "Config": row["Config"],
+                "HostConfig": hc, "Mounts": sorted(row["Mounts"], key=lambda x: x["Destination"])}
+
+    for row, status in ((created, "created"), (completed, "exited")):
+        labels, hc, state = row.get("Config", {}).get("Labels", {}), row.get("HostConfig", {}), row.get("State", {})
+        need(row.get("Id") == cid and row.get("Image") == expected["image_id"]
+             and row.get("Name") == f"/{expected['project']}-{service}-bind-proof"
+             and row["Config"].get("Image") == expected["image_id"] and row["Config"].get("User") == expected["runtime_user"]
+             and row["Config"].get("Entrypoint") == ["/bin/busybox"]
+             and row["Config"].get("Cmd") == ["stat", "-c", "%d:%i:%F", *targets]
+             and sorted(row["Config"].get("Env", [])) == sorted(environment)
+             and labels.get("com.docker.compose.project") == expected["project"]
+             and labels.get("com.docker.compose.service") == service + "-bind-proof"
+             and labels.get("com.docker.compose.oneoff") == "True" and labels.get("lantern.owner") == "compose-bind-identity-probe"
+             and type(labels.get("lantern.initializer")) is str and re.fullmatch(r"lantern-owned-init\.[A-Za-z0-9]+", labels["lantern.initializer"])
+             and type(row.get("RestartCount")) is int and row["RestartCount"] == 0
+             and state.get("Status") == status and state.get("Running") is False
+             and type(state.get("Pid")) is int and state["Pid"] == 0
+             and state.get("Paused") is False and state.get("Restarting") is False
+             and state.get("OOMKilled") is False,
+             "time source utility execution/ownership differs")
+        need(hc.get("NetworkMode") == "none" and hc.get("ReadonlyRootfs") is True and hc.get("Privileged") is False
+             and hc.get("AutoRemove") is False and hc.get("CapDrop") == ["ALL"] and hc.get("CapAdd") in (None, [])
+             and hc.get("SecurityOpt") == ["no-new-privileges:true"]
+             and all(type(hc.get(k)) is int and hc[k] == n for k, n in (("Memory", 33554432), ("NanoCpus", 250000000), ("PidsLimit", 16)))
+             and hc.get("RestartPolicy") == {"Name": "no", "MaximumRetryCount": 0}
+             and type(hc["RestartPolicy"].get("MaximumRetryCount")) is int
+             and all(hc.get(k) in (None, []) for k in ("Binds", "VolumesFrom", "Devices", "DeviceRequests", "DeviceCgroupRules"))
+             and all(hc.get(k) == "" for k in ("PidMode", "UTSMode", "UsernsMode")) and hc.get("IpcMode") in ("", "private")
+             and hc.get("Tmpfs") in (None, {}) and row["Config"].get("Volumes") in (None, {})
+             and hc.get("PublishAllPorts") is False and hc.get("PortBindings") in (None, {}),
+             "time source utility isolation differs")
+        requests, mounts = hc.get("Mounts"), row.get("Mounts")
+        need(type(requests) is list and type(mounts) is list and len(requests) == len(mounts) == 2,
+             "time source utility mount membership differs")
+        for target in targets:
+            req = [x for x in requests if x.get("Target") == target]
+            eff = [x for x in mounts if x.get("Destination") == target]
+            need(len(req) == len(eff) == 1, "time source utility target duplicated or missing")
+            keys(req[0], ("Type", "Source", "Target", "ReadOnly", "BindOptions"))
+            keys(eff[0], ("Type", "Source", "Destination", "Mode", "RW", "Propagation"))
+            need(req[0]["Type"] == "bind" and req[0]["Source"] in allowed and req[0]["ReadOnly"] is True
+                 and req[0]["BindOptions"] in ({"Propagation": "rprivate"}, {"Propagation": "rprivate", "CreateMountpoint": False})
+                 and eff[0]["Type"] == "bind" and eff[0]["Source"] in allowed and eff[0]["RW"] is False
+                 and eff[0]["Mode"] in ("", "ro") and eff[0]["Propagation"] == "rprivate",
+                 "time source utility request/effective source differs")
+    need(created["State"].get("StartedAt") in ("", "0001-01-01T00:00:00Z")
+         and type(completed["State"].get("StartedAt")) is str
+         and completed["State"]["StartedAt"] not in ("", "0001-01-01T00:00:00Z")
+         and completed["State"].get("OOMKilled") is False and type(completed["State"].get("ExitCode")) is int
+         and completed["State"]["ExitCode"] == 0 and probe_fingerprint(created) == probe_fingerprint(completed)
+         and raw("probe_wait", "probe-wait.log", 256, False) == b"0\n"
+         and raw("probe_remove", "probe-remove.log", 256, False) == (cid + "\n").encode(),
+         "time source utility closure differs")
+    timestamp(completed["State"]["StartedAt"])
+    output = raw("probe_output", "probe-output.log", 4096, False).decode()
+    rows = output.splitlines(keepends=True)
+    need(len(rows) == 2 and all(re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*:regular file\n", x) for x in rows)
+         and rows[0] == rows[1], "time source same-file identity is unproved")
+    directory = Path(root) / base
+    info = directory.lstat()
+    need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+         "time source proof directory is not private")
+    names = {"binding.json", "host-before.json", "host-after.json", "original-before.json", "original-after.json",
+             "alias-target-before.json", "daemon-before.txt", "daemon-after.txt", "requested-pairs.json", "image-environment.json",
+             "probe-created.json", "probe-completed.json", "probe-output.log", "probe-wait.log", "probe-remove.log", "identity.json"}
+    total = 0
+    for path in directory.iterdir():
+        info = path.lstat()
+        need(path.name in names and stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+             and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 128 << 10, "unsafe time source proof member")
+        total += info.st_size
+    need(total <= 2 << 20, "time source proof size exceeded")
+
+
 def _target(value, network, expected, service, initial=False):
     value = _inspect(value)
     labels = value["Config"]["Labels"]
@@ -259,19 +500,14 @@ def _target(value, network, expected, service, initial=False):
              and value["HostConfig"]["CpusetCpus"] == expected["cpuset"]
              and value["Name"] == f"/{labels['com.docker.compose.project']}-{service}-1",
              "time source serving target is not the frozen process")
-    # These are safe time-config mount projections, not all application mounts.
-    need(type(value["Mounts"]) is list and len(value["Mounts"]) == 1
-         and value["Mounts"][0].get("Type") == "bind"
-         and value["Mounts"][0].get("Destination") == "/etc/ntp.conf"
-         and value["Mounts"][0].get("RW") is False, "time source configuration bind differs")
+    # These are safe time-config projections, not application credential mounts.
     source = expected["source_configs"][SERVICES.index(service)]["path"]
-    hc = value["HostConfig"]
-    bind = source + ":/etc/ntp.conf:ro"
-    via_bind = hc["Binds"] == [bind] and hc["Mounts"] in (None, [])
-    via_mount = (hc["Binds"] in (None, []) and type(hc["Mounts"]) is list and len(hc["Mounts"]) == 1
-                 and hc["Mounts"][0].get("Type") == "bind" and hc["Mounts"][0].get("Source") == source
-                 and hc["Mounts"][0].get("Target") == "/etc/ntp.conf" and hc["Mounts"][0].get("ReadOnly") is True)
-    need(via_bind or via_mount, "time source hash is not bound to the requested config mount")
+    sources = _ntp_sources(value)
+    entry = expected.get("source_config_bindings", [None] * 3)[SERVICES.index(service)]
+    if entry is None:
+        need(sources == (source, source), "time source hash is not bound to the requested config mount")
+    else:
+        _ntp_binding(expected["root"], entry, value, network, expected, service, initial)
     _attached(value, network, not initial)
     _no_publication(value)
     return value
@@ -457,6 +693,97 @@ def _relay(value, backend, frontend, expected, helper, config_path, routes):
     return value
 
 
+def _receipt_keys(receipt):
+    required = {"schema", "profile", "phase", "source_commit", "source_tree", "scenario", "run_id", "scope",
+                "image_id", "runtime_user", "server_cpuset", "fixture_placement", "helper", "helper_executable", "ntp_config",
+                "fixture", "network", "status", "serving", "initializers", "diagnostics", "source_configs",
+                "transport_profile", "relay", "frontend", "relay_status", "relay_config", "relay_executable"}
+    need(type(receipt) is dict and set(receipt) in (required, required | {"source_config_bindings"}),
+         "time source receipt schema differs")
+
+
+def _source_configs(root, receipt):
+    need(reference(root, receipt["ntp_config"], "time-source-evidence/ntp.conf", 4096, False,
+                   modes=(0o600, 0o644)) == NTP_BYTES, "time source declared configuration changed")
+    configs = receipt["source_configs"]
+    need(type(configs) is list and len(configs) == 3, "time source config cohort missing")
+    for i, config in enumerate(configs):
+        keys(config, ("service", "path", "sha256"))
+        need(config["service"] == SERVICES[i] and config["sha256"] == NTP_SHA
+             and type(config["path"]) is str and Path(config["path"]).is_absolute()
+             and ".." not in Path(config["path"]).parts and not any(c in config["path"] for c in "\r\n\x00:")
+             and Path(config["path"]).parts[-2:] == (SERVICES[i], "ntp.conf"),
+             "time source fixed per-node configuration differs")
+    need(len({x["path"] for x in configs}) == 3, "duplicate time source config path")
+    entries = receipt.get("source_config_bindings")
+    if entries is None:
+        entries = [None] * 3
+    need(type(entries) is list and len(entries) == 3, "time source alias cohort differs")
+    for entry in entries:
+        if entry is not None:
+            keys(entry, ("binding", "host", "daemon"))
+    return configs, entries
+
+
+def _phase_targets(root, receipt, network, expected, fixture_ip):
+    configs, entries = _source_configs(root, receipt)
+    binding = dict(expected, fixture_ip=fixture_ip, source_configs=configs, source_config_bindings=entries,
+                   root=root, phase=receipt["phase"])
+    need(type(receipt["serving"]) is list and len(receipt["serving"]) == 3
+         and type(receipt["initializers"]) is list and len(receipt["initializers"]) == (3 if expected["receipt"] else 0),
+         "time source cohort incomplete")
+    base = f"time-source-evidence/{receipt['phase']}"
+    serving = [_target(reference(root, row, f"{base}/serving-{i}.json"), network, binding, SERVICES[i])
+               for i, row in enumerate(receipt["serving"])]
+    initializers = [_target(reference(root, row, f"time-source-evidence/init-{i}.json"), network, binding, SERVICES[i], True)
+                    for i, row in enumerate(receipt["initializers"])]
+    return serving, initializers
+
+
+def validate_start(root, expected):
+    """Admit actual PRE target/config/alias evidence before load, never qualify a run."""
+    try:
+        root = Path(root).absolute()
+        expected = dict(expected)
+        scenario = expected.get("scenario", "")
+        ordinary = (type(scenario) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", scenario)
+                    and not scenario.startswith("receipt_") and expected.get("image_scope") == "normal")
+        need(HEX40.fullmatch(expected.get("source_commit", ""))
+             and (HEX40.fullmatch(expected.get("source_tree", "")) or (ordinary and expected.get("source_tree") == ""))
+             and IMAGE.fullmatch(expected.get("image_id", ""))
+             and re.fullmatch(r"[1-9][0-9]*:[0-9]+", expected.get("runtime_user", ""))
+             and expected.get("image_scope") in ("normal", "retained")
+             and (ordinary or scenario in SCENARIOS)
+             and type(expected.get("project")) is str and expected["project"], "unbound start-admission context")
+        receipt, digest = read(root, "time_source_pre.json")
+        _receipt_keys(receipt)
+        need(type(receipt["schema"]) is int and receipt["schema"] == 1 and receipt["profile"] == PROFILE
+             and receipt["phase"] == "pre" and receipt["transport_profile"] == TRANSPORT
+             and all(receipt[k] == expected[k] for k in ("source_commit", "source_tree", "scenario", "image_id", "runtime_user"))
+             and receipt["run_id"] == root.name and receipt["scope"] == expected["image_scope"]
+             and type(receipt["server_cpuset"]) is str, "actual PRE start-admission context differs")
+        expected.update(cpuset=receipt["server_cpuset"], receipt=expected["scenario"].startswith("receipt_"))
+        network = _network(reference(root, receipt["network"], "time-source-evidence/pre/network.json"))
+        need(network["Labels"] == {"com.docker.compose.project": expected["project"], "com.docker.compose.network": "default"}
+             and network["Name"] == expected["project"] + "_default", "start-admission network belongs to another case")
+        fixture = _inspect(reference(root, receipt["fixture"], "time-source-evidence/pre/fixture.json"))
+        need(fixture["Image"] == expected["image_id"] and fixture["Config"]["User"] == expected["runtime_user"]
+             and fixture["Config"]["Labels"].get("com.docker.compose.project") == expected["project"]
+             and fixture["Config"]["Labels"].get("com.docker.compose.service") == "time-fixture"
+             and fixture["Config"]["Labels"].get("io.lantern.bench-time.profile") == PROFILE
+             and fixture["State"]["Status"] == "running" and fixture["State"]["Running"] is True
+             and fixture["State"]["Pid"] > 0, "start-admission time fixture differs")
+        serving, initializers = _phase_targets(root, receipt, network, expected, _attached(fixture, network, True))
+        need(len({r["Id"] for r in [fixture, *serving, *initializers]}) == 4 + len(initializers),
+             "start-admission target identity duplicated")
+        return {"schema": 1, "scope": "time-config-start-admission", "phase": "pre", "admitted": True,
+                "qualification": False, "receipt_sha256": digest, "serving_container_ids": [r["Id"] for r in serving]}
+    except Incomplete:
+        raise
+    except (OSError, KeyError, TypeError, AttributeError, ValueError, IndexError, OverflowError) as error:
+        raise Incomplete("time source start-admission incomplete: " + str(error)) from error
+
+
 def _validate_case(root, expected):
     root = Path(root).absolute()
     need(expected.get("time_profile") == PROFILE and HEX40.fullmatch(expected.get("source_commit", ""))
@@ -470,10 +797,7 @@ def _validate_case(root, expected):
     before, after, hashes = [], [], {}
     for phase, output in (("pre", before), ("post", after)):
         receipt, digest = read(root, f"time_source_{phase}.json")
-        keys(receipt, ("schema", "profile", "phase", "source_commit", "source_tree", "scenario", "run_id", "scope",
-                       "image_id", "runtime_user", "server_cpuset", "fixture_placement", "helper", "helper_executable", "ntp_config",
-                       "fixture", "network", "status", "serving", "initializers", "diagnostics", "source_configs",
-                       "transport_profile", "relay", "frontend", "relay_status", "relay_config", "relay_executable"))
+        _receipt_keys(receipt)
         need(type(receipt["schema"]) is int and receipt["schema"] == 1 and receipt["profile"] == PROFILE
              and receipt["phase"] == phase
              and all(receipt[k] == expected[k] for k in
@@ -484,20 +808,6 @@ def _validate_case(root, expected):
         need(receipt["transport_profile"] == TRANSPORT, "controlled-local transport profile missing")
         base = f"time-source-evidence/{phase}"
         helper = _helper(root, receipt["helper"], expected)
-        need(reference(root, receipt["ntp_config"], "time-source-evidence/ntp.conf", 4096, False,
-                       modes=(0o600, 0o644)) == ("server " + HOST + "\n").encode(),
-             "time source declared configuration changed")
-        source_configs = receipt["source_configs"]
-        fixed_config_sha = hashlib.sha256(("server " + HOST + "\n").encode()).hexdigest()
-        need(type(source_configs) is list and len(source_configs) == 3, "time source config cohort missing")
-        for index, config in enumerate(source_configs):
-            keys(config, ("service", "path", "sha256"))
-            need(config["service"] == SERVICES[index] and config["sha256"] == fixed_config_sha
-                 and type(config["path"]) is str and Path(config["path"]).is_absolute()
-                 and ".." not in Path(config["path"]).parts and not any(c in config["path"] for c in "\r\n\x00:")
-                 and Path(config["path"]).parts[-2:] == (SERVICES[index], "ntp.conf"),
-                 "time source fixed per-node configuration differs")
-        need(len({x["path"] for x in source_configs}) == 3, "duplicate time source config path")
         network = _network(reference(root, receipt["network"], f"{base}/network.json"))
         need(network["Labels"]["com.docker.compose.project"] == expected["project"]
              and network["Labels"]["com.docker.compose.network"] == "default"
@@ -511,14 +821,7 @@ def _validate_case(root, expected):
         status = _status(reference(root, receipt["status"], f"{base}/status.json"))
         need(status["responses"] >= (6 if expected["receipt"] else 3),
              "time fixture acquisition cohort observations incomplete")
-        binding = dict(expected, fixture_ip=ip, source_configs=source_configs)
-        need(type(receipt["serving"]) is list and len(receipt["serving"]) == 3
-             and type(receipt["initializers"]) is list and len(receipt["initializers"]) == (3 if expected["receipt"] else 0),
-             "time source cohort incomplete")
-        serving = [_target(reference(root, row, f"{base}/serving-{i}.json"), network, binding, SERVICES[i])
-                   for i, row in enumerate(receipt["serving"])]
-        initializers = [_target(reference(root, row, f"time-source-evidence/init-{i}.json"), network, binding, SERVICES[i], True)
-                        for i, row in enumerate(receipt["initializers"])]
+        serving, initializers = _phase_targets(root, receipt, network, expected, ip)
         need(type(receipt["diagnostics"]) is list and len(receipt["diagnostics"]) == (0 if expected["receipt"] else 1),
              "time source diagnostic cohort differs")
         diagnostics = [_diagnostic(reference(root, row, f"{base}/diagnostic-prometheus.json"), network, expected)
@@ -556,11 +859,14 @@ def _validate_case(root, expected):
         hashes[phase] = {"path": str(root / f"time_source_{phase}.json"), "sha256": digest}
     pre, post = before[0], after[0]
     need(all(pre[k] == post[k] for k in pre if k not in
-             ("phase", "fixture", "network", "status", "serving", "diagnostics", "relay", "frontend", "relay_status"))
+             ("phase", "fixture", "network", "status", "serving", "diagnostics", "relay", "frontend", "relay_status", "source_config_bindings"))
          and before[1] == after[1] and before[4:9] == after[4:9]
          and {k: v for k, v in before[2].items() if k != "Containers"} ==
              {k: v for k, v in after[2].items() if k != "Containers"}
          and before[9] == after[9], "time source process/routing changed")
+    def bindings(receipt):
+        return [x["binding"] if x is not None else None for x in receipt.get("source_config_bindings") or [None] * 3]
+    need(bindings(pre) == bindings(post), "time source alias binder changed across phases")
     need(all(before[3][k] == after[3][k] for k in ("pid", "start_nonce", "clock_kind", "seed_utc"))
          and after[3]["elapsed_ns"] > before[3]["elapsed_ns"]
          and all(after[3][k] >= before[3][k] for k in ("requests", "responses")),
@@ -663,3 +969,24 @@ def owned_relay(value, expected):
         return True
     except (Incomplete, OSError, KeyError, TypeError, AttributeError, ValueError, IndexError):
         return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Validate actual PRE time/config admission without qualifying a run")
+    sub = parser.add_subparsers(dest="command", required=True)
+    start = sub.add_parser("validate-start")
+    start.add_argument("--root", required=True, type=Path)
+    for name in ("source-commit", "source-tree", "image-id", "runtime-user", "project", "scenario"):
+        start.add_argument("--" + name, required=True)
+    start.add_argument("--scope", required=True, choices=("normal", "retained"))
+    args = parser.parse_args()
+    expected = {k: getattr(args, k) for k in ("source_commit", "source_tree", "image_id", "runtime_user", "project", "scenario")}
+    expected["image_scope"] = args.scope
+    try:
+        print(json.dumps(validate_start(args.root, expected), sort_keys=True))
+    except Incomplete as error:
+        parser.exit(2, "time source start-admission refused: " + str(error) + "\n")
+
+
+if __name__ == "__main__":
+    main()

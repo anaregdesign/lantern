@@ -83,7 +83,8 @@ def fixture(root, expected=None, receipt=True):
         row["State"]["Pid"] = 100 + i
         row["HostConfig"].update(CpusetCpus="0-3", ExtraHosts=[profile.HOST + ":" + ip], Mounts=[],
                                   Binds=[source_configs[i]["path"] + ":/etc/ntp.conf:ro"])
-        row["Mounts"] = [{"Type": "bind", "Source": "/private/example/ntp.conf", "Destination": "/etc/ntp.conf", "RW": False}]
+        row["Mounts"] = [{"Type": "bind", "Source": source_configs[i]["path"], "Destination": "/etc/ntp.conf",
+                          "RW": False, "Mode": "ro", "Propagation": "rprivate"}]
         row["NetworkSettings"]["Networks"][name]["IPAddress"] = subnet + str(i + 3)
         serving.append(row)
         init = copy.deepcopy(row)
@@ -170,6 +171,101 @@ def fixture(root, expected=None, receipt=True):
     return expected
 
 
+def ntp_binding(root, expected, index=1, initializer_alias=False, structured=False):
+    """Raw fixed-utility file-pair proof; no Docker, subprocess or target is used."""
+    packet = json.loads((root / "time_source_pre.json").read_text())
+    service = profile.SERVICES[index]
+    canonical = packet["source_configs"][index]["path"]
+    alternate = "/observed-daemon" + canonical
+    base = root / "time-source-evidence/ntp-mounts" / service
+    base.mkdir(parents=True, exist_ok=True); base.chmod(0o700)
+    for phase in ("pre", "post"):
+        path = root / f"time_source_{phase}.json"; value = json.loads(path.read_text())
+        role = "initializers" if initializer_alias else "serving"
+        target = value[role][index]
+        row = json.loads(Path(target["path"]).read_text())
+        row["HostConfig"].update(Binds=None if structured else [alternate + ":/etc/ntp.conf:ro"],
+            Mounts=[{"Type": "bind", "Source": alternate, "Target": "/etc/ntp.conf", "ReadOnly": True, "BindOptions": {}}] if structured else [])
+        row["Mounts"][0]["Source"] = alternate
+        value[role][index] = write(Path(target["path"]), row)
+        write(path, value)
+    packet = json.loads((root / "time_source_pre.json").read_text())
+    original = json.loads(Path(packet["serving"][index]["path"]).read_text())
+    original["State"].update(Status="created", Running=False, Pid=0, StartedAt="0001-01-01T00:00:00Z")
+    alias = copy.deepcopy(original)
+    if initializer_alias:
+        alias = json.loads(Path(packet["initializers"][index]["path"]).read_text())
+        alias["State"].update(Status="created", Running=False, Pid=0, StartedAt="0001-01-01T00:00:00Z")
+    identity = {"schema": 1, "profile": profile.NTP_BIND_PROFILE, "path": canonical, "device": 1, "inode": 123,
+                "type": "regular file", "uid": os.getuid(), "gid": os.getgid(), "mode": 0o644, "nlink": 1,
+                "size": 27, "mtime_ns": 1, "ctime_ns": 1, "sha256": profile.NTP_SHA}
+    daemon = b"test-daemon-identity\n"
+    environment = ["PATH=/usr/bin:/bin", "LANTERN_COMMIT=" + expected["source_commit"]]
+    probe = {"Id": "0" * 64, "Name": f"/{expected['project']}-{service}-bind-proof", "Image": expected["image_id"],
+             "Config": {"Image": expected["image_id"], "User": expected["runtime_user"], "Entrypoint": ["/bin/busybox"],
+                        "Cmd": ["stat", "-c", "%d:%i:%F", "/proof/original-0", "/proof/clone-0"], "Env": environment,
+                        "Volumes": None, "Labels": {"com.docker.compose.project": expected["project"],
+                            "com.docker.compose.service": service + "-bind-proof", "com.docker.compose.oneoff": "True",
+                            "lantern.owner": "compose-bind-identity-probe", "lantern.initializer": "lantern-owned-init.test123"}},
+             "HostConfig": {"NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False, "AutoRemove": False,
+                            "CapDrop": ["ALL"], "CapAdd": None, "SecurityOpt": ["no-new-privileges:true"], "Memory": 33554432,
+                            "NanoCpus": 250000000, "PidsLimit": 16, "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
+                            "Binds": None, "VolumesFrom": None, "Devices": None, "DeviceRequests": None, "DeviceCgroupRules": None,
+                            "PidMode": "", "UTSMode": "", "UsernsMode": "", "IpcMode": "private", "Tmpfs": {},
+                            "PublishAllPorts": False, "PortBindings": {}, "Mounts": []},
+             "Mounts": [], "RestartCount": 0, "State": {"Status": "created", "Running": False, "Pid": 0,
+                    "StartedAt": "0001-01-01T00:00:00Z", "OOMKilled": False, "ExitCode": 0, "Paused": False, "Restarting": False}}
+    for side, path in (("original", canonical), ("clone", alternate)):
+        target = "/proof/" + side + "-0"
+        probe["HostConfig"]["Mounts"].append({"Type": "bind", "Source": path, "Target": target, "ReadOnly": True,
+                                             "BindOptions": {"Propagation": "rprivate", "CreateMountpoint": False}})
+        # The daemon may collapse both views to A. Only raw stat proves identity.
+        probe["Mounts"].append({"Type": "bind", "Source": alternate, "Destination": target, "Mode": "ro",
+                                "RW": False, "Propagation": "rprivate"})
+    completed = copy.deepcopy(probe)
+    completed["State"].update(Status="exited", StartedAt="2026-10-30T00:00:00Z")
+    binding = {"schema": 1, "profile": profile.NTP_BIND_PROFILE,
+               **{k: expected[k] for k in ("source_commit", "source_tree", "scenario", "project", "image_id", "runtime_user")},
+               "run_id": root.name, "scope": expected["image_scope"], "service": service,
+               "original_container_id": original["Id"], "canonical_source": canonical, "alternate_source": alternate,
+               "config_sha256": profile.NTP_SHA, "alias_role": "initializer" if initializer_alias else "serving",
+               "daemon_id": daemon.decode().strip()}
+    values = {"host_before": ("host-before.json", identity), "host_after": ("host-after.json", identity),
+              "original_before": ("original-before.json", original), "original_after": ("original-after.json", original),
+              "alias_target_before": ("alias-target-before.json", alias), "daemon_before": ("daemon-before.txt", daemon),
+              "daemon_after": ("daemon-after.txt", daemon), "image_environment": ("image-environment.json", environment),
+              "pairs_file": ("requested-pairs.json", [{"original_source": canonical, "clone_source": alternate, "expected_type": "regular file"}]),
+              "probe_created": ("probe-created.json", probe), "probe_completed": ("probe-completed.json", completed),
+              "probe_output": ("probe-output.log", b"99:456:regular file\n99:456:regular file\n"),
+              "probe_wait": ("probe-wait.log", b"0\n"), "probe_remove": ("probe-remove.log", (probe["Id"] + "\n").encode())}
+    for key, (filename, value) in values.items():
+        binding[key] = write(base / filename, value, isinstance(value, bytes))
+    # The existing convenience summary is deliberately not qualification input.
+    write(base / "identity.json", {"status": "ignored"})
+    bound = write(base / "binding.json", binding)
+    for phase in ("pre", "post"):
+        path = root / f"time_source_{phase}.json"; packet = json.loads(path.read_text())
+        entries = [None] * 3
+        entries[index] = {"binding": bound, "host": write(root / f"time-source-evidence/{phase}/ntp-host-{index}.json", identity),
+                          "daemon": write(root / f"time-source-evidence/{phase}/ntp-daemon.txt", daemon, True)}
+        packet["source_config_bindings"] = entries; write(path, packet)
+    return base / "binding.json"
+
+
+def alter_ntp_binding(root, binding_path, key, change):
+    binding = json.loads(binding_path.read_text())
+    if key in binding and isinstance(binding[key], dict) and set(binding[key]) == {"path", "sha256"}:
+        path = Path(binding[key]["path"])
+        value = json.loads(path.read_text()); change(value)
+        binding[key] = write(path, value)
+    else:
+        change(binding)
+    ref = write(binding_path, binding)
+    for phase in ("pre", "post"):
+        path = root / f"time_source_{phase}.json"; packet = json.loads(path.read_text())
+        packet["source_config_bindings"][1]["binding"] = ref; write(path, packet)
+
+
 class TimeProfileTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -237,6 +333,174 @@ class TimeProfileTest(unittest.TestCase):
             if kind == "source": packet["source_configs"][0]["path"] = "/different/lantern-0/ntp.conf"
             write(path, packet)
             with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+
+    def test_literal_requested_and_effective_sources_are_both_required(self):
+        for phase in ("pre", "post"):
+            fixture(self.root)
+            packet_path = self.root / f"time_source_{phase}.json"; packet = json.loads(packet_path.read_text())
+            row_ref = packet["serving"][1]; row = json.loads(Path(row_ref["path"]).read_text())
+            row["Mounts"][0]["Source"] = "/host_mnt" + row["Mounts"][0]["Source"]
+            packet["serving"][1] = write(Path(row_ref["path"]), row); write(packet_path, packet)
+            with self.assertRaises(profile.Incomplete): profile.validate_case(self.root, self.expected)
+            if phase == "pre":
+                with self.assertRaises(profile.Incomplete): profile.validate_start(self.root, self.expected)
+            else:
+                self.assertTrue(profile.validate_start(self.root, self.expected)["admitted"])
+
+    def test_ntp_same_file_proof_covers_both_lanes_roles_and_real_pre_admission(self):
+        for scope in ("normal", "retained"):
+            for receipt in (False, True):
+                for alias_role in ((False, True) if receipt else (False,)):
+                    for structured in (False, True):
+                        with self.subTest(scope=scope, receipt=receipt, initializer_alias=alias_role, structured=structured):
+                            root = self.root.parent / f"{scope}-{receipt}-{alias_role}-{structured}"
+                            expected = fixture(root, {"image_scope": scope}, receipt=receipt)
+                            ntp_binding(root, expected, initializer_alias=alias_role, structured=structured)
+                            self.assertEqual(profile.validate_case(root, expected)["verdict"], "pass")
+                            result = profile.validate_start(root, expected)
+                            self.assertTrue(result["admitted"])
+                            self.assertFalse(result["qualification"])
+                            self.assertEqual(result["scope"], "time-config-start-admission")
+                            (root / "time_source_post.json").unlink()
+                            self.assertTrue(profile.validate_start(root, expected)["admitted"])
+                            with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_ntp_raw_identity_custody_and_origin_forgery_refuse_after_hashes_rebound(self):
+        mutations = [
+            ("context", lambda x: x.update(schema=True)),
+            ("context", lambda x: x.update(source_tree="0" * 40)),
+            ("context", lambda x: x.update(run_id="an-old-case")),
+            ("context", lambda x: x.update(original_container_id="9" * 64)),
+            ("context", lambda x: x.update(project="foreign")),
+            ("context", lambda x: x.update(service="lantern-2")),
+            ("context", lambda x: x.update(canonical_source="/other/lantern-1/ntp.conf")),
+            ("host_after", lambda x: x.update(inode=x["inode"] + 1)),
+            ("host_after", lambda x: x.update(sha256="0" * 64)),
+            ("host_after", lambda x: x.update(mode=0o666)),
+            ("host_after", lambda x: x.update(uid=x["uid"] + 1)),
+            ("host_after", lambda x: x.update(gid=x["gid"] + 1)),
+            ("original_after", lambda x: x["HostConfig"].update(ExtraHosts=[profile.HOST + ":172.20.0.99"])),
+            ("probe_completed", lambda x: x["Config"].update(Cmd=["true"])),
+            ("probe_completed", lambda x: x.update(Image="sha256:" + "f" * 64)),
+            ("probe_completed", lambda x: x["HostConfig"].update(NetworkMode="bridge")),
+            ("probe_completed", lambda x: x["HostConfig"].update(Privileged=True)),
+            ("probe_completed", lambda x: x["State"].update(ExitCode=1)),
+            ("probe_created", lambda x: x["State"].update(Pid=42)),
+            ("probe_created", lambda x: x["State"].update(OOMKilled=True)),
+            ("probe_completed", lambda x: x["State"].update(Pid=42)),
+            ("probe_completed", lambda x: x["State"].update(Pid=False)),
+            ("probe_completed", lambda x: x["State"].update(Paused=True)),
+            ("probe_completed", lambda x: x["State"].update(Restarting=True)),
+            ("probe_completed", lambda x: x["State"].update(StartedAt="0001-01-01T00:00:00Z")),
+            ("probe_completed", lambda x: x["State"].update(StartedAt=False)),
+            ("probe_completed", lambda x: x["Mounts"][0].update(Source="/third/lantern-1/ntp.conf")),
+            ("probe_completed", lambda x: x["Mounts"][0].update(RW=True)),
+            ("probe_completed", lambda x: x["Mounts"][0].update(Destination="/elsewhere")),
+            ("probe_completed", lambda x: x["HostConfig"]["Mounts"][0]["BindOptions"].update(CreateMountpoint=True)),
+        ]
+        for i, (key, change) in enumerate(mutations):
+            with self.subTest(key=key, mutation=i):
+                root = self.root.parent / f"forgery-{i}"; expected = fixture(root)
+                binding = ntp_binding(root, expected)
+                alter_ntp_binding(root, binding, key, change)
+                with self.assertRaises(profile.Incomplete): profile.validate_start(root, expected)
+                with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_ntp_stat_and_terminal_raw_failures_are_not_replaced_by_convenience_pass(self):
+        changes = (("probe_output", b"99:456:regular file\n99:457:regular file\n"),
+                   ("probe_output", b"99:456:directory\n99:456:directory\n"),
+                   ("probe_output", b"99:456:regular file\n"),
+                   ("probe_output", b"99:456:regular file\n99:456:regular file"),
+                   ("probe_wait", b"1\n"), ("probe_remove", b"not-the-owned-container\n"),
+                   ("daemon_after", b"different-daemon\n"))
+        for i, (key, raw) in enumerate(changes):
+            root = self.root.parent / f"raw-forgery-{i}"; expected = fixture(root)
+            path = ntp_binding(root, expected); binding = json.loads(path.read_text())
+            binding[key] = write(Path(binding[key]["path"]), raw, True)
+            bound = write(path, binding)
+            write(path.parent / "identity.json", {"status": "PASS"})
+            for phase in ("pre", "post"):
+                packet_path = root / f"time_source_{phase}.json"; packet = json.loads(packet_path.read_text())
+                packet["source_config_bindings"][1]["binding"] = bound; write(packet_path, packet)
+            with self.assertRaises(profile.Incomplete): profile.validate_start(root, expected)
+
+    def test_ntp_phase_host_daemon_missing_foreign_and_third_source_are_refused(self):
+        for kind in ("host", "daemon", "missing", "foreign", "third", "initializer-replay"):
+            root = self.root.parent / kind; expected = fixture(root)
+            binding = ntp_binding(root, expected, initializer_alias=kind == "initializer-replay")
+            for phase in ("pre", "post"):
+                packet_path = root / f"time_source_{phase}.json"; packet = json.loads(packet_path.read_text())
+                entry = packet["source_config_bindings"][1]
+                if kind == "host":
+                    value = json.loads(Path(entry["host"]["path"]).read_text()); value["ctime_ns"] += 1
+                    entry["host"] = write(Path(entry["host"]["path"]), value)
+                elif kind == "daemon": entry["daemon"] = write(Path(entry["daemon"]["path"]), b"another-daemon\n", True)
+                elif kind == "missing": packet.pop("source_config_bindings")
+                elif kind == "foreign": entry["binding"]["path"] = str(self.root.parent / "foreign/binding.json")
+                else:
+                    target = packet["initializers" if kind == "initializer-replay" else "serving"][1]
+                    row = json.loads(Path(target["path"]).read_text())
+                    if kind == "third":
+                        row["Mounts"][0]["Source"] = "/third/lantern-1/ntp.conf"
+                    else: row["Id"] = "9" * 64
+                    packet["initializers" if kind == "initializer-replay" else "serving"][1] = write(Path(target["path"]), row)
+                write(packet_path, packet)
+            with self.assertRaises(profile.Incomplete): profile.validate_start(root, expected)
+            with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_ntp_proof_hardlink_and_oversized_raw_input_are_refused(self):
+        for kind in ("hardlink", "oversized", "extra-file"):
+            root = self.root.parent / f"unsafe-{kind}"; expected = fixture(root)
+            binding_path = ntp_binding(root, expected); binding = json.loads(binding_path.read_text())
+            if kind == "hardlink":
+                path = Path(binding["probe_output"]["path"])
+                os.link(path, root / "another-stat-link")
+            elif kind == "oversized":
+                binding["probe_output"] = write(Path(binding["probe_output"]["path"]), b"x" * 4097, True)
+                ref = write(binding_path, binding)
+                for phase in ("pre", "post"):
+                    path = root / f"time_source_{phase}.json"; packet = json.loads(path.read_text())
+                    packet["source_config_bindings"][1]["binding"] = ref; write(path, packet)
+            else:
+                write(binding_path.parent / "unrequested.json", {})
+            with self.assertRaises(profile.Incomplete): profile.validate_start(root, expected)
+            with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_short_search_start_admission_keeps_shared_placement_and_no_tree_qualification(self):
+        root = self.root.parent / "search"; expected = fixture(root, {"scenario": "search_qualification", "source_tree": ""}, receipt=False)
+        for phase in ("pre", "post"):
+            packet_path = root / f"time_source_{phase}.json"; packet = json.loads(packet_path.read_text())
+            packet["fixture_placement"] = "shared_correctness_only"
+            row = json.loads(Path(packet["fixture"]["path"]).read_text()); row["HostConfig"]["CpusetCpus"] = "0"
+            packet["fixture"] = write(Path(packet["fixture"]["path"]), row); write(packet_path, packet)
+        (root / "time_source_post.json").unlink()
+        self.assertTrue(profile.validate_start(root, expected)["admitted"])
+        with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_start_admission_preserves_documented_normal_bench_usage(self):
+        for scenario in ("write_heavy", "read_heavy", "addedge_contention", "broad_rw"):
+            with self.subTest(scenario=scenario):
+                root = self.root.parent / scenario
+                expected = fixture(root, {"source_tree": "", "scenario": scenario}, receipt=False)
+                self.assertTrue(profile.validate_start(root, expected)["admitted"])
+                self.assertFalse(profile.validate_start(root, expected)["qualification"])
+                with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_start_admission_rejects_unknown_protected_family_and_invalid_context(self):
+        for i, (scope, scenario, receipt) in enumerate((
+            ("normal", "receipt_admission_lookup", True),
+            ("retained", "broad_rw", False), ("retained", "receipt_admission_lookup", True),
+            ("retained", "search_qualification", False))):
+            with self.subTest(scope=scope, scenario=scenario):
+                root = self.root.parent / f"empty-tree-{i}"
+                expected = fixture(root, {"source_tree": "", "scenario": scenario, "image_scope": scope}, receipt=receipt)
+                with self.assertRaises(profile.Incomplete): profile.validate_start(root, expected)
+        for i, (scope, scenario, tree) in enumerate((("normal", "../write_heavy", ""),
+             ("normal", "write-heavy", ""), ("normal", "write_heavy", "invalid"),
+             ("normal", "receipt_unknown", "b" * 40), ("retained", "write_heavy", "b" * 40))):
+            root = self.root.parent / f"invalid-context-{i}"
+            expected = fixture(root, {"source_tree": tree, "scenario": scenario, "image_scope": scope}, receipt=False)
+            with self.assertRaises(profile.Incomplete): profile.validate_start(root, expected)
 
     def test_fifo_is_refused_without_opening_a_blocking_stream(self):
         path = self.root / "time-source-evidence/pre/status.json"
