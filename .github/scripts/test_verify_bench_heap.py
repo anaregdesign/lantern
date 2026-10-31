@@ -73,7 +73,7 @@ class BenchHeapVerificationTest(unittest.TestCase):
         step = next(item for item in plan if item.name == "server-bench-heap-tests")
         self.assertEqual(step.cwd, ".")
         self.assertEqual(step.command, ("python3", "-B", ".github/scripts/verify_bench_heap.py"))
-        self.assertEqual(len(plan), 78)
+        self.assertEqual(len(plan), 79)
         for modules, selected in ((["server", "."], True), (["core", "."], False)):
             scope = dict(full=False, families=[], go_modules=modules, generation=False)
             self.assertEqual(step in affected_steps(plan, scope), selected)

@@ -195,7 +195,27 @@ fingerprinting. Its results describe the frozen local checkout, not hosted or
 release qualification. Use the existing explicit [pure-prose path](#local-prose-eligibility)
 for eligible explanation-only edits.
 
-The complete 78-step plan below remains available by omitting `--affected-base`.
+The finite `HARNESS_INPUTS` table in that same map selects actual consumers
+for modified existing benchmark time-profile readers, root binary verifiers and
+the shared Git test helper (#1975). Their paired/consumer Python suites, actual
+owned-shell contracts and pinned-Go raw/effective environment check run through
+`harness_contracts.py`; missing tools, skipped or empty selected tests fail.
+Mixed product edits retain their module/native obligations. New/deleted tools,
+workflows, classifier/policy code, executable fixtures, protocol/scenario/resource
+configuration and unknown paths remain conservative. A focused reader check is
+not permission to reuse a measurement: apply the [claim/input/invalidation
+map](docs/ci-inventory.md#claims-inputs-and-invalidation--1974), preserve original
+verdicts and execute fresh affected cases when their required inputs changed or
+are missing. Hosted functional, module, coverage and security checks remain
+independent; only the reviewed unrelated configured-source/native obligation is
+omitted for a known reader-only edit.
+
+The complete 79-step plan remains available by omitting `--affected-base`.
+It runs bounded harness contracts before dependency setup and product work.
+The Go workflow requires early real-tool contracts for known harness changes,
+generation and full/unknown scope, before dependent product jobs. Unrelated
+mapped product edits retain ordinary module contracts without this duplicate
+early run. The manual benchmark workflow runs them before its image/workload.
 Policy-changing PRs must run the **previous full contract on their final source**,
 including functional-validation/configured-source-integration and applicable native coverage; a relaxation cannot qualify itself.
 The explicit #1820 owner-approved time-contract migration below supersedes only
@@ -596,10 +616,11 @@ results and verifies distinct functional-validation/configured-source-integratio
 artifacts against the exact merge/main source and successful same-run producer digests.
 configured-source-integration is mandatory for time, native, production composition,
 dependency/toolchain, deployment, fixture bridge and proof/CI boundary changes. The
-conservative [classifier](.github/scripts/current_qualification_scope.py) exempts only
-regular modified application/computational sources and exact profiling handlers in its
-small allowlist; unknown paths, base failures, additions/deletions/renames and mixed
-changes require configured-source-integration. Existing docs/evidence-only
+conservative [classifier](.github/scripts/current_qualification_scope.py) exempts
+regular modified application/computational sources, exact profiling handlers and
+the finite known-reader/test inputs described above. Unknown paths, base failures,
+additions/deletions/renames and mixed boundary changes require
+configured-source-integration. Existing docs/evidence-only
 classifications are unchanged. A non-boundary candidate may show **functional-validation
 PASS / configured-source-integration NOT_RUN**, which is code acceptance, not release or
 environment qualification. Any executed configured-source-integration failure remains
@@ -679,7 +700,7 @@ not authorize publishing during SDK development.
 ## Local validation carry
 
 The optional full-plan [live runner](.github/scripts/local_gate_session.py) owns a reviewed
-[78-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
+[79-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
 serially before Go traverses the workspace and executes the complete plan on its
 first candidate. It accepts no manifest, receipt, digest or success JSON as input.
 The external historical full-gate runner is not modified by this mechanism.
@@ -697,7 +718,7 @@ The initial eligible set is deliberately small: `go-test-core`, `go-test-mcp`,
 all Go workspace source/manifests, proto/generated inputs, shared fixtures under
 `tests/`, `testdata/` and `testbed/`, relevant root inputs, gate commands and
 configuration. Cross-module Go changes therefore invalidate these receipts
-conservatively. At most **6 of 78 steps** can carry; the other **72 steps execute
+conservatively. At most **6 of 79 steps** can carry; the other **73 steps execute
 again**. A useful case is a reviewed follow-up changing only `admin/app/` or
 `sdks/node/src/`, with locks, configuration, Go/shared inputs and the execution
 context unchanged while the original runner process remains alive. This saves
@@ -717,7 +738,7 @@ checkout bytes, hardlinks, symlinks, ignored fixtures and untracked files never
 enter it. A developer source edit followed by restoration cannot change these
 execution inputs. A required fixture outside this namespace fails qualification;
 nondefault GOFLAGS/overlays and external local module/workspace replacements have
-no support. The remaining 71 fresh steps keep the existing owner-frozen checkout
+no support. The remaining 73 fresh steps keep the existing owner-frozen checkout
 contract. Toolchain binary/source/tool files, actual Go version/settings,
 downloaded dependency integrity and effective environment are checked as well.
 The Go-generated decimal work-directory suffix in `GOGCCFLAGS` prefix maps is

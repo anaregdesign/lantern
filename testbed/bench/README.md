@@ -194,6 +194,50 @@ formal families and exact tree. Final performance validation still requires the
 complete isolated PRE/POST profile and all existing gates. An older failed case
 without a retained alias proof remains failed.
 
+For a reader-only repair, the same strict PRE/POST component consumer can inspect
+saved observations without starting Docker, networking, GC or workloads:
+
+```sh
+python3 -B .github/scripts/bench_time_profile.py assess-case \
+  --root /absolute/saved/case \
+  --expected /absolute/saved/time-expectations.json \
+  --original /absolute/saved/progress.json > ../new-time-assessment.json
+```
+
+`--expected` contains the recorded component expectations: `time_profile`,
+`source_commit`, `source_tree`, `image_id`, `image_scope`, `runtime_user`, `cpuset`,
+`scenario`, `run_id`, `receipt`, `goarch`, `project`, `helper_sources` and
+`go_tool_sha256`, plus `diagnostic` (image ID and runtime user) for a canonical
+OFF case. Use the actual historical inputs; changing checkout HEAD provides
+none of them. Both input JSON files must be regular, current-user-owned files
+with mode 0600 or 0644. The original aggregate must have a completed `verdict`
+of pass, fail or incomplete (uppercase is also preserved). When the original
+contains the existing progress fields `source_sha`, `source_tree` or `campaign`,
+each must match the component's source commit, source tree or project. A
+mismatch is refused. Missing association fields are reported as `NOT_PROVEN`;
+matching all three proves only agreement of user-supplied fields, without a
+claim of historical provenance or membership of this case in the aggregate.
+
+The JSON output records the executing reader's SHA-256 separately from product
+expectations, hashes the expectation file and preserves the original aggregate
+verdict and exact bytes' hash. It always reports `qualification: false` and
+assesses only controlled-local time and relay conditions. Complete evidence
+produces a component pass and exit 0; missing or changed evidence produces a
+component incomplete and exit 2. Malformed expectations or original evidence
+are refused. Input files are never rewritten. Product/helper identity,
+resources, topology, time/transport protocols and PRE/POST continuity retain
+their existing strict checks; missing historical same-file identity stays
+unproven. Workload/scenario, GC, performance, retained-memory pairing, release
+and selected-environment acceptance still require their existing consumers.
+The release driver continues to load its reader from the frozen source; this
+assessment cannot be imported as qualification or authorize a full-case reuse.
+
+[#1967](https://github.com/anaregdesign/lantern/issues/1967) records the historical
+bounded reassessment of eight saved cases, preserving the original FAIL and
+seven unproven origin identities. Its private raw data is not in this tree.
+The assessment regressions use explicitly synthetic saved-observation shapes,
+including #1969's diagnostic volume and reordered mounts, without new load.
+
 Docker does not publish host ports for containers attached only to internal
 networks. The benchmark therefore uses one separate raw TCP relay: Servers and
 the NTP fixture keep only the internal backend, while the relay also joins a

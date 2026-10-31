@@ -83,6 +83,16 @@ jobs:
         with:
           go-version: '1.27.3'
           check-latest: true
+      - name: Test early harness contracts
+        run: python3 -B .github/scripts/harness_contracts.py --group bench-time --group release-binaries --evidence "$RUNNER_TEMP/harness-contracts"
+      - name: Preserve early harness contract evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-contracts-${{ github.sha }}
+          path: ${{ runner.temp }}/harness-contracts/
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Install bench prerequisites (ghz, yq)
         run: |
           set -euo pipefail

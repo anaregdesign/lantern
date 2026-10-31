@@ -995,21 +995,82 @@ def owned_relay(value, expected):
         return False
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Validate actual PRE time/config admission without qualifying a run")
+def assess_case(root, expected_path, original_path):
+    """Re-read one saved component; never replace its original aggregate verdict.
+
+    Expectations are explicit historical inputs, not inferred from this reader's
+    checkout. This does not assess scenario/load, GC, performance or paired-memory
+    acceptance and is not a reusable qualification receipt.
+    """
+    def document(path):
+        path = Path(path).absolute()
+        value, digest = read(path.parent, path, 1 << 20, modes=(0o600, 0o644))
+        return value, {"path": str(path), "sha256": digest}
+
+    expected, expected_ref = document(expected_path)
+    required = {"time_profile", "source_commit", "source_tree", "image_id", "image_scope",
+                "runtime_user", "cpuset", "scenario", "run_id", "receipt", "goarch", "project",
+                "helper_sources", "go_tool_sha256"}
+    need(type(expected) is dict and set(expected) in (required, required | {"diagnostic"}),
+         "assessment expectation keys differ")
+    original, original_ref = document(original_path)
+    need(type(original) is dict and original.get("verdict") in
+         ("pass", "fail", "incomplete", "PASS", "FAIL", "INCOMPLETE"),
+         "original aggregate verdict missing or unfinished")
+    associations = {"source_sha": "source_commit", "source_tree": "source_tree", "campaign": "project"}
+    for name, key in associations.items():
+        if name in original:
+            need(type(original[name]) is str and original[name] == expected[key],
+                 "original aggregate " + name + " differs from component expectation")
+    matched = sorted(set(original) & set(associations))
+    missing = sorted(set(associations) - set(original))
+    association = {"status": "NOT_PROVEN" if missing else "SOURCE_AND_CAMPAIGN_MATCH",
+                   "matched_fields": matched, "missing_fields": missing,
+                   "basis": "User-supplied aggregate fields only; case membership and historical provenance NOT_PROVEN"}
+    reader_path = Path(__file__).absolute()
+    _, reader_hash = read(reader_path.parent, reader_path, 256 << 10, decode=False, modes=(0o644, 0o755))
+    try:
+        component = validate_case(root, expected)
+    except Incomplete as error:
+        component = {"verdict": "incomplete", "reason": str(error)}
+    return {"schema": 1, "protocol": "bench_local_time_assessment_v1", "qualification": False,
+            "scope": "controlled-local time and relay observations only",
+            "reader": {"path": ".github/scripts/bench_time_profile.py", "sha256": reader_hash},
+            "product_expectation": {key: expected[key] for key in
+                ("source_commit", "source_tree", "image_id", "image_scope", "scenario", "run_id")},
+            "expected_inputs": expected_ref,
+            "original_aggregate": dict(original_ref, verdict=original["verdict"], association=association),
+            "component": component,
+            "unassessed": ["workload and scenario", "GC", "performance", "retained-memory pair",
+                           "release and selected-environment acceptance"]}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Read controlled-local time evidence without qualifying a run")
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("validate-start")
     start.add_argument("--root", required=True, type=Path)
     for name in ("source-commit", "source-tree", "image-id", "runtime-user", "project", "scenario"):
         start.add_argument("--" + name, required=True)
     start.add_argument("--scope", required=True, choices=("normal", "retained"))
-    args = parser.parse_args()
-    expected = {k: getattr(args, k) for k in ("source_commit", "source_tree", "image_id", "runtime_user", "project", "scenario")}
-    expected["image_scope"] = args.scope
+    assess = sub.add_parser("assess-case", help="Strict offline component assessment; original verdict stays unchanged")
+    assess.add_argument("--root", required=True, type=Path)
+    assess.add_argument("--expected", required=True, type=Path)
+    assess.add_argument("--original", required=True, type=Path)
+    args = parser.parse_args(argv)
     try:
-        print(json.dumps(validate_start(args.root, expected), sort_keys=True))
-    except Incomplete as error:
-        parser.exit(2, "time source start-admission refused: " + str(error) + "\n")
+        if args.command == "assess-case":
+            result = assess_case(args.root, args.expected, args.original)
+            print(json.dumps(result, sort_keys=True))
+            if result["component"]["verdict"] != "pass":
+                parser.exit(2)
+        else:
+            expected = {k: getattr(args, k) for k in
+                        ("source_commit", "source_tree", "image_id", "runtime_user", "project", "scenario")}
+            expected["image_scope"] = args.scope
+            print(json.dumps(validate_start(args.root, expected), sort_keys=True))
+    except (Incomplete, OSError) as error:
+        parser.exit(2, "time source " + args.command + " refused: " + str(error) + "\n")
 
 
 if __name__ == "__main__":

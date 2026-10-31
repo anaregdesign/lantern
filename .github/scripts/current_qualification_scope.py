@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 import ci_docs
 import evidence_only_pr
+import validation_scope
 
 
 # These application-only paths cannot change native source acquisition or its
@@ -28,6 +29,11 @@ def requires_qualification(changes):
         return True
     for path, status in changes.items():
         p = PurePosixPath(path)
+        # Reader-only inputs cannot alter the product's native source acquisition.
+        # Their focused consumer contracts are selected by the same finite map;
+        # unknown/mixed boundary changes below still require integration.
+        if validation_scope.harness_group(path, status):
+            continue
         if (status != "M" or p.is_absolute() or ".." in p.parts or p.as_posix() != path
                 or not (path.startswith(APPLICATION_PATHS) or path in DIAGNOSTICS)
                 or p.suffix not in APPLICATION_SUFFIXES):
@@ -47,7 +53,7 @@ def classify(environ):
             for revision in revisions:
                 if evidence_only_pr.git("ls-tree", revision, "--", path).split()[0] != "100644":
                     return True, "nonregular or missing source"
-        return required, "boundary or unknown change" if required else "reviewed application-only edits"
+        return required, "boundary or unknown change" if required else "reviewed application or harness-only edits"
     except Exception as error:
         return True, f"classification unavailable: {type(error).__name__}"
 
