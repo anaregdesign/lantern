@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tarfile
@@ -91,6 +92,7 @@ class ReleaseFixture(unittest.TestCase):
         self.calls = []
         self.go_environment = {"GOENV": "off", "GOTOOLCHAIN": "local", "GOFLAGS": "",
                                "GOWORK": str(self.repo / "go.work")}
+        self.effective_go_environment = dict(self.go_environment, GOENV="")
         self.environment = patch.dict(os.environ, self.go_environment)
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -113,7 +115,7 @@ class ReleaseFixture(unittest.TestCase):
     def command(self, args, repo):
         self.calls.append(args)
         if args == ["go", "env", "-json", "GOENV", "GOTOOLCHAIN", "GOFLAGS", "GOWORK"]:
-            return json.dumps(self.go_environment).encode()
+            return json.dumps(self.effective_go_environment).encode()
         if args == ["go", "version"]:
             return b"go version go9.8.7 linux/amd64\n"
         if args[:4] == ["go", "version", "-m", "-json"]:
@@ -184,8 +186,11 @@ class ReleaseFixture(unittest.TestCase):
 
 class SourceTests(ReleaseFixture):
     def test_clean_source_uses_manifest_pin_and_does_not_create_dist(self):
-        self.assertEqual(self.source()["go_version"], "go9.8.7")
-        self.assertEqual(self.source()["go_environment"], self.go_environment)
+        source = self.source()
+        self.assertEqual(source["go_version"], "go9.8.7")
+        self.assertEqual(source["go_environment"], self.go_environment)
+        self.assertEqual(self.effective_go_environment["GOENV"], "")
+        self.assertEqual(source["go_environment"]["GOENV"], "off")
         self.assertFalse((self.repo / "dist").exists())
 
     def test_hidden_index_changes_refuse_even_when_status_and_diff_are_clean(self):
@@ -210,19 +215,37 @@ class SourceTests(ReleaseFixture):
     def test_effective_go_environment_refuses_external_source_selectors(self):
         changes = (("GOFLAGS", "-overlay=ignored-overlay.json"), ("GOFLAGS", "-modfile=ignored.mod"),
                    ("GOWORK", str(self.repo / "dist/alternate.work")), ("GOENV", "/outside/go/env"),
+                   ("GOENV", "off"),
                    ("GOTOOLCHAIN", "auto"))
         for key, value in changes:
             with self.subTest(key=key, value=value):
-                original = self.go_environment[key]
-                self.go_environment[key] = value
+                original = self.effective_go_environment[key]
+                self.effective_go_environment[key] = value
                 with self.assertRaisesRegex(gate.Refused, "effective Go environment"):
                     self.source()
-                self.go_environment[key] = original
+                self.effective_go_environment[key] = original
+
+    def test_effective_go_environment_requires_complete_exact_report(self):
+        original = self.effective_go_environment
+        for report in ({key: value for key, value in original.items() if key != "GOENV"},
+                       dict(original, GOENV=None), dict(original, EXTRA="unexpected")):
+            with self.subTest(report=report):
+                self.effective_go_environment = report
+                with self.assertRaisesRegex(gate.Refused, "effective Go environment"):
+                    self.source()
+        self.effective_go_environment = original
 
     def test_raw_go_environment_refuses_before_invoking_go(self):
-        for key, value in (("GOENV", "/outside/config"), ("GOTOOLCHAIN", "auto"),
-                           ("GOFLAGS", "-overlay=ignored.json"), ("GOWORK", "off")):
-            with self.subTest(key=key), patch.dict(os.environ, {key: value}):
+        for key, value in (("GOENV", None), ("GOENV", ""), ("GOENV", "/outside/config"),
+                           ("GOTOOLCHAIN", None), ("GOTOOLCHAIN", "auto"),
+                           ("GOFLAGS", None), ("GOFLAGS", "-overlay=ignored.json"),
+                           ("GOWORK", None), ("GOWORK", ""), ("GOWORK", "off"),
+                           ("GOWORK", "/outside/foreign.work")):
+            with self.subTest(key=key, value=value), patch.dict(os.environ):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
                 self.calls.clear()
                 with self.assertRaisesRegex(gate.Refused, "Go environment inputs"):
                     self.source()
@@ -231,7 +254,7 @@ class SourceTests(ReleaseFixture):
     def test_all_modes_refuse_alternate_effective_workspace_without_receipts(self):
         target = ("lantern", "linux", "amd64")
         binary = self.binary(target)
-        self.go_environment["GOWORK"] = str(self.repo / "dist/alternate.work")
+        self.effective_go_environment["GOWORK"] = str(self.repo / "dist/alternate.work")
         modes = (self.source,
                  lambda: gate.verify_binary(self.repo, target, binary, self.head, self.tag),
                  lambda: gate.verify_complete(self.repo, self.head, self.tag))
@@ -453,6 +476,29 @@ class CompleteTests(ReleaseFixture):
         with self.assertRaises(gate.Refused):
             gate.verify_archive(zip_path, {raw.name: (gate.sha256(raw), gate.MAX_BINARY)})
         self.assertFalse((self.repo.parent / "outside").exists())
+
+
+class RealGoEnvironmentTests(unittest.TestCase):
+    def test_pinned_go_reports_disabled_path_and_receipt_keeps_raw_input(self):
+        pin = re.search(r"(?m)^go (\d+\.\d+\.\d+)$",
+                        Path(__file__).resolve().parents[2].joinpath("go.mod").read_text())[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            (repo / "go.mod").write_text("module example.invalid/release-env\n\ngo " + pin + "\n")
+            (repo / "go.work").write_text("go " + pin + "\n\nuse .\n")
+            selectors = {"GOENV": "off", "GOTOOLCHAIN": "local", "GOFLAGS": "",
+                         "GOWORK": str(repo / "go.work")}
+            # Version/env inspection only; never resolve, download or build.
+            with patch.dict(os.environ, dict(selectors, GOPROXY="off", GOSUMDB="off")):
+                try:
+                    version = gate.command(["go", "version"], repo).decode().strip()
+                except gate.Refused:
+                    self.skipTest("pinned Go is unavailable")
+                if not version.startswith("go version go" + pin + " "):
+                    self.skipTest("pinned Go is unavailable")
+                observed = gate.json_read(gate.command(["go", "env", "-json", *selectors], repo))
+                self.assertEqual(observed, dict(selectors, GOENV=""))
+                self.assertEqual(gate.go_environment(repo), selectors)
 
 
 if __name__ == "__main__":
