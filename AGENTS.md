@@ -102,6 +102,13 @@ Authentication/security HTTP and Connect adapters live in
 `service`. Keep authority/workflow decisions in `security`, `authn` and `oidc`;
 shared strict JSON and bounded error details belong to `internal/rpcwire`.
 
+`server/internal/query` owns bounded search execution, settings, observations and
+retained cursor sessions. Its consumer-defined Reader receives publication-aware
+service captures rather than a raw backend. Service keeps Snapshot/WAL read cuts,
+detaches full vertices before releasing the read latch, and preserves the admitted
+context plus namespace/policy cursor bindings. Cursor paging uses the one-shot
+read cut; only fresh searches use the retrying cut. Query never imports service.
+
 ```bash
 go build -v ./...                # build (same as CI)
 go test -v ./...                 # tests

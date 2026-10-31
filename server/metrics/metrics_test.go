@@ -9,7 +9,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/anaregdesign/lantern/core/search"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/query"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -462,7 +462,7 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	}
 
 	// One terminal observation emits all bounded SearchVertices series.
-	m.OnSearchExecution(service.SearchObservation{
+	m.OnSearchExecution(query.Observation{
 		Mode: "all", Phrase: true, Fuzziness: 2, PrefixTerms: true, PrefixPresent: true,
 		Outcome: "resource_exhausted", Reason: string(search.WorkPostingVisits), TotalDuration: 3 * time.Millisecond,
 		Stats: search.Stats{
@@ -496,13 +496,13 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	if got := testutil.ToFloat64(m.searchRejections.WithLabelValues(string(search.WorkPostingVisits))); got != 1 {
 		t.Errorf("search_rejections_total{posting_visits} = %v, want 1", got)
 	}
-	m.OnSearchExecution(service.SearchObservation{Mode: "all", Outcome: "resource_exhausted", Reason: string(search.WorkExpirationVisits), Stats: search.Stats{ExpirationVisits: 5}})
+	m.OnSearchExecution(query.Observation{Mode: "all", Outcome: "resource_exhausted", Reason: string(search.WorkExpirationVisits), Stats: search.Stats{ExpirationVisits: 5}})
 	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkExpirationVisits), "all")); got != 2 {
 		t.Errorf("search_work{expiration_visits} sample count = %v, want 2", got)
 	}
 	// Unknown values are collapsed to bounded fallbacks instead of becoming
 	// user-controlled labels.
-	m.OnSearchExecution(service.SearchObservation{Mode: "raw-query", Fuzziness: 999, Outcome: "raw-query", Reason: "raw-prefix"})
+	m.OnSearchExecution(query.Observation{Mode: "raw-query", Fuzziness: 999, Outcome: "raw-query", Reason: "raw-prefix"})
 	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("unknown", "no", "other", "no", "no", "internal", "internal")); got != 1 {
 		t.Errorf("search_calls_total{internal,internal} = %v, want sanitized sample", got)
 	}

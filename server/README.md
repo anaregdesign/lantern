@@ -54,6 +54,7 @@ Both ports are configurable via environment variables (see below).
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
 | `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
+| `internal/query/` | Bounded search execution, validation/settings, terminal observations and signed cursor sessions. `service/` supplies publication-aware reads and keeps authorization/namespace boundaries. |
 | `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
 | `internal/authn/` | Login/session and purpose-callback workflows; genuine Code/Bearer producers. Borrows existing OIDC and security owners without opening state or owning transport. |
 | `internal/securitytransport/` | Security management Connect RPCs, Bearer admission interceptor, browser and native authentication adapters. Borrows certified workflow/authority owners; does not import `service`. |
@@ -373,6 +374,10 @@ standing up a metrics stack:
   `internal/securitytransport -> internal/authn -> internal/oidc -> internal/security`;
   security transport does not import service, and authn/security have no upward
   transport imports. Shared protobuf wire safeguards live in `internal/rpcwire`.
+- `service/ -> internal/query` delegates bounded search and retained result paging.
+  Query consumes a narrow Reader; service retains Snapshot/WAL consistency,
+  authorized contexts, namespace cursor bindings and payload detachment. Fresh
+  search captures may retry; retained page reads run at most once.
 
 See [AGENTS.md](../AGENTS.md) for the full dependency graph and release
 contract. The server module is **never tagged independently** — it ships

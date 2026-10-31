@@ -13,6 +13,7 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/lantern/server/internal/query"
 )
 
 // WithDataNamespace installs the public logical/physical boundary. Internal
@@ -152,9 +153,9 @@ func dataCursorBinding(request proto.Message) ([]byte, error) {
 func dataCursorError(request proto.Message, stale bool, cause error) error {
 	if _, search := request.(*pb.SearchVerticesRequest); search {
 		if stale {
-			return newSearchAbortedError(pb.SearchErrorReason_SEARCH_CURSOR_STALE, cause)
+			return query.StaleCursorError(pb.SearchErrorReason_SEARCH_CURSOR_STALE, cause)
 		}
-		return newSearchInvalidCursorError(pb.SearchErrorReason_SEARCH_CURSOR_INVALID, cause)
+		return query.InvalidCursorError(pb.SearchErrorReason_SEARCH_CURSOR_INVALID, cause)
 	}
 	code := connect.CodeInvalidArgument
 	if stale {

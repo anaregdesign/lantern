@@ -22,6 +22,7 @@ func TestAuthenticationPackageBoundaries(t *testing.T) {
 		"internal/security":          {server + "internal/oidc", server + "internal/authn", server + "provider", server + "service", server + "internal/securitytransport", server + "internal/rpcwire"},
 		"internal/securitytransport": {server + "provider", server + "service"},
 		"internal/rpcwire":           {server + "provider", server + "service", server + "internal/securitytransport", server + "internal/authn", server + "internal/oidc", server + "internal/security"},
+		"internal/query":             {server + "provider", server + "service", server + "internal/securitytransport", server + "internal/authn", server + "internal/oidc", server + "internal/security"},
 		"service":                    {server + "provider", server + "internal/securitytransport"},
 		"provider":                   {},
 	}

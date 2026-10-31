@@ -16,6 +16,7 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/lantern/server/internal/query"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/readiness"
@@ -172,7 +173,7 @@ func newLanternService(
 			PositionsEnabled: src.Positions,
 			DefaultLimit:     src.DefaultLimit,
 			MaxLimit:         src.MaxLimit,
-			DefaultMode:      service.ParseMatchMode(src.DefaultMode),
+			DefaultMode:      query.ParseMatchMode(src.DefaultMode),
 			DefaultMinShould: src.DefaultMinShould,
 			Timeout:          src.Timeout,
 			MaxQueryBytes:    src.MaxQueryBytes,
