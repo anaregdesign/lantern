@@ -159,6 +159,7 @@ def clean_index_flags(repo):
 
 
 def go_environment(repo):
+    """Validate effective paths, then return the controlled input provenance."""
     regular(repo / "go.work")
     expected = {"GOENV": "off", "GOTOOLCHAIN": "local", "GOFLAGS": "", "GOWORK": str(repo / "go.work")}
     # Refuse the raw selector inputs before invoking Go: an automatic toolchain
@@ -166,8 +167,10 @@ def go_environment(repo):
     require(all(os.environ.get(key) == value for key, value in expected.items()),
             "release Go environment inputs differ")
     actual = json_read(command(["go", "env", "-json", *expected], repo))
-    require(actual == expected, "effective Go environment differs")
-    return actual
+    # Go reports an empty effective config path when the raw selector is off.
+    require(actual == dict(expected, GOENV=""), "effective Go environment differs")
+    # The receipt's go_environment records validated raw inputs, not Go's JSON.
+    return expected
 
 
 def source(repo, head, tag):
