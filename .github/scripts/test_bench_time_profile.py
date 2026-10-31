@@ -1,10 +1,13 @@
 import copy
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import bench_time_profile as profile
 
@@ -762,6 +765,203 @@ class TimeProfileTest(unittest.TestCase):
             self.alter("pre", "relay_status", lambda x: x.update({key: actual}))
             with self.subTest(key=key, actual=actual), self.assertRaises(profile.Incomplete):
                 profile.validate_case(self.root, self.expected)
+
+
+class AssessmentTest(unittest.TestCase):
+    """Synthetic saved-observation regressions, never historical acceptance."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "case"
+        self.expected = fixture(self.root, receipt=False)
+        self.expected_path = self.root.parent / "expected.json"
+        self.original_path = self.root.parent / "original.json"
+        write(self.expected_path, self.expected)
+        write(self.original_path, {"verdict": "FAIL", "reason": "original strict aggregate rejection",
+            "source_sha": self.expected["source_commit"], "source_tree": self.expected["source_tree"],
+            "campaign": self.expected["project"]})
+
+    def assess(self):
+        return profile.assess_case(self.root, self.expected_path, self.original_path)
+
+    def alter(self, phase, field, change):
+        path = self.root / f"time_source_{phase}.json"
+        packet = json.loads(path.read_text())
+        ref = packet[field][0] if field in ("serving", "diagnostics") else packet[field]
+        target = Path(ref["path"])
+        row = json.loads(target.read_text())
+        change(row)
+        replacement = write(target, row)
+        if field in ("serving", "diagnostics"):
+            packet[field][0] = replacement
+        else:
+            packet[field] = replacement
+        write(path, packet)
+
+    def snapshot(self):
+        return {str(path.relative_to(self.root.parent)): path.read_bytes()
+                for path in self.root.parent.rglob("*") if path.is_file()}
+
+    def test_assessment_preserves_failed_aggregate_and_raw_mount_order(self):
+        # Saved-observation shape of #1969; these bytes are synthetic.
+        self.alter("post", "diagnostics", lambda row: row["Mounts"].reverse())
+        self.alter("post", "relay", lambda row: row["Mounts"].reverse())
+        before = self.snapshot()
+        result = self.assess()
+        self.assertEqual(result["component"]["verdict"], "pass")
+        self.assertFalse(result["qualification"])
+        self.assertNotIn("verdict", result)
+        original = result["original_aggregate"]
+        self.assertEqual(original["path"], str(self.original_path))
+        self.assertEqual(original["sha256"], hashlib.sha256(before["original.json"]).hexdigest())
+        self.assertEqual(original["verdict"], "FAIL")
+        self.assertEqual(original["association"]["status"], "SOURCE_AND_CAMPAIGN_MATCH")
+        self.assertEqual(original["association"]["missing_fields"], [])
+        self.assertIn("historical provenance NOT_PROVEN", original["association"]["basis"])
+        self.assertEqual(result["reader"]["sha256"], hashlib.sha256(Path(profile.__file__).read_bytes()).hexdigest())
+        self.assertEqual(result["product_expectation"]["source_commit"], self.expected["source_commit"])
+        self.assertEqual(result["product_expectation"]["image_id"], self.expected["image_id"])
+        self.assertEqual(result["expected_inputs"]["sha256"], hashlib.sha256(before["expected.json"]).hexdigest())
+        self.assertIn("performance", result["unassessed"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_changed_explicit_product_helper_and_protocol_expectations_refuse(self):
+        # Partial user-supplied originals carry no source association claim.
+        write(self.original_path, {"verdict": "FAIL"})
+        changes = {"source_commit": "0" * 40, "source_tree": "0" * 40,
+                   "image_id": "sha256:" + "0" * 64, "runtime_user": "1001:1001", "cpuset": "1-4",
+                   "image_scope": "retained", "scenario": "search_churn", "run_id": "different-case",
+                   "project": "different-project", "time_profile": "unknown",
+                   "helper_sources": {"testbed/bench/ntpfixture/main.go": "0" * 64},
+                   "go_tool_sha256": "0" * 64, "goarch": "amd64", "receipt": True}
+        for key, value in changes.items():
+            with self.subTest(key=key):
+                write(self.expected_path, dict(self.expected, **{key: value}))
+                before = self.snapshot()
+                result = self.assess()
+                self.assertEqual(result["component"]["verdict"], "incomplete")
+                self.assertFalse(result["qualification"])
+                self.assertEqual(result["original_aggregate"]["verdict"], "FAIL")
+                self.assertEqual(self.snapshot(), before)
+
+    def test_original_source_tree_and_campaign_mismatch_refuse_without_rewriting(self):
+        original = json.loads(self.original_path.read_text())
+        for key, value in (("source_sha", "0" * 40), ("source_tree", "0" * 40),
+                           ("campaign", "another-campaign"), ("source_sha", None)):
+            with self.subTest(key=key, value=value):
+                write(self.original_path, dict(original, **{key: value}))
+                before = self.snapshot()
+                with self.assertRaisesRegex(profile.Incomplete, "original aggregate " + key):
+                    self.assess()
+                self.assertEqual(self.snapshot(), before)
+
+    def test_partial_original_fields_report_user_supplied_association_not_proven(self):
+        for original, matched, missing in (
+                ({"verdict": "FAIL"}, [], ["campaign", "source_sha", "source_tree"]),
+                ({"verdict": "fail", "source_sha": self.expected["source_commit"]},
+                 ["source_sha"], ["campaign", "source_tree"])):
+            with self.subTest(original=original):
+                write(self.original_path, original)
+                before = self.snapshot()
+                result = self.assess()
+                self.assertEqual(result["component"]["verdict"], "pass")
+                self.assertFalse(result["qualification"])
+                self.assertEqual(result["original_aggregate"]["verdict"], original["verdict"])
+                association = result["original_aggregate"]["association"]
+                self.assertEqual(association["status"], "NOT_PROVEN")
+                self.assertEqual(association["matched_fields"], matched)
+                self.assertEqual(association["missing_fields"], missing)
+                self.assertIn("User-supplied", association["basis"])
+                self.assertEqual(self.snapshot(), before)
+
+    def test_missing_expectations_and_unknown_extra_inputs_do_not_narrow_claim(self):
+        for key in self.expected:
+            if key == "diagnostic":
+                continue
+            with self.subTest(missing=key):
+                value = dict(self.expected)
+                value.pop(key)
+                write(self.expected_path, value)
+                with self.assertRaisesRegex(profile.Incomplete, "expectation keys"):
+                    self.assess()
+        write(self.expected_path, dict(self.expected, arbitrary_reuse=True))
+        with self.assertRaisesRegex(profile.Incomplete, "expectation keys"):
+            self.assess()
+
+    def test_material_observation_changes_and_missing_pre_post_stay_incomplete(self):
+        changes = [
+            ("relay", lambda row: row["HostConfig"].update(Memory=134217728)),
+            ("network", lambda row: row.update(Internal=False)),
+            ("serving", lambda row: row.update(Image="sha256:" + "0" * 64)),
+            ("serving", lambda row: row.update(RestartCount=1)),
+            ("status", lambda row: row.update(start_nonce="0" * 64)),
+        ]
+        for phase in ("pre", "post"):
+            for field, change in changes:
+                with self.subTest(phase=phase, field=field):
+                    fixture(self.root, receipt=False)
+                    self.alter(phase, field, change)
+                    result = self.assess()
+                    self.assertEqual(result["component"]["verdict"], "incomplete")
+                    self.assertEqual(result["original_aggregate"]["verdict"], "FAIL")
+            for key, value in (("source_commit", "0" * 40), ("source_tree", "0" * 40),
+                               ("transport_profile", "unknown")):
+                with self.subTest(phase=phase, key=key):
+                    fixture(self.root, receipt=False)
+                    path = self.root / f"time_source_{phase}.json"
+                    packet = json.loads(path.read_text())
+                    packet[key] = value
+                    write(path, packet)
+                    self.assertEqual(self.assess()["component"]["verdict"], "incomplete")
+            fixture(self.root, receipt=False)
+            (self.root / f"time_source_{phase}.json").unlink()
+            self.assertEqual(self.assess()["component"]["verdict"], "incomplete")
+        fixture(self.root, receipt=False)
+        helper = self.root / "time-source-evidence/ntpfixture.bin"
+        helper.write_bytes(helper.read_bytes() + b"changed")
+        self.assertEqual(self.assess()["component"]["verdict"], "incomplete")
+
+    def test_missing_historical_alias_identity_remains_unproven(self):
+        self.alter("pre", "serving", lambda row: row["Mounts"][0].update(
+            Source="/host_mnt" + row["Mounts"][0]["Source"]))
+        result = self.assess()
+        self.assertEqual(result["component"]["verdict"], "incomplete")
+        self.assertNotIn("fixture_container_id", result["component"])
+        self.assertEqual(result["original_aggregate"]["verdict"], "FAIL")
+
+    def test_cli_reads_only_and_refuses_incomplete_with_json_and_nonzero_exit(self):
+        args = ["assess-case", "--root", str(self.root), "--expected", str(self.expected_path),
+                "--original", str(self.original_path)]
+        before = self.snapshot()
+        with patch("subprocess.Popen", side_effect=AssertionError("subprocess attempted")), \
+                patch("socket.socket", side_effect=AssertionError("network attempted")):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                profile.main(args)
+            self.assertEqual(json.loads(output.getvalue())["component"]["verdict"], "pass")
+            self.assertEqual(self.snapshot(), before)
+            (self.root / "time_source_post.json").unlink()
+            output = io.StringIO()
+            with redirect_stdout(output), self.assertRaises(SystemExit) as stopped:
+                profile.main(args)
+            self.assertEqual(stopped.exception.code, 2)
+            self.assertEqual(json.loads(output.getvalue())["original_aggregate"]["verdict"], "FAIL")
+            self.assertEqual(json.loads(output.getvalue())["component"]["verdict"], "incomplete")
+
+    def test_original_and_expected_files_must_be_safe_completed_json(self):
+        for value in ({}, {"verdict": "running"}, {"verdict": True}):
+            write(self.original_path, value)
+            with self.subTest(original=value), self.assertRaises(profile.Incomplete):
+                self.assess()
+        write(self.original_path, {"verdict": "fail"})
+        self.expected_path.write_text('{"source_commit":"a","source_commit":"b"}')
+        with self.assertRaises(profile.Incomplete):
+            self.assess()
+        self.expected_path.unlink()
+        self.expected_path.symlink_to(self.original_path)
+        with self.assertRaises(profile.Incomplete):
+            self.assess()
 
 
 if __name__ == "__main__":
