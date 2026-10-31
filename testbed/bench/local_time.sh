@@ -263,7 +263,7 @@ local_time_validate_relay() {
     (.HostConfig.Binds==null or .HostConfig.Binds==[]) and (.HostConfig.Tmpfs==null or .HostConfig.Tmpfs=={}) and
     .HostConfig.PublishAllPorts==false and (.HostConfig.ExtraHosts==null or .HostConfig.ExtraHosts==[]) and
     .HostConfig.RestartPolicy=={Name:"no",MaximumRetryCount:0} and
-    .HostConfig.CpusetCpus==$cpu and .HostConfig.NanoCpus==1000000000 and .HostConfig.Memory==134217728 and .HostConfig.PidsLimit==128 and
+    .HostConfig.CpusetCpus==$cpu and .HostConfig.NanoCpus==1000000000 and .HostConfig.Memory==536870912 and .HostConfig.PidsLimit==128 and
     (.NetworkSettings.Networks|keys|sort)==([$backend,($project+"_frontend")]|sort) and
     (.HostConfig.NetworkMode==$backend or .HostConfig.NetworkMode==($project+"_frontend")) and
     (.HostConfig.Mounts|length)==2 and (.Mounts|length)==2 and
@@ -339,7 +339,7 @@ with os.fdopen(fd,"w") as f:json.dump(value,f,separators=(",",":"));f.write("\n"
   jq -n --arg image "$LOCAL_TIME_IMAGE_ID" --arg owner "$runtime_owner" --arg helper "$LOCAL_TIME_HELPER" \
     --arg config "$LOCAL_TIME_RELAY_CONFIG" --arg cpu "$LOCAL_TIME_CPU" --arg project "$COMPOSE_PROJECT_NAME" --argjson ports "$ports" '
     {services:{"time-relay":{image:$image,container_name:($project+"-time-relay"),user:$owner,read_only:true,
-      cap_drop:["ALL"],security_opt:["no-new-privileges:true"],cpuset:$cpu,cpus:1,mem_limit:"128m",pids_limit:128,
+      cap_drop:["ALL"],security_opt:["no-new-privileges:true"],cpuset:$cpu,cpus:1,mem_limit:"512m",pids_limit:128,
       sysctls:{"net.ipv4.ip_forward":"0","net.ipv6.conf.all.forwarding":"0"},
       labels:{"io.lantern.bench-time.profile":"bench_local_udp_v1","lantern.owner":"bench-local-tcp-relay"},networks:["default","frontend"],
       entrypoint:["/fixture/ntpfixture"],command:["-relay-config","/fixture/relay.json"],ports:$ports,
@@ -436,6 +436,130 @@ value={'schema':1,'profile':'bench_local_udp_v1','phase':phase,'source_commit':c
 fd=os.open(root/f'time_source_{phase}.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
 with os.fdopen(fd,'w') as f: json.dump(value,f,separators=(',',':'));f.write('\n')
 PY
+}
+
+# Failure-only observation, after owned clients are reaped and before any stop.
+# Query/log children stay in the original owner group; this never starts a target.
+local_time_capture_failure() {
+  python3 - "$1" "$OUTDIR/time-source-evidence/bootstrap" "$COMPOSE_PROJECT_NAME" \
+    "$LOCAL_TIME_IMAGE_ID" "$runtime_owner" "${LOCAL_TIME_RELAY_ID:-}" \
+    "${LOCAL_TIME_FIXTURE_ID:-}" "${LOCAL_TIME_RELAY_DECLARED:-0}" <<'PY_CAPTURE'
+import datetime,hashlib,json,os,selectors,signal,stat,subprocess,sys,time
+private,bootstrap,project,image,user,relay,fixture,relay_declared=sys.argv[1:]
+directory=os.open(private,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+metadata=os.fstat(directory)
+if metadata.st_uid!=os.getuid() or stat.S_IMODE(metadata.st_mode)!=0o700:
+    os.close(directory); raise SystemExit('private failure directory ownership differs')
+def interrupted(signum,frame): raise SystemExit(128+signum)
+signal.signal(signal.SIGTERM,interrupted); signal.signal(signal.SIGINT,interrupted)
+def write(name,data):
+    fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=directory)
+    with os.fdopen(fd,'wb') as output: output.write(data)
+    return {'path':name,'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)}
+def read_baseline(role):
+    for phase in ('running','created'):
+        path=os.path.join(bootstrap,role+'-'+phase+'.json')
+        try: fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        except FileNotFoundError: continue
+        with os.fdopen(fd,'rb') as source:
+            before=os.fstat(source.fileno()); data=source.read(131073); after=os.fstat(source.fileno())
+        final=os.lstat(path)
+        identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or before.st_nlink!=1 or stat.S_IMODE(before.st_mode)!=0o600 or len(data)>131072 or any(identity(value)!=identity(before) for value in (after,final)):
+            raise ValueError('bootstrap identity file differs')
+        return path,hashlib.sha256(data).hexdigest(),json.loads(data)
+    raise ValueError('bootstrap identity file missing')
+def query(arguments,limit,seconds):
+    # Bound each pipe independently while continuing to drain. No detached PG.
+    start=time.monotonic_ns(); buffers=[bytearray(),bytearray()]; truncated=[False,False]
+    selector=selectors.DefaultSelector()
+    try: child=subprocess.Popen(arguments,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    except BaseException:
+        selector.close(); raise
+    timed_out=False; reaped=False
+    try:
+        for index,pipe in enumerate((child.stdout,child.stderr)):
+            os.set_blocking(pipe.fileno(),False); selector.register(pipe,selectors.EVENT_READ,index)
+        deadline=time.monotonic()+seconds
+        while selector.get_map():
+            remaining=deadline-time.monotonic()
+            if remaining<=0: timed_out=True; break
+            for event,_ in selector.select(min(remaining,0.1)):
+                chunk=os.read(event.fileobj.fileno(),8192)
+                if not chunk: selector.unregister(event.fileobj); continue
+                index=event.data; available=limit-len(buffers[index])
+                buffers[index].extend(chunk[:available])
+                if len(chunk)>available: truncated[index]=True
+        if timed_out: child.kill()
+        try: child.wait(timeout=max(0.01,deadline-time.monotonic()))
+        except subprocess.TimeoutExpired:
+            timed_out=True; child.kill(); child.wait(timeout=1)
+        reaped=True
+    finally:
+        if child.poll() is None:
+            child.kill()
+            try: child.wait(timeout=1); reaped=True
+            except subprocess.TimeoutExpired: pass
+        selector.close(); child.stdout.close(); child.stderr.close()
+    return bytes(buffers[0]),bytes(buffers[1]),{'exit_code':child.returncode,'timed_out':timed_out,
+        'direct_reaped':reaped,'stdout_truncated':truncated[0],'stderr_truncated':truncated[1],
+        'started_ns':start,'finished_ns':time.monotonic_ns()}
+def owned(value,role,cid):
+    config=value.get('Config',{}); labels=config.get('Labels',{})
+    return (value.get('Id')==cid and value.get('Image')==image and config.get('User')==user and
+        value.get('Name')=='/'+project+'-time-'+role and
+        labels.get('com.docker.compose.project')==project and
+        labels.get('com.docker.compose.service')=='time-'+role and
+        labels.get('com.docker.compose.oneoff')=='False' and
+        labels.get('lantern.owner')==('bench-local-tcp-relay' if role=='relay' else 'bench-local-udp-fixture') and
+        labels.get('io.lantern.bench-time.profile')=='bench_local_udp_v1')
+failed=False
+try:
+    for role,cid in (('relay',relay),('fixture',fixture)):
+        if role=='relay' and relay_declared!='1' and not cid: continue
+        record={'schema':1,'scope':'private_pre_cleanup_diagnostic_only','role':role,
+            'expected_container_id':cid,'expected_image':image,'started_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'started_ns':time.monotonic_ns(),'errors':[],'commands':{},'files':{}}
+        try:
+            if len(cid)!=64 or any(c not in '0123456789abcdef' for c in cid): raise ValueError('original container ID missing or invalid')
+            path,digest,before=read_baseline(role)
+            if not owned(before,role,cid): raise ValueError('bootstrap ownership differs')
+            record['bootstrap']={'path':path,'sha256':digest,'pid':before['State']['Pid'],'started_at':before['State']['StartedAt']}
+            output,stderr,command=query(['docker','inspect','--format','{{json .}}',cid],131072,3)
+            record['commands']['inspect']=command
+            if command['exit_code']!=0 or command['timed_out'] or not command['direct_reaped'] or command['stdout_truncated'] or command['stderr_truncated']:
+                raise ValueError('terminal inspect incomplete')
+            actual=json.loads(output)
+            if not owned(actual,role,cid): raise ValueError('terminal ownership differs')
+            state=actual['State']
+            projection={'Id':actual['Id'],'Name':actual['Name'],'Image':actual['Image'],
+                'RestartCount':actual['RestartCount'],'Config':{'User':actual['Config']['User'],'Labels':{key:actual['Config']['Labels'][key] for key in
+                ('com.docker.compose.project','com.docker.compose.service','com.docker.compose.oneoff','lantern.owner','io.lantern.bench-time.profile')}},
+                'State':{key:state[key] for key in ('Status','Running','Pid','StartedAt','FinishedAt','OOMKilled','ExitCode','Error')}}
+            record['files']['terminal']=write('time-'+role+'.terminal.json',(json.dumps(projection,separators=(',',':'))+'\n').encode())
+            if before['State']['Pid']>0:
+                record['process_continuity']=(state['StartedAt']==before['State']['StartedAt'] and
+                    (state['Pid']==before['State']['Pid'] or state['Running'] is False and state['Pid']==0) and actual['RestartCount']==before['RestartCount'])
+                if not record['process_continuity']: record['errors'].append('process identity changed since bootstrap')
+            else:
+                record['process_continuity']=None
+            stdout,stderr,command=query(['docker','logs','--timestamps','--tail','256',cid],65536,5)
+            record['commands']['logs']=command
+            record['files']['stdout']=write('time-'+role+'.stdout.log',stdout)
+            record['files']['stderr']=write('time-'+role+'.stderr.log',stderr)
+            if command['exit_code']!=0 or command['timed_out'] or not command['direct_reaped']:
+                record['errors'].append('terminal log capture incomplete')
+            if command['stdout_truncated'] or command['stderr_truncated']:
+                record['errors'].append('terminal logs truncated at per-stream byte bound')
+        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):
+            record['errors'].append('terminal identity or capture unavailable')
+        record['finished_ns']=time.monotonic_ns()
+        record['finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+        record['complete']=not record['errors']; failed=failed or not record['complete']
+        write('time-'+role+'.capture.json',(json.dumps(record,separators=(',',':'))+'\n').encode())
+finally: os.close(directory)
+raise SystemExit(1 if failed else 0)
+PY_CAPTURE
 }
 
 # Retained failures may keep volumes for inspection, but never leave a time

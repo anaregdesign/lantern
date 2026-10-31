@@ -409,7 +409,7 @@ def _relay(value, backend, frontend, expected, helper, config_path, routes):
          and hc["Sysctls"] == {"net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0"}
          and hc["CpusetCpus"] == "4"
          and hc["NanoCpus"] == 1000000000 and type(hc["NanoCpus"]) is int
-         and hc["Memory"] == 134217728 and type(hc["Memory"]) is int
+         and hc["Memory"] == 536870912 and type(hc["Memory"]) is int
          and hc["PidsLimit"] == 128 and type(hc["PidsLimit"]) is int
          and all(hc[k] in (None, []) for k in ("CapAdd", "Devices", "DeviceRequests", "DeviceCgroupRules", "VolumesFrom", "ExtraHosts", "Binds"))
          and hc["Tmpfs"] in (None, {}) and hc["PublishAllPorts"] is False
@@ -583,7 +583,7 @@ def _validate_case(root, expected):
                         "goarch": pre["helper"]["goarch"], "clock_kind": before[3]["clock_kind"],
                         "profile": PROFILE, "transport_profile": TRANSPORT,
                         "fixture_cpuset": "4", "relay_cpuset": "4", "server_cpuset": "0-3",
-                        "relay_resources": {"nano_cpus": 1000000000, "memory": 134217728, "pids": 128, "max_connections": 4096},
+                        "relay_resources": {"nano_cpus": 1000000000, "memory": 536870912, "pids": 128, "max_connections": 4096},
                         "routes": [{"service": SERVICES[row["listen_port"] - 6380] if row["listen_port"] < 9000 else
                                     SERVICES[row["listen_port"] - 9090] if row["listen_port"] < 9093 else "prometheus",
                                     "listen_port": row["listen_port"], "backend_port": row["backend_port"]} for row in routes]}}

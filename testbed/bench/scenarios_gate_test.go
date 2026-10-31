@@ -1350,18 +1350,25 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 	cleanup := "cleanup() {\n" + body + "\n}\n"
 
 	for _, tc := range []struct {
-		name         string
-		dockerStatus int
-		logsStatus   int
-		runStatus    int
-		keepUp       int
-		wantStatus   int
-		wantDown     bool
-		wantBridge   bool
-		bridgeLink   bool
-		captureError string
+		name           string
+		dockerStatus   int
+		logsStatus     int
+		runStatus      int
+		keepUp         int
+		wantStatus     int
+		wantDown       bool
+		wantBridge     bool
+		bridgeLink     bool
+		captureError   string
+		localTime      int
+		terminalStatus int
+		childrenStatus int
 	}{
 		{name: "clean teardown", wantDown: true},
+		{name: "local time success does not capture failure", localTime: 1, wantDown: true},
+		{name: "local terminal capture precedes stop and down", localTime: 1, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
+		{name: "local terminal capture failure preserves primary and cleanup", localTime: 1, terminalStatus: 17, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
+		{name: "unproved client reap excludes terminal capture", localTime: 1, childrenStatus: 21, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
 		{name: "log capture failure preserves pass and teardown", logsStatus: 17, wantDown: true},
 		{name: "log exit sidecar write failure preserves pass and teardown", wantDown: true, captureError: "sidecar"},
 		{name: "log evidence mktemp failure preserves pass and teardown", wantDown: true, captureError: "mktemp"},
@@ -1410,8 +1417,16 @@ export COMPOSE_PROJECT_NAME=lantern-bench-cleanup-fixture
 COMPOSE_STARTED=1
 COMPOSE_FILES=(-f fixture-compose.yml)
 source owned_compose.sh
-stop_owned_processes() { printf 'stop\n' >> "$OUTDIR/cleanup-order"; }
+stop_owned_processes() { printf 'stop\n' >> "$OUTDIR/cleanup-order"; return %d; }
 KEEP_UP=%d
+LOCAL_TIME_FIXTURE_ID=""
+if [[ "%d" == 1 ]]; then LOCAL_TIME_FIXTURE_ID=owned-fixture; fi
+local_time_capture_failure() {
+ [[ -d "$1" && "$(tail -n 1 "$OUTDIR/cleanup-order")" == capture ]] || return 90
+ printf 'terminal\n' >> "$OUTDIR/cleanup-order"
+ return %d
+}
+local_time_stop() { printf 'local-stop\n' >> "$OUTDIR/cleanup-order"; }
 log() { :; }
 case "${CAPTURE_ERROR:-}" in
   mktemp) mktemp() { return 29; };;
@@ -1442,7 +1457,7 @@ docker() {
 %s
 trap cleanup EXIT
 exit %d
-`, tc.keepUp, tc.logsStatus, tc.dockerStatus, cleanup, tc.runStatus)
+`, tc.childrenStatus, tc.keepUp, tc.localTime, tc.terminalStatus, tc.logsStatus, tc.dockerStatus, cleanup, tc.runStatus)
 			cmd := exec.Command("bash", "-c", fixture)
 			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "HERE="+outDir,
 				"NATIVE_WORK_DIR="+workspace, "PEER_TLS_DIR="+trust, "TMPDIR="+failureRoot, "CAPTURE_ERROR="+tc.captureError)
@@ -1468,11 +1483,23 @@ exit %d
 			if wantCapture {
 				wantOrder += "capture\n"
 			}
+			if tc.localTime == 1 {
+				if tc.runStatus != 0 && tc.childrenStatus == 0 && wantCapture {
+					wantOrder += "terminal\n"
+				}
+				wantOrder += "local-stop\n"
+			}
 			if tc.wantDown {
 				wantOrder += "down\n"
 			}
 			if err != nil || string(order) != wantOrder {
 				t.Fatalf("cleanup capture order = %q, err = %v; want %q", order, err, wantOrder)
+			}
+			if tc.terminalStatus != 0 && !strings.Contains(string(output), "terminal diagnostics incomplete") {
+				t.Fatalf("terminal capture failure not explicit: %s", output)
+			}
+			if tc.childrenStatus != 0 && !strings.Contains(string(output), "terminal diagnostics skipped; owned client reap unproved") {
+				t.Fatalf("terminal observation ran with unknown clients: %s", output)
 			}
 			if tc.dockerStatus != 0 && tc.wantDown && !strings.Contains(string(output), "run is unqualified") {
 				t.Errorf("teardown failure is not reported: %s", output)
@@ -1640,10 +1667,14 @@ local_time_start_relay() {
   printf 'relay\n' >> "$OUTDIR/local-time-actions"
  fi
 }
+local_time_capture_failure() {
+ [[ "$CASE" == "initialization failure" && -d "$1" && "$(cat "$OUTDIR/local-time-actions")" == prepare ]] || return 90
+ printf 'terminal\n' >> "$OUTDIR/local-time-actions"
+}
 local_time_stop() {
  [[ "$COMPOSE_STARTED" == 1 && "$LOCAL_TIME_FIXTURE_ID" == owned-fixture ]] || return 90
  if [[ "$CASE" == "initialization failure" ]]; then
-  [[ "$(cat "$OUTDIR/local-time-actions")" == prepare ]] || return 90
+  [[ "$(cat "$OUTDIR/local-time-actions")" == $'prepare\nterminal' ]] || return 90
  else
   [[ "$(cat "$OUTDIR/local-time-actions")" == $'prepare\nrelay' ]] || return 90
  fi
@@ -1695,7 +1726,7 @@ cleanup() {
 				wantTime := "prepare\nrelay\nstop\n"
 				switch tc.name {
 				case "initialization failure":
-					wantTime = "prepare\nstop\n"
+					wantTime = "prepare\nterminal\nstop\n"
 				case "skip startup":
 					wantTime = "relay-skip\n"
 				}

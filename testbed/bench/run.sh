@@ -175,10 +175,12 @@ cleanup() {
   local tls_in_use=0
   local private_failure=""
   local compose_logs_status=0
+  local owned_clients_stopped=1
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
   if ! stop_owned_processes "${NATURAL_GC_PID:-}" "${chaos_pid:-}" "${prod_pids[@]}" "${sub_pids[@]}" "${MEMBERSHIP_PID:-}" "${DIAGNOSTICS_PID:-}"; then
+    owned_clients_stopped=0
     echo "run.sh: owned child teardown failed; run is unqualified" >&2
     if (( status == 0 )); then status=1; fi
   fi
@@ -205,6 +207,13 @@ cleanup() {
       # This records the capture exit only; zero does not prove complete logs.
       if ! (umask 077; printf '%s\n' "$compose_logs_status" > "$private_failure/server.log.exit-code"); then
         echo "run.sh: failed to retain Compose log capture exit code; workload status preserved" >&2
+      fi
+      if (( status != 0 )) && [[ -n "${LOCAL_TIME_FIXTURE_ID:-}" ]]; then
+        if (( owned_clients_stopped == 0 )); then
+          echo "run.sh: local time terminal diagnostics skipped; owned client reap unproved" >&2
+        elif ! local_time_capture_failure "$private_failure"; then
+          echo "run.sh: local time terminal diagnostics incomplete; workload status and cleanup preserved" >&2
+        fi
       fi
       echo "run.sh: private startup/runtime evidence retained at $private_failure" >&2
     else

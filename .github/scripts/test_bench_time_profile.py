@@ -118,7 +118,7 @@ def fixture(root, expected=None, receipt=True):
     relay_executable_ref = write(root / "time-source-evidence/relay-executable.sha256",
                                  (helper["sha256"] + "  /proc/1/exe\n").encode(), True)
     relay["HostConfig"].update(Sysctls={"net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0"},
-                               NanoCpus=1000000000, Memory=134217728, PidsLimit=128)
+                               NanoCpus=1000000000, Memory=536870912, PidsLimit=128)
     relay["HostConfig"]["Mounts"].append({"Type": "bind", "Source": relay_config_ref["path"], "Target": "/fixture/relay.json", "ReadOnly": True})
     relay["Mounts"].append({"Type": "bind", "Source": "/host_mnt" + relay_config_ref["path"], "Destination": "/fixture/relay.json",
                             "Mode": "ro", "RW": False, "Propagation": "rprivate"})
@@ -348,6 +348,44 @@ class TimeProfileTest(unittest.TestCase):
                              ("NetworkMode", "host"), ("CapAdd", ["NET_ADMIN"])):
             value = copy.deepcopy(row); value["HostConfig"][key] = changed
             self.assertFalse(profile.owned_relay(value, binding))
+
+    def test_exact_relay_memory_is_bound_in_both_lanes_and_phases(self):
+        for scope in ("normal", "retained"):
+            for receipt in (True, False):
+                root = self.root.parent / (scope + ("-receipt" if receipt else "-canonical"))
+                expected = fixture(root, {"image_scope": scope}, receipt=receipt)
+                proof = profile.validate_case(root, expected)
+                self.assertEqual(proof["pairing"]["relay_resources"], {
+                    "nano_cpus": 1000000000, "memory": 536870912,
+                    "pids": 128, "max_connections": 4096})
+        for phase in ("pre", "post"):
+            for memory in (134217728, None, 536870911, 1073741824, "536870912", True):
+                with self.subTest(phase=phase, memory=memory):
+                    fixture(self.root)
+                    self.alter(phase, "relay", lambda x: x["HostConfig"].update(Memory=memory))
+                    with self.assertRaises(profile.Incomplete):
+                        profile.validate_case(self.root, self.expected)
+            fixture(self.root)
+            self.alter(phase, "relay", lambda x: x["HostConfig"].pop("Memory"))
+            with self.subTest(phase=phase, missing=True), self.assertRaises(profile.Incomplete):
+                profile.validate_case(self.root, self.expected)
+
+    def test_cleanup_relay_memory_and_other_resource_limits_stay_exact(self):
+        source = self.root / "source"
+        root = source / "testbed/bench/out/receipt_admission_lookup/20261030T000000Z"
+        expected = fixture(root)
+        row = json.loads((root / "time-source-evidence/pre/relay.json").read_text())
+        binding = dict(expected, container_id=row["Id"], source_root=str(source), helper_sha256=None)
+        self.assertEqual(row["HostConfig"]["Memory"], 536870912)
+        self.assertTrue(profile.owned_relay(row, binding))
+        for key, changed in (("Memory", 134217728), ("Memory", None), ("Memory", 536870911),
+                             ("Memory", "536870912"), ("NanoCpus", 2000000000),
+                             ("PidsLimit", 256), ("CpusetCpus", "0-3")):
+            with self.subTest(key=key, changed=changed):
+                value = copy.deepcopy(row); value["HostConfig"][key] = changed
+                self.assertFalse(profile.owned_relay(value, binding))
+        value = copy.deepcopy(row); value["HostConfig"].pop("Memory")
+        self.assertFalse(profile.owned_relay(value, binding))
 
     def test_actual_relay_publishers_are_required_and_servers_stay_internal(self):
         for kind in ("server-publisher", "wrong-published-port", "public-host", "protected-metrics"):
