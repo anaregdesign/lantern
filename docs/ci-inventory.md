@@ -66,6 +66,16 @@ FAIL remains unchanged. Only the previously unrun normal4 and retained4 were
 executed. This bounded adoption is not a general historical identity certificate
 or permission to reassess under a changed workload, resource budget or protocol.
 
+The [actual saved-observation CLI demonstration](evidence/validation-time-reassessment.json)
+re-read two existing cases without load: `broad_mutate` passed this time-profile
+component in 0.271679s; `broad_rw` remained incomplete for missing bind identity
+in 0.151519s. Both results remain nonqualifying, the original aggregate stays
+FAIL with the same SHA-256, and all 125 saved raw files were unchanged. The
+complete read/hash/assessment procedure took 0.985645s; these timings are not
+benchmark performance or whole-case acceptance. Private raw paths are omitted
+from the public summary; exact inputs and byte/metadata inventories are retained
+with the implementation evidence.
+
 The finite migration is: (1) #1975 adds early actual-consumer contracts and the
 small known-tool routing closure; (2) #1976 adds a strict, nonqualifying offline
 component assessment records raw hashes, reader identity, unchanged premises,

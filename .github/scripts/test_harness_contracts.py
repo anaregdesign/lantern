@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -52,11 +53,14 @@ class HarnessContractsTest(unittest.TestCase):
 
     def test_go_command_uses_the_exact_selector_uncached_and_owns_its_group(self):
         process = Mock(returncode=0)
+        diagnostics = b"go: downloading example.invalid/dependency v1.2.3\n"
         def spawn(*args, **kwargs):
             kwargs["stdout"].write(events().encode())
+            kwargs["stderr"].write(diagnostics)
+            self.assertIsNot(kwargs["stdout"], kwargs["stderr"])
             return process
         with patch.object(contracts.subprocess, "Popen", side_effect=spawn) as start:
-            self.assertEqual(contracts.run_go(), (0, events()))
+            self.assertEqual(contracts.run_go(), (0, events().encode(), diagnostics))
         command = start.call_args.args[0]
         self.assertEqual(command, ["go", "test", "-json", "-count=1", "-timeout=30m", "./testbed/bench",
                                    "-run", "^(" + "|".join(contracts.GO_TESTS) + ")$"])
@@ -70,10 +74,11 @@ class HarnessContractsTest(unittest.TestCase):
                                    subprocess.TimeoutExpired("go", 10), subprocess.TimeoutExpired("go", 10)]
         def spawn(*args, **kwargs):
             kwargs["stdout"].write(b"original failure\n")
+            kwargs["stderr"].write(b"original diagnostic\n")
             return process
         with patch.object(contracts.subprocess, "Popen", side_effect=spawn), \
                 patch.object(contracts.os, "killpg") as stop:
-            self.assertEqual(contracts.run_go(), (1, "original failure\n"))
+            self.assertEqual(contracts.run_go(), (1, b"original failure\n", b"original diagnostic\n"))
         self.assertEqual(stop.call_args_list[0].args, (12345, signal.SIGTERM))
         self.assertEqual(stop.call_args_list[1].args, (12345, signal.SIGKILL))
 
@@ -117,11 +122,12 @@ class HarnessContractsTest(unittest.TestCase):
             evidence = Path(temporary) / "evidence"
             with patch.object(contracts, "real_go_environment", return_value={"raw_goenv": "off"}), \
                     patch.object(contracts, "python_contracts", return_value=(True, 9, "python passed\n")) as python, \
-                    patch.object(contracts, "run_go", return_value=(1, "original strict failure\n")), \
-                    contextlib.redirect_stdout(io.StringIO()):
+                    patch.object(contracts, "run_go", return_value=(1, b"original strict failure\n", b"original stderr\n")), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(contracts.main(["--evidence", str(evidence)]), 1)
             self.assertEqual(python.call_args.args[0], tuple(contracts.GROUPS))
             self.assertEqual((evidence / "go.jsonl").read_text(), "original strict failure\n")
+            self.assertEqual((evidence / "go.stderr.log").read_bytes(), b"original stderr\n")
             self.assertEqual(json.loads((evidence / "verdict.json").read_text())["verdict"], "fail")
         with patch.object(contracts, "python_contracts", return_value=(True, 2, "passed\n")) as python, \
                 patch.object(contracts, "run_go") as go, patch.object(contracts, "real_go_environment") as environment, \
@@ -133,7 +139,7 @@ class HarnessContractsTest(unittest.TestCase):
 
     def test_tools_only_reports_python_as_not_selected(self):
         with patch.object(contracts, "python_contracts") as python, \
-                patch.object(contracts, "run_go", return_value=(0, events())), \
+                patch.object(contracts, "run_go", return_value=(0, events().encode(), b"")), \
                 patch.object(contracts, "real_go_environment", return_value={"raw_goenv": "off"}), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(contracts.main(["--group", "bench-time", "--tools-only"]), 0)
@@ -141,6 +147,30 @@ class HarnessContractsTest(unittest.TestCase):
         self.assertEqual(report["claim"], "harness-tool-contracts")
         self.assertEqual(report["python_status"], "NOT_SELECTED")
         python.assert_not_called()
+
+    def test_download_stderr_stays_raw_and_only_stdout_events_qualify(self):
+        diagnostics = b"go: downloading example.invalid/dependency v1.2.3\n"
+        for code, output, expected in ((0, events().encode(), 0),
+                                       (7, events().encode(), 1),
+                                       (0, b"not test JSON\n", 1),
+                                       (0, events().replace("inactive=true", "inactive=false").encode(), 1)):
+            with self.subTest(code=code, output=output[:80]), tempfile.TemporaryDirectory() as temporary:
+                evidence = Path(temporary) / "evidence"
+                process = Mock(returncode=code)
+                def spawn(*args, **kwargs):
+                    kwargs["stdout"].write(output)
+                    kwargs["stderr"].write(diagnostics)
+                    return process
+                with patch.object(contracts.subprocess, "Popen", side_effect=spawn), \
+                        patch.object(contracts, "real_go_environment", return_value={"raw_goenv": "off"}), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(contracts.main(["--tools-only", "--group", "bench-time", "--evidence", str(evidence)]), expected)
+                report = json.loads((evidence / "verdict.json").read_text())
+                self.assertEqual(report["go_exit_code"], code)
+                self.assertEqual(report["verdict"], "pass" if expected == 0 else "fail")
+                for name, raw in (("go.jsonl", output), ("go.stderr.log", diagnostics)):
+                    self.assertEqual((evidence / name).read_bytes(), raw)
+                    self.assertEqual(report["logs"][name], {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)})
 
     def test_tools_only_rejects_a_group_without_real_tool_consumers(self):
         with tempfile.TemporaryDirectory() as temporary:

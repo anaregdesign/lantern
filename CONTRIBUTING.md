@@ -616,10 +616,11 @@ results and verifies distinct functional-validation/configured-source-integratio
 artifacts against the exact merge/main source and successful same-run producer digests.
 configured-source-integration is mandatory for time, native, production composition,
 dependency/toolchain, deployment, fixture bridge and proof/CI boundary changes. The
-conservative [classifier](.github/scripts/current_qualification_scope.py) exempts only
-regular modified application/computational sources and exact profiling handlers in its
-small allowlist; unknown paths, base failures, additions/deletions/renames and mixed
-changes require configured-source-integration. Existing docs/evidence-only
+conservative [classifier](.github/scripts/current_qualification_scope.py) exempts
+regular modified application/computational sources, exact profiling handlers and
+the finite known-reader/test inputs described above. Unknown paths, base failures,
+additions/deletions/renames and mixed boundary changes require
+configured-source-integration. Existing docs/evidence-only
 classifications are unchanged. A non-boundary candidate may show **functional-validation
 PASS / configured-source-integration NOT_RUN**, which is code acceptance, not release or
 environment qualification. Any executed configured-source-integration failure remains

@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "component_reason": null,
+      "component_verdict": "pass",
+      "elapsed_seconds": 0.271679,
+      "exit": 0,
+      "historical_case_claim": "PASS",
+      "original_sha256_after": "91d25815eb56006c28f5320d4d9946d597c5b85e62d60c728b8bdcd8655aa8bd",
+      "original_sha256_before": "91d25815eb56006c28f5320d4d9946d597c5b85e62d60c728b8bdcd8655aa8bd",
+      "original_verdict": "fail",
+      "qualification": false,
+      "raw_all_bytes_metadata_unchanged": true,
+      "raw_bytes": 46013516,
+      "raw_file_count": 61,
+      "run_id": "20261031T014705Z",
+      "scenario": "broad_mutate",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "9978593aeb07383a4db5114431a3e1b428ade146dcda655a16d00a2c8d50b08a"
+    },
+    {
+      "component_reason": "time source hash is not bound to the requested config mount",
+      "component_verdict": "incomplete",
+      "elapsed_seconds": 0.151519,
+      "exit": 2,
+      "historical_case_claim": "INCOMPLETE",
+      "original_sha256_after": "91d25815eb56006c28f5320d4d9946d597c5b85e62d60c728b8bdcd8655aa8bd",
+      "original_sha256_before": "91d25815eb56006c28f5320d4d9946d597c5b85e62d60c728b8bdcd8655aa8bd",
+      "original_verdict": "fail",
+      "qualification": false,
+      "raw_all_bytes_metadata_unchanged": true,
+      "raw_bytes": 132650052,
+      "raw_file_count": 64,
+      "run_id": "20261031T014037Z",
+      "scenario": "broad_rw",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "a1956a09095660eb0e49e3187c1e359cf00b61d196b8cf1c4f9505f0f7b4f37e"
+    }
+  ],
+  "docker_calls": 0,
+  "go_builds": 0,
+  "head": "7f7d40166d43b40620735fea482a0fbc23800eb9",
+  "historical_origin_scope": "broad_rw remains incomplete; no retrospective identity was invented",
+  "new_workload_calls": 0,
+  "original_aggregate_rewritten": false,
+  "qualification": false,
+  "raw_files_modified": 0,
+  "reader_sha256": "56fce4ff422c97b036f8a67cdff9dcadfa0bb898e176bf72ffd0a0991c6a6228",
+  "schema": 1,
+  "scope": "actual saved controlled-local time component reassessment only",
+  "total_elapsed_seconds": 0.985645
+}

@@ -128,9 +128,11 @@ def run_go(root=ROOT):
     # A regular file cannot be held open as an unreadable pipe by descendants.
     # Existing fixture controllers own their separate process groups. Their
     # terminal records, not stopping Go's group, establish fixture cleanup.
-    with tempfile.TemporaryFile() as capture:
+    # Go writes dependency/build diagnostics to stderr even with -json. Keep
+    # those bytes separately; only stdout is the test event stream.
+    with tempfile.TemporaryFile() as capture, tempfile.TemporaryFile() as diagnostics:
         process = subprocess.Popen(command, cwd=root, env=environment,
-                                   stdout=capture, stderr=subprocess.STDOUT, start_new_session=True)
+                                   stdout=capture, stderr=diagnostics, start_new_session=True)
         try:
             # This backstop exceeds the sum of declared fixture/cleanup budgets;
             # ordinary runs end promptly. Do not interrupt a live controller at
@@ -155,8 +157,9 @@ def run_go(root=ROOT):
                     pass
             code = 1
         capture.seek(0)
-        output = capture.read().decode("utf-8", errors="replace")
-    return code, output
+        diagnostics.seek(0)
+        output, errors = capture.read(), diagnostics.read()
+    return code, output, errors
 
 
 def python_contracts(groups):
@@ -185,12 +188,12 @@ def main(argv=None):
     report = {"groups": list(groups), "claim": "harness-tool-contracts" if args.tools_only else "harness-contracts",
               "python_status": "NOT_SELECTED" if args.tools_only else "NOT_RUN", "verdict": "fail", "logs": {}}
 
-    def log(name, output):
-        encoded = output.encode()
+    def log(name, output, stream=sys.stdout):
+        encoded = output.encode() if isinstance(output, str) else output
         report["logs"][name] = {"sha256": hashlib.sha256(encoded).hexdigest(), "bytes": len(encoded)}
         if args.evidence:
             (args.evidence / name).write_bytes(encoded)
-        print(output, end="", flush=True)
+        print(encoded.decode("utf-8", errors="replace"), end="", file=stream, flush=True)
 
     try:
         # The real release environment contract runs before a possibly skipped
@@ -204,8 +207,10 @@ def main(argv=None):
             report["python_status"] = "PASS" if qualified else "FAIL"
             require(qualified, "Python contracts failed, skipped or incomplete")
         if "bench-time" in groups:
-            code, output = run_go()
+            code, output, errors = run_go()
+            report["go_exit_code"] = code
             log("go.jsonl", output)
+            log("go.stderr.log", errors, stream=sys.stderr)
             require(code == 0, "Go harness consumer command failed; fixture cleanup is unproven until terminal evidence is checked")
             report["go_tests"] = require_go_events(output)
         report["verdict"] = "pass"
