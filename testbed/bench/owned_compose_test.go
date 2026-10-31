@@ -2028,6 +2028,15 @@ docker() {
  elif [[ "$1" == logs ]]; then printf 'bounded fake initializer log\n'
  else return 92; fi
 }
+local_time_ntp_admit() {
+ local node="$1" role="$2" raw phase
+ raw="$(cat)" || return 1
+ [[ "$node" =~ ^lantern-[012]$ && "$role" == initializer ]] || return 94
+ phase="$(jq -er --arg node "$node" '
+  select(.Config.Labels["com.docker.compose.service"]==$node) |
+  .State.Status | select(.=="created" or .=="exited")' <<<"$raw")" || return 94
+ printf 'ntp-%s %s\n' "$phase" "${node##*-}" >> "$OUTDIR/actions"
+}
 prove_owned_compose_bind_identity() { printf 'unexpected-proof\n' >> "$OUTDIR/actions"; return 93; }
 mkdir -m 700 "$OUTDIR/time-source-evidence"
 initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$LOCAL_TIME_IMAGE_ID" "$fixture_owner" -f fixture.yml
@@ -2050,11 +2059,19 @@ initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$LOCAL_TIME_IMAGE_ID"
 				if strings.Count(string(actions), "create ") != 3 || strings.Count(string(actions), "start ") != 3 || strings.Count(string(actions), " host=time.asia.apple.com:"+tc.ip) != 3 {
 					t.Fatalf("three exact mappings were not replayed by actual initializer custody: %s", actions)
 				}
+				if strings.Count(string(actions), "ntp-created ") != 3 || strings.Count(string(actions), "ntp-exited ") != 3 {
+					t.Fatalf("created and completed initializers did not enter NTP admission: %s", actions)
+				}
 				before, first := strings.Index(string(actions), "original 2\n"), strings.Index(string(actions), "create 0 ")
 				if before < 0 || first < 0 || before > first {
 					t.Fatalf("native clone was created before all three routes were admitted: %s", actions)
 				}
 				for i := range 3 {
+					admitted := strings.Index(string(actions), fmt.Sprintf("ntp-created %d\n", i))
+					started := strings.Index(string(actions), fmt.Sprintf("start %d\n", i))
+					if admitted < 0 || started < 0 || admitted > started {
+						t.Fatalf("native initializer started before NTP admission: %s", actions)
+					}
 					if _, err := os.Stat(filepath.Join(fixture.directory, "time-source-evidence", fmt.Sprintf("init-%d.json", i))); err != nil {
 						t.Fatalf("successful initializer route proof missing: %v", err)
 					}
@@ -2065,6 +2082,472 @@ initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$LOCAL_TIME_IMAGE_ID"
 				}
 				if tc.cloneRefusal && strings.Count(string(actions), "create ") != 1 {
 					t.Fatalf("negative clone case did not reach its created-object route check: %s", actions)
+				}
+			}
+		})
+	}
+}
+
+func TestOwnedComposeLocalTimeNTPFileBinding(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("the host file contract requires the current nonroot owner")
+	}
+	helper, err := filepath.Abs("owned_compose.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeHelper, err := filepath.Abs("local_time.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		accepted bool
+		probes   int
+		volume   bool
+	}{
+		{"literal", true, 0, true},
+		{"original-alias", true, 1, true},
+		{"requested-alias", true, 1, true},
+		{"effective-alias", true, 1, true},
+		{"clone-first-alias", true, 1, true},
+		{"clone-first-wrong-cid", false, 1, true},
+		{"original-rw", false, 0, false},
+		{"original-destination", false, 0, false},
+		{"original-third-source", false, 0, false},
+		{"original-foreign-image", false, 0, false},
+		{"original-foreign-project", false, 0, false},
+		{"probe-directory", false, 1, false},
+		{"probe-different-inode", false, 1, false},
+		{"probe-missing-row", false, 1, false},
+		{"probe-duplicate-row", false, 1, false},
+		{"probe-writable", false, 1, false},
+		{"probe-third-source", false, 1, false},
+		{"probe-exit", false, 1, false},
+		{"probe-wait", false, 1, false},
+		{"probe-remove", false, 1, false},
+		{"daemon-drift", false, 1, false},
+		{"host-hash-drift", false, 1, false},
+		{"host-inode-drift", false, 1, false},
+		{"missing-proof", false, 1, true},
+		{"foreign-proof", false, 1, true},
+		{"recheck-third-source", false, 1, true},
+		{"recheck-daemon-drift", false, 1, true},
+		{"post-host-hash-drift", false, 1, true},
+		{"post-host-inode-drift", false, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const script = `set -euo pipefail
+umask 077
+source "$1"
+source "$2"
+case_name="$3"
+OUTDIR="$(cd "$OUTDIR" && pwd -P)"
+docker() { printf 'unexpected\n' > "$OUTDIR/prepare-docker"; return 97; }
+export COMPOSE_PROJECT_NAME=lantern-ntp-file-fixture
+runtime_owner="$(id -u):$(id -g)"
+receipt_image_id="sha256:$(printf 'a%.0s' {1..64})"
+receipt_image_commit="$(printf 'b%.0s' {1..40})"
+EXPECTED_LANTERN_TREE="$(printf 'c%.0s' {1..40})"
+SCENARIO_NAME=many_subscribers
+retained_heap=0
+LOCAL_TIME_ACTIVE=1
+LOCAL_TIME_IMAGE_ID="$receipt_image_id"
+LOCAL_TIME_FIXTURE_IP=172.23.0.2
+LOCAL_TIME_NETWORK_ID="$(printf 'd%.0s' {1..64})"
+LOCAL_TIME_NETWORK_NAME="$COMPOSE_PROJECT_NAME-default"
+PEER_TLS_DIR="$OUTDIR/trust"
+mkdir -m 700 "$PEER_TLS_DIR" "$OUTDIR/time-source-evidence"
+for node in lantern-0 lantern-1 lantern-2; do
+ mkdir -m 700 "$PEER_TLS_DIR/$node"
+ printf 'server time.asia.apple.com\n' > "$PEER_TLS_DIR/$node/ntp.conf"
+ chmod 644 "$PEER_TLS_DIR/$node/ntp.conf"
+done
+local_time_ntp_prepare
+canonical="$PEER_TLS_DIR/lantern-1/ntp.conf"
+alternate="/host_mnt$canonical"
+third="/unproved$canonical"
+fixture_configuration="$(jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg image "$receipt_image_id" --arg owner "$runtime_owner" --arg trust "$PEER_TLS_DIR" '
+ {name:$project,services:([range(0;3)|. as $i|("lantern-"+tostring) as $s|
+  {key:$s,value:{image:$image,user:$owner,environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:"private-current-config"},
+   volumes:[{type:"bind",source:($trust+"/"+$s),target:"/run/lantern-config",read_only:true},
+    {type:"bind",source:($trust+"/"+$s+"/ntp.conf"),target:"/etc/ntp.conf",read_only:true},
+    {type:"volume",source:("state-"+($i|tostring)),target:"/state",volume:{nocopy:true}},
+    {type:"volume",source:("backup-"+($i|tostring)),target:"/data",volume:{nocopy:true}}]}}]|from_entries),
+  volumes:([range(0;3)|("state-"+tostring),("backup-"+tostring)]|map({key:.,value:{name:.}})|from_entries)}')"
+for index in 0 1 2; do
+ jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg image "$receipt_image_id" --arg owner "$runtime_owner" \
+  --arg trust "$PEER_TLS_DIR" --arg network "$LOCAL_TIME_NETWORK_NAME" --arg network_id "$LOCAL_TIME_NETWORK_ID" \
+  --arg case "$case_name" --arg alternate "$alternate" --arg third "$third" --argjson i "$index" '
+  ("lantern-"+($i|tostring)) as $s | ($trust+"/"+$s) as $config |
+  {Id:(("0"*63)+(($i+1)|tostring)),Name:("/"+$project+"-"+$s+"-1"),Image:$image,RestartCount:0,
+   Config:{Image:$image,User:$owner,WorkingDir:"/app",Entrypoint:["/app/lantern"],Cmd:null,Volumes:null,
+    Env:["LANTERN_AUTH_MODE=oidc","LANTERN_SECURITY_CONFIG_JSON=private-current-config"],
+    Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$s,"com.docker.compose.oneoff":"False","io.lantern.bench-time.profile":"bench_local_udp_v1"}},
+   State:{Status:"created",Running:false,Pid:0,StartedAt:"",OOMKilled:false,ExitCode:0},
+   HostConfig:{NetworkMode:$network,ExtraHosts:["time.asia.apple.com:172.23.0.2"],
+    Binds:[($config+":/run/lantern-config:ro"),($config+"/ntp.conf:/etc/ntp.conf:ro")],
+    Mounts:[{Type:"volume",Source:("state-"+($i|tostring)),Target:"/state",VolumeOptions:{NoCopy:true}},
+     {Type:"volume",Source:("backup-"+($i|tostring)),Target:"/data",VolumeOptions:{NoCopy:true}}],VolumesFrom:null,Tmpfs:null},
+   Mounts:[{Type:"bind",Source:$config,Destination:"/run/lantern-config",Mode:"ro",RW:false,Propagation:"rprivate"},
+    {Type:"bind",Source:($config+"/ntp.conf"),Destination:"/etc/ntp.conf",Mode:"ro",RW:false,Propagation:"rprivate"},
+    {Type:"volume",Name:("state-"+($i|tostring)),Destination:"/state",RW:true},
+    {Type:"volume",Name:("backup-"+($i|tostring)),Destination:"/data",RW:true}],
+   NetworkSettings:{Networks:{($network):{NetworkID:$network_id}},Ports:{}}} |
+  if $i!=1 or $case=="literal" or $case=="clone-first-alias" or $case=="clone-first-wrong-cid" then . else
+   .HostConfig.Binds[1]=($alternate+":/etc/ntp.conf:ro") | .Mounts[1].Source=$alternate |
+   if $case=="requested-alias" then .Mounts[1].Source=($config+"/ntp.conf")
+   elif $case=="effective-alias" then .HostConfig.Binds[1]=($config+"/ntp.conf:/etc/ntp.conf:ro")
+   elif $case=="original-rw" then .Mounts[1].RW=true
+   elif $case=="original-destination" then .Mounts[1].Destination="/etc/other.conf"
+   elif $case=="original-third-source" then .Mounts[1].Source=$third
+   elif $case=="original-foreign-image" then .Image="foreign-image"
+   elif $case=="original-foreign-project" then .Config.Labels["com.docker.compose.project"]="foreign-project"
+   else . end
+  end' > "$OUTDIR/original-$index.json"
+done
+docker() {
+ if [[ "$1" == compose ]]; then
+  if [[ "$*" == *"config --format json" ]]; then printf '%s\n' "$fixture_configuration"
+  elif [[ "$*" == *"create lantern-0 lantern-1 lantern-2" ]]; then printf 'originals-created\n' >> "$OUTDIR/actions"
+  else local node="${@: -1}"; printf '%064d\n' "$(( ${node##*-}+1 ))"; fi
+  return
+ fi
+ if [[ "$1" == volume ]]; then
+  if [[ "$2" == inspect ]]; then printf '%s\n' "$COMPOSE_PROJECT_NAME"; fi
+  return
+ fi
+ if [[ "$1" == info ]]; then
+  local count=0
+  [[ ! -f "$OUTDIR/daemon-count" ]] || read -r count < "$OUTDIR/daemon-count"
+  count=$((count+1)); printf '%s\n' "$count" > "$OUTDIR/daemon-count"
+  if [[ "$case_name" == daemon-drift && "$count" -gt 1 || -f "$OUTDIR/change-daemon" ]]; then printf 'foreign-daemon\n'; else printf 'same-daemon\n'; fi
+  return
+ fi
+ if [[ "$1" == image ]]; then printf '["PATH=/usr/bin:/bin"]\n'; return; fi
+ if [[ "$1" == inspect ]]; then
+  local id="${@: -1}" index
+  [[ "$id" =~ ^0{63}[123]$ ]] || return 91
+  index="$((10#${id: -1}-1))"
+  cat "$OUTDIR/original-$index.json"
+  return
+ fi
+ return 92
+}
+local_time_assert_fixture_only() {
+ [[ ! -e "$OUTDIR/actions" ]] || return 93
+ for node in lantern-0 lantern-1 lantern-2; do
+  [[ -f "$OUTDIR/time-source-evidence/ntp-mounts/$node/host-before.json" &&
+     ! -e "$OUTDIR/time-source-evidence/ntp-mounts/$node/original-before.json" ]] || return 93
+ done
+}
+# Preserve the real plan builder, probe validator and raw-output retainer.
+# Only the owned utility execution is replaced by finite created/completed data.
+run_owned_compose_initializer() {
+ local project="$1" image="$2" owner="$3" kind="$4" service="$5" validator="$7"
+ shift 7
+ if [[ "$kind" == compose-volume-initializer ]]; then
+  for node in lantern-0 lantern-1 lantern-2; do
+   [[ -f "$OUTDIR/time-source-evidence/ntp-mounts/$node/original-before.json" ]] || return 93
+  done
+  printf 'volume-init\n' >> "$OUTDIR/actions"
+  return
+ fi
+ [[ "$kind" == compose-bind-identity-probe && "$validator" == validate_owned_compose_bind_probe ]] || return 93
+ printf 'probe %s\n' "$service" >> "$OUTDIR/actions"
+ local arguments previous="" argument
+ local -a binds=()
+ arguments="$(jq -nc --args '$ARGS.positional' -- "$@")"
+ jq -e --arg image "$image" --argjson targets "$bind_probe_targets" '
+  index($image) as $i | .[$i+1:]==(["stat","-c","%d:%i:%F"]+$targets) and
+  (index("--env-file")==null) and (index("--network") as $n|.[$n+1]=="none") and
+  (index("--read-only")!=null) and (index("--cap-drop") as $n|.[$n+1]=="ALL") and
+  (index("--security-opt") as $n|.[$n+1]=="no-new-privileges:true") and
+  (index("--memory") as $n|.[$n+1]=="32m") and (index("--cpus") as $n|.[$n+1]=="0.25") and
+  (index("--pids-limit") as $n|.[$n+1]=="16")' <<<"$arguments" >/dev/null || return 94
+ for argument in "$@"; do case "$argument" in --mount=*) binds+=("${argument#*=}");; esac; done
+ local private="$OUTDIR/probe-private" initialized probe_id
+ mkdir -m 700 "$private"
+ probe_id="$(printf 'e%.0s' {1..64})"
+ initialized="$(jq -nc --arg project "$project" --arg image "$image" --arg owner "$owner" --arg service "$service" \
+  --arg id "$probe_id" --arg case "$case_name" --argjson targets "$bind_probe_targets" \
+  --argjson binds "$(jq -nc --args '$ARGS.positional' -- "${binds[@]}")" '
+  ($binds|map(split(",")|{Type:"bind",Source:.[1][7:],Target:.[2][7:],ReadOnly:true,BindOptions:{Propagation:"rprivate"}})) as $requests |
+  {Id:$id,Name:("/"+$project+"-"+$service),Image:$image,
+   Config:{Image:$image,User:$owner,Entrypoint:["/bin/busybox"],Cmd:(["stat","-c","%d:%i:%F"]+$targets),Env:["PATH=/usr/bin:/bin"],Volumes:null,
+    Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$service,"com.docker.compose.oneoff":"True","lantern.owner":"compose-bind-identity-probe","lantern.initializer":"lantern-owned-init.fixture"}},
+   State:{Status:"created",Running:false,ExitCode:0},
+   HostConfig:{NetworkMode:"none",ReadonlyRootfs:true,Privileged:false,AutoRemove:false,CapDrop:["ALL"],CapAdd:null,SecurityOpt:["no-new-privileges:true"],Memory:33554432,NanoCpus:250000000,PidsLimit:16,
+    Binds:null,Mounts:$requests,VolumesFrom:null,Tmpfs:null,Devices:null,DeviceRequests:null,DeviceCgroupRules:null,PidMode:"",UTSMode:"",UsernsMode:"",PublishAllPorts:false,PortBindings:{},RestartPolicy:{Name:"no",MaximumRetryCount:0}},
+   Mounts:[$requests[]|{Type:"bind",Source:.Source,Destination:.Target,Mode:"",RW:false,Propagation:"rprivate"}]} |
+  if $case=="probe-writable" then .Mounts[0].RW=true
+  elif $case=="probe-third-source" then .Mounts[0].Source="/third/lantern-1/ntp.conf" | .HostConfig.Mounts[0].Source="/third/lantern-1/ntp.conf"
+  else . end')"
+ "$validator" || return 95
+ printf '%s\n' "$initialized" > "$private/created.json"
+ jq -c --arg case "$case_name" '.State={Status:"exited",Running:false,ExitCode:(if $case=="probe-exit" then 17 else 0 end)}' <<<"$initialized" > "$private/completed.json"
+ case "$case_name" in
+  probe-directory) printf '5:100:directory\n5:100:directory\n';;
+  probe-different-inode) printf '5:100:regular file\n5:101:regular file\n';;
+  probe-missing-row) printf '5:100:regular file\n';;
+  probe-duplicate-row) printf '5:100:regular file\n5:100:regular file\n5:100:regular file\n';;
+  *) printf '5:100:regular file\n5:100:regular file\n';;
+ esac > "$private/start.log"
+ if [[ "$case_name" == probe-wait ]]; then printf '1\n'; else printf '0\n'; fi > "$private/wait.log"
+ retain_owned_compose_bind_probe "$private" || return 96
+ if [[ "$case_name" == probe-remove ]]; then printf 'foreign-id\n'; else printf '%s\n' "$probe_id"; fi > "$bind_proof_directory/probe-remove.log"
+ if [[ "$case_name" == host-hash-drift ]]; then printf 'changed time source\n' > "$canonical"; fi
+ if [[ "$case_name" == host-inode-drift ]]; then
+  printf 'server time.asia.apple.com\n' > "$PEER_TLS_DIR/lantern-1/replacement"
+  chmod 644 "$PEER_TLS_DIR/lantern-1/replacement"
+  mv "$PEER_TLS_DIR/lantern-1/replacement" "$canonical"
+ fi
+}
+initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" -f fixture.yml
+node_directory="$OUTDIR/time-source-evidence/ntp-mounts/lantern-1"
+if [[ "$case_name" == missing-proof ]]; then rm "$node_directory/probe-output.log"; fi
+if [[ "$case_name" == foreign-proof ]]; then
+ jq -c '.Image="foreign-image"' "$node_directory/probe-created.json" > "$OUTDIR/foreign.json"
+ mv "$OUTDIR/foreign.json" "$node_directory/probe-created.json"
+fi
+original="$(cat "$OUTDIR/original-1.json")"
+configuration="$fixture_configuration"
+service=lantern-1-security-init
+initialized="$(jq -c --arg project "$COMPOSE_PROJECT_NAME" --arg case "$case_name" --arg alternate "$alternate" '
+ .Id=("f"*64) | .Name=("/"+$project+"-lantern-1-security-init") | .Config.Cmd=["init-security"] |
+ .Config.Labels["com.docker.compose.oneoff"]="True" | .Config.Labels["lantern.owner"]="compose-security-initializer" |
+ if $case=="clone-first-alias" or $case=="clone-first-wrong-cid" then .Mounts[1].Source=$alternate else . end' <<<"$original")"
+validate_owned_compose_security_initializer
+printf 'native-init\n' >> "$OUTDIR/actions"
+initialized="$(jq -c '.State.Status="exited" | .State.ExitCode=0' <<<"$initialized")"
+local_time_record_initializer lantern-1 <<<"$initialized"
+if [[ "$case_name" == clone-first-wrong-cid ]]; then
+ changed_clone="$(jq -c '.Id=("9"*64)' <<<"$initialized")"
+ local_time_ntp_admit lantern-1 initializer <<<"$changed_clone"
+fi
+if [[ "$case_name" == recheck-daemon-drift ]]; then : > "$OUTDIR/change-daemon"; fi
+if [[ "$case_name" == post-host-hash-drift ]]; then printf 'changed time source\n' > "$canonical"; fi
+if [[ "$case_name" == post-host-inode-drift ]]; then
+ printf 'server time.asia.apple.com\n' > "$PEER_TLS_DIR/lantern-1/replacement"
+ chmod 644 "$PEER_TLS_DIR/lantern-1/replacement"
+ mv "$PEER_TLS_DIR/lantern-1/replacement" "$canonical"
+fi
+running="$(jq -c --arg case "$case_name" --arg third "$third" '
+ .State.Status="running" | .State.Running=true |
+ if $case=="recheck-third-source" then .Mounts[1].Source=$third else . end' <<<"$original")"
+local_time_ntp_admit lantern-1 serving <<<"$running"
+local_time_ntp_host_record lantern-1 "$OUTDIR/time-source-evidence/host-current.json"
+printf 'complete\n' > "$OUTDIR/ntp-complete"
+`
+			fixture := runOwnedComposeFixture(t, script, []string{helper, timeHelper, tc.name}, nil, 15*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("NTP file fixture custody failed: %v %s\n%s", fixture.controlErr, fixture.output, ownedComposeFixtureDiagnostics(fixture.directory))
+			}
+			if (fixture.commandErr == nil) != tc.accepted {
+				t.Fatalf("NTP file admission=%v want accepted=%t: %s", fixture.commandErr, tc.accepted, fixture.output)
+			}
+			actions, _ := os.ReadFile(filepath.Join(fixture.directory, "actions"))
+			if _, err := os.Stat(filepath.Join(fixture.directory, "prepare-docker")); !os.IsNotExist(err) {
+				t.Fatalf("host preparation attempted Docker: %v", err)
+			}
+			if strings.Count(string(actions), "probe ") != tc.probes || strings.Contains(string(actions), "volume-init\n") != tc.volume {
+				t.Fatalf("NTP proof/init boundary differs: %s", actions)
+			}
+			_, completed := os.Stat(filepath.Join(fixture.directory, "ntp-complete"))
+			if (completed == nil) != tc.accepted {
+				t.Fatalf("NTP file completion=%v want accepted=%t", completed, tc.accepted)
+			}
+			if strings.Contains(string(fixture.output), "private-current-config") {
+				t.Fatal("current security configuration leaked to diagnostics")
+			}
+			if !tc.accepted {
+				return
+			}
+			for i := range 3 {
+				path := filepath.Join(fixture.directory, "time-source-evidence", "ntp-mounts", fmt.Sprintf("lantern-%d", i), "original-before.json")
+				data, err := os.ReadFile(path)
+				if err != nil || strings.Contains(string(data), "private-current-config") || strings.Contains(string(data), "\"Env\"") {
+					t.Fatalf("safe created-original record missing or contains Env: %v %s", err, data)
+				}
+			}
+			before, err := os.ReadFile(filepath.Join(fixture.directory, "time-source-evidence", "ntp-mounts", "lantern-1", "host-before.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(filepath.Join(fixture.directory, "time-source-evidence", "host-current.json"))
+			if err != nil || string(before) != string(after) {
+				t.Fatalf("stable host fingerprint changed: %v", err)
+			}
+			bindingPath := filepath.Join(fixture.directory, "time-source-evidence", "ntp-mounts", "lantern-1", "binding.json")
+			bindingRaw, bindingErr := os.ReadFile(bindingPath)
+			if tc.name == "literal" {
+				if !os.IsNotExist(bindingErr) || string(actions) != "originals-created\nvolume-init\nnative-init\n" {
+					t.Fatalf("literal C/C path created a binding or probe: %v %s", bindingErr, actions)
+				}
+				return
+			}
+			var binding map[string]any
+			if bindingErr != nil || json.Unmarshal(bindingRaw, &binding) != nil {
+				t.Fatalf("immutable NTP file binding missing: %v", bindingErr)
+			}
+			role := "serving"
+			if tc.name == "clone-first-alias" {
+				role = "initializer"
+			}
+			if binding["alias_role"] != role || binding["service"] != "lantern-1" || binding["profile"] != "bench_local_ntp_file_bind_v1" {
+				t.Fatalf("NTP binding identity differs: %s", bindingRaw)
+			}
+			probe := strings.Index(string(actions), "probe lantern-1-bind-proof\n")
+			native := strings.Index(string(actions), "native-init\n")
+			volume := strings.Index(string(actions), "volume-init\n")
+			if probe < 0 || native < probe || tc.name == "clone-first-alias" && volume > probe || tc.name != "clone-first-alias" && volume < probe {
+				t.Fatalf("NTP alias proof crossed its initialization boundary: %s", actions)
+			}
+			for _, name := range []string{"binding.json", "host-before.json", "host-after.json", "original-before.json", "original-after.json", "alias-target-before.json", "daemon-before.txt", "daemon-after.txt", "requested-pairs.json", "image-environment.json", "probe-created.json", "probe-completed.json", "probe-output.log", "probe-wait.log", "probe-remove.log"} {
+				path := filepath.Join(filepath.Dir(bindingPath), name)
+				info, err := os.Lstat(path)
+				if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+					t.Fatalf("private NTP proof %s missing or unsafe: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestOwnedComposeLocalTimeCaptureStartAdmission(t *testing.T) {
+	timeHelper, err := filepath.Abs("local_time.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(timeHelper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, relay, found := strings.Cut(string(source), "local_time_start_relay() {\n")
+	if !found {
+		t.Fatal("actual local relay startup missing")
+	}
+	relay, _, found = strings.Cut(relay, "\nlocal_time_capture() {\n")
+	if !found || strings.Contains(relay, "ntp-daemon.txt") {
+		t.Fatal("phase daemon capture entered relay startup")
+	}
+	for _, tc := range []struct {
+		name     string
+		phase    string
+		mode     string
+		retained string
+		wantExit int
+		want     string
+	}{
+		{"PRE emits before admission", "pre", "pass", "0", 0, "emit\nvalidate-start\n"},
+		{"PRE emission failure blocks admission", "pre", "emit-failure", "0", 1, "emit\n"},
+		{"PRE admission refusal propagates", "pre", "admission-failure", "1", 1, "emit\nvalidate-start\n"},
+		{"POST never enters start admission", "post", "admission-failure", "1", 0, "emit\n"},
+		{"PRE and POST each capture their daemon", "both", "pass", "0", 0, "emit\nvalidate-start\nemit\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const script = `set -euo pipefail
+source "$1"
+phase="$2"; mode="$3"; retained_heap="$4"
+mkdir -m 700 "$OUTDIR/time-source-evidence"
+REPO_ROOT="$OUTDIR/current-source"
+PEER_TLS_DIR="$OUTDIR/private-trust"
+COMPOSE_PROJECT_NAME=lantern-current-capture-fixture
+COMPOSE_FILES=(-f current-fixture.yml)
+receipt_image_commit="$(printf 'b%.0s' {1..40})"
+EXPECTED_LANTERN_TREE="$(printf 'c%.0s' {1..40})"
+receipt_image_id="sha256:$(printf 'a%.0s' {1..64})"
+LOCAL_TIME_IMAGE_ID="$receipt_image_id"
+runtime_owner=501:20
+SCENARIO_NAME=many_subscribers
+LANTERN_BENCH_CPUSET=0-3
+LOCAL_TIME_PLACEMENT=external-4
+receipt_driver=1
+LOCAL_TIME_FIXTURE_ID=fixture-id
+LOCAL_TIME_RELAY_ID=relay-id
+LOCAL_TIME_FRONTEND_ID=frontend-id
+docker() {
+ if [[ "$1" == compose ]]; then printf '%s\n' "${@: -1}"; return; fi
+ if [[ "$1" == info ]]; then
+  [[ "$*" == "info --format {{.ID}}" ]] || return 90
+  printf '%s\n' "$phase" >> "$OUTDIR/daemon-events"
+  printf 'same-daemon\n'
+  return
+ fi
+ [[ "$1" == inspect ]] || return 90
+ printf '{"observed":"%s"}\n' "${@: -1}"
+}
+local_time_validate_fixture() { cat >/dev/null; }
+local_time_validate_relay() { cat >/dev/null; }
+local_time_assert_route() { cat >/dev/null; }
+local_time_ntp_admit() { cat >/dev/null; }
+local_time_ntp_host_record() { printf '{}\n' | local_time_write_new "$2"; }
+local_time_safe_inspect() { cat; }
+local_time_network() { printf '{}\n'; }
+local_time_status() { printf '{}\n'; }
+local_time_relay_publishers() { printf '{}\n'; }
+python3() {
+ if [[ "$1" == - ]]; then
+  cat >/dev/null
+  [[ "$#" == 14 && "$2" == "$OUTDIR" && "$3" == "$phase" && "$4" == "$receipt_image_commit" &&
+     "$5" == "$EXPECTED_LANTERN_TREE" && "$6" == "$SCENARIO_NAME" && "$7" == "$COMPOSE_PROJECT_NAME" &&
+     "$8" == "$retained_heap" && "$9" == "$receipt_image_id" && "${10}" == "$runtime_owner" &&
+     "${11}" == "$LANTERN_BENCH_CPUSET" && "${12}" == "$receipt_driver" &&
+     "${13}" == "$LOCAL_TIME_PLACEMENT" && "${14}" == "$PEER_TLS_DIR" ]] || return 91
+  printf 'emit\n' >> "$OUTDIR/capture-events"
+  [[ "$mode" != emit-failure ]] || return 27
+  printf '{"phase":"%s"}\n' "$phase" > "$OUTDIR/time_source_$phase.json"
+  return
+ fi
+ [[ "$#" == 19 && "$1" == -B && "$2" == "$REPO_ROOT/.github/scripts/bench_time_profile.py" &&
+    "$3" == validate-start && "$4" == --root && "$5" == "$OUTDIR" &&
+    "$6" == --source-commit && "$7" == "$receipt_image_commit" &&
+    "$8" == --source-tree && "$9" == "$EXPECTED_LANTERN_TREE" &&
+    "${10}" == --image-id && "${11}" == "$receipt_image_id" &&
+    "${12}" == --runtime-user && "${13}" == "$runtime_owner" &&
+    "${14}" == --project && "${15}" == "$COMPOSE_PROJECT_NAME" &&
+    "${16}" == --scenario && "${17}" == "$SCENARIO_NAME" && "${18}" == --scope ]] || return 92
+ local expected_scope=normal
+ [[ "$retained_heap" != 1 ]] || expected_scope=retained
+ [[ "${19}" == "$expected_scope" && "$phase" == pre && -f "$OUTDIR/time_source_pre.json" ]] || return 93
+ [[ "$(cat "$OUTDIR/time_source_pre.json")" == '{"phase":"pre"}' ]] || return 93
+ printf 'validate-start\n' >> "$OUTDIR/capture-events"
+ [[ "$mode" != admission-failure ]]
+}
+if [[ "$phase" == both ]]; then
+ local_time_capture pre
+ local_time_capture post
+else
+ local_time_capture "$phase"
+fi
+`
+			fixture := runOwnedComposeFixture(t, script, []string{timeHelper, tc.phase, tc.mode, tc.retained}, nil, 5*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("capture fixture custody failed: %v %s", fixture.controlErr, fixture.output)
+			}
+			if fixture.exitCode != tc.wantExit {
+				t.Fatalf("capture exit=%d want=%d: %v %s", fixture.exitCode, tc.wantExit, fixture.commandErr, fixture.output)
+			}
+			events, err := os.ReadFile(filepath.Join(fixture.directory, "capture-events"))
+			if err != nil || string(events) != tc.want {
+				t.Fatalf("capture/start admission order=%q want=%q: %v", events, tc.want, err)
+			}
+			phases := []string{tc.phase}
+			if tc.phase == "both" {
+				phases = []string{"pre", "post"}
+			}
+			daemonEvents, err := os.ReadFile(filepath.Join(fixture.directory, "daemon-events"))
+			if err != nil || string(daemonEvents) != strings.Join(phases, "\n")+"\n" {
+				t.Fatalf("phase daemon capture order=%q: %v", daemonEvents, err)
+			}
+			for _, phase := range phases {
+				daemon, err := os.ReadFile(filepath.Join(fixture.directory, "time-source-evidence", phase, "ntp-daemon.txt"))
+				if err != nil || string(daemon) != "same-daemon\n" {
+					t.Fatalf("phase daemon receipt %s differs: %q %v", phase, daemon, err)
+				}
+				_, emitted := os.Stat(filepath.Join(fixture.directory, "time_source_"+phase+".json"))
+				if (emitted == nil) != (tc.mode != "emit-failure") {
+					t.Fatalf("phase receipt emission differs: %v", emitted)
 				}
 			}
 		})

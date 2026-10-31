@@ -173,6 +173,27 @@ that prevents public fallback. Missing or changed routing/fixture evidence makes
 the case incomplete. Normal and retained lanes require the same declared local
 time profile. The short release Search scenario uses this profile too.
 
+The time-config reader requires both the requested and effective `/etc/ntp.conf`
+Source to equal the declared per-node file, or a current case-local same-file
+proof (#1967). A Docker Desktop spelling such as `/host_mnt/...` is never accepted
+by stripping a prefix or comparing file contents alone. Before native startup,
+the existing network-free, read-only utility binds the canonical and first
+observed alternate Source and retains raw equal device/inode/regular-file stat
+rows, immutable container/image/daemon identity and host file fingerprints.
+Later serving and initialization observations must stay within that one proven
+pair; another Source or changed file, target, read-only setting or owner fails
+closed. Normal and tagged lanes use the same contract.
+
+After the actual PRE receipt is captured, the same pure target/config/alias
+parser checks start admission before warmup. This check reads no fabricated
+POST and grants no workload or whole-case qualification. The short Search check
+retains its shared placement. Ordinary normal scenarios such as `write_heavy`
+also keep their existing start-only use without an exact tree input; an explicit
+tree must still be a full SHA. Receipt and tagged admission require the selected
+formal families and exact tree. Final performance validation still requires the
+complete isolated PRE/POST profile and all existing gates. An older failed case
+without a retained alias proof remains failed.
+
 Docker does not publish host ports for containers attached only to internal
 networks. The benchmark therefore uses one separate raw TCP relay: Servers and
 the NTP fixture keep only the internal backend, while the relay also joins a

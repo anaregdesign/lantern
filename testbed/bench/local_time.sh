@@ -46,12 +46,164 @@ local_time_write_new() {
   (umask 077; set -o noclobber; cat > "$path")
 }
 
+# File identity is admitted before native constructors. This is a bounded data
+# adapter for one declared NTP file, not a path-normalization rule.
+local_time_ntp_data() {
+  local scope=normal
+  [[ "${retained_heap:-0}" != 1 ]] || scope=retained
+  python3 - "$1" "$2" "${3:-}" "${4:-}" "$OUTDIR" "$PEER_TLS_DIR" "$COMPOSE_PROJECT_NAME" \
+    "$receipt_image_id" "$runtime_owner" "$receipt_image_commit" "${EXPECTED_LANTERN_TREE:-}" "$SCENARIO_NAME" "$scope" <<'PY_NTP'
+import hashlib,json,os,pathlib,re,stat,sys
+act,service,role,raw,out,trust,project,image,user,commit,tree,scenario,scope=sys.argv[1:]
+if not re.fullmatch(r'lantern-[012]',service): raise SystemExit('invalid time file service')
+root=pathlib.Path(out).resolve(strict=True); node=root/'time-source-evidence/ntp-mounts'/service
+canonical=pathlib.Path(trust,service,'ntp.conf'); expected=b'server time.asia.apple.com\n'; sha=hashlib.sha256(expected).hexdigest()
+def fail(msg): raise SystemExit(msg)
+def write(path,value):
+    data=(json.dumps(value,separators=(',',':'))+'\n').encode()
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'wb') as f: f.write(data)
+def load(path):
+    before=path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_uid!=os.getuid() or stat.S_IMODE(before.st_mode)!=0o600 or before.st_size>131072: fail('unsafe time binding input')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as f:
+        opened=os.fstat(f.fileno()); data=f.read(131073); after=os.fstat(f.fileno())
+    def fp(v): return (v.st_dev,v.st_ino,v.st_mode,v.st_uid,v.st_gid,v.st_nlink,v.st_size,v.st_mtime_ns,v.st_ctime_ns)
+    if any(fp(v)!=fp(before) for v in (opened,after,path.lstat())) or len(data)!=before.st_size: fail('time binding input changed')
+    return data
+
+def host():
+    if not canonical.is_absolute() or canonical.resolve(strict=True)!=canonical: fail('physical canonical time file required')
+    before=canonical.lstat(); fd=os.open(canonical,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as f:
+        opened=os.fstat(f.fileno()); data=f.read(128); after=os.fstat(f.fileno())
+    def fp(v): return (v.st_dev,v.st_ino,v.st_mode,v.st_uid,v.st_gid,v.st_nlink,v.st_size,v.st_mtime_ns,v.st_ctime_ns)
+    if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or before.st_uid==0 or stat.S_IMODE(before.st_mode)!=0o644 or before.st_nlink!=1 or data!=expected or any(fp(v)!=fp(before) for v in (opened,after,canonical.lstat())): fail('canonical time file identity changed')
+    return dict(schema=1,profile='bench_local_ntp_file_bind_v1',path=str(canonical),device=before.st_dev,inode=before.st_ino,type='regular file',uid=before.st_uid,gid=before.st_gid,mode=stat.S_IMODE(before.st_mode),nlink=before.st_nlink,size=before.st_size,mtime_ns=before.st_mtime_ns,ctime_ns=before.st_ctime_ns,sha256=sha)
+def source(v):
+    if not isinstance(v,str) or not v.startswith('/') or pathlib.PurePosixPath(v).as_posix()!=v or '..' in pathlib.PurePosixPath(v).parts or any(ord(c)<32 or ord(c)==127 or c in ':,"' for c in v) or pathlib.PurePosixPath(v).parts[-2:]!=(service,'ntp.conf'): fail('invalid observed time source')
+    return v
+
+def sources(v):
+    hc=v['HostConfig']; binds=hc['Binds']; mounts=hc['Mounts']; effective=v['Mounts']
+    if not isinstance(effective,list) or len(effective)!=1: fail('time effective mount count differs')
+    m=effective[0]
+    if set(m)!={'Type','Source','Destination','Mode','RW','Propagation'} or m['Type']!='bind' or m['Destination']!='/etc/ntp.conf' or m['RW'] is not False or m['Mode'] not in ('','ro') or m['Propagation']!='rprivate': fail('time effective mount options differ')
+    if isinstance(binds,list) and len(binds)==1 and mounts in (None,[]):
+        parts=binds[0].split(':')
+        if len(parts)!=3 or parts[1:]!=['/etc/ntp.conf','ro']: fail('time bind options differ')
+        requested=parts[0]
+    elif binds in (None,[]) and isinstance(mounts,list) and len(mounts)==1:
+        q=mounts[0]
+        if not {'Type','Source','Target','ReadOnly'}<=set(q) or set(q)-{'Type','Source','Target','ReadOnly','BindOptions'} or q['Type']!='bind' or q['Target']!='/etc/ntp.conf' or q['ReadOnly'] is not True or q.get('BindOptions') not in (None,{}, {'Propagation':'rprivate'},{'Propagation':'rprivate','CreateMountpoint':False}): fail('time structured bind options differ')
+        requested=q['Source']
+    else: fail('ambiguous time requested mount')
+    return {source(requested),source(m['Source'])}
+
+def target(v,target_role):
+    labels=v['Config']['Labels']; state=v['State']; initial=target_role=='initializer'
+    if v['Image']!=image or v['Config']['User']!=user or labels.get('com.docker.compose.project')!=project or labels.get('com.docker.compose.service')!=service or labels.get('com.docker.compose.oneoff')!=('True' if initial else 'False') or labels.get('io.lantern.bench-time.profile')!='bench_local_udp_v1' or v['Config']['Entrypoint']!=['/app/lantern'] or (initial and (labels.get('lantern.owner')!='compose-security-initializer' or v['Config']['Cmd']!=['init-security'])) or not re.fullmatch(r'[0-9a-f]{64}',v['Id']): fail('time binding target identity differs')
+    return sources(v)
+
+def ref(path): return {'path':str(path),'sha256':hashlib.sha256(load(path)).hexdigest()}
+if act=='host':
+    path=pathlib.Path(raw)
+    if path.parent.resolve(strict=True)!=path.parent or not path.is_relative_to(root/'time-source-evidence'): fail('host record outside case')
+    write(path,host()); raise SystemExit(0)
+baseline=json.loads(load(node/'host-before.json'))
+if host()!=baseline: fail('time host file drift')
+if act=='observe':
+    v=json.loads(raw); observed=target(v,role); c=str(canonical)
+    original=node/'original-before.json'; binder=node/'binding.json'
+    if role=='serving' and not original.exists():
+        if v['State']['Status']!='created' or v['State']['Running'] is not False: fail('original must be recorded before native start')
+        write(original,v)
+    initial=json.loads(load(original)); target(initial,'serving')
+    if role=='serving' and v['Id']!=initial['Id']: fail('time original CID changed')
+    if binder.exists():
+        b=json.loads(load(binder))
+        if type(b.get('schema')) is not int or b['schema']!=1 or b.get('profile')!='bench_local_ntp_file_bind_v1' or b.get('alias_role') not in ('serving','initializer') or b['alternate_source']==c or b['canonical_source']!=c or b['original_container_id']!=initial['Id'] or b['image_id']!=image or b['project']!=project or b['service']!=service or b['source_commit']!=commit or b['source_tree']!=tree or b['scenario']!=scenario or b['run_id']!=root.name or b['scope']!=scope or b['runtime_user']!=user or b['config_sha256']!=sha or not observed<={c,source(b['alternate_source'])}: fail('new time file alias or binding identity')
+        fixed={'host_before':'host-before.json','host_after':'host-after.json','original_before':'original-before.json','original_after':'original-after.json','alias_target_before':'alias-target-before.json','daemon_before':'daemon-before.txt','daemon_after':'daemon-after.txt','pairs_file':'requested-pairs.json','image_environment':'image-environment.json','probe_created':'probe-created.json','probe_completed':'probe-completed.json','probe_output':'probe-output.log','probe_wait':'probe-wait.log','probe_remove':'probe-remove.log'}
+        if any(b.get(key)!=ref(node/name) for key,name in fixed.items()) or json.loads(load(node/'host-after.json'))!=baseline: fail('time binding raw evidence changed')
+        if b['alias_role']=='initializer' and role=='initializer' and v['Id']!=json.loads(load(node/'alias-target-before.json'))['Id']: fail('time alias initializer CID changed')
+        print('[]'); raise SystemExit(0)
+    if observed=={c}: print('[]'); raise SystemExit(0)
+    alternate=observed-{c}
+    if len(alternate)!=1 or len(observed|{c})!=2 or v['State']['Status']!='created' or v['State']['Running'] is not False: fail('time alias must be proven before native start')
+    if role=='initializer' and sources(initial)!={c}: fail('initializer cannot replace an original alias')
+    plan=[dict(original_source=c,clone_source=next(iter(alternate)),expected_type='regular file')]
+    write(node/'alias-target-before.json',v); write(node/'requested-pairs.json',plan)
+    print(json.dumps(plan,separators=(',',':'))); raise SystemExit(0)
+if act=='seal':
+    initial=json.loads(load(node/'original-before.json')); final=json.loads(load(node/'original-after.json'))
+    if initial!=final or initial['State']['Status']!='created' or initial['State']['Running'] is not False: fail('original changed during time file proof')
+    h=json.loads(load(node/'host-after.json'))
+    if h!=baseline: fail('host file changed during time proof')
+    daemon=load(node/'daemon-before.txt'); after=load(node/'daemon-after.txt')
+    daemon_text=daemon.decode('ascii')
+    if daemon!=after or not daemon_text.endswith('\n') or not 0<len(daemon_text[:-1])<=128 or not all(32<ord(c)<127 for c in daemon_text[:-1]): fail('time proof daemon changed')
+    plan=json.loads(load(node/'requested-pairs.json')); rows=load(node/'probe-output.log').decode().splitlines(keepends=True)
+    if len(plan)!=1 or plan[0]['original_source']!=str(canonical) or plan[0]['expected_type']!='regular file' or len(rows)!=2 or rows[0]!=rows[1] or not re.fullmatch(r'[1-9][0-9]*:[1-9][0-9]*:regular file\n',rows[0]): fail('time file same-object stat proof differs')
+    completed=json.loads(load(node/'probe-completed.json'))
+    if completed['State']['Status']!='exited' or completed['State']['Running'] is not False or completed['State']['ExitCode']!=0 or load(node/'probe-wait.log')!=b'0\n' or load(node/'probe-remove.log')!=(completed['Id']+'\n').encode(): fail('time file utility did not close')
+    alias=json.loads(load(node/'alias-target-before.json')); alias_role='serving' if alias['Id']==initial['Id'] else 'initializer'; target(alias,alias_role)
+    value=dict(schema=1,profile='bench_local_ntp_file_bind_v1',source_commit=commit,source_tree=tree,scenario=scenario,run_id=root.name,scope=scope,project=project,image_id=image,runtime_user=user,service=service,original_container_id=initial['Id'],canonical_source=str(canonical),alternate_source=plan[0]['clone_source'],config_sha256=sha,alias_role=alias_role,host_before=ref(node/'host-before.json'),host_after=ref(node/'host-after.json'),original_before=ref(node/'original-before.json'),original_after=ref(node/'original-after.json'),alias_target_before=ref(node/'alias-target-before.json'),daemon_id=daemon.decode().strip(),daemon_before=ref(node/'daemon-before.txt'),daemon_after=ref(node/'daemon-after.txt'),pairs_file=ref(node/'requested-pairs.json'),image_environment=ref(node/'image-environment.json'),probe_created=ref(node/'probe-created.json'),probe_completed=ref(node/'probe-completed.json'),probe_output=ref(node/'probe-output.log'),probe_wait=ref(node/'probe-wait.log'),probe_remove=ref(node/'probe-remove.log'))
+    write(node/'binding.json',value); raise SystemExit(0)
+fail('unknown fixed time file operation')
+PY_NTP
+}
+
+local_time_ntp_host_record() {
+  local_time_ntp_data host "$1" '' "$2"
+}
+
+local_time_ntp_prepare() {
+  mkdir -m 700 "$OUTDIR/time-source-evidence/ntp-mounts" || return 1
+  local service
+  for service in lantern-0 lantern-1 lantern-2; do
+    mkdir -m 700 "$OUTDIR/time-source-evidence/ntp-mounts/$service" || return 1
+    local_time_ntp_host_record "$service" "$OUTDIR/time-source-evidence/ntp-mounts/$service/host-before.json" || return 1
+  done
+}
+
+local_time_ntp_admit() {
+  local service="$1" role="$2" raw safe project="$COMPOSE_PROJECT_NAME" image="$receipt_image_id" owner="$runtime_owner"
+  local original_service="$service" bind_proof_directory="$OUTDIR/time-source-evidence/ntp-mounts/$service"
+  local bind_proof_plan bind_probe_environment bind_probe_targets original_id fresh daemon
+  local -a proof_mounts=() proof_targets=()
+  raw="$(cat)" || return 1
+  safe="$(local_time_safe_inspect "$role" <<<"$raw")" || return 1
+  bind_proof_plan="$(local_time_ntp_data observe "$service" "$role" "$safe")" || return 1
+  if [[ -f "$bind_proof_directory/binding.json" ]]; then
+    daemon="$(docker info --format '{{.ID}}')" || return 1
+    [[ "$daemon" == "$(jq -er '.daemon_id' "$bind_proof_directory/binding.json")" ]] || return 1
+  fi
+  [[ "$bind_proof_plan" != '[]' ]] || return 0
+  docker info --format '{{.ID}}' | local_time_write_new "$bind_proof_directory/daemon-before.txt" || return 1
+  docker image inspect --format '{{json .Config.Env}}' "$image" | local_time_write_new "$bind_proof_directory/image-environment.json" || return 1
+  bind_probe_environment="$(cat "$bind_proof_directory/image-environment.json")"
+  jq -e 'type=="array" and all(.[]; type=="string" and test("^(PATH|LANTERN_DEFAULT_TTL_SECONDS|LANTERN_PORT|LANTERN_METRICS_ADDR|LANTERN_LOG_FORMAT|LANTERN_LOG_LEVEL|LANTERN_VERSION|LANTERN_COMMIT)=") and ((contains("\r") or contains("\n") or contains("\u0000"))|not)) and (map(split("=")[0])|unique|length)==length' <<<"$bind_probe_environment" >/dev/null || return 1
+  execute_owned_compose_bind_probe || return "$?"
+  original_id="$(jq -er '.Id' "$bind_proof_directory/original-before.json")" || return 1
+  fresh="$(docker inspect --format '{{json .}}' "$original_id")" || return 1
+  local_time_safe_inspect serving <<<"$fresh" | local_time_write_new "$bind_proof_directory/original-after.json" || return 1
+  local_time_ntp_host_record "$service" "$bind_proof_directory/host-after.json" || return 1
+  docker info --format '{{.ID}}' | local_time_write_new "$bind_proof_directory/daemon-after.txt" || return 1
+  local_time_ntp_data seal "$service"
+}
+
+local_time_ntp_original() {
+  local_time_ntp_admit "$1" serving
+}
+
 local_time_record_initializer() {
   local service="$1" raw
   [[ "$service" =~ ^lantern-[012]$ ]] || return 1
   raw="$(cat)" || return 1
   local_time_assert_route <<<"$raw" || return 1
   jq -e '.State.Running==false and .State.Status=="exited" and .State.ExitCode==0 and .State.OOMKilled==false' <<<"$raw" >/dev/null || return 1
+  local_time_ntp_admit "$service" initializer <<<"$raw" || return 1
   local_time_safe_inspect initializer <<<"$raw" |
     local_time_write_new "$OUTDIR/time-source-evidence/init-${service#lantern-}.json"
 }
@@ -234,6 +386,7 @@ PYEXEC
     printf '  prometheus:\n    ports: !override []\n'
   } | local_time_write_new "$binding" || return 1
   COMPOSE_FILES+=(-f "$binding")
+  local_time_ntp_prepare || return 1
   LOCAL_TIME_ACTIVE=1
   local_time_assert_fixture_only
 }
@@ -387,6 +540,7 @@ local_time_capture() {
   local phase="$1" directory="$OUTDIR/time-source-evidence/$1" service container raw
   [[ "$phase" == pre || "$phase" == post ]] || return 1
   mkdir -m 700 "$directory" || return 1
+  docker info --format '{{.ID}}' | local_time_write_new "$directory/ntp-daemon.txt" || return 1
   raw="$(docker inspect --format '{{json .}}' "$LOCAL_TIME_FIXTURE_ID")" || return 1
   local_time_validate_fixture running <<<"$raw" || return 1
   local_time_safe_inspect fixture <<<"$raw" | local_time_write_new "$directory/fixture.json" || return 1
@@ -403,6 +557,8 @@ local_time_capture() {
     container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || return 1
     raw="$(docker inspect --format '{{json .}}' "$container")" || return 1
     local_time_assert_route <<<"$raw" || return 1
+    local_time_ntp_admit "$service" serving <<<"$raw" || return 1
+    local_time_ntp_host_record "$service" "$directory/ntp-host-${service#lantern-}.json" || return 1
     local_time_safe_inspect serving <<<"$raw" | local_time_write_new "$directory/serving-${service#lantern-}.json" || return 1
   done
   if [[ "$receipt_driver" == 0 ]]; then
@@ -411,7 +567,7 @@ local_time_capture() {
     jq -e --arg project "$COMPOSE_PROJECT_NAME" '.Config.Labels["com.docker.compose.project"]==$project and .Config.Labels["com.docker.compose.service"]=="prometheus" and .State.Running==true' <<<"$raw" >/dev/null || return 1
     local_time_safe_inspect diagnostic <<<"$raw" | local_time_write_new "$directory/diagnostic-prometheus.json" || return 1
   fi
-  python3 - "$OUTDIR" "$phase" "$receipt_image_commit" "${EXPECTED_LANTERN_TREE:-}" "$SCENARIO_NAME" "$COMPOSE_PROJECT_NAME" "$retained_heap" "$LOCAL_TIME_IMAGE_ID" "$runtime_owner" "${LANTERN_BENCH_CPUSET:-}" "$receipt_driver" "$LOCAL_TIME_PLACEMENT" "$PEER_TLS_DIR" <<'PY'
+  python3 - "$OUTDIR" "$phase" "$receipt_image_commit" "${EXPECTED_LANTERN_TREE:-}" "$SCENARIO_NAME" "$COMPOSE_PROJECT_NAME" "$retained_heap" "$LOCAL_TIME_IMAGE_ID" "$runtime_owner" "${LANTERN_BENCH_CPUSET:-}" "$receipt_driver" "$LOCAL_TIME_PLACEMENT" "$PEER_TLS_DIR" <<'PY' || return 1
 import hashlib,json,os,pathlib,stat,sys
 out,phase,commit,tree,scenario,run,retained,image,user,cpuset,receipt,placement,trust=sys.argv[1:]
 root=pathlib.Path(out).resolve(strict=True); evidence=root/'time-source-evidence'; cut=evidence/phase
@@ -433,9 +589,21 @@ for i in range(3):
 value={'schema':1,'profile':'bench_local_udp_v1','phase':phase,'source_commit':commit,'source_tree':tree,'scenario':scenario,'run_id':root.name,'scope':'retained' if retained=='1' else 'normal','image_id':image,'runtime_user':user,'server_cpuset':cpuset,'fixture_placement':placement,'helper':helper,'helper_executable':ref(evidence/'helper-executable.sha256'),'ntp_config':ref(evidence/'ntp.conf'),'source_configs':source_configs,'transport_profile':'bench_local_tcp_relay_v1',
        'relay':ref(cut/'relay.json'),'frontend':ref(cut/'frontend.json'),'relay_status':ref(cut/'relay-status.json'),'relay_config':ref(evidence/'relay.json'),'relay_executable':ref(evidence/'relay-executable.sha256'),
        'fixture':ref(cut/'fixture.json'),'network':ref(cut/'network.json'),'status':ref(cut/'status.json'),'serving':[ref(cut/f'serving-{i}.json') for i in range(3)],'initializers':[ref(evidence/f'init-{i}.json') for i in range(3)] if receipt=='1' else [],'diagnostics':[] if receipt=='1' else [ref(cut/'diagnostic-prometheus.json')]}
+bindings=[]
+for i in range(3):
+    binder=evidence/'ntp-mounts'/f'lantern-{i}'/'binding.json'
+    bindings.append({'binding':ref(binder),'host':ref(cut/f'ntp-host-{i}.json'),'daemon':ref(cut/'ntp-daemon.txt')} if binder.exists() else None)
+value['source_config_bindings']=bindings
 fd=os.open(root/f'time_source_{phase}.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
 with os.fdopen(fd,'w') as f: json.dump(value,f,separators=(',',':'));f.write('\n')
 PY
+  if [[ "$phase" == pre ]]; then
+    local scope=normal
+    [[ "${retained_heap:-0}" != 1 ]] || scope=retained
+    python3 -B "$REPO_ROOT/.github/scripts/bench_time_profile.py" validate-start --root "$OUTDIR" \
+      --source-commit "$receipt_image_commit" --source-tree "${EXPECTED_LANTERN_TREE:-}" --image-id "$receipt_image_id" \
+      --runtime-user "$runtime_owner" --project "$COMPOSE_PROJECT_NAME" --scenario "$SCENARIO_NAME" --scope "$scope" || return 1
+  fi
 }
 
 # Failure-only observation, after owned clients are reaped and before any stop.

@@ -83,6 +83,7 @@ initialize_owned_compose_volumes() {
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
     identity="$(docker inspect --format '{{json .}}' "$container")" || return 1
     if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then local_time_assert_route <<<"$identity" || return 1; fi
+    if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then local_time_ntp_original "$service" <<<"$identity" || return 1; fi
     wanted="$(jq -ec --arg service "$service" '.services[] | select(.service==$service) | .mounts | map({target,volume}) | sort_by(.target)' <<<"$layout")" || return 1
     volumes="$(jq -er --arg project "$project" --arg image "$image" --arg owner "$owner" --arg service "$service" --argjson wanted "$wanted" '
       select(.Config.Labels["com.docker.compose.project"]==$project and
@@ -378,8 +379,12 @@ PY
 }
 
 validate_owned_compose_security_initializer() {
-  local heap_identity_validated=false
+  local heap_identity_validated=false ntp_identity_validated=false
   validate_owned_compose_heap_mount <<<"$initialized" >/dev/null || return 1
+  if [[ "${LOCAL_TIME_ACTIVE:-0}" == 1 ]]; then
+    local_time_ntp_admit "${service%-security-init}" initializer <<<"$initialized" || return 1
+    ntp_identity_validated=true
+  fi
   if [[ -n "${heap_source:-}" ]]; then
     printf '%s\n' "$initialized" | owned_compose_heap_controller bind-clone-before \
       --directory "$heap_root" --service "${service%-security-init}" || return 1
@@ -420,8 +425,8 @@ validate_owned_compose_security_initializer() {
       (.[1].Mounts|map(select(.Destination=="/run/lantern-bench-heap")|del(.Source)))' >/dev/null || return 1
   fi
   if printf '%s\n%s\n' "$original" "$initialized" |
-    jq -se --arg heap_source "${heap_source:-}" '
-      def mounts: map(if $heap_source!="" and .Destination=="/run/lantern-bench-heap" then del(.Source) else . end)|sort_by(.Destination);
+    jq -se --arg heap_source "${heap_source:-}" --argjson ntp_proved "$ntp_identity_validated" '
+      def mounts: map(if ($heap_source!="" and .Destination=="/run/lantern-bench-heap") or ($ntp_proved and .Destination=="/etc/ntp.conf") then del(.Source) else . end)|sort_by(.Destination);
       .[0] as $original | .[1] | (.Mounts|mounts)==($original.Mounts|mounts)' >/dev/null; then
     return 0
   fi
@@ -548,7 +553,7 @@ prove_owned_compose_bind_identity() {
   local -a proof_mounts=() proof_targets=()
   original_service="$(jq -er '.Config.Labels["com.docker.compose.service"]|select(type=="string" and test("^lantern-[012]$"))' <<<"$original")" || return 1
   bind_proof_plan="$(printf '%s\n%s\n%s\n' "$original" "$initialized" "$configuration" |
-    jq -sec --arg service "$original_service" --argjson heap_proved "${heap_identity_validated:-false}" '
+    jq -sec --arg service "$original_service" --argjson heap_proved "${heap_identity_validated:-false}" --argjson ntp_proved "${ntp_identity_validated:-false}" '
       def source: type=="string" and startswith("/") and length>1 and
         ((contains(",") or contains("\""))|not) and (explode|all(.>=32 and .!=127));
       .[0] as $original | .[1] as $clone | .[2].services[$service].volumes as $declared |
@@ -557,8 +562,8 @@ prove_owned_compose_bind_identity() {
         ($left|map(.Destination)|unique|length)!=($left|length) or ($right|map(.Destination)|unique|length)!=($right|length)
       then error("mount membership differs") else . end |
       [range(0;$left|length)|. as $i|$left[$i] as $a|$right[$i] as $c|
-        if $a==$c then empty elif $heap_proved and $a.Destination=="/run/lantern-bench-heap" and
-          $c.Destination=="/run/lantern-bench-heap" and ($a|del(.Source))==($c|del(.Source)) then empty else
+        if $a==$c then empty elif (($heap_proved and $a.Destination=="/run/lantern-bench-heap") or ($ntp_proved and $a.Destination=="/etc/ntp.conf")) and
+          $c.Destination==$a.Destination and ($a|del(.Source))==($c|del(.Source)) then empty else
           (if $a.Destination=="/run/lantern-config" then "directory" elif $a.Destination=="/etc/ntp.conf" then "regular file" else error("unsupported proof destination") end) as $type |
           [$declared[]|select(.type=="bind" and .read_only==true and .target==$a.Destination)] as $intent |
           if $a.Type!="bind" or $a.RW!=false or ($a|del(.Source))!=($c|del(.Source)) or
