@@ -344,8 +344,8 @@ func TestSearchVertices_ClampsLimitAndForwardsPrefix(t *testing.T) {
 			if resp.GetEffectiveLimit() != tc.wantLimit {
 				t.Errorf("effective limit = %d, want %d", resp.GetEffectiveLimit(), tc.wantLimit)
 			}
-			if fb.lastSearchLimit != svc.search.MaxSessionHits+1 {
-				t.Errorf("backend snapshot limit = %d, want %d", fb.lastSearchLimit, svc.search.MaxSessionHits+1)
+			if fb.lastSearchLimit != svc.search.Limits().MaxSessionHits+1 {
+				t.Errorf("backend snapshot limit = %d, want %d", fb.lastSearchLimit, svc.search.Limits().MaxSessionHits+1)
 			}
 			if fb.lastSearchPrefix != tc.reqPrefix {
 				t.Errorf("backend prefix = %q, want %q", fb.lastSearchPrefix, tc.reqPrefix)
@@ -789,48 +789,89 @@ func TestSearchVertices_RecordsBoundedTraceWork(t *testing.T) {
 	}
 }
 
-func TestParseMatchMode(t *testing.T) {
-	tests := []struct {
-		in   string
-		want search.MatchMode
-	}{
-		{"", search.MatchAny},
-		{"any", search.MatchAny},
-		{"ANY", search.MatchAny},
-		{"  all  ", search.MatchAll},
-		{"min-should", search.MatchMinShould},
-		{"minshould", search.MatchMinShould},
-		{"min_should", search.MatchMinShould},
-		// Unrecognised launders to MatchAny — a dead path in a booted server
-		// because the provider rejects the value at startup, but kept tolerant
-		// so the wire seam never has to handle an error.
-		{"min_shold", search.MatchAny},
-		{"or", search.MatchAny},
-	}
-	for _, tc := range tests {
-		if got := ParseMatchMode(tc.in); got != tc.want {
-			t.Errorf("ParseMatchMode(%q) = %v, want %v", tc.in, got, tc.want)
+func TestSearchReaderRetriesReplaceResultsAndBackendErrors(t *testing.T) {
+	for _, projection := range []pb.SearchProjection{
+		pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE,
+		pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+	} {
+		for _, firstError := range []bool{false, true} {
+			t.Run(projection.String()+"/first_error="+strconv.FormatBool(firstError), func(t *testing.T) {
+				fb := newFakeBackend()
+				fb.vertices["final"] = &pb.Vertex{Key: "final", Value: &pb.Vertex_String_{String_: "owned"}}
+				metrics := &fakeHotPathMetrics{}
+				svc := NewLanternService(fb).WithSearchLimits(SearchLimits{Enabled: true}).WithHotPathMetrics(metrics)
+				type contextKey struct{}
+				ctx := context.WithValue(t.Context(), contextKey{}, "authorized-context")
+				fb.searchContextFn = func(gotCtx context.Context) ([]search.Result[string], search.Stats, error) {
+					if gotCtx.Value(contextKey{}) != "authorized-context" {
+						t.Fatal("search adapter dropped the incoming context")
+					}
+					if fb.searchCalls == 1 {
+						// Force a completed publication interval across the first
+						// capture. The query adapter must replace this attempt.
+						svc.replicationCutMu.Lock()
+						svc.replicationCutMu.Unlock()
+						if firstError {
+							return nil, search.Stats{PostingVisits: 99}, search.ErrIndexIncomplete
+						}
+						return []search.Result[string]{{ID: "discarded", Score: 99}}, search.Stats{PostingVisits: 99}, nil
+					}
+					return []search.Result[string]{{ID: "final", Score: 2}}, search.Stats{PostingVisits: 2}, nil
+				}
+				response, err := svc.SearchVertices(ctx, &pb.SearchVerticesRequest{Query: "needle", Projection: projection})
+				if err != nil || fb.searchCalls != 2 || len(response.GetHits()) != 1 || response.GetHits()[0].GetKey() != "final" {
+					t.Fatalf("retry = response:%+v err:%v calls:%d", response, err, fb.searchCalls)
+				}
+				if len(metrics.searchExecution) != 1 || metrics.searchExecution[0].Stats.PostingVisits != 2 {
+					t.Fatalf("retry observations = %+v, want only final attempt", metrics.searchExecution)
+				}
+				if projection == pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
+					fb.vertices["final"].Value = &pb.Vertex_String_{String_: "changed"}
+					if response.GetHits()[0].GetVertex().GetString_() != "owned" {
+						t.Fatal("capture returned a vertex borrowed from storage")
+					}
+				}
+			})
 		}
 	}
 }
 
-func TestValidateMatchMode(t *testing.T) {
-	t.Run("accepts canonical, aliases, and empty", func(t *testing.T) {
-		for _, in := range []string{"", "any", "all", "min-should", "minshould", "min_should", "  ALL  "} {
-			if err := ValidateMatchMode(in); err != nil {
-				t.Errorf("ValidateMatchMode(%q) = %v, want nil", in, err)
+func TestSearchReaderPublicationFaultOverridesBackendError(t *testing.T) {
+	for _, projection := range []pb.SearchProjection{
+		pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE,
+		pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+	} {
+		t.Run(projection.String(), func(t *testing.T) {
+			fb := newFakeBackend()
+			metrics := &fakeHotPathMetrics{}
+			svc := NewLanternService(fb).WithSearchLimits(SearchLimits{Enabled: true}).WithHotPathMetrics(metrics)
+			fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+				svc.replicationCutMu.Lock()
+				svc.markPublicationFault(&pendingMutation{})
+				svc.replicationCutMu.Unlock()
+				return nil, search.Stats{PostingVisits: 9}, &search.BudgetExceededError{Kind: search.WorkPostingVisits, Limit: 1}
 			}
-		}
-	})
-	t.Run("rejects a typo naming the value and allowed set", func(t *testing.T) {
-		err := ValidateMatchMode("min_shold")
-		if err == nil {
-			t.Fatal("ValidateMatchMode accepted a typo")
-		}
-		for _, want := range []string{"min_shold", "any|all|min-should"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not contain %q", err, want)
+			response, err := svc.SearchVertices(t.Context(), &pb.SearchVerticesRequest{Query: "needle", Projection: projection})
+			if response != nil || connect.CodeOf(err) != connect.CodeFailedPrecondition || fb.searchCalls != 1 {
+				t.Fatalf("faulted capture = response:%+v err:%v calls:%d", response, err, fb.searchCalls)
 			}
-		}
+			if len(metrics.searchExecution) != 1 || metrics.searchExecution[0].Reason != "publication_gap" || metrics.searchExecution[0].Stats != (search.Stats{}) {
+				t.Fatalf("fault observation = %+v, want publication gap before backend result", metrics.searchExecution)
+			}
+		})
+	}
+}
+
+func TestSearchReaderPageUsesOneShotPublicationCut(t *testing.T) {
+	svc := NewLanternService(newFakeBackend())
+	calls := 0
+	err := (searchReader{service: svc}).ReadPage(func() error {
+		calls++
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		return nil
 	})
+	if calls != 1 || connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("page read = %v calls=%d, want one-shot conflict", err, calls)
+	}
 }

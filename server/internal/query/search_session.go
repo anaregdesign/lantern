@@ -1,4 +1,4 @@
-package service
+package query
 
 import (
 	"container/list"
@@ -68,7 +68,7 @@ type searchCursorPayload struct {
 	ExpiresUnixNano     int64  `json:"x"`
 }
 
-func newSearchSessionStore(limits SearchLimits) *searchSessionStore {
+func newSearchSessionStore(limits Limits) *searchSessionStore {
 	store := &searchSessionStore{
 		sessions: make(map[string]*list.Element),
 		lru:      list.New(),

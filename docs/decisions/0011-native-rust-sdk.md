@@ -320,7 +320,7 @@ details remain absent; malformed nonempty details expose a decode failure.
 In both cases retain the original `tonic::Status` code/message (rather than
 trusting redundant fields in the rich envelope), never an invented typed reason
 ([upstream rich-status decoder](https://github.com/grpc/grpc-rust/blob/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/tonic-types/src/richer_error/mod.rs),
-[server detail construction](../../server/service/search.go)).
+[server detail construction](../../server/internal/query/search.go)).
 
 ## Scope and consequences
 

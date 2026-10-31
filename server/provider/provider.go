@@ -21,6 +21,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
+	"github.com/anaregdesign/lantern/server/internal/query"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
@@ -242,7 +243,7 @@ type SearchConfig struct {
 	Positions bool
 	// DefaultMode is the match mode applied when a SearchVertices request omits
 	// options or leaves match_mode unspecified: "any" (OR), "all" (AND), or
-	// "min-should". The value is validated at startup (service.ValidateMatchMode);
+	// "min-should". The value is validated at startup (query.ValidateMatchMode);
 	// an unrecognised spelling fails boot rather than silently defaulting (#911).
 	DefaultMode string
 	// DefaultMinShould is the minimum-should-match count applied when the mode
@@ -454,7 +455,7 @@ func NewConfig() (*Config, error) {
 	// fails boot: the value is a valid string, so it slips past parsing, but a
 	// typo silently rewrites server-wide default ranking semantics — an operator
 	// must learn about it at startup, not from confusing search results (#911).
-	if err := service.ValidateMatchMode(cfg.Search.DefaultMode); err != nil {
+	if err := query.ValidateMatchMode(cfg.Search.DefaultMode); err != nil {
 		return nil, err
 	}
 	if cfg.Cache.MaxVertexCausalEntries < 0 {

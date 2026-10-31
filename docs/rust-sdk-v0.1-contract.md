@@ -242,7 +242,7 @@ followed by a full `Any.type_url` match on
 `SearchErrorDetail::decode(any.value.as_slice())`. Preserve the outer
 gRPC status even when rich details are absent, invalid, or unknown
 ([upstream implementation](https://github.com/grpc/grpc-rust/blob/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/tonic-types/src/richer_error/mod.rs),
-[server detail](../server/service/search.go)).
+[server detail](../server/internal/query/search.go)).
 
 ## Timeout, cancellation, and retry matrix
 

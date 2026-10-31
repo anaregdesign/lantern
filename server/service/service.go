@@ -25,8 +25,8 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
+	"github.com/anaregdesign/lantern/server/internal/query"
 	"github.com/anaregdesign/lantern/server/internal/security"
-	"golang.org/x/sync/semaphore"
 )
 
 // ServiceName is the fully-qualified service name used for per-service
@@ -58,10 +58,7 @@ type LanternService struct {
 	cache                     Backend
 	runtime                   *ServingRuntime
 	scan                      ScanLimits
-	search                    SearchLimits
-	searchConfigFingerprint   string
-	searchGate                *semaphore.Weighted
-	searchSessions            *searchSessionStore
+	search                    *query.Engine
 	log                       *mutationlog.Log
 	clock                     *hlc.Clock
 	origin                    []byte
@@ -208,64 +205,19 @@ func defaultScanLimits() ScanLimits {
 // fail closed when false.
 // DefaultLimit / MaxLimit cap the per-call ranked-hit count exactly like
 // ScanLimits caps the prefix RPCs.
-type SearchLimits struct {
-	Enabled          bool
-	PositionsEnabled bool
-	DefaultLimit     uint32
-	MaxLimit         uint32
-	// DefaultMode is the match mode applied when a request leaves match_mode
-	// unspecified (#892); the zero value is MatchAny (the OR-union default).
-	DefaultMode search.MatchMode
-	// DefaultMinShould is the minimum-should-match count applied when the mode
-	// is MatchMinShould but the request leaves min_should_match at 0.
-	DefaultMinShould uint32
-	Timeout          time.Duration
-	MaxQueryBytes    int
-	WorkBudget       search.Budget
-	MaxInFlight      int
-	CursorTTL        time.Duration
-	MaxSessions      int
-	MaxSessionHits   int
-	MaxSessionBytes  int64
-	AnalysisLimits   search.SearchAnalysisLimits
-}
-
-func defaultSearchLimits() SearchLimits {
-	return SearchLimits{
-		Enabled:       false,
-		DefaultLimit:  100,
-		MaxLimit:      1000,
-		Timeout:       5 * time.Second,
-		MaxQueryBytes: 16 * 1024,
-		WorkBudget: search.Budget{
-			MaxQueryTerms:       1024,
-			MaxDictionaryVisits: 1_000_000,
-			MaxPostingVisits:    10_000_000,
-			MaxPositionVisits:   10_000_000,
-			MaxExpirationVisits: 100_000,
-		},
-		MaxInFlight:     32,
-		CursorTTL:       time.Minute,
-		MaxSessions:     128,
-		MaxSessionHits:  10_000,
-		MaxSessionBytes: 64 << 20,
-	}
-}
+type SearchLimits = query.Limits
 
 func NewLanternService(cache Backend) *LanternService {
-	searchLimits := defaultSearchLimits()
 	s := &LanternService{
-		cache:                   cache,
-		scan:                    defaultScanLimits(),
-		search:                  searchLimits,
-		searchConfigFingerprint: computeSearchConfigFingerprint(searchLimits),
-		searchSessions:          newSearchSessionStore(searchLimits),
-		origins:                 newOriginStateTracker(),
-		publicationFaultCh:      make(chan struct{}),
-		metrics:                 noopHotPathMetrics{},
-		traversalTimeout:        5 * time.Second,
-		traversalWorkBudget:     graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
-		traversalMaxResults:     1024,
+		cache:               cache,
+		scan:                defaultScanLimits(),
+		search:              query.New(query.DefaultLimits()),
+		origins:             newOriginStateTracker(),
+		publicationFaultCh:  make(chan struct{}),
+		metrics:             noopHotPathMetrics{},
+		traversalTimeout:    5 * time.Second,
+		traversalWorkBudget: graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
+		traversalMaxResults: 1024,
 	}
 	s.replicationCutMu.initialize(s)
 	return s
@@ -285,33 +237,7 @@ func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
 // unit tests that construct LanternService directly get the FAILED_PRECONDITION
 // path until they opt in.
 func (s *LanternService) WithSearchLimits(l SearchLimits) *LanternService {
-	defaults := defaultSearchLimits()
-	if l.DefaultLimit == 0 {
-		l.DefaultLimit = defaults.DefaultLimit
-	}
-	if l.MaxLimit == 0 {
-		l.MaxLimit = defaults.MaxLimit
-	}
-	if l.CursorTTL <= 0 {
-		l.CursorTTL = defaults.CursorTTL
-	}
-	if l.MaxSessions <= 0 {
-		l.MaxSessions = defaults.MaxSessions
-	}
-	if l.MaxSessionHits <= 0 {
-		l.MaxSessionHits = defaults.MaxSessionHits
-	}
-	if l.MaxSessionBytes <= 0 {
-		l.MaxSessionBytes = defaults.MaxSessionBytes
-	}
-	s.search = l
-	s.searchConfigFingerprint = computeSearchConfigFingerprint(l)
-	s.searchSessions = newSearchSessionStore(l)
-	if l.MaxInFlight > 0 {
-		s.searchGate = semaphore.NewWeighted(int64(l.MaxInFlight))
-	} else {
-		s.searchGate = nil
-	}
+	s.search = query.New(l)
 	return s
 }
 
@@ -1481,11 +1407,11 @@ func writeError(err error) error {
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	}
 	if errors.Is(err, search.ErrIndexIncomplete) {
-		return newSearchPreconditionError(pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, err)
+		return query.PreconditionError(pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, err)
 	}
 	var limit *search.AnalysisLimitError
 	if errors.As(err, &limit) {
-		return newSearchResourceError(pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED, string(limit.Kind), err)
+		return query.ResourceError(pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED, string(limit.Kind), err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }

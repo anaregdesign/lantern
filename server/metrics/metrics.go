@@ -13,7 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/search"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/query"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -1314,7 +1314,7 @@ func (m *DomainMetrics) OnEdgeContribDeduped(n int) {
 // SearchVertices attempt. Every string is sanitized against a finite set and
 // the remaining dimensions are booleans or a fixed fuzziness bucket, so raw
 // query text, prefixes, keys, and values cannot become labels.
-func (m *DomainMetrics) OnSearchExecution(observation service.SearchObservation) {
+func (m *DomainMetrics) OnSearchExecution(observation query.Observation) {
 	mode := sanitizeLabel(observation.Mode, searchModes, "unknown")
 	outcome := sanitizeLabel(observation.Outcome, searchOutcomes, "internal")
 	reason := sanitizeLabel(observation.Reason, searchReasons, "internal")

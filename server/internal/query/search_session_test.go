@@ -1,4 +1,4 @@
-package service
+package query
 
 import (
 	"crypto/sha256"
@@ -11,7 +11,7 @@ import (
 
 func TestSearchSessionStore(t *testing.T) {
 	newStore := func(maxCount, maxHits int, maxBytes int64) (*searchSessionStore, *time.Time) {
-		limits := SearchLimits{
+		limits := Limits{
 			CursorTTL:       time.Minute,
 			MaxSessions:     maxCount,
 			MaxSessionHits:  maxHits,
@@ -115,7 +115,7 @@ func TestSearchSessionStore(t *testing.T) {
 }
 
 func FuzzSearchCursorDecode(f *testing.F) {
-	store := newSearchSessionStore(SearchLimits{
+	store := newSearchSessionStore(Limits{
 		CursorTTL:       time.Minute,
 		MaxSessions:     2,
 		MaxSessionHits:  10,
