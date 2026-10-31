@@ -490,7 +490,7 @@ Dart/Rust SDKs, and Bun-managed TypeScript packages. The server depends on
 |---|---|
 | [`proto/`](proto/) / [`pb/`](pb/) | Shared schema / generated Go protobuf and Connect stubs |
 | [`core/`](core/) | Graph, cache, collections, concurrency, and NLP building blocks |
-| [`server/`](server/) | Server and runtime assembly |
+| [`server/`](server/) | Data/replication services, internal authentication transport adapters, and runtime assembly |
 | [`sdks/`](sdks/) | Independently consumable client packages |
 | [`cli/`](cli/) / [`admin/`](admin/) / [`mcp/`](mcp/) | CLI, browser console, and agent-facing MCP server |
 | [`deploy/`](deploy/) | Compose stack and Helm chart |

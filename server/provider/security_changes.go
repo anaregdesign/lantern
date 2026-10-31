@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -21,7 +22,7 @@ func (r *SecurityRuntime) PublicChangeHTTPHandler(svc *service.LanternService, c
 	if err != nil {
 		return "", nil, err
 	}
-	options = append(options, service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
+	options = append(options, rpcwire.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternChangeServiceHandler(changes, options...)
 	}, options...)
@@ -44,7 +45,7 @@ func (r *SecurityRuntime) BrowserChangeHTTPHandler(svc *service.LanternService, 
 	if err != nil {
 		return "", nil, err
 	}
-	options = append(options, service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
+	options = append(options, rpcwire.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternChangeServiceHandler(changes, options...)
 	}, options...)

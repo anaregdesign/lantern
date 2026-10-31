@@ -4,12 +4,12 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 )
 
 // Boundary rejection happens before a generated handler can encode its error.
 // Preserve the request's Connect, gRPC or gRPC-Web status and expose no policy
 // or credential details. Browser login/navigation has a separate HTTP contract.
 func publicRPCError(w http.ResponseWriter, req *http.Request, code connect.Code) {
-	service.WritePublicAdmissionError(w, req, code)
+	securitytransport.WritePublicAdmissionError(w, req, code)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/proto"
 )
@@ -165,7 +166,7 @@ func TestCurrentDataRPCHandlerOptionParity(t *testing.T) {
 		})
 	}
 	t.Run("conditional read cap and strict JSON", func(t *testing.T) {
-		options := []connect.HandlerOption{service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(1024), connect.WithConditionalHandlerOptions(func(spec connect.Spec) []connect.HandlerOption {
+		options := []connect.HandlerOption{rpcwire.StrictJSONHandlerOption(), connect.WithReadMaxBytes(1024), connect.WithConditionalHandlerOptions(func(spec connect.Spec) []connect.HandlerOption {
 			if spec.Procedure == procedure {
 				return []connect.HandlerOption{connect.WithReadMaxBytes(16)}
 			}
@@ -243,7 +244,7 @@ var currentDataRPCBenchmarkHandler http.Handler
 // normal GC remains; this benchmark adds no manual GC or runtime settings.
 func BenchmarkCurrentDataRPCHandlerConstruction(b *testing.B) {
 	svc := graphv1connect.UnimplementedLanternServiceHandler{}
-	options := []connect.HandlerOption{service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(4 << 20), connect.WithSendMaxBytes(4 << 20), connect.WithCompressMinBytes(1024)}
+	options := []connect.HandlerOption{rpcwire.StrictJSONHandlerOption(), connect.WithReadMaxBytes(4 << 20), connect.WithSendMaxBytes(4 << 20), connect.WithCompressMinBytes(1024)}
 	b.Run("generated-all", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {

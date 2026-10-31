@@ -9,7 +9,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 )
 
 func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
@@ -55,7 +55,7 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 		return err
 	}
 	r.composeAuthentication()
-	r.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Current: r.current, Now: r.now, ValidateIssuer: func(ctx context.Context, i security.Issuer) error {
+	r.control, err = securitytransport.NewSecurityConnectHandler(securitytransport.SecurityServiceOptions{Current: r.current, Now: r.now, ValidateIssuer: func(ctx context.Context, i security.Issuer) error {
 		if i.BrowserEnabled() && i.RedirectURI != r.config.BrowserOrigin+oidc.CallbackPath(i.URL) {
 			return oidc.ErrInvalidDocument
 		}
