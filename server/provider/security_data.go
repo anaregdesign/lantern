@@ -8,6 +8,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -30,7 +31,7 @@ func (r *SecurityRuntime) PublicDataHTTPHandler(svc *service.LanternService, opt
 	if err := r.protectDataService(svc); err != nil {
 		return "", nil, err
 	}
-	options = append(options, service.StrictJSONHandlerOption(), connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
+	options = append(options, rpcwire.StrictJSONHandlerOption(), connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternServiceName+"/", func(procedure string, options ...connect.HandlerOption) (string, http.Handler) {
 		typed := service.NewLanternServiceConnectHandler(svc)
 		if procedure == "" && r.current == nil {
@@ -44,7 +45,7 @@ func (r *SecurityRuntime) BrowserDataHTTPHandler(svc *service.LanternService, op
 	if err := r.protectDataService(svc); err != nil {
 		return "", nil, err
 	}
-	options = append(options, service.StrictJSONHandlerOption())
+	options = append(options, rpcwire.StrictJSONHandlerOption())
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternServiceName+"/", func(procedure string, options ...connect.HandlerOption) (string, http.Handler) {
 		typed := service.NewLanternServiceConnectHandler(svc)
 		if procedure == "" && r.current == nil {

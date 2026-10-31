@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
+	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -43,7 +44,7 @@ func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, repli
 	if peer == nil || replication == nil || peer.CheckWorkload(context.Background()) != nil {
 		return nil, nil, errors.New("private listener requires certified workload and replication runtime")
 	}
-	options := []connect.HandlerOption{connect.WithReadMaxBytes(limits.MaxRecvMsgBytes), connect.WithSendMaxBytes(limits.MaxSendMsgBytes), service.StrictJSONHandlerOption()}
+	options := []connect.HandlerOption{connect.WithReadMaxBytes(limits.MaxRecvMsgBytes), connect.WithSendMaxBytes(limits.MaxSendMsgBytes), rpcwire.StrictJSONHandlerOption()}
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(replication), options...))
 	var listener net.Listener

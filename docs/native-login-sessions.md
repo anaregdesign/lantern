@@ -40,7 +40,7 @@ landed through #1752 at `f8db9d460e9ddac5cc9afcdf0870e485a4d2d0fa`.
 | `server/internal/oidc` | Shared bounded JWT/JWKS/signature/time primitives; explicit Google-native and Apple-native/web verification; Apple `client_secret_post` exchange; opaque native completion evidence; bounded one-use provider transactions. It does not issue Lantern sessions or decide Roles. |
 | `server/internal/authn` | `Workflow.BeginNativeLogin` / `CompleteNativeLogin`, Apple callback staging, common current-session establishment, shared prepare/apply logout orchestration; concrete trusted credential producers. No HTTP, Connect, protobuf, persistence owner or worker. |
 | `server/internal/security` | Committed issuer/client profiles and session profile, original evidence commitments, current admission, historical verification, Prepare/Apply/lineage/revoke, current self/issued-session output. No provider HTTP/plugin import. |
-| `server/service` | Native Connect DTO validation/status/encoding, strict Apple form POST and fixed application return URI, header/TLS/proxy checks, output-context propagation. No duplicate provider/session decisions. |
+| `server/internal/securitytransport` | Native Connect DTO validation/status/encoding, strict Apple form POST and fixed application return URI, header/TLS/proxy checks, output-context propagation. No duplicate provider/session decisions. |
 | `server/provider` | Focused trusted config, one shared fetcher/key cache/secret registry, transaction/workflow/adapter construction, exact runtime certification and cleanup. |
 | `sdks/dart` | Pure-Dart typed facade over the chosen wire contract, normal transport/deadline/cancellation/redaction, existing per-attempt `TokenProvider`. Generated classes stay private. |
 | `sdks/dart/example` | Plugins, UI/cancellation, platform registrations, app-only secure credential storage, pending-login/account generations, cache/outbox ownership. |
@@ -54,7 +54,7 @@ opaque Bearer and non-secret metadata.
 
 Use coherent paired files such as `oidc/native_login.go`, `oidc/apple_exchange.go`,
 `oidc/native_transactions.go`, `authn/native_login.go` and
-`service/security_native.go` only as their responsibilities warrant. Reuse
+`securitytransport/native.go` only as their responsibilities warrant. Reuse
 low-level bounded transaction/secret/hash helpers without merging browser PKCE
 and Apple into a permissive bag of optional fields. Update the existing
 `authentication_boundary_gate_test.go` for actual producer placement. Follow

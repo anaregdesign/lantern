@@ -17,11 +17,13 @@ import (
 func TestAuthenticationPackageBoundaries(t *testing.T) {
 	const server = "github.com/anaregdesign/lantern/server/"
 	forbidden := map[string][]string{
-		"internal/authn":    {"net/http", "connectrpc.com/", "github.com/anaregdesign/lantern/pb/", server + "provider", server + "service"},
-		"internal/oidc":     {server + "internal/authn", server + "provider", server + "service"},
-		"internal/security": {server + "internal/oidc", server + "internal/authn", server + "provider", server + "service"},
-		"service":           {server + "provider"},
-		"provider":          {},
+		"internal/authn":             {"net/http", "connectrpc.com/", "github.com/anaregdesign/lantern/pb/", server + "provider", server + "service", server + "internal/securitytransport", server + "internal/rpcwire"},
+		"internal/oidc":              {server + "internal/authn", server + "provider", server + "service", server + "internal/securitytransport", server + "internal/rpcwire"},
+		"internal/security":          {server + "internal/oidc", server + "internal/authn", server + "provider", server + "service", server + "internal/securitytransport", server + "internal/rpcwire"},
+		"internal/securitytransport": {server + "provider", server + "service"},
+		"internal/rpcwire":           {server + "provider", server + "service", server + "internal/securitytransport", server + "internal/authn", server + "internal/oidc", server + "internal/security"},
+		"service":                    {server + "provider", server + "internal/securitytransport"},
+		"provider":                   {},
 	}
 	var producers []string
 	for pkg, imports := range forbidden {
@@ -57,7 +59,7 @@ func TestAuthenticationPackageBoundaries(t *testing.T) {
 		}
 	}
 	slices.Sort(producers)
-	want := []string{"internal/authn/current_credential.go", "service/security_credential.go"}
+	want := []string{"internal/authn/current_credential.go", "internal/securitytransport/credential.go"}
 	if !slices.Equal(producers, want) {
 		t.Fatalf("production credential producer boundary changed: %v", producers)
 	}

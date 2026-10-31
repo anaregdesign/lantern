@@ -97,6 +97,11 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
 
 ## Build / Run / Test / Generate
 
+Authentication/security HTTP and Connect adapters live in
+`server/internal/securitytransport`, composed by `provider` without importing
+`service`. Keep authority/workflow decisions in `security`, `authn` and `oidc`;
+shared strict JSON and bounded error details belong to `internal/rpcwire`.
+
 ```bash
 go build -v ./...                # build (same as CI)
 go test -v ./...                 # tests

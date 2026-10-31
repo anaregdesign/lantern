@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/readinessdiag"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -21,7 +22,7 @@ import (
 // its role/query/CDC/peer/browser boundaries before accepting requests.
 type SecurityRuntime struct {
 	mode           string
-	authentication *service.AuthenticationAdapter
+	authentication *securitytransport.AuthenticationAdapter
 	workflow       *authn.Workflow
 	credentials    *authn.Credentials
 	current        *security.CurrentAuthority
@@ -34,7 +35,7 @@ type SecurityRuntime struct {
 	verifier       *oidc.Verifier
 	logins         *oidc.LoginTransactions
 	nativeLogins   *oidc.NativeTransactions
-	control        *service.SecurityConnectHandler
+	control        *securitytransport.SecurityConnectHandler
 	data           *service.ServingRuntime
 	config         SecurityConfig
 	now            func() time.Time
@@ -62,7 +63,7 @@ func NewSecurityRuntime(ctx context.Context, config SecurityConfig, data *servic
 	}()
 	if config.Mode == "off" {
 		runtime.composeAuthentication()
-		runtime.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Ready: runtime.Ready})
+		runtime.control, err = securitytransport.NewSecurityConnectHandler(securitytransport.SecurityServiceOptions{Ready: runtime.Ready})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -132,8 +133,10 @@ func (r *SecurityRuntime) finish(orderly bool) error {
 	}
 	return r.closeErr
 }
-func (r *SecurityRuntime) Mode() string                                    { return r.mode }
-func (r *SecurityRuntime) ControlHandler() *service.SecurityConnectHandler { return r.control }
+func (r *SecurityRuntime) Mode() string { return r.mode }
+func (r *SecurityRuntime) ControlHandler() *securitytransport.SecurityConnectHandler {
+	return r.control
+}
 
 // TimeAcquisitionCounts is local diagnostic evidence; it does not grant time.
 func (r *SecurityRuntime) TimeAcquisitionCounts() decisiontrace.AcquisitionCounts {

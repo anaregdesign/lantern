@@ -15,7 +15,7 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -134,7 +134,7 @@ func generateQueryFixture(ctx context.Context, dir string, ports []int, mode, bi
 			if err != nil {
 				return fixture{}, err
 			}
-			profile := service.EncodeCurrentProfile(originalProfile)
+			profile := securitytransport.EncodeCurrentProfile(originalProfile)
 			if i == 0 {
 				f.Query.CurrentProfile, f.Query.CurrentBinding = profile, originalProfile.Binding()
 			} else if !proto.Equal(profile, f.Query.CurrentProfile) {
@@ -187,7 +187,7 @@ func queryCapabilitiesReady(q *queryFixture, node int, mode string, version, mem
 	if protojson.Unmarshal(raw, &profile) != nil || !proto.Equal(&profile, expected) {
 		return false
 	}
-	decoded, err := service.DecodeCurrentProfile(&profile)
+	decoded, err := securitytransport.DecodeCurrentProfile(&profile)
 	return err == nil && (q == nil || decoded.Binding() == q.CurrentBinding)
 }
 

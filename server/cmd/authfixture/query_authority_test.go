@@ -7,14 +7,14 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestCurrentQueryReadinessRejectsFallbackAndWrongOriginalProfile(t *testing.T) {
 	p := security.CurrentProfile{Version: 2, Domain: [32]byte{1}, Cohort: [32]byte{2}, Generation: [16]byte{3}, Protocol: [32]byte{4}, Time: [32]byte{5}, Membership: [32]byte{6}, Configuration: [32]byte{7}}
-	profile := service.EncodeCurrentProfile(p)
+	profile := securitytransport.EncodeCurrentProfile(p)
 	q := &queryFixture{Mode: "oidc", SecurityProfile: "current-v2", CurrentProfile: profile, CurrentBinding: p.Binding()}
 	raw, err := protojson.Marshal(profile)
 	if err != nil {

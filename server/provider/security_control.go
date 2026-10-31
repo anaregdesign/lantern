@@ -5,13 +5,13 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 )
 
 // PublicControlHTTPHandler always installs strict JSON decoding and verified
 // bearer admission. Browser session routes use a distinct authenticated mount.
 func (r *SecurityRuntime) PublicControlHTTPHandler(extra ...connect.HandlerOption) (string, http.Handler) {
-	options := service.SecurityHandlerOptions()
+	options := securitytransport.SecurityHandlerOptions()
 	options = append(options, extra...)
 	options = append(options, connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
 	return r.publicRPCHandler("/"+graphv1connect.LanternSecurityServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
@@ -21,7 +21,7 @@ func (r *SecurityRuntime) PublicControlHTTPHandler(extra ...connect.HandlerOptio
 
 func (r *SecurityRuntime) NativeAuthHTTPHandler(extra ...connect.HandlerOption) (string, http.Handler) {
 	options := append([]connect.HandlerOption{}, extra...)
-	options = append(options, service.NativeHandlerOptions()...)
+	options = append(options, securitytransport.NativeHandlerOptions()...)
 	options = append(options, connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternNativeAuthServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternNativeAuthServiceHandler(r.authentication, options...)
@@ -32,6 +32,6 @@ func (r *SecurityRuntime) NativeAuthHTTPHandler(extra ...connect.HandlerOption) 
 func (r *SecurityRuntime) BrowserControlHTTPHandler(extra ...connect.HandlerOption) (string, http.Handler) {
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternSecurityServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternSecurityServiceHandler(r.control, options...)
-	}, append(service.SecurityHandlerOptions(), extra...)...)
+	}, append(securitytransport.SecurityHandlerOptions(), extra...)...)
 	return "/browser" + path, r.BrowserRPCHandler(path, handler)
 }

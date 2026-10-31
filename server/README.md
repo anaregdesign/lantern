@@ -49,13 +49,15 @@ Both ports are configurable via environment variables (see below).
 | Path | Description |
 | --- | --- |
 | `cmd/` | `main`, the `App` composition root, and `wire`-generated graph (`wire.go` / `wire_gen.go`). |
-| `service/` | RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination, prefix scans, Connect and browser authentication adapters. |
+| `service/` | Data and replication RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination and prefix scans. |
 | `provider/` | Wire providers — `Config` aggregation, `LanternListener` (the h2c http.Server wired with the Connect mux + grpchealth + grpcreflect + CORS + otelhttp), Connect interceptors (logging, metrics, slow-rpc, validation, rate-limit), TLS loader, Prometheus registry, metrics HTTP server, OTel tracing, readiness gate, replication pump, anti-entropy driver. |
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
 | `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
 | `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
 | `internal/authn/` | Login/session and purpose-callback workflows; genuine Code/Bearer producers. Borrows existing OIDC and security owners without opening state or owning transport. |
+| `internal/securitytransport/` | Security management Connect RPCs, Bearer admission interceptor, browser and native authentication adapters. Borrows certified workflow/authority owners; does not import `service`. |
+| `internal/rpcwire/` | Shared strict protobuf JSON codec and bounded error detail encoding for control and data transports. |
 | `internal/oidc/` | Configured IdP discovery, Code exchange, token verification and one-use login transactions. |
 | `internal/security/` | Native policy/session state, current authority, admission, Prepare/Apply and finite output ownership. |
 
@@ -367,9 +369,10 @@ standing up a metrics stack:
 - If a server-side test needs the client (e.g. a full-stack `bufconn`
   round-trip), put it under [`tests/integration/`](../tests/integration/),
   not in `server/.../_test.go`.
-- `service/` has zero imports from `provider/`; provider composes its concrete
-  transport adapters. `internal/authn -> internal/oidc -> internal/security`
-  remains acyclic, with no transport imports in authn or upward imports in security.
+- `service/` has zero imports from `provider/`. Provider composes
+  `internal/securitytransport -> internal/authn -> internal/oidc -> internal/security`;
+  security transport does not import service, and authn/security have no upward
+  transport imports. Shared protobuf wire safeguards live in `internal/rpcwire`.
 
 See [AGENTS.md](../AGENTS.md) for the full dependency graph and release
 contract. The server module is **never tagged independently** — it ships
