@@ -580,14 +580,38 @@ def _diagnostic(value, network, expected):
          and value["Config"]["Cmd"] == ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=1h"]
          and value["State"]["Status"] == "running" and value["State"]["Running"] is True
          and value["State"]["Pid"] > 0
-         and value["HostConfig"]["ExtraHosts"] in (None, [])
-         and type(value["Mounts"]) is list and len(value["Mounts"]) == 1
-         and value["Mounts"][0].get("Destination") == "/etc/prometheus/prometheus.yml"
-         and value["Mounts"][0].get("Type") == "bind" and value["Mounts"][0].get("RW") is False,
+         and value["HostConfig"]["ExtraHosts"] in (None, []),
          "time network diagnostic is not the frozen Prometheus")
+    hc, mounts = value["HostConfig"], value["Mounts"]
+    need(type(hc["Binds"]) is list and len(hc["Binds"]) == 1 and type(hc["Binds"][0]) is str
+         and hc["Mounts"] in (None, [])
+         and hc["VolumesFrom"] in (None, []) and hc["Tmpfs"] in (None, {})
+         and type(mounts) is list and len(mounts) == 2 and all(type(m) is dict for m in mounts)
+         and {m.get("Destination") for m in mounts} == {"/etc/prometheus/prometheus.yml", "/prometheus"},
+         "time diagnostic mount requests or membership differ")
+    request = hc["Binds"][0].split(":")
+    need(len(request) == 3 and request[1:] == ["/etc/prometheus/prometheus.yml", "ro"],
+         "time diagnostic requested config bind differs")
+    _ntp_source(request[0])
+    by_target = {m["Destination"]: m for m in mounts}
+    config, data = by_target["/etc/prometheus/prometheus.yml"], by_target["/prometheus"]
+    keys(config, ("Type", "Source", "Destination", "Mode", "RW", "Propagation"))
+    keys(data, ("Type", "Name", "Source", "Destination", "Driver", "Mode", "RW", "Propagation"))
+    _ntp_source(config["Source"])
+    _ntp_source(data["Source"])
+    need(config["Type"] == "bind" and config["RW"] is False
+         and config["Mode"] == "ro" and config["Propagation"] == "rprivate"
+         and data["Type"] == "volume" and type(data["Name"]) is str and HEX64.fullmatch(data["Name"])
+         and type(data["Source"]) is str and Path(data["Source"]).is_absolute()
+         and ".." not in Path(data["Source"]).parts
+         and Path(data["Source"]).parts[-3:] == ("volumes", data["Name"], "_data")
+         and data["Driver"] == "local" and data["RW"] is True and data["Mode"] == "" and data["Propagation"] == "",
+         "time diagnostic config or local data volume differs")
     _attached(value, network, True)
     _no_publication(value)
-    return value
+    # Docker may reorder effective mounts between inspections. Keep raw bytes
+    # and every field intact; only this comparison copy is ordered.
+    return dict(value, Mounts=sorted(mounts, key=lambda m: m["Destination"]))
 
 
 def _relay_status(value, config_sha):
@@ -690,7 +714,7 @@ def _relay(value, backend, frontend, expected, helper, config_path, routes):
             need(type(rows) is list and len(rows) == 1, "relay TCP publisher missing/duplicated")
             keys(rows[0], ("HostIp", "HostPort"))
             need(rows[0] == {"HostIp": "127.0.0.1", "HostPort": host_port}, "relay publisher differs from fixed host mapping")
-    return value
+    return dict(value, Mounts=sorted(value["Mounts"], key=lambda m: m["Destination"]))
 
 
 def _receipt_keys(receipt):

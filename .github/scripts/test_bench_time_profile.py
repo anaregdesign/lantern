@@ -102,7 +102,15 @@ def fixture(root, expected=None, receipt=True):
     diagnostic["Config"]["Labels"]["com.docker.compose.service"] = "prometheus"
     diagnostic["State"]["Pid"] = 103
     diagnostic["HostConfig"]["ExtraHosts"] = []
-    diagnostic["Mounts"] = [{"Type": "bind", "Destination": "/etc/prometheus/prometheus.yml", "RW": False}]
+    prometheus_config = str(root.parents[2 if expected["image_scope"] == "normal" else 3] / "prometheus.native.yml")
+    volume = "a" * 64
+    diagnostic["HostConfig"].update(Binds=[prometheus_config + ":/etc/prometheus/prometheus.yml:ro"], Mounts=None)
+    # Match the safe Docker projection: Config.Volumes is deliberately absent.
+    diagnostic["Mounts"] = [
+        {"Type": "bind", "Source": prometheus_config, "Destination": "/etc/prometheus/prometheus.yml",
+         "Mode": "ro", "RW": False, "Propagation": "rprivate"},
+        {"Type": "volume", "Name": volume, "Source": "/var/lib/docker/volumes/" + volume + "/_data",
+         "Destination": "/prometheus", "Driver": "local", "Mode": "", "RW": True, "Propagation": ""}]
     diagnostic["NetworkSettings"]["Networks"][name]["IPAddress"] = subnet + "6"
     relay = copy.deepcopy(base)
     relay.update(Id=("c" if retained else "d") * 64, Name=f"/{expected['project']}-time-relay")
@@ -292,6 +300,75 @@ class TimeProfileTest(unittest.TestCase):
         root = self.root.parent / "off"
         expected = fixture(root, receipt=False)
         self.assertEqual(profile.validate_case(root, expected)["verdict"], "pass")
+
+    def test_diagnostic_real_config_and_anonymous_data_shape_ignore_only_effective_order(self):
+        root = self.root.parent / "diagnostic-order"; expected = fixture(root, receipt=False)
+        path = root / "time_source_post.json"; packet = json.loads(path.read_text())
+        target = Path(packet["diagnostics"][0]["path"]); row = json.loads(target.read_text())
+        self.assertNotIn("Volumes", row["Config"])
+        row["Mounts"].reverse(); packet["diagnostics"][0] = write(target, row); write(path, packet)
+        raw = target.read_bytes()
+        self.assertEqual(profile.validate_case(root, expected)["verdict"], "pass")
+        self.assertEqual(target.read_bytes(), raw)
+        network = json.loads(Path(packet["network"]["path"]).read_text())
+        original = copy.deepcopy(row)
+        normalized = profile._diagnostic(row, network, expected)
+        self.assertEqual(row, original)
+        self.assertIsNot(normalized, row)
+        self.assertEqual([x["Destination"] for x in normalized["Mounts"]], ["/etc/prometheus/prometheus.yml", "/prometheus"])
+        # Diagnostic Sources are observed spellings, not an NTP same-file proof.
+        # Keep both phases stable while requested/effective paths differ.
+        for phase in ("pre", "post"):
+            path = root / f"time_source_{phase}.json"; packet = json.loads(path.read_text())
+            target = Path(packet["diagnostics"][0]["path"]); row = json.loads(target.read_text())
+            row["HostConfig"]["Binds"] = ["/Users/operator/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+            next(x for x in row["Mounts"] if x["Type"] == "bind")["Source"] = "/host_mnt/Users/operator/prometheus.yml"
+            packet["diagnostics"][0] = write(target, row); write(path, packet)
+        self.assertEqual(profile.validate_case(root, expected)["verdict"], "pass")
+
+    def test_diagnostic_foreign_extra_writable_and_substituted_mounts_refuse(self):
+        def foreign_config(row):
+            row["HostConfig"]["Binds"] = ["/foreign/prometheus.native.yml:/etc/prometheus/prometheus.yml:ro"]
+            row["Mounts"][0]["Source"] = "/foreign/prometheus.native.yml"
+        def substituted_data(row):
+            row["Mounts"][1].update(Name="b" * 64, Source="/var/lib/docker/volumes/" + "b" * 64 + "/_data")
+        changes = [foreign_config, substituted_data,
+            lambda x: x["Mounts"][0].update(RW=True), lambda x: x["Mounts"][0].update(Mode="rw"),
+            lambda x: x["Mounts"][0].update(Propagation="rshared"),
+            lambda x: x["Mounts"][1].update(Name="foreign-volume"), lambda x: x["Mounts"][1].update(Driver="nfs"),
+            lambda x: x["Mounts"][1].update(Source="/var/lib/docker/volumes/foreign/_data"),
+            lambda x: x["Mounts"][1].update(RW=False), lambda x: x["Mounts"][1].update(Mode="ro"),
+            lambda x: x["Mounts"].append(dict(x["Mounts"][1])),
+            lambda x: x["Mounts"][1].update(Destination="/unexpected"),
+            lambda x: x["HostConfig"].update(Binds=["/config:/etc/prometheus/prometheus.yml:rw"]),
+            lambda x: x["HostConfig"].update(Binds=["/config:/unexpected:ro"]),
+            lambda x: x["Mounts"][0].update(Source="/config/../unexpected"),
+            lambda x: x["HostConfig"]["Binds"].append("foreign:/prometheus:rw"),
+            lambda x: x["HostConfig"].update(Mounts=[{"Type": "volume", "Source": "foreign", "Target": "/prometheus"}])]
+        for i, change in enumerate(changes):
+            with self.subTest(change=i):
+                root = self.root.parent / f"diagnostic-refusal-{i}"; expected = fixture(root, receipt=False)
+                path = root / "time_source_post.json"; packet = json.loads(path.read_text())
+                target = Path(packet["diagnostics"][0]["path"]); row = json.loads(target.read_text()); change(row)
+                packet["diagnostics"][0] = write(target, row); write(path, packet)
+                with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
+
+    def test_relay_effective_order_copy_preserves_exact_mount_continuity(self):
+        for receipt in (False, True):
+            with self.subTest(receipt=receipt):
+                root = self.root.parent / f"relay-order-{receipt}"; expected = fixture(root, receipt=receipt)
+                path = root / "time_source_post.json"; packet = json.loads(path.read_text())
+                target = Path(packet["relay"]["path"]); row = json.loads(target.read_text())
+                row["Mounts"].reverse(); packet["relay"] = write(target, row); write(path, packet)
+                raw = target.read_bytes()
+                self.assertEqual(profile.validate_case(root, expected)["verdict"], "pass")
+                self.assertEqual(target.read_bytes(), raw)
+                # Normalization must preserve the complete row, including Source.
+                for field, value in (("Source", "/other/helper"), ("Destination", "/other/target"), ("RW", True)):
+                    with self.subTest(field=field):
+                        changed = copy.deepcopy(row); changed["Mounts"][0][field] = value
+                        packet["relay"] = write(target, changed); write(path, packet)
+                        with self.assertRaises(profile.Incomplete): profile.validate_case(root, expected)
 
     def test_fixture_restart_or_clock_and_counter_rollback(self):
         for field, changed in (("start_nonce", "b" * 64), ("seed_utc", "2026-10-31T00:00:00Z"),
