@@ -199,11 +199,22 @@ inferring refusal from a relay connection failure.
 
 Formal load runs require explicit `LANTERN_BENCH_CPUSET=0-3` and at least five
 Docker CPUs: all three Servers share CPUs 0–3; the fixture (0.25 CPU, 64 MiB,
-64 PIDs) and relay (1 CPU, 128 MiB, 128 PIDs) use CPU 4. The
+64 PIDs) and relay (1 CPU, 512 MiB, 128 PIDs) use CPU 4. The
 short `search_qualification` correctness scenario may keep its existing Server
 placement and share a CPU with its fixture and relay; it records that placement explicitly
 and cannot supply a formal matrix case. Its own correctness/performance checks
 remain blocking. No extra Server CPU capacity is inferred from fixture placement.
+
+The relay-only 512 MiB limit (#1965) is an engineering allowance for the
+fixed benchmark workloads. At a nominal 65 TCP connections, two Linux splice
+pipes per connection can request 130 MiB of pipe capacity; capacity is not
+resident or cgroup-charged memory. The remaining 382 MiB is an unmeasured
+allowance, not a measured minimum or a guarantee for the 4096-connection
+admission ceiling. Relay CPU, PIDs, copy behavior and Server resources are
+unchanged. A separate diagnostic recorded an owned relay OOM under 128 MiB;
+it does not establish the cause of the earlier formal failure. Old or missing
+relay limits fail the strict profile checks, and historical PASS results do
+not carry into the new exact-source matrix.
 
 This is performance evidence with controlled UTC, not external time-source
 qualification. The independent normal-build configured-source-integration gate
@@ -413,6 +424,10 @@ teardown of the named Compose project must also succeed; a teardown failure
 disqualifies the run without masking an earlier gate failure. Run artifacts
 are written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
 Runs already failing before teardown also retain a private Server log.
+After host clients are reaped and before container stop, failure-only capture
+records terminal State and separate bounded stdout/stderr for the exact owned
+relay and time fixture. These private records report capture errors explicitly;
+capture cannot mask the primary failure or prevent owned cleanup.
 Compose replica prefixes identify the emitting node; keep them when interpreting
 Snapshot or publication failures. Raw logs may contain runtime context and stay
 outside public artifacts. Publish their hashes and bounded findings instead.

@@ -2139,3 +2139,283 @@ printf 'complete\n' > "$OUTDIR/discovery-complete"
 		})
 	}
 }
+
+func TestOwnedComposeLocalTimeRelayMemoryProfile(t *testing.T) {
+	helper, err := filepath.Abs("local_time.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"created", "running"} {
+		for _, tc := range []struct {
+			name     string
+			accepted bool
+		}{
+			{"exact-512", true},
+			{"old-128", false},
+			{"missing", false},
+			{"null", false},
+			{"drift", false},
+			{"larger", false},
+			{"string", false},
+			{"cpu-drift", false},
+			{"pids-drift", false},
+			{"cpuset-drift", false},
+		} {
+			t.Run(state+"/"+tc.name, func(t *testing.T) {
+				script := `set -euo pipefail
+source "$1"
+state="$2"; case_name="$3"
+LOCAL_TIME_IMAGE_ID="sha256:$(printf 'a%.0s' {1..64})"
+runtime_owner="$(id -u):$(id -g)"
+COMPOSE_PROJECT_NAME=lantern-relay-memory-fixture
+LOCAL_TIME_HELPER="$OUTDIR/helper"
+LOCAL_TIME_RELAY_CONFIG="$OUTDIR/relay.json"
+LOCAL_TIME_CPU=4
+LOCAL_TIME_NETWORK_NAME="${COMPOSE_PROJECT_NAME}_default"
+jq -n --arg image "$LOCAL_TIME_IMAGE_ID" --arg owner "$runtime_owner" --arg project "$COMPOSE_PROJECT_NAME" \
+ --arg helper "$LOCAL_TIME_HELPER" --arg config "$LOCAL_TIME_RELAY_CONFIG" --arg state "$state" --arg case "$case_name" '
+ {Image:$image,Name:("/"+$project+"-time-relay"),RestartCount:0,
+  Config:{Image:$image,User:$owner,Entrypoint:["/fixture/ntpfixture"],Cmd:["-relay-config","/fixture/relay.json"],
+   Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":"time-relay",
+    "com.docker.compose.oneoff":"False","lantern.owner":"bench-local-tcp-relay","io.lantern.bench-time.profile":"bench_local_udp_v1"}},
+  State:{Status:$state,Running:($state=="running"),Pid:(if $state=="running" then 123 else 0 end),OOMKilled:false},
+  HostConfig:{ReadonlyRootfs:true,Privileged:false,AutoRemove:false,CapDrop:["ALL"],CapAdd:null,
+   SecurityOpt:["no-new-privileges:true"],Sysctls:{"net.ipv4.ip_forward":"0","net.ipv6.conf.all.forwarding":"0"},
+   PidMode:"",IpcMode:"private",UTSMode:"",UsernsMode:"",Devices:[],DeviceRequests:null,DeviceCgroupRules:null,
+   VolumesFrom:null,Binds:[],Tmpfs:{},PublishAllPorts:false,ExtraHosts:[],RestartPolicy:{Name:"no",MaximumRetryCount:0},
+   CpusetCpus:"4",NanoCpus:1000000000,Memory:536870912,PidsLimit:128,NetworkMode:($project+"_default"),
+   Mounts:[{Type:"bind",Source:$helper,Target:"/fixture/ntpfixture",ReadOnly:true,BindOptions:{Propagation:"rprivate",CreateMountpoint:false}},
+           {Type:"bind",Source:$config,Target:"/fixture/relay.json",ReadOnly:true,BindOptions:{Propagation:"rprivate",CreateMountpoint:false}}]},
+  Mounts:[{Type:"bind",Destination:"/fixture/ntpfixture",RW:false,Mode:"ro",Propagation:"rprivate"},
+          {Type:"bind",Destination:"/fixture/relay.json",RW:false,Mode:"ro",Propagation:"rprivate"}],
+  NetworkSettings:{Networks:{($project+"_default"):{},($project+"_frontend"): {}}}} |
+ if $case=="old-128" then .HostConfig.Memory=134217728
+ elif $case=="missing" then del(.HostConfig.Memory)
+ elif $case=="null" then .HostConfig.Memory=null
+ elif $case=="drift" then .HostConfig.Memory=536870911
+ elif $case=="larger" then .HostConfig.Memory=1073741824
+ elif $case=="string" then .HostConfig.Memory="536870912"
+ elif $case=="cpu-drift" then .HostConfig.NanoCpus=2000000000
+ elif $case=="pids-drift" then .HostConfig.PidsLimit=256
+ elif $case=="cpuset-drift" then .HostConfig.CpusetCpus="0-3"
+ else . end' > "$OUTDIR/relay-profile.json"
+local_time_validate_relay "$state" < "$OUTDIR/relay-profile.json"
+`
+				fixture := runOwnedComposeFixture(t, script, []string{helper, state, tc.name}, nil, 10*time.Second)
+				if !fixture.controlQualified() {
+					t.Fatalf("relay profile fixture custody failed: %v %s", fixture.controlErr, fixture.output)
+				}
+				if (fixture.commandErr == nil) != tc.accepted {
+					t.Fatalf("relay profile result=%v want accepted=%t: %s", fixture.commandErr, tc.accepted, fixture.output)
+				}
+			})
+		}
+	}
+}
+
+func TestOwnedComposeLocalTimeFailureDiagnostics(t *testing.T) {
+	helper, err := filepath.Abs("local_time.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		complete bool
+		terminal bool
+		logs     bool
+	}{
+		{name: "terminal-exit", complete: true, terminal: true, logs: true},
+		{name: "inspect-fails"},
+		{name: "setup-register-fails"},
+		{name: "wrong-id"},
+		{name: "wrong-image"},
+		{name: "foreign-project"},
+		{name: "missing-bootstrap"},
+		{name: "changed-start", terminal: true, logs: true},
+		{name: "changed-pid", terminal: true, logs: true},
+		{name: "logs-fail", terminal: true, logs: true},
+		{name: "oversize", terminal: true, logs: true},
+		{name: "timeout", terminal: true, logs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := `set -euo pipefail
+source "$1"
+export CASE_NAME="$2"
+export COMPOSE_PROJECT_NAME=lantern-terminal-fixture
+LOCAL_TIME_IMAGE_ID="sha256:$(printf 'a%.0s' {1..64})"
+runtime_owner="$(id -u):$(id -g)"
+LOCAL_TIME_RELAY_ID="$(printf '1%.0s' {1..64})"
+LOCAL_TIME_FIXTURE_ID="$(printf '2%.0s' {1..64})"
+LOCAL_TIME_RELAY_DECLARED=1
+mkdir -m 700 "$OUTDIR/private" "$OUTDIR/time-source-evidence" "$OUTDIR/time-source-evidence/bootstrap" "$OUTDIR/bin"
+python3 - "$runtime_owner" <<'PY_FIXTURE'
+import json,os,pathlib,sys
+root=pathlib.Path(os.environ['OUTDIR']); project=os.environ['COMPOSE_PROJECT_NAME']; case=os.environ['CASE_NAME']
+for i,role in enumerate(('relay','fixture'),1):
+    cid=str(i)*64
+    value={'Id':cid,'Name':'/'+project+'-time-'+role,'Image':'sha256:'+'a'*64,'RestartCount':0,
+        'Config':{'User':sys.argv[1],'Env':['SECRET=never-copy-this-env'],'Labels':{'com.docker.compose.project':project,'com.docker.compose.service':'time-'+role,
+            'com.docker.compose.oneoff':'False','lantern.owner':'bench-local-tcp-relay' if role=='relay' else 'bench-local-udp-fixture','io.lantern.bench-time.profile':'bench_local_udp_v1'}},
+        'State':{'Status':'running','Running':True,'Pid':100+i,'StartedAt':'2026-10-30T09:41:12Z','FinishedAt':'0001-01-01T00:00:00Z','OOMKilled':False,'ExitCode':0,'Error':''}}
+    path=root/'time-source-evidence'/'bootstrap'/(role+'-running.json')
+    if not (role=='relay' and case=='missing-bootstrap'):
+        path.write_text(json.dumps(value)); path.chmod(0o600)
+    if role=='relay':
+        value['State'].update(Status='exited',Running=False,Pid=0,FinishedAt='2026-10-30T09:41:55Z',OOMKilled=True,ExitCode=137,Error='observed terminal error')
+        if case=='wrong-id': value['Id']='3'*64
+        elif case=='wrong-image': value['Image']='sha256:'+'b'*64
+        elif case=='foreign-project': value['Config']['Labels']['com.docker.compose.project']='foreign'
+        elif case=='changed-start': value['State']['StartedAt']='2026-10-30T09:41:53Z'
+        elif case=='changed-pid': value['State'].update(Status='running',Running=True,Pid=999)
+    (root/(role+'.json')).write_text(json.dumps(value))
+PY_FIXTURE
+cat > "$OUTDIR/bin/docker" <<'PY_DOCKER'
+#!/usr/bin/env python3
+import json,os,pathlib,sys,time
+root=pathlib.Path(os.environ['OUTDIR']); case=os.environ['CASE_NAME']; args=sys.argv[1:]
+role={'1'*64:'relay','2'*64:'fixture'}.get(args[-1])
+if role is None: raise SystemExit(91)
+with (root/'commands').open('a') as f: f.write(' '.join(args)+'\n')
+if args==['inspect','--format','{{json .}}',args[-1]]:
+    if role=='relay' and case=='inspect-fails': raise SystemExit(17)
+    if role=='relay' and case=='setup-register-fails': time.sleep(60)
+    sys.stdout.write((root/(role+'.json')).read_text())
+elif args==['logs','--timestamps','--tail','256',args[-1]]:
+    if role=='relay' and case=='timeout':
+        (root/'timed-child-pid').write_text(str(os.getpid())); time.sleep(60)
+    if role=='relay' and case=='oversize':
+        sys.stdout.buffer.write(b'o'*200000); sys.stdout.flush(); sys.stderr.buffer.write(b'e'*200000)
+    else:
+        print('2026-10-30T09:41:55Z bounded '+role+' stdout')
+        print('2026-10-30T09:41:55Z bounded '+role+' stderr',file=sys.stderr)
+    if role=='relay' and case=='logs-fail': raise SystemExit(19)
+else: raise SystemExit(92)
+PY_DOCKER
+chmod 700 "$OUTDIR/bin/docker"
+export PATH="$OUTDIR/bin:$PATH"
+if [[ "$CASE_NAME" == setup-register-fails ]]; then
+ cat > "$OUTDIR/bin/sitecustomize.py" <<'PY_INJECT'
+import os,pathlib,selectors,subprocess
+root=pathlib.Path(os.environ['OUTDIR']); original_popen=subprocess.Popen; original_selector=selectors.DefaultSelector
+failed=False
+def popen(*args,**kwargs):
+    child=original_popen(*args,**kwargs)
+    with (root/'setup-child-pids').open('a') as output: output.write(str(child.pid)+'\n')
+    return child
+class FailFirstRegister(original_selector):
+    def register(self,*args,**kwargs):
+        global failed
+        if not failed:
+            failed=True; (root/'setup-registration-failed').write_text('after-spawn\n')
+            raise OSError('injected selector registration failure')
+        return super().register(*args,**kwargs)
+subprocess.Popen=popen; selectors.DefaultSelector=FailFirstRegister
+PY_INJECT
+ export PYTHONPATH="$OUTDIR/bin"
+fi
+if local_time_capture_failure "$OUTDIR/private"; then exit 0; else exit 23; fi
+`
+			fixture := runOwnedComposeFixture(t, script, []string{helper, tc.name}, nil, 15*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("terminal diagnostic fixture custody failed: %v %s", fixture.controlErr, fixture.output)
+			}
+			if (fixture.commandErr == nil) != tc.complete {
+				t.Fatalf("capture completion=%v want %t: %s", fixture.commandErr, tc.complete, fixture.output)
+			}
+			private := filepath.Join(fixture.directory, "private")
+			var record struct {
+				Complete          bool  `json:"complete"`
+				ProcessContinuity *bool `json:"process_continuity"`
+				Commands          map[string]struct {
+					ExitCode        int  `json:"exit_code"`
+					TimedOut        bool `json:"timed_out"`
+					DirectReaped    bool `json:"direct_reaped"`
+					StdoutTruncated bool `json:"stdout_truncated"`
+					StderrTruncated bool `json:"stderr_truncated"`
+				} `json:"commands"`
+			}
+			raw, err := os.ReadFile(filepath.Join(private, "time-relay.capture.json"))
+			if err != nil || json.Unmarshal(raw, &record) != nil || record.Complete != tc.complete {
+				t.Fatalf("explicit relay capture result differs: %s %v", raw, err)
+			}
+			var other struct {
+				Complete bool `json:"complete"`
+			}
+			raw, err = os.ReadFile(filepath.Join(private, "time-fixture.capture.json"))
+			if err != nil || json.Unmarshal(raw, &other) != nil || !other.Complete {
+				t.Fatalf("relay failure prevented independent fixture observation: %s %v", raw, err)
+			}
+			entries, err := os.ReadDir(private)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				info, err := entry.Info()
+				data, readErr := os.ReadFile(filepath.Join(private, entry.Name()))
+				if err != nil || readErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || strings.Contains(string(data), "never-copy-this-env") || strings.Contains(string(data), `"Env"`) {
+					t.Fatalf("private bounded projection leaked context or permissions: %s %v %v", entry.Name(), err, readErr)
+				}
+				if strings.HasSuffix(entry.Name(), ".log") && len(data) > 65536 {
+					t.Fatalf("unbounded stream: %s %d", entry.Name(), len(data))
+				}
+			}
+			terminal, terminalErr := os.ReadFile(filepath.Join(private, "time-relay.terminal.json"))
+			if (terminalErr == nil) != tc.terminal {
+				t.Fatalf("terminal ownership admission differs: %s %v", terminal, terminalErr)
+			}
+			if tc.name == "terminal-exit" && (!strings.Contains(string(terminal), `"OOMKilled":true`) || !strings.Contains(string(terminal), `"ExitCode":137`) || !strings.Contains(string(terminal), `"FinishedAt":"2026-10-30T09:41:55Z"`) || record.ProcessContinuity == nil || !*record.ProcessContinuity) {
+				t.Fatalf("unhealthy original terminal state was lost: %s", terminal)
+			}
+			commands, _ := os.ReadFile(filepath.Join(fixture.directory, "commands"))
+			relayLogs := strings.Contains(string(commands), "logs --timestamps --tail 256 "+strings.Repeat("1", 64))
+			if relayLogs != tc.logs {
+				t.Fatalf("unadmitted identity reached logs: %s", commands)
+			}
+			if strings.Contains(string(commands), "start ") || strings.Contains(string(commands), "stop ") {
+				t.Fatalf("observation mutated target: %s", commands)
+			}
+			if tc.name == "oversize" {
+				logs := record.Commands["logs"]
+				if !logs.StdoutTruncated || !logs.StderrTruncated || !logs.DirectReaped {
+					t.Fatalf("bounded streams not explicit: %+v", logs)
+				}
+			}
+			if tc.name == "setup-register-fails" {
+				marker, err := os.ReadFile(filepath.Join(fixture.directory, "setup-registration-failed"))
+				if err != nil || string(marker) != "after-spawn\n" {
+					t.Fatalf("actual registration failure not reached: %q %v", marker, err)
+				}
+				pids, err := os.ReadFile(filepath.Join(fixture.directory, "setup-child-pids"))
+				if err != nil || len(strings.Fields(string(pids))) == 0 {
+					t.Fatalf("actual query child not recorded: %q %v", pids, err)
+				}
+				for _, rawPID := range strings.Fields(string(pids)) {
+					pid, err := strconv.Atoi(rawPID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+						t.Fatalf("query child survived registration failure: %d %v", pid, err)
+					}
+				}
+			}
+			if tc.name == "timeout" {
+				logs := record.Commands["logs"]
+				if !logs.TimedOut || !logs.DirectReaped {
+					t.Fatalf("timed child not reaped: %+v", logs)
+				}
+				pidRaw, err := os.ReadFile(filepath.Join(fixture.directory, "timed-child-pid"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				pid, err := strconv.Atoi(string(pidRaw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+					t.Fatalf("timed Docker query remains: %d %v", pid, err)
+				}
+			}
+		})
+	}
+}
