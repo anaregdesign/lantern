@@ -102,7 +102,7 @@ def fixture(root, expected=None, receipt=True):
     diagnostic["Config"]["Labels"]["com.docker.compose.service"] = "prometheus"
     diagnostic["State"]["Pid"] = 103
     diagnostic["HostConfig"]["ExtraHosts"] = []
-    prometheus_config = str(root.parents[2 if expected["image_scope"] == "normal" else 3] / "prometheus.native.yml")
+    prometheus_config = str(root.parent / "prometheus.native.yml")
     volume = "a" * 64
     diagnostic["HostConfig"].update(Binds=[prometheus_config + ":/etc/prometheus/prometheus.yml:ro"], Mounts=None)
     # Match the safe Docker projection: Config.Volumes is deliberately absent.
