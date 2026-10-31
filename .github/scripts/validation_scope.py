@@ -24,23 +24,55 @@ NATIVE_GO = ("core/privatefile/", "core/mutationlog/", "core/mutationreceipt/",
 NATIVE_RUST = ("sdks/rust/src/transport", "sdks/rust/src/test_server.rs",
                "sdks/rust/src/value", "sdks/rust/src/smoke.rs")
 
+# Finite read-only reader/preflight dependencies, not a blanket .github exemption.
+# Executable fixtures, workflows, selectors, build/security/protocol policy and new
+# files stay full. These consumers must still reject changed/missing measurement
+# inputs; selecting their contracts never carries a benchmark or release PASS.
+HARNESS_INPUTS = {
+    **dict.fromkeys((".github/scripts/bench_time_profile.py",
+                     ".github/scripts/test_bench_time_profile.py",
+                     ".github/scripts/test_retained_heap_pair.py",
+                     ".github/scripts/test_local_release_qualification.py"), "bench-time"),
+    **dict.fromkeys((".github/scripts/verify_root_release_binaries.py",
+                     ".github/scripts/test_verify_root_release_binaries.py"), "release-binaries"),
+    **dict.fromkeys((".github/scripts/git_test_fixture.py",
+                     ".github/scripts/test_git_test_fixture.py",
+                     ".github/scripts/test_local_gate_session.py"), "git-fixture"),
+}
+
+
+def harness_group(path, status):
+    # Additions/deletions can change the dependency graph; only existing regular
+    # modifications have this reviewed closure. Git callers verify file modes.
+    return HARNESS_INPUTS.get(path) if status == "M" else None
+
+
+def harness_required(result):
+    # Early real tools are useful for their changed inputs, not another minute
+    # of duplicate work on every unrelated product edit. Manual broad runs keep
+    # their independent preflight; normal module/security checks remain blocking.
+    return result["full"] or result["generation"] or bool(result["harness_contracts"])
+
 
 def full(reason):
     return dict(full=True, reason=reason, families=sorted(LANGUAGES),
                 go_modules=list(GO_CONSUMERS), generation=True,
-                windows_required=True, windows_rust_required=True)
+                windows_required=True, windows_rust_required=True, harness_contracts=[])
 
 
 def affected(changes):
     if not changes:
         return full("empty or unavailable diff")
-    families, modules = set(), set()
+    families, modules, harness = set(), set(), set()
     native_go = native_rust = generation = False
     for path, status in changes.items():
         value = PurePosixPath(path)
         if (path != value.as_posix() or value.is_absolute() or ".." in value.parts
                 or status not in {"A", "M", "D"}):
             return full("unknown path or change type")
+        if group := harness_group(path, status):
+            harness.add(group)
+            continue
         # Instructions/build policy cannot narrow its own qualification.
         if (path.startswith((".github/", ".agents/", "deploy/"))
                 or value.name in {"AGENTS.md", "CONTRIBUTING.md", "CLAUDE.md", "Makefile", "Dockerfile", "package.json"}
@@ -87,11 +119,12 @@ def affected(changes):
             native_go |= path.startswith(NATIVE_GO) or "_windows" in value.name or status != "M"
             # Backend native composition also changes the Windows Rust fixture.
             native_rust |= path.startswith(("server/provider/", "server/cmd/", "server/internal/listenerlaunch/"))
-    if families == {"docs"}:
+    if families == {"docs"} and not harness:
         return full("documentation uses the existing explicit prose gate")
     return dict(full=False, reason="mapped affected inputs", families=sorted(families),
                 go_modules=sorted(modules), generation=generation,
-                windows_required=native_go or native_rust, windows_rust_required=native_rust)
+                windows_required=native_go or native_rust, windows_rust_required=native_rust,
+                harness_contracts=sorted(harness))
 
 
 def changed(root, base, head="HEAD"):
@@ -130,9 +163,10 @@ def main():
         result = affected(changed(Path.cwd(), *revisions)) if revisions else full("manual or unavailable range")
     except Exception as error:
         result = full("classification unavailable: " + type(error).__name__)
+    result["harness_contracts_required"] = harness_required(result)
     print(json.dumps(result, sort_keys=True))
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        for name in ("windows_required", "windows_rust_required"):
+        for name in ("windows_required", "windows_rust_required", "harness_contracts_required"):
             output.write(f"{name}={str(result[name]).lower()}\n")
     if path := os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(path).open("a") as summary:

@@ -33,6 +33,7 @@ class ValidationScopeTest(unittest.TestCase):
             with self.subTest(path=path):
                 result = scope.affected({path: "M"})
                 self.assertFalse(result["full"])
+                self.assertFalse(scope.harness_required(result))
                 self.assertEqual(set(result["families"]), families)
                 names = self.names(path)
                 self.assertTrue({"final-diff", "final-clean"} <= names)
@@ -64,7 +65,52 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertTrue(scope.local_scope(Path("/nonexistent"), "missing")["full"])
         full = steps(Path("/tmp/evidence"))
         self.assertEqual(affected_steps(full, scope.full("unknown")), full)
-        self.assertEqual(len(full), 78)
+        self.assertEqual(len(full), 79)
+
+    def test_known_harness_readers_select_their_consumers_without_product_carry(self):
+        for path, group in scope.HARNESS_INPUTS.items():
+            with self.subTest(path=path):
+                result = scope.affected({path: "M"})
+                self.assertFalse(result["full"])
+                self.assertEqual(result["harness_contracts"], [group])
+                self.assertTrue(scope.harness_required(result))
+                self.assertEqual(result["go_modules"], [])
+                self.assertFalse(result["windows_required"])
+                plan = affected_steps(steps(Path("/tmp/evidence")), result)
+                self.assertEqual([s.name for s in plan],
+                                 ["harness-contracts", "final-diff", "final-clean"])
+                self.assertEqual(plan[0].command[-2:], ("--group", group))
+                for status in ("A", "D", "T", "R100"):
+                    self.assertTrue(scope.affected({path: status})["full"])
+
+    def test_harness_union_preserves_product_security_policy_and_unknown_inputs(self):
+        result = scope.affected({".github/scripts/bench_time_profile.py": "M",
+                                 ".github/scripts/verify_root_release_binaries.py": "M",
+                                 "server/internal/security/control.go": "M"})
+        self.assertFalse(result["full"])
+        self.assertEqual(result["harness_contracts"], ["bench-time", "release-binaries"])
+        self.assertTrue(result["windows_required"])
+        self.assertEqual(set(result["go_modules"]), {"server", "."})
+        for path in ("testbed/bench/local_time.sh", "testbed/bench/owned_compose.sh",
+                     "testbed/bench/scenarios/broad_rw.yaml", ".github/workflows/go.yml",
+                     ".github/scripts/harness_contracts.py", ".github/scripts/new_reader.py",
+                     ".github/scripts/current_qualification_scope.py", "server/go.mod"):
+            self.assertTrue(scope.affected({".github/scripts/bench_time_profile.py": "M",
+                                           path: "M"})["full"], path)
+
+    def test_harness_modification_with_docs_still_selects_docs_contracts(self):
+        result = scope.affected({".github/scripts/git_test_fixture.py": "M", "docs/ci-inventory.md": "M"})
+        self.assertFalse(result["full"])
+        names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
+        self.assertEqual(names, {"harness-contracts", "docs-tests", "final-diff", "final-clean"})
+
+    def test_early_real_tools_follow_relevant_changes_without_duplicate_product_sweeps(self):
+        for path in ("core/search/index.go", "admin/app/a.tsx", "server/service/runtime.go"):
+            self.assertFalse(scope.harness_required(scope.affected({path: "M"})), path)
+        for path in (".github/scripts/bench_time_profile.py", "proto/api.proto", "go.mod",
+                     "testbed/bench/local_time.sh", ".github/scripts/unknown.py"):
+            self.assertTrue(scope.harness_required(scope.affected({path: "M"})), path)
+        self.assertTrue(scope.harness_required(scope.full("classification error")))
 
     def test_mixed_paths_union_including_rename_sides(self):
         result = scope.affected({"sdks/rust/src/value.rs": "D", "admin/app/a.tsx": "A"})

@@ -744,7 +744,7 @@ class CleanupAndOrderTest(unittest.TestCase):
     def test_fixture_cleanup_admits_only_the_exact_owned_auxiliary_profile(self):
         from test_bench_time_profile import fixture as time_fixture
         with tempfile.TemporaryDirectory() as temporary:
-            driver = self.make_driver(Path(temporary))
+            driver = self.make_driver(Path(temporary).resolve())
             path = driver.source / ".github/scripts/bench_time_profile.py"
             path.parent.mkdir(parents=True)
             path.write_bytes(Path(qualification.__file__).with_name("bench_time_profile.py").read_bytes())

@@ -19,7 +19,7 @@ class SessionTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        self.base = Path(self.temporary.name).resolve()
         self.root = self.base / "repo"
         self.root.mkdir()
         self.git("init", "-b", "feature")
@@ -198,6 +198,26 @@ class SessionTest(unittest.TestCase):
             result = self.session.qualify_affected("HEAD^")
         self.assertFalse(result["passed"])
         self.assertIn("clean committed", result["error"])
+
+    def test_focused_harness_command_is_never_also_not_selected(self):
+        self.write(".github/scripts/bench_time_profile.py", "baseline reader\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(".github/scripts/bench_time_profile.py", "changed reader\n")
+        self.commit()
+        self.session.plan = (Step("harness-contracts", ".", ("fixture-helper",)),
+                             Step("go-test-server", ".", ("unselected-fixture",)))
+        seen = []
+        def run(step, log):
+            seen.append(step.command)
+            log.write_text("Synthetic command-selection fixture only\n")
+            return 0, True
+        with patch.object(self.session, "run", side_effect=run), redirect_stdout(io.StringIO()):
+            result = self.session.qualify_affected("origin/main")
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(seen, [("fixture-helper", "--group", "bench-time")])
+        self.assertEqual(result["not_selected"], ["go-test-server"])
+        self.assertEqual((result["executed"], result["carried"]), (1, 0))
 
     def test_dart_documentation_rejects_zero_exit_warnings(self):
         for name in ("dart-doc", "offline-doc"):
@@ -537,12 +557,12 @@ class SessionTest(unittest.TestCase):
             synthetic_prefix.append(step.name)
             log.write_text("Synthetic test prefix; no production qualification\n")
             return 0, True
-        # 75 mock prefix commands followed by the three real final subprocesses.
+        # 76 mock prefix commands followed by the three real final subprocesses.
         # The temporary fixture report is only a regression test artifact.
         with patch.object(self.session, "run", side_effect=run):
             result = self.qualify()
-        self.assertEqual(len(synthetic_prefix), 75)
-        self.assertEqual((result["executed"], result["carried"]), (78, 0))
+        self.assertEqual(len(synthetic_prefix), 76)
+        self.assertEqual((result["executed"], result["carried"]), (79, 0))
         self.assertEqual([r["name"] for r in result["steps"][-3:]],
                          ["docs-tests", "final-diff", "final-clean"])
         log = Path(result["steps"][-3]["log"])
@@ -592,7 +612,7 @@ class PlanTest(unittest.TestCase):
             with self.subTest(indexes=indexes), self.assertRaises(ValueError):
                 Step("invalid", ".", ("fixture", "*.py"), glob_args=indexes)
 
-    def test_all_78_executor_calls_preserve_declared_argv_cwd_and_environment(self):
+    def test_all_79_executor_calls_preserve_declared_argv_cwd_and_environment(self):
         with tempfile.TemporaryDirectory(prefix="gate argv with spaces ") as directory:
             root = Path(directory) / "repo with spaces"
             root.mkdir()
@@ -613,7 +633,7 @@ class PlanTest(unittest.TestCase):
                     patch.object(session, "check_go_inputs") as check_inputs:
                 for index, step in enumerate(session.plan):
                     self.assertEqual(session.run(step, session.evidence / f"mock-{index}.log"), (0, True))
-            self.assertEqual(len(captured), 78)
+            self.assertEqual(len(captured), 79)
             self.assertEqual(check_inputs.call_count, 6)
             for step, (command, kwargs) in zip(session.plan, captured):
                 with self.subTest(step=step.name):
@@ -638,9 +658,9 @@ class PlanTest(unittest.TestCase):
 
     def test_complete_plan_keeps_install_order_generation_and_unsupported_qualification(self):
         plan = steps(Path("/tmp/fixture-evidence"))
-        self.assertEqual(len(plan), 78)
-        self.assertEqual(len({s.name for s in plan}), 78)
-        self.assertEqual([s.name for s in plan[:5]], ["node-frozen-install", "node-prebuild",
+        self.assertEqual(len(plan), 79)
+        self.assertEqual(len({s.name for s in plan}), 79)
+        self.assertEqual([s.name for s in plan[:6]], ["harness-contracts", "node-frozen-install", "node-prebuild",
                          "admin-frozen-install", "example-frozen-preflight", "gofmt"])
         names = {s.name for s in plan}
         self.assertTrue(gate.ELIGIBLE <= names)

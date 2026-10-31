@@ -24,6 +24,7 @@ def steps(evidence: Path) -> tuple[Step, ...]:
     plan = []
     def add(name, directory, *cmd, empty=False, glob_args=(), reject_line_prefixes=()):
         plan.append(Step(name, directory, tuple(cmd), empty, glob_args, reject_line_prefixes))
+    add("harness-contracts", ".", "python3", "-B", ".github/scripts/harness_contracts.py")
     add("node-frozen-install", "sdks/node", "bun", "install", "--frozen-lockfile")
     add("node-prebuild", "sdks/node", "bun", "run", "build")
     add("admin-frozen-install", "admin", "bun", "install", "--frozen-lockfile", "--force")
@@ -119,6 +120,12 @@ def affected_steps(plan, scope):
         names.add("example-frozen-preflight")
     if "docs" in families:
         names.add("docs-tests")
+    groups = scope.get("harness_contracts", [])
+    if groups:
+        names.add("harness-contracts")
     if scope["generation"]:
         names |= generation
-    return tuple(s for s in plan if s.name in names)
+    return tuple(Step(s.name, s.cwd, s.command + tuple(
+        arg for group in groups for arg in ("--group", group)), s.empty,
+        s.glob_args, s.reject_line_prefixes) if s.name == "harness-contracts" else s
+        for s in plan if s.name in names)

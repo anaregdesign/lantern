@@ -392,7 +392,8 @@ class Session:
             print("Full fallback: " + scope["reason"], flush=True)
             return self.qualify()
         selected = affected_steps(self.plan, scope)
-        omitted = [s.name for s in self.plan if s not in selected]
+        selected_names = {s.name for s in selected}
+        omitted = [s.name for s in self.plan if s.name not in selected_names]
         result = {"kind": "local-affected", "base": base, "scope": scope,
                   "not_selected": omitted, "steps": [], "passed": False}
         started = time.monotonic()
