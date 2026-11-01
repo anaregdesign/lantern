@@ -99,7 +99,7 @@ func productionSearchLimits(enabled, positions bool) service.SearchLimits {
 }
 
 func newProductionSearchCache(ttl time.Duration, enabled, positions bool, limits search.SearchAnalysisLimits) *graphcache.GraphCache[string, *pb.Vertex] {
-	return provider.NewGraphCache(provider.CacheConfig{TTL: ttl}, provider.SearchConfig{
+	return provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: ttl}}, provider.SearchConfig{
 		Enabled: enabled, Positions: positions, AnalysisLimits: limits,
 	})
 }

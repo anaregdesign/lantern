@@ -887,7 +887,7 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		}
 		f.runtimes[i] = runtime
 		t.Cleanup(cleanup)
-		graph := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+		graph := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 		logOptions := mutationlog.Options{Capacity: 16}
 		if len(options) != 0 && options[0].LogOptions != nil {
 			logOptions = options[0].LogOptions(i)

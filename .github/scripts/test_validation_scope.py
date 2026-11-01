@@ -67,6 +67,23 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertEqual(affected_steps(full, scope.full("unknown")), full)
         self.assertEqual(len(full), 79)
 
+    def test_operational_settings_keep_provider_native_coverage_after_extraction(self):
+        for path in ("server/internal/config/network.go", "server/internal/config/search_test.go",
+                     "server/internal/config/observability.go", "server/internal/config/lifecycle.go",
+                     "server/internal/config/environment.go"):
+            with self.subTest(path=path):
+                result = scope.affected({path: "M"})
+                self.assertFalse(result["full"])
+                self.assertEqual(set(result["go_modules"]), {"server", "."})
+                self.assertTrue(result["windows_required"])
+                self.assertTrue(result["windows_rust_required"])
+                self.assertIn("go-test-server", self.names(path))
+                self.assertIn("go-test-.", self.names(path))
+        for path in ("server/internal/config/config.go", "server/internal/config/security_config.go",
+                     "server/internal/config/new.yaml", "server/internal/config/unknown.file"):
+            self.assertTrue(scope.affected({path: "M"})["full"], path)
+        self.assertTrue(scope.affected({"server/internal/config/network.go": "M", "go.mod": "M"})["full"])
+
     def test_known_harness_readers_select_their_consumers_without_product_carry(self):
         for path, group in scope.HARNESS_INPUTS.items():
             with self.subTest(path=path):

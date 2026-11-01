@@ -9,6 +9,7 @@ on:
       - 'proto/**'
       - '.github/workflows/admin.yml'
       - 'server/provider/**'
+      - 'server/internal/config/**'
       - 'deploy/helm/**'
       - 'deploy/compose/**'
       - "!admin/*.md"
@@ -20,6 +21,7 @@ on:
       - 'proto/**'
       - '.github/workflows/admin.yml'
       - 'server/provider/**'
+      - 'server/internal/config/**'
       - 'deploy/helm/**'
       - 'deploy/compose/**'
       - "!admin/*.md"

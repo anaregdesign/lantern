@@ -21,6 +21,8 @@ func TestAuthModePreflight(t *testing.T) {
 		{"implicit Issuer", map[string]string{"LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example"}, true},
 		{"empty Issuer", map[string]string{"LANTERN_OIDC_ADMIN_ISSUER": ""}, true},
 		{"implicit system setting", map[string]string{"LANTERN_SECURITY_STORE_DIR": "/tmp/sys"}, true},
+		{"empty security JSON in off", map[string]string{"LANTERN_AUTH_MODE": "off", "LANTERN_SECURITY_CONFIG_JSON": ""}, true},
+		{"security JSON in implicit off", map[string]string{"LANTERN_SECURITY_CONFIG_JSON": "{}"}, true},
 		{"auth typo", map[string]string{"LANTERN_AUTH_TOKEN": "token"}, true},
 		{"Issuer case typo", map[string]string{"LANTERN_OIdC_ADMIN_ISSUER": "https://idp.example"}, true},
 		{"off with Issuer", map[string]string{"LANTERN_AUTH_MODE": "off", "LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example"}, true},

@@ -228,6 +228,14 @@ class WorkflowRoutingTest(unittest.TestCase):
             condition = next(line for line in body.splitlines() if line.startswith("    if:"))
             self.assertIn("needs.scope.outputs.docs_only != 'true'", condition)
 
+    def test_extracted_operational_settings_retain_admin_workflow_coverage(self):
+        for event in ("push", "pull_request"):
+            paths = workflow_paths("admin", event)
+            for path in ("server/provider/provider.go", "server/internal/config/network.go",
+                         "server/internal/config/observability.go"):
+                self.assertTrue(triggers(paths, [path]), (event, path))
+            self.assertFalse(triggers(paths, ["server/README.md"]))
+
 
 class AdminCaddyGateTest(unittest.TestCase):
     def test_existing_ci_step_requires_real_test_success_without_skips(self):

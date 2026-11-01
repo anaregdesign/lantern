@@ -205,7 +205,7 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 }
 
 func TestNewServingRuntimeSelectsExplicitMode(t *testing.T) {
-	cacheConfig := CacheConfig{TTL: time.Hour}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
 	searchConfig := SearchConfig{Enabled: true, Positions: true}
 	logConfig := MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}
 	replicationConfig := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
@@ -229,7 +229,7 @@ func TestNewServingRuntimeSelectsExplicitMode(t *testing.T) {
 }
 
 func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
-	cacheConfig := CacheConfig{TTL: time.Hour}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
 	searchConfig := SearchConfig{}
 	logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
 	node := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
@@ -405,7 +405,7 @@ func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
 }
 
 func TestNewServingRuntimeRestartFallsBackOnlyForMissingBaseline(t *testing.T) {
-	cacheConfig := CacheConfig{TTL: time.Hour}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
 	searchConfig := SearchConfig{}
 	logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
 	node := ReplicationConfig{NodeID: hlc.NodeID{0x52}, nodeIDExplicit: true}
@@ -497,7 +497,7 @@ func TestNewServingRuntimeRestartFallsBackOnlyForMissingBaseline(t *testing.T) {
 }
 
 func TestNewServingRuntimePrefersValidRestartOverInvalidBackup(t *testing.T) {
-	cacheConfig := CacheConfig{TTL: time.Hour}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
 	searchConfig := SearchConfig{}
 	logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
 	node := ReplicationConfig{NodeID: hlc.NodeID{0x53}, nodeIDExplicit: true}
@@ -609,7 +609,7 @@ func TestNewServingRuntimeRestartRejectsIneligibleFallbacks(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cacheConfig := CacheConfig{TTL: time.Hour}
+			cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
 			searchConfig := SearchConfig{}
 			logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
 			node := ReplicationConfig{NodeID: hlc.NodeID{0x54}, nodeIDExplicit: true}
@@ -748,7 +748,7 @@ func produceProviderReceiptBackup(
 }
 
 func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
-	cacheConfig := CacheConfig{TTL: time.Hour}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
 	searchConfig := SearchConfig{Enabled: true, Positions: true}
 	logConfig := MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}
 	replicationConfig := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
@@ -839,7 +839,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 		t.Helper()
 		runtime, cleanup, err := NewServingRuntime(
 			ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
-			CacheConfig{TTL: time.Hour},
+			CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
 			SearchConfig{},
 			MutationLogConfig{Capacity: 8},
 			ReplicationConfig{NodeID: hlc.NodeID{0x61}},

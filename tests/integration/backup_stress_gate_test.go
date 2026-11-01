@@ -88,7 +88,7 @@ func TestPeriodicBackupStress(t *testing.T) {
 		t.Fatalf("invalid backup stress parameters: vertices=%d degree=%d interval_ms=%d read_rps=%d write_rps=%d", vertices, degree, intervalMS, readRPS, writeRPS)
 	}
 	interval := time.Duration(intervalMS) * time.Millisecond
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 	keys := make([]string, vertices)
 	vertexBatch := make([]graphcache.VertexItem[string, *pb.Vertex], 0, 1000)
 	liveUntil := time.Now().Add(time.Hour)

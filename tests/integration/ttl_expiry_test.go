@@ -357,7 +357,7 @@ func TestTTL_ExplicitEpochReceipt_RealConnectWire(t *testing.T) {
 }
 
 func TestTTL_BudgetedGCDoesNotDelayWireHidingAndEventuallyReclaimsDangling(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour, GCEdgeBudget: 1}, provider.SearchConfig{})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour, GCEdgeBudget: 1}}, provider.SearchConfig{})
 	svc := service.NewLanternService(cache)
 	validation := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 	srv := newConnectTestServer(t, svc, nil, validation.ConnectInterceptor())

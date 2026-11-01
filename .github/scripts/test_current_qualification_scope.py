@@ -39,6 +39,8 @@ class QualificationScopeTest(unittest.TestCase):
 
     def test_unknown_production_dependency_and_proof_changes_require_source_integration(self):
         for path in ("server/internal/security/control_time_owner.go", "server/provider/security_current_runtime.go",
+                     "server/internal/config/network.go", "server/internal/config/observability.go",
+                     "server/internal/config/search_test.go", "server/internal/config/lifecycle.go",
                      "core/cache/cache.go", "server/provider/public_metrics.go", "server/provider/provider.go",
                      "server/internal/authn/session.go", "core/hlc/clock.go", "core/mutationreceipt/clock_journal.go",
                      "go.mod", "go.work", "sdks/node/bun.lock", "admin/package.json",

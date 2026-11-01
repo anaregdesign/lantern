@@ -779,7 +779,7 @@ func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
 }
 
 func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{Enabled: true, Positions: true})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{Enabled: true, Positions: true})
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled: true, PositionsEnabled: true, DefaultLimit: 20, MaxLimit: 100,
 	})
@@ -859,7 +859,7 @@ func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 func TestSearchVertices_SharedConformanceManifest(t *testing.T) {
 	manifest := loadSearchConformanceManifest(t)
 	newClients := func(searchConfig provider.SearchConfig, limits service.SearchLimits) (graphv1connect.LanternServiceClient, *client.Lantern) {
-		cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, searchConfig)
+		cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, searchConfig)
 		svc := service.NewLanternService(cache).WithSearchLimits(limits)
 		srv := newConnectTestServer(t, svc, nil)
 		return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url), newConnectClientFor(t, srv.url)

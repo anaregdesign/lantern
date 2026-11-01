@@ -19,9 +19,9 @@ import (
 // while an equal/newer Delete of the existing identity replaces the barrier
 // without needing another budget slot.
 func TestCausalMetadataCapacity_WireGate(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{
 		TTL: time.Minute, MaxVertexCausalEntries: 1, MaxEdgeCausalEntries: 1,
-	}, provider.SearchConfig{})
+	}}, provider.SearchConfig{})
 	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16})
 	t.Cleanup(func() { _ = log.Close() })
 	var nodeID hlc.NodeID

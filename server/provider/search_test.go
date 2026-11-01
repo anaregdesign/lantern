@@ -249,7 +249,7 @@ func TestVertexSearchDocumentPreservesFieldInstances(t *testing.T) {
 }
 
 func TestNewGraphCacheSearchFieldBoundariesAndImplicitEndpoints(t *testing.T) {
-	gc := NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true, Positions: true})
+	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: true, Positions: true})
 	expiration := time.Now().Add(time.Hour)
 	if err := gc.PutVertexWithExpiration("alpha", &v1.Vertex{Key: "alpha", Value: &v1.Vertex_String_{String_: "beta"}}, expiration); err != nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestNewGraphCacheSearchDocumentBudgetsCoverJSONAndBytes(t *testing.T) {
 		CompactionRatio: 2, CompactionMinRetired: 1,
 	}
 	newCache := func() *graphcache.GraphCache[string, *v1.Vertex] {
-		return NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true, AnalysisLimits: limits})
+		return NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: true, AnalysisLimits: limits})
 	}
 	for _, tc := range []struct {
 		name   string
@@ -297,7 +297,7 @@ func TestNewGraphCacheSearchDocumentBudgetsCoverJSONAndBytes(t *testing.T) {
 }
 
 func TestNewGraphCache_SearchEnabledIndexesKeyAndValue(t *testing.T) {
-	gc := NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true})
+	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: true})
 	gc.PutVertex("user.preferences.tone", &v1.Vertex{
 		Key:   "user.preferences.tone",
 		Value: &v1.Vertex_String_{String_: "calm and concise"},
@@ -314,7 +314,7 @@ func TestNewGraphCache_SearchEnabledIndexesKeyAndValue(t *testing.T) {
 }
 
 func TestNewGraphCache_SearchJSONStringValueFiltersStructure(t *testing.T) {
-	gc := NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true})
+	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: true})
 	gc.PutVertex("user.profile", &v1.Vertex{
 		Key:   "user.profile",
 		Value: &v1.Vertex_String_{String_: `{"role":"administrator","city":"Tokyo","score":9000,"active":true}`},
@@ -346,7 +346,7 @@ func TestNewGraphCache_SearchJSONStringValueFiltersStructure(t *testing.T) {
 }
 
 func TestNewGraphCache_SearchDisabledReturnsNil(t *testing.T) {
-	gc := NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: false})
+	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: false})
 	gc.PutVertex("user.preferences.tone", &v1.Vertex{
 		Key:   "user.preferences.tone",
 		Value: &v1.Vertex_String_{String_: "calm and concise"},
@@ -383,7 +383,7 @@ func TestProductionProjectionRelevanceGate(t *testing.T) {
 	for _, corpus := range corpora {
 		byName[corpus.Name] = corpus
 		t.Run(corpus.Name, func(t *testing.T) {
-			cache := NewGraphCache(CacheConfig{TTL: time.Hour}, SearchConfig{Enabled: true, Positions: true})
+			cache := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}, SearchConfig{Enabled: true, Positions: true})
 			expiration := time.Now().Add(time.Hour)
 			for _, doc := range corpus.Docs {
 				vertex := &v1.Vertex{Key: doc.ID, Value: &v1.Vertex_String_{String_: doc.Text}}
