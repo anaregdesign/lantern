@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"runtime/debug"
 	"time"
 
@@ -37,14 +36,11 @@ type Tracing struct {
 //   - OTEL_EXPORTER_OTLP_PROTOCOL (or _TRACES_PROTOCOL) selects the wire
 //     protocol — `grpc` (default) or `http/protobuf`.
 //
-// All other OTel SDK env vars (insecure, headers, timeout, …) are honoured by
+// Exporter destinations and other OTel SDK env vars (TLS, headers, timeout, …)
+// remain SDK-owned and are honoured by
 // the exporters out of the box.
-func NewTracing(logger *slog.Logger) (*Tracing, error) {
-	endpoint := firstNonEmpty(
-		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
-		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-	)
-	if endpoint == "" {
+func NewTracing(c TracingConfig, logger *slog.Logger) (*Tracing, error) {
+	if !c.Enabled {
 		logger.Info("otel tracing disabled (OTEL_EXPORTER_OTLP_ENDPOINT unset)")
 		return &Tracing{logger: logger}, nil
 	}
@@ -52,22 +48,16 @@ func NewTracing(logger *slog.Logger) (*Tracing, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	protocol := firstNonEmpty(
-		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"),
-		os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"),
-		"grpc",
-	)
-
 	var (
 		exp otlptrace.Client
 	)
-	switch protocol {
+	switch c.Protocol {
 	case "grpc":
 		exp = otlptracegrpc.NewClient()
 	case "http/protobuf", "http":
 		exp = otlptracehttp.NewClient()
 	default:
-		return nil, fmt.Errorf("unsupported OTEL_EXPORTER_OTLP_PROTOCOL=%q (want grpc|http/protobuf)", protocol)
+		return nil, fmt.Errorf("unsupported OTEL_EXPORTER_OTLP_PROTOCOL=%q (want grpc|http/protobuf)", c.Protocol)
 	}
 
 	exporter, err := otlptrace.New(ctx, exp)
@@ -98,8 +88,7 @@ func NewTracing(logger *slog.Logger) (*Tracing, error) {
 	))
 
 	logger.Info("otel tracing enabled",
-		slog.String("endpoint", endpoint),
-		slog.String("protocol", protocol),
+		slog.String("protocol", c.Protocol),
 	)
 	return &Tracing{tp: tp, logger: logger}, nil
 }
@@ -111,15 +100,6 @@ func (t *Tracing) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return t.tp.Shutdown(ctx)
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func buildVersion() string {

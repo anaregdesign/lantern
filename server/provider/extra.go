@@ -13,6 +13,7 @@ import (
 	"golang.org/x/time/rate"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/config"
 	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -30,15 +31,8 @@ func NewLifecycleConfig(cache CacheConfig, shutdown ShutdownConfig) service.Life
 // Request validation
 // ---------------------------------------------------------------------------
 
-// ValidationLimits caps user-controllable request dimensions so a single
-// caller can't exhaust server resources before the rate limiter or message
-// size cap kicks in.
-type ValidationLimits struct {
-	MaxKeyLen         int
-	MaxBatchSize      int
-	IlluminateMaxStep int
-	IlluminateMaxK    int
-}
+// ValidationLimits is the ordinary operational request-size policy.
+type ValidationLimits = config.ValidationLimits
 
 type ValidationInterceptor struct {
 	limits     ValidationLimits

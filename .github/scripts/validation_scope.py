@@ -20,6 +20,7 @@ NATIVE_GO = ("core/privatefile/", "core/mutationlog/", "core/mutationreceipt/",
              "core/hlc/", "server/backup/", "server/provider/", "server/cmd/",
              "server/internal/security/", "server/internal/authn/",
              "server/internal/listenerlaunch/", "server/internal/envconfig/",
+             "server/internal/config/",
              "server/service/receipt", "server/service/runtime")
 NATIVE_RUST = ("sdks/rust/src/transport", "sdks/rust/src/test_server.rs",
                "sdks/rust/src/value", "sdks/rust/src/smoke.rs")
@@ -118,7 +119,8 @@ def affected(changes):
                 generation = native_go = native_rust = True
             native_go |= path.startswith(NATIVE_GO) or "_windows" in value.name or status != "M"
             # Backend native composition also changes the Windows Rust fixture.
-            native_rust |= path.startswith(("server/provider/", "server/cmd/", "server/internal/listenerlaunch/"))
+            native_rust |= path.startswith(("server/provider/", "server/cmd/", "server/internal/listenerlaunch/",
+                                            "server/internal/config/"))
     if families == {"docs"} and not harness:
         return full("documentation uses the existing explicit prose gate")
     return dict(full=False, reason="mapped affected inputs", families=sorted(families),

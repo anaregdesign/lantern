@@ -20,26 +20,26 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	if err != nil {
 		return nil, nil, err
 	}
-	observabilityConfig := provider.NewObservabilityConfig(config)
-	logger := provider.NewLogger(observabilityConfig)
+	v := provider.NewObservabilityConfig(config)
+	logger := provider.NewLogger(v)
 	receiptWALConfig := provider.NewReceiptWALConfig(config)
 	cacheConfig := provider.NewCacheConfig(config)
-	searchConfig := provider.NewSearchConfig(config)
+	v2 := provider.NewSearchConfig(config)
 	mutationLogConfig := provider.NewMutationLogConfig(config)
 	replicationConfig := provider.NewReplicationConfig(config)
 	backupConfig := provider.NewBackupConfig(config)
 	registry := provider.NewPrometheusRegistry()
-	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig)
-	servingRuntime, cleanup, err := provider.NewServingRuntime(receiptWALConfig, cacheConfig, searchConfig, mutationLogConfig, replicationConfig, backupConfig, domainMetrics)
+	domainMetrics := provider.NewDomainMetrics(registry, v)
+	servingRuntime, cleanup, err := provider.NewServingRuntime(receiptWALConfig, cacheConfig, v2, mutationLogConfig, replicationConfig, backupConfig, domainMetrics)
 	if err != nil {
 		return nil, nil, err
 	}
-	scanConfig := provider.NewScanConfig(config)
-	validationLimits := provider.NewValidationLimits(config)
-	traversalConfig := provider.NewTraversalConfig(config)
+	v3 := provider.NewScanConfig(config)
+	v4 := provider.NewValidationLimits(config)
+	v5 := provider.NewTraversalConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
-	lanternService := newLanternService(servingRuntime, scanConfig, searchConfig, replicationConfig, validationLimits, traversalConfig, tlsConfig, cacheConfig, observabilityConfig, logger, domainMetrics)
-	netConfig := provider.NewNetConfig(config)
+	lanternService := newLanternService(servingRuntime, v3, v2, replicationConfig, v4, v5, tlsConfig, cacheConfig, v, logger, domainMetrics)
+	v6 := provider.NewNetConfig(config)
 	lanternReplicationService, err := newLanternReplicationService(servingRuntime, logger, domainMetrics, lanternService)
 	if err != nil {
 		cleanup()
@@ -50,7 +50,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, lanternService, lanternReplicationService, runtimeRestored, netConfig)
+	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, lanternService, lanternReplicationService, runtimeRestored, v6)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -88,7 +88,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	listener, cleanup4, err := provider.NewListener(netConfig, runtimeCertified, publicReceiptsCertified, launch)
+	listener, cleanup4, err := provider.NewListener(v6, runtimeCertified, publicReceiptsCertified, launch)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -97,14 +97,14 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	}
 	corsConfig := provider.NewCORSConfig(config)
 	changeConfig := provider.NewChangeConfig(config, domainMetrics)
-	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
-	rateLimitConfig := provider.NewRateLimitConfig(config)
-	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
+	validationInterceptor := provider.NewValidationInterceptorProvider(v4, domainMetrics, logger)
+	v7 := provider.NewRateLimitConfig(config)
+	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(v7, domainMetrics)
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
-	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(observabilityConfig, logger)
+	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(v, logger)
 	healthChecker := provider.NewHealthChecker()
-	lanternListener, err := provider.NewPublicLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
+	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, lanternService, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -112,15 +112,15 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	shutdownConfig := provider.NewShutdownConfig(config)
-	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, shutdownConfig)
+	v8 := provider.NewShutdownConfig(config)
+	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, v8)
 	graphCache := provider.NewRuntimeGraph(servingRuntime)
 	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, lanternService, lanternReplicationService)
 	readinessConfig := provider.NewReadinessConfig(config)
 	peerConfig := provider.NewPeerConfig(config)
 	peerResolver := provider.NewWorkloadPeerResolver(peerIdentityRuntime)
 	gate := provider.NewServingReadinessGate(readinessConfig, peerConfig, peerResolver, healthChecker, securityRuntime)
-	metricsServer, err := provider.NewServingMetricsServer(observabilityConfig, registry, gate, logger, runtimeCertified, publicSecurityCertified)
+	metricsServer, err := provider.NewServingMetricsServer(v, registry, gate, logger, runtimeCertified, publicSecurityCertified)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -128,7 +128,8 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	tracing, err := provider.NewTracing(logger)
+	v9 := provider.NewTracingConfig(config)
+	tracing, err := provider.NewTracing(v9, logger)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -145,8 +146,8 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		return nil, nil, err
 	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
-	v := provider.NewGraphSnapshotSpoolConfig(config)
-	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, v, peerPlaneConfig, cacheConfig, searchConfig, servingRuntime, lanternService, logger, runtimeCertified)
+	v10 := provider.NewGraphSnapshotSpoolConfig(config)
+	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, v10, peerPlaneConfig, cacheConfig, v2, servingRuntime, lanternService, logger, runtimeCertified)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -167,7 +168,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, lanternReplicationService, netConfig, logger, runtimeCertified, launch)
+	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, lanternReplicationService, v6, logger, runtimeCertified, launch)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -178,7 +179,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, v8, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
 	return app, func() {
 		cleanup5()
 		cleanup4()

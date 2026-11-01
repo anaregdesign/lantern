@@ -58,7 +58,7 @@ func tracingTestEnvironment(t *testing.T) *slog.Logger {
 func TestTracingDisabledAndInvalidProtocol(t *testing.T) {
 	logger := tracingTestEnvironment(t)
 	previous := otel.GetTracerProvider()
-	disabled, err := NewTracing(logger)
+	disabled, err := NewTracing(TracingConfig{}, logger)
 	if err != nil || disabled.tp != nil || otel.GetTracerProvider() != previous {
 		t.Fatalf("disabled tracing = %+v, %v", disabled, err)
 	}
@@ -69,7 +69,7 @@ func TestTracingDisabledAndInvalidProtocol(t *testing.T) {
 	}
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
 	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "unsupported")
-	if tracing, err := NewTracing(logger); err == nil || tracing != nil || otel.GetTracerProvider() != previous {
+	if tracing, err := NewTracing(TracingConfig{Enabled: true, Protocol: "unsupported"}, logger); err == nil || tracing != nil || otel.GetTracerProvider() != previous {
 		t.Fatalf("invalid protocol = %+v, %v", tracing, err)
 	}
 }
@@ -114,7 +114,7 @@ func TestTracingExportAndPropagation(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", protocol)
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-lantern-test=collector")
-			tracing, err := NewTracing(logger)
+			tracing, err := NewTracing(TracingConfig{Enabled: true, Protocol: protocol}, logger)
 			if err != nil {
 				t.Fatal(err)
 			}

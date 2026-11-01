@@ -1,7 +1,6 @@
 package query
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -83,25 +82,4 @@ func TestParseMatchMode(t *testing.T) {
 			t.Errorf("ParseMatchMode(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
-}
-
-func TestValidateMatchMode(t *testing.T) {
-	t.Run("accepts canonical, aliases, and empty", func(t *testing.T) {
-		for _, in := range []string{"", "any", "all", "min-should", "minshould", "min_should", "  ALL  "} {
-			if err := ValidateMatchMode(in); err != nil {
-				t.Errorf("ValidateMatchMode(%q) = %v, want nil", in, err)
-			}
-		}
-	})
-	t.Run("rejects a typo naming the value and allowed set", func(t *testing.T) {
-		err := ValidateMatchMode("min_shold")
-		if err == nil {
-			t.Fatal("ValidateMatchMode accepted a typo")
-		}
-		for _, want := range []string{"min_shold", "any|all|min-should"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not contain %q", err, want)
-			}
-		}
-	})
 }

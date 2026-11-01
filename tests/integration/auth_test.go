@@ -58,7 +58,7 @@ const testToken = "integration-s3cret"
 // The reserved system image is private even before the full public-key mapper
 // is installed. A same-named client vertex is a distinct data record.
 func TestAuth_ReservedSystemImageRemainsPrivateOverConnect(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Minute}, provider.SearchConfig{Enabled: true, Positions: true})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Minute}}, provider.SearchConfig{Enabled: true, Positions: true})
 	metadata, err := cache.EnableSystemMetadata("sys:security:revision", 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestAuth_ReservedSystemImageRemainsPrivateOverConnect(t *testing.T) {
 }
 
 func TestAuth_DataNamespacePublicConnectBoundary(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 	svc := service.NewLanternService(cache).WithDataNamespace()
 	srv := newConnectTestServer(t, svc, nil)
 	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
@@ -192,7 +192,7 @@ func TestAuth_DataNamespacePublicConnectBoundary(t *testing.T) {
 }
 
 func TestAuth_DataNamespaceCursorErrorsAndEquivalentOrderRealConnect(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{Enabled: true, Positions: true})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{Enabled: true, Positions: true})
 	svc := service.NewLanternService(cache).WithDataNamespace().WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
 	srv := newConnectTestServer(t, svc, nil)
 	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
@@ -468,7 +468,7 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 		Log:        mutationlog.Options{Capacity: 16, SubscriberBuffer: 16},
 		DefaultTTL: time.Hour,
 		ConfigureGraph: func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-			provider.ConfigureGraphCache(graph, provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+			provider.ConfigureGraphCache(graph, provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 			return nil
 		},
 		NodeID:        nodeID,
@@ -2046,7 +2046,7 @@ func TestAuth_OFFScopedCursorQualifiedClockOverConnect(t *testing.T) {
 	issued := now
 	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	setTime := func(value time.Time) { mu.Lock(); now = value; mu.Unlock() }
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 	data, err := service.NewGraphOnlyServingRuntime(cache, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{9}, hlc.Options{}), "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)
@@ -2228,7 +2228,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 		verify(t, changes, short, f.token(t, "sdk", nil), 2*time.Second, true)
 	})
 	t.Run("OFF existing admission bound", func(t *testing.T) {
-		cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+		cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 		data, err := service.NewGraphOnlyServingRuntime(cache, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{9}, hlc.Options{}), "namespaced-v1")
 		if err != nil {
 			t.Fatal(err)
@@ -2669,7 +2669,7 @@ func TestAuth_OIDCDartScopedChangesFacadeRealConnect(t *testing.T) { runScopedLa
 func TestAuth_OIDCRustScopedChangesFacadeRealConnect(t *testing.T) { runScopedLanguageWire(t, "cargo") }
 
 func TestAuth_OFFPublicChangeLifecycleRealConnect(t *testing.T) {
-	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 	data, err := service.NewGraphOnlyServingRuntime(cache, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{9}, hlc.Options{}), "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)

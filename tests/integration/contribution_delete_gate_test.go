@@ -491,9 +491,9 @@ func TestContributionDelete_ReceiptCapacityFailureAtomicRealConnectWire(t *testi
 	node := hlc.NodeID{0xe8}
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipt.wal"), node)
 	config.ConfigureGraph = func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-		provider.ConfigureGraphCache(graph, provider.CacheConfig{
+		provider.ConfigureGraphCache(graph, provider.CacheConfig{CacheSettings: provider.CacheSettings{
 			TTL: time.Hour, MaxEdgeCausalEntries: 1,
-		}, provider.SearchConfig{})
+		}}, provider.SearchConfig{})
 		return nil
 	}
 	wire := newClusterRecoveryPublicReceiptServer(t, config, testToken)

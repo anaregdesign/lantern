@@ -140,7 +140,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				config.Receipt.MaxEntries, config.Receipt.MaxBytes = 1024, 32<<20
 				config.Log = mutationlog.Options{Capacity: 1024, SubscriberBuffer: 128}
 				config.ConfigureGraph = func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-					provider.ConfigureGraphCache(graph, provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{Enabled: true})
+					provider.ConfigureGraphCache(graph, provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{Enabled: true})
 					return nil
 				}
 			}

@@ -36,7 +36,11 @@ in the root module instead of under `server/`.
   `NewListener` takes `NetConfig` plus the private runtime-certification
   marker), not the aggregate `*Config`. Keep that SRP invariant when
   adding providers; only `App`/`main` may hold `*Config` because they observe multiple
-  slices. The env-var parsing lives in `internal/envconfig/`.
+  slices. Ordinary operational values, defaults and semantic validation live in
+  `internal/config/`; primitive env parsing and process-wide registration live
+  in `internal/envconfig/`. `provider.NewConfig` completes all loaders before the
+  unknown-key/strict sweep. Runtime material and private ownership certification
+  remain provider/security concerns, including the cache namespace selection.
 - `provider.NewServingRuntime` is the sole graph-only versus private durable
   receipt-WAL composition boundary. It must finish lease acquisition, full-cut
   validation, replay/index rebuild, HLC restoration, and exact service

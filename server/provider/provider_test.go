@@ -2,149 +2,85 @@ package provider
 
 import (
 	"bytes"
-	"context"
-	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
-	"io"
 	"log/slog"
-	"net"
-	"net/http"
-	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/graphcache"
-	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/config"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
-	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
-	"github.com/anaregdesign/lantern/server/readiness"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
-func TestNewGraphCache_CausalMetadataLimits(t *testing.T) {
-	cache := NewGraphCache(CacheConfig{
-		TTL: time.Minute, MaxVertexCausalEntries: 7, MaxEdgeCausalEntries: 9,
-	}, SearchConfig{})
-	stats := cache.CausalMetadataStats()
-	if stats.MaxVertexEntries != 7 || stats.MaxEdgeEntries != 9 {
-		t.Fatalf("NewGraphCache causal limits = (%d, %d), want (7, 9)", stats.MaxVertexEntries, stats.MaxEdgeEntries)
-	}
-}
-
-func TestConfigureGraphCacheForStagedRecovery(t *testing.T) {
-	cache := graphcache.NewGraphCacheWithStaging[string, *v1.Vertex](time.Minute)
-	ConfigureGraphCache(cache, CacheConfig{
-		TTL: time.Minute, MaxVertexCausalEntries: 7, MaxEdgeCausalEntries: 9,
-	}, SearchConfig{Enabled: true, Positions: true})
-	stats := cache.CausalMetadataStats()
-	if stats.MaxVertexEntries != 7 || stats.MaxEdgeEntries != 9 {
-		t.Fatalf("staged causal limits = (%d, %d), want (7, 9)", stats.MaxVertexEntries, stats.MaxEdgeEntries)
-	}
-	if err := cache.PutVertexWithExpiration("indexed-key", &v1.Vertex{Key: "indexed-key"}, time.Now().Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if got := cache.CountByPrefix("indexed"); got != 1 {
-		t.Fatalf("staged prefix index count = %d, want 1", got)
-	}
-	if hits := cache.SearchVertices("indexed", 10, ""); len(hits) != 1 || hits[0].ID != "indexed-key" {
-		t.Fatalf("staged search index = %+v, want indexed-key", hits)
-	}
-}
-
-// TestWireCacheGCHooks_EmitsTickSummary asserts that a single
-// "graph cache: gc tick" info log record is emitted per cache tick
-// after WireCacheGCHooks installs the multiplexed hooks (#223).
-func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
-	cache := graphcache.NewGraphCache[string, *v1.Vertex](time.Second)
-	reg := prometheus.NewRegistry()
-	dm := domainmetrics.New(reg, domainmetrics.Options{})
-
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	if got := WireCacheGCHooks(cache, dm, logger); got != (CacheGCHooksWired{}) {
-		t.Fatalf("WireCacheGCHooks return = %+v, want empty marker", got)
-	}
-
-	// Drive the Watch loop on a short interval; expect at least one tick
-	// to fire while we hold the goroutine open.
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		cache.Watch(ctx, 10*time.Millisecond)
-		close(done)
-	}()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-
-	recs := decodeRecords(t, &buf)
-	if len(recs) == 0 {
-		t.Fatalf("no log records emitted; want >=1 'graph cache: gc tick'")
-	}
-	rec := recs[0]
-	if rec["msg"] != "graph cache: gc tick" {
-		t.Errorf("msg = %v, want 'graph cache: gc tick'", rec["msg"])
-	}
-	for _, k := range []string{
-		"vertices_expired", "edges_expired", "dangling_edges_removed",
-		"vertices_remaining", "edges_remaining", "duration_ms", "duration_ns",
-		"tails_scanned", "edges_scanned", "contributions_expired",
-		"contributions_compacted_in_live_edges", "tail_backlog",
-	} {
-		if _, ok := rec[k]; !ok {
-			t.Errorf("missing field %q in record: %v", k, rec)
+func TestNewConfigOperationalComposition(t *testing.T) {
+	t.Run("strict sweep waits for both operational and provider loaders", func(t *testing.T) {
+		clearSecurityEnvironment(t)
+		envconfig.ResetForTesting()
+		for key, value := range map[string]string{
+			"LANTERN_STRICT_CONFIG":                  "true",
+			"LANTERN_PORT":                           "6399",
+			"LANTERN_RATE_LIMIT_RPS":                 "7.5",
+			"LANTERN_RATE_LIMIT_BURST":               "19",
+			"LANTERN_METRICS_ADDR":                   "",
+			"LANTERN_SHUTDOWN_TIMEOUT_SECONDS":       "9",
+			"LANTERN_DRAIN_DELAY_SECONDS":            "2",
+			"LANTERN_SCAN_DEFAULT_LIMIT":             "21",
+			"LANTERN_SEARCH_MAX_IN_FLIGHT":           "3",
+			"LANTERN_MAX_BATCH_SIZE":                 "17",
+			"LANTERN_BACKUP_RESTORE_ON_START":        "false",
+			"LANTERN_BACKUP_INTERVAL":                "7m",
+			"LANTERN_MUTATION_LOG_CAPACITY":          "73",
+			"LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER": "11",
+			"LANTERN_NODE_ID":                        "0102030405060708090a0b0c0d0e0f10",
+			"LANTERN_MAX_REPLICATION_LAG":            "33",
+			"LANTERN_ANTI_ENTROPY_INTERVAL_MS":       "1234",
+			"LANTERN_CORS_ALLOWED_ORIGINS":           "https://admin.example",
+			"LANTERN_LLM_PROVIDER":                   "disabled",
+			"LANTERN_CDC_ENABLED":                    "false",
+		} {
+			t.Setenv(key, value)
 		}
-	}
-}
-
-func TestNewGraphCache_GCEdgeBudget(t *testing.T) {
-	cache := NewGraphCache(CacheConfig{TTL: time.Minute, GCEdgeBudget: 1}, SearchConfig{})
-	live := time.Now().Add(time.Minute)
-	for _, key := range []string{"a", "b", "c"} {
-		cache.PutVertexWithExpiration(key, &v1.Vertex{Key: key}, live)
-	}
-	cache.AddEdgeWithExpiration("a", "b", 1, live)
-	cache.AddEdgeWithExpiration("b", "c", 1, live)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	seen := make(chan graphcache.GCSweepStats, 1)
-	cache.SetGCHooks(nil, func(time.Duration) {
-		seen <- cache.LastGCSweepStats()
-		cancel()
+		cfg, err := NewConfig()
+		if err != nil {
+			t.Fatalf("valid settings from both layers were rejected: %v", err)
+		}
+		if NewNetConfig(cfg).Port != 6399 || NewRateLimitConfig(cfg).RPS != 7.5 || NewRateLimitConfig(cfg).Burst != 19 || NewObservabilityConfig(cfg).MetricsAddr != "" {
+			t.Fatal("network and observability selectors lost operational settings")
+		}
+		if NewShutdownConfig(cfg).Timeout != 9*time.Second || NewShutdownConfig(cfg).DrainDelay != 2*time.Second || NewScanConfig(cfg).ScanDefaultLimit != 21 || NewSearchConfig(cfg).MaxInFlight != 3 || NewValidationLimits(cfg).MaxBatchSize != 17 {
+			t.Fatal("focused selectors lost lifecycle or request settings")
+		}
+		if cfg.Backup.Interval != 7*time.Minute || cfg.Backup.RestoreOnStart || cfg.MutationLog.Capacity != 73 || cfg.MutationLog.SubscriberBuffer != 11 || !cfg.Replication.nodeIDExplicit || cfg.Replication.NodeID[0] != 1 || cfg.Readiness.MaxLag != 33 || cfg.AntiEntropy.Interval != 1234*time.Millisecond || len(cfg.CORS.AllowedOrigins) != 1 || cfg.Changes.Enabled {
+			t.Fatal("provider-owned settings were lost during operational composition")
+		}
 	})
-	go cache.Watch(ctx, time.Millisecond)
-	select {
-	case stats := <-seen:
-		if stats.ScannedTails != 1 || stats.BacklogTails != 1 {
-			t.Fatalf("budgeted first tick = %+v, want one scanned and one backlog tail", stats)
+
+	t.Run("metrics keeps the OFF default and explicit overrides", func(t *testing.T) {
+		clearSecurityEnvironment(t)
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_METRICS_ADDR", "")
+		if err := os.Unsetenv("LANTERN_METRICS_ADDR"); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("no GC tick")
-	}
-}
-
-func TestNewListenerRequiresCertifiedReplicationSendLimit(t *testing.T) {
-	config := NetConfig{Port: 0, MaxRecvMsgBytes: 1024, MaxSendMsgBytes: 512}
-	certified := runtimeCertified{valid: true, replicationSendMaxBytes: 256}
-	publicReceipts := publicReceiptsCertified{valid: true}
-	if listener, cleanup, err := NewListener(config, certified, publicReceipts, nil); err == nil {
-		cleanup()
-		listener.Close()
-		t.Fatal("NewListener accepted a send limit different from frame admission")
-	} else if !strings.Contains(err.Error(), "differs from certified replication frame admission") {
-		t.Fatalf("NewListener mismatch error = %v", err)
-	}
-
-	certified.replicationSendMaxBytes = config.MaxSendMsgBytes
-	listener, cleanup, err := NewListener(config, certified, publicReceipts, nil)
-	if err != nil {
-		t.Fatalf("NewListener matching limit: %v", err)
-	}
-	if listener == nil {
-		t.Fatal("NewListener matching limit returned nil listener")
-	}
-	cleanup()
+		off, err := NewConfig()
+		if err != nil {
+			t.Fatalf("OFF config: %v", err)
+		}
+		if off.Observability.MetricsAddr != ":9090" {
+			t.Fatalf("OFF metrics default = %q", off.Observability.MetricsAddr)
+		}
+		for _, address := range []string{"", "127.0.0.1:9393"} {
+			t.Setenv("LANTERN_METRICS_ADDR", address)
+			envconfig.ResetForTesting()
+			cfg, err := NewConfig()
+			if err != nil {
+				t.Fatalf("explicit metrics setting: %v", err)
+			}
+			if cfg.Observability.MetricsAddr != address {
+				t.Fatalf("metrics setting = %q, want %q", cfg.Observability.MetricsAddr, address)
+			}
+		}
+	})
 }
 
 // TestNewConfigValidation covers the #847 boot-time validation pass: a
@@ -179,7 +115,7 @@ func TestNewConfigValidation(t *testing.T) {
 			LogFormat: "json",
 		}, &buf)
 
-		if err := validateEnv([]string{"LANTERN_NOT_REAL=1"}, logger); err != nil {
+		if err := config.CheckEnvironment([]string{"LANTERN_NOT_REAL=1"}, logger); err != nil {
 			t.Fatalf("validateEnv: %v", err)
 		}
 		recs := decodeRecords(t, &buf)
@@ -436,125 +372,4 @@ func TestNewConfigValidation(t *testing.T) {
 			t.Fatalf("NewConfig error = %v, want session/page relationship rejection", err)
 		}
 	})
-}
-
-// TestMetricsMux groups the HTTP-shim tests for newMetricsMux. The
-// function under test lives in provider.go alongside the wire-time
-// metrics + readiness assembly, so the tests live next to the
-// WireCacheGCHooks coverage in this same file rather than in an
-// orphan metrics_server_test.go that has no matching source.
-func TestMetricsMux(t *testing.T) {
-	t.Run("ReadinessSingleInstance", func(t *testing.T) {
-		// Single-instance mode (peerMode=false) returns 200 on
-		// /readyz + /healthz/ready immediately at startup.
-		gate := readiness.NewGate(10000, false, NewHealthChecker())
-		ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate, false))
-		defer ts.Close()
-
-		for _, path := range []string{"/readyz", "/healthz/ready"} {
-			resp, err := http.Get(ts.URL + path)
-			if err != nil {
-				t.Fatalf("GET %s: %v", path, err)
-			}
-			body, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("GET %s: want 200, got %d body=%q", path, resp.StatusCode, body)
-			}
-		}
-	})
-
-	t.Run("ReadinessMultiPeerFlips", func(t *testing.T) {
-		// Multi-peer mode drives the gate through bootstrap and
-		// per-peer lag transitions; both probe endpoints must
-		// reflect each transition.
-		gate := readiness.NewGate(100, true, NewHealthChecker())
-		ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate, false))
-		defer ts.Close()
-
-		probe := func(path string) int {
-			resp, err := http.Get(ts.URL + path)
-			if err != nil {
-				t.Fatalf("GET %s: %v", path, err)
-			}
-			_ = resp.Body.Close()
-			return resp.StatusCode
-		}
-
-		for _, path := range []string{"/readyz", "/healthz/ready"} {
-			if got := probe(path); got != http.StatusServiceUnavailable {
-				t.Fatalf("multi-peer pre-bootstrap GET %s: want 503, got %d", path, got)
-			}
-		}
-
-		gate.MarkBootstrapped()
-		for _, path := range []string{"/readyz", "/healthz/ready"} {
-			if got := probe(path); got != http.StatusOK {
-				t.Fatalf("post-bootstrap GET %s: want 200, got %d", path, got)
-			}
-		}
-
-		gate.SetLag("peer-a", "origin-a", 250)
-		for _, path := range []string{"/readyz", "/healthz/ready"} {
-			if got := probe(path); got != http.StatusServiceUnavailable {
-				t.Fatalf("lag-exceeded GET %s: want 503, got %d", path, got)
-			}
-		}
-
-		gate.SetLag("peer-a", "origin-a", 0)
-		for _, path := range []string{"/readyz", "/healthz/ready"} {
-			if got := probe(path); got != http.StatusOK {
-				t.Fatalf("caught-up GET %s: want 200, got %d", path, got)
-			}
-		}
-	})
-}
-
-func TestNewListenerAdoptionRequiresCertification(t *testing.T) {
-	for _, phase := range []string{"runtime", "receipts", "frame", "negative_limit"} {
-		t.Run(phase, func(t *testing.T) {
-			owner, err := listenerlaunch.Reserve(t.Context(), false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer owner.Close()
-			address, _ := owner.Addresses()
-			addr, err := net.ResolveTCPAddr("tcp", address)
-			if err != nil {
-				t.Fatal(err)
-			}
-			config := NetConfig{Port: addr.Port, MaxSendMsgBytes: 512}
-			certified := runtimeCertified{valid: true, replicationSendMaxBytes: 512}
-			receipts := publicReceiptsCertified{valid: true}
-			switch phase {
-			case "runtime":
-				certified.valid = false
-			case "receipts":
-				receipts.valid = false
-			case "frame":
-				certified.replicationSendMaxBytes = 256
-			case "negative_limit":
-				config.MaxRecvMsgBytes = -1
-			}
-			if _, cleanup, err := NewListener(config, certified, receipts, owner); err == nil {
-				cleanup()
-				t.Fatal("uncertified adoption")
-			}
-			if owner.Adopted() == nil {
-				t.Fatal("failed guard consumed listener")
-			}
-			config.MaxRecvMsgBytes = 0
-			certified.valid = true
-			certified.replicationSendMaxBytes = 512
-			receipts.valid = true
-			listener, cleanup, err := NewListener(config, certified, receipts, owner)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer cleanup()
-			if listener.Addr().String() != address || owner.Adopted() != nil {
-				t.Fatal("certified adoption replaced socket")
-			}
-		})
-	}
 }

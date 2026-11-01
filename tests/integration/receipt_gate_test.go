@@ -174,7 +174,7 @@ func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.DurableRec
 		ConfigureGraph: func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
 			provider.ConfigureGraphCache(
 				graph,
-				provider.CacheConfig{TTL: time.Hour},
+				provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}},
 				provider.SearchConfig{},
 			)
 			return nil

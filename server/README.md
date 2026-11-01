@@ -55,7 +55,8 @@ Both ports are configurable via environment variables (see below).
 | `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
 | `internal/query/` | Bounded search execution, validation/settings, terminal observations and signed cursor sessions. `service/` supplies publication-aware reads and keeps authorization/namespace boundaries. |
-| `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
+| `internal/config/` | Ordinary operational values, defaults, environment loading and semantic validation; no runtime construction or trust certification. |
+| `internal/envconfig/` | Primitive env-var parsing and the process-wide registration/diagnostic records used by config and provider loaders. |
 | `internal/authn/` | Login/session and purpose-callback workflows; genuine Code/Bearer producers. Borrows existing OIDC and security owners without opening state or owning transport. |
 | `internal/securitytransport/` | Security management Connect RPCs, Bearer admission interceptor, browser and native authentication adapters. Borrows certified workflow/authority owners; does not import `service`. |
 | `internal/rpcwire/` | Shared strict protobuf JSON codec and bounded error detail encoding for control and data transports. |
@@ -154,10 +155,24 @@ install is required.
 Providers take the **slice of `Config` they actually need**, never the
 aggregate `*Config`, so each provider stays single-purpose. The current
 sub-configs are: `NetConfig`, `TLSConfig`, `RateLimitConfig`,
-`ObservabilityConfig`, `CacheConfig`, `ShutdownConfig`, `ValidationLimits`,
+`ObservabilityConfig`, `TracingConfig`, `CacheConfig`, `ShutdownConfig`, `ValidationLimits`,
 `ScanConfig`, `MutationLogConfig`, `GraphSnapshotSpoolConfig`, `ReplicationConfig`, `PeerConfig`,
 `AntiEntropyConfig`, `ReadinessConfig`. `App` / `main` may still observe the
 aggregate `*Config` because they need multiple slices at once.
+
+`provider.NewConfig` remains the composition entry point. It delegates ordinary
+operational settings to `internal/config`, then checks the complete environment
+registry after all loaders have registered their keys. Loading still uses
+`envconfig`'s process-wide records; separate loads are not isolated concurrent
+configuration sessions. The value-only `Config.Validate` method has no runtime
+side effects. Provider retains TLS/key resolution, security material and private
+ownership certification, durable restore, and listener construction. The private
+cache namespace selection also remains provider-owned; `CacheSettings` contains
+only ordinary cache values. Graph, listener and observability constructors live
+in coherent files in the same provider package. Wire and App continue to own
+the existing startup and shutdown sequence.
+Tracing injects activation and protocol values; exporter destinations, TLS,
+headers and other standard options remain owned by the OpenTelemetry SDK.
 
 ## Environment variables
 

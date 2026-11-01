@@ -24,7 +24,7 @@ func certifiedSnapshotInstallerRuntime(
 	}
 	runtime, cleanup, err := NewServingRuntime(
 		config,
-		CacheConfig{TTL: time.Hour},
+		CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
 		SearchConfig{},
 		MutationLogConfig{Capacity: 8, SubscriberBuffer: 2},
 		replicationConfig,
@@ -80,7 +80,7 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 				config,
 				GraphSnapshotSpoolConfig{},
 				PeerPlaneConfig{},
-				CacheConfig{TTL: time.Hour},
+				CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
 				SearchConfig{},
 				runtime,
 				primary,
@@ -148,7 +148,7 @@ func TestSnapshotInstallerSelectionRejectsRuntimeModeMismatch(t *testing.T) {
 				tc.selectionConfig,
 				GraphSnapshotSpoolConfig{},
 				PeerPlaneConfig{},
-				CacheConfig{TTL: time.Hour},
+				CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
 				SearchConfig{},
 				runtime,
 				primary,
@@ -169,7 +169,7 @@ func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T)
 		config,
 		GraphSnapshotSpoolConfig{},
 		PeerPlaneConfig{},
-		CacheConfig{TTL: time.Hour},
+		CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
 		SearchConfig{},
 		runtime,
 		foreignPrimary,
@@ -184,7 +184,7 @@ func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T)
 		config,
 		GraphSnapshotSpoolConfig{},
 		PeerPlaneConfig{},
-		CacheConfig{TTL: time.Hour},
+		CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
 		SearchConfig{},
 		foreignRuntime,
 		primary,
@@ -200,7 +200,7 @@ func TestSnapshotInstallerSelectionRequiresConfiguredGraphHASpool(t *testing.T) 
 	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, config)
 	peers := PeerPlaneConfig{ListenAddress: "127.0.0.1:6391"}
 	if selected, err := NewSnapshotInstallerSelection(config, GraphSnapshotSpoolConfig{}, peers,
-		CacheConfig{TTL: time.Hour}, SearchConfig{}, runtime, primary, nil, certified); err == nil || selected != nil {
+		CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}, SearchConfig{}, runtime, primary, nil, certified); err == nil || selected != nil {
 		t.Fatal("graph-only HA constructed an installer without explicit spool capacity")
 	}
 	directory, err := filepath.EvalSymlinks(t.TempDir())
@@ -212,7 +212,7 @@ func TestSnapshotInstallerSelectionRequiresConfiguredGraphHASpool(t *testing.T) 
 	}
 	spool := GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20}
 	selected, err := NewSnapshotInstallerSelection(config, spool, peers,
-		CacheConfig{TTL: time.Hour}, SearchConfig{}, runtime, primary, nil, certified)
+		CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}, SearchConfig{}, runtime, primary, nil, certified)
 	if err != nil || selected == nil || selected.selected() == nil {
 		t.Fatalf("explicit private graph Snapshot spool was not admitted: %v", err)
 	}
