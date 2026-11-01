@@ -1,0 +1,698 @@
+package dataruntime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	"github.com/anaregdesign/lantern/core/search"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+func BenchmarkPublicReceiptVertexPutAdmission(b *testing.B) {
+	for _, withReceipt := range []bool{false, true} {
+		name := "no_receipt"
+		if withReceipt {
+			name = "admitted_receipt"
+		}
+		b.Run(name, func(b *testing.B) {
+			maxEntries := 32
+			if withReceipt {
+				maxEntries = b.N + 1
+			}
+			maxBytes := uint64(maxEntries) * 4096
+			if maxBytes < 1<<20 {
+				maxBytes = 1 << 20
+			}
+			runtime, svc, _ := newActivatedReceiptServiceWithLimits(b, maxEntries, maxBytes)
+			requests := make([]*pb.PutVertexRequest, b.N)
+			issued := time.Now().Add(-time.Second)
+			for i := range requests {
+				requests[i] = &pb.PutVertexRequest{
+					Vertex: &pb.Vertex{
+						Key: fmt.Sprintf("benchmark-conditional-put-%d", i),
+						Value: &pb.Vertex_String_{
+							String_: "receipt-bench",
+						},
+					},
+					IfAbsent: true,
+				}
+				if withReceipt {
+					requests[i].ReceiptContext = receiptBenchmarkContext(b, runtime, issued, uint64(i))
+				}
+			}
+			ctx := context.Background()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				response, err := svc.PutVertex(ctx, requests[i])
+				if err != nil || response.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+					b.Fatalf("PutVertex() = %+v, %v", response, err)
+				}
+			}
+		})
+	}
+}
+
+type receiptVertexPutWALFunc func(mutationlog.Entry) error
+
+func (f receiptVertexPutWALFunc) Write(entry mutationlog.Entry) error { return f(entry) }
+
+type receiptVertexPutFixture struct {
+	coordinator *vertexPutReceiptCoordinator
+	service     *Executor
+	cache       *graphcache.GraphCache[string, *pb.Vertex]
+	log         *mutationlog.Log
+	store       *mutationreceipt.Store
+	epoch       mutationreceipt.Epoch
+}
+
+func newReceiptVertexPutFixture(
+	t *testing.T,
+	wal mutationlog.WAL,
+	node hlc.NodeID,
+	maxEntries int,
+	configure func(*graphcache.GraphCache[string, *pb.Vertex]),
+) receiptVertexPutFixture {
+	t.Helper()
+	epoch := mutationreceipt.Epoch{0x72}
+	store, err := mutationreceipt.New(mutationreceipt.Config{
+		Epoch: epoch, Retention: time.Hour, MaxEntries: maxEntries, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	if configure != nil {
+		configure(cache)
+	}
+	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32, WAL: wal})
+	t.Cleanup(func() { _ = log.Close() })
+	service := NewExecutor(cache).
+		WithReplication(log, hlc.New(node, hlc.Options{}), nil).
+		WithTombstoneTTL(time.Hour)
+	coordinator, err := newVertexPutReceiptCoordinator(service, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receiptVertexPutFixture{coordinator, service, cache, log, store, epoch}
+}
+
+func receiptVertexPutTestCall(
+	t *testing.T,
+	epoch mutationreceipt.Epoch,
+	groupSeed byte,
+	ifAbsent bool,
+	vertices ...*pb.Vertex,
+) receiptVertexPutCall {
+	t.Helper()
+	call := receiptVertexPutCall{
+		Group: mutationreceipt.GroupID{groupSeed}, IfAbsent: ifAbsent,
+		Items: make([]receiptVertexPutItem, len(vertices)),
+	}
+	issued := time.Now().Add(-time.Second)
+	for i, vertex := range vertices {
+		id, err := mutationreceipt.NewID(epoch, issued, [24]byte{groupSeed, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		call.Items[i] = receiptVertexPutItem{ID: id, Vertex: vertex}
+	}
+	return call
+}
+
+func TestPublicVertexPutReceiptsRouteAndValidate(t *testing.T) {
+	runtime, service, _ := newActivatedReceiptService(t, 16)
+	if _, err := service.PutVertex(context.Background(), &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "old"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	receiptContext := publicReceiptContext(t, runtime, 0x21, 3)
+	request := &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{
+			{Key: "permanent", Value: &pb.Vertex_String_{String_: "live"}},
+			{Key: "existing", Value: &pb.Vertex_String_{String_: "blocked"}},
+			{
+				Key: "expired", Value: &pb.Vertex_String_{String_: "dead"},
+				Expiration: timestamppb.New(time.Now().Add(-time.Minute)),
+			},
+		},
+		IfAbsent: true, ReceiptContext: receiptContext,
+	}
+	want := []pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+	}
+	beforeLog := runtime.log.Len()
+	beforeSeq := service.LocalSeq(service.clock.NodeID())
+	response, err := service.PutVertices(context.Background(), request)
+	if err != nil || !slices.Equal(response.GetOutcomes(), want) {
+		t.Fatalf("public PutVertices = (%+v, %v), want %v", response, err, want)
+	}
+	if got, live := runtime.graph.GetVertex("permanent"); !live ||
+		got.GetString_() != "live" || got.GetExpiration() != nil {
+		t.Fatalf("permanent Vertex = (%+v, %t)", got, live)
+	}
+	if runtime.log.Len() != beforeLog+1 ||
+		service.LocalSeq(service.clock.NodeID()) != beforeSeq+1 {
+		t.Fatal("public PutVertices did not publish exactly one receipt envelope")
+	}
+
+	replay, err := service.PutVertices(
+		context.Background(),
+		proto.Clone(request).(*pb.PutVerticesRequest),
+	)
+	if err != nil || !proto.Equal(replay, response) || runtime.log.Len() != beforeLog+1 {
+		t.Fatalf("public PutVertices replay = (%+v, %v), want %+v", replay, err, response)
+	}
+	statuses, err := service.GetReceiptStatuses(context.Background(), &pb.GetReceiptStatusesRequest{
+		OperationIds: receiptContext.GetOperationIds(),
+	})
+	if err != nil || len(statuses.GetStatuses()) != len(want) {
+		t.Fatalf("public Put status = (%+v, %v)", statuses, err)
+	}
+	for i, status := range statuses.GetStatuses() {
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+			status.GetReceipt().GetOriginalResult().GetPutVertexOutcome() != want[i] {
+			t.Fatalf("public Put status[%d] = %+v, want %v", i, status, want[i])
+		}
+	}
+
+	changedIntent := proto.Clone(request).(*pb.PutVerticesRequest)
+	changedIntent.Vertices[0].Value = &pb.Vertex_String_{String_: "changed"}
+	if _, err := service.PutVertices(context.Background(), changedIntent); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("changed Put intent = %v, want InvalidArgument", err)
+	}
+	changedGroup := proto.Clone(request).(*pb.PutVerticesRequest)
+	changedGroup.ReceiptContext.LogicalCallId[0]++
+	if _, err := service.PutVertices(context.Background(), changedGroup); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("changed Put group = %v, want InvalidArgument", err)
+	}
+
+	duplicateContext := publicReceiptContext(t, runtime, 0x22, 2)
+	duplicateContext.OperationIds[1] = append([]byte(nil), duplicateContext.OperationIds[0]...)
+	if _, err := service.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices:       []*pb.Vertex{{Key: "duplicate-a"}, {Key: "duplicate-b"}},
+		ReceiptContext: duplicateContext,
+	}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("duplicate Put IDs = %v, want InvalidArgument", err)
+	}
+	if _, live := runtime.graph.GetVertex("duplicate-a"); live {
+		t.Fatal("duplicate Put IDs mutated graph")
+	}
+
+	noOpContext := publicReceiptContext(t, runtime, 0x23, 1)
+	beforeLog = runtime.log.Len()
+	beforeSeq = service.LocalSeq(service.clock.NodeID())
+	noOp, err := service.PutVertex(context.Background(), &pb.PutVertexRequest{
+		Vertex:   &pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "ignored"}},
+		IfAbsent: true, ReceiptContext: noOpContext,
+	})
+	if err != nil || noOp.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET ||
+		runtime.log.Len() != beforeLog+1 ||
+		service.LocalSeq(service.clock.NodeID()) != beforeSeq+1 {
+		t.Fatalf("receipt-only singular Put = (%+v, %v), log=%d seq=%d",
+			noOp, err, runtime.log.Len(), service.LocalSeq(service.clock.NodeID()))
+	}
+}
+
+func TestPublicVertexPutReceiptEpochExpiration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exp  *timestamppb.Timestamp
+	}{
+		{"epoch", timestamppb.New(time.Unix(0, 0).UTC())},
+		{"pre-epoch", timestamppb.New(time.Unix(-1, 0).UTC())},
+		{"positive fractional epoch", timestamppb.New(time.Unix(0, 500_000_000).UTC())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, svc, _ := newActivatedReceiptService(t, 8)
+			request := &pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "expired", Expiration: tc.exp}},
+				ReceiptContext: publicReceiptContext(t, runtime, 0x9a, 1),
+			}
+			response, err := svc.PutVertices(t.Context(), request)
+			if err != nil || !slices.Equal(response.GetOutcomes(), []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED}) {
+				t.Fatalf("epoch receipt Put = (%+v, %v), want EXPIRED", response, err)
+			}
+			if _, live := runtime.graph.GetVertex("expired"); live {
+				t.Fatal("receipt-bearing expired Put became live")
+			}
+			replay, err := svc.PutVertices(t.Context(), proto.Clone(request).(*pb.PutVerticesRequest))
+			if err != nil || !proto.Equal(replay, response) {
+				t.Fatalf("receipt retry = (%+v, %v), want %+v", replay, err, response)
+			}
+			status, err := svc.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
+				OperationId: request.GetReceiptContext().GetOperationIds()[0],
+			})
+			if err != nil ||
+				status.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				status.GetStatus().GetReceipt().GetOriginalResult().GetPutVertexOutcome() != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+				t.Fatalf("epoch Put receipt status = (%+v, %v), want EXPIRED", status, err)
+			}
+		})
+	}
+}
+
+func TestPublicVertexPutReceiptInvalidTimestampIsAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exp  *timestamppb.Timestamp
+	}{
+		{"explicit Go zero", timestamppb.New(time.Time{})},
+		{"invalid seconds", &timestamppb.Timestamp{Seconds: 253402300800}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, svc, _ := newActivatedReceiptService(t, 8)
+			_, err := svc.PutVertices(t.Context(), &pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "valid"}, {Key: "invalid", Expiration: tc.exp}},
+				ReceiptContext: publicReceiptContext(t, runtime, 0x9b, 2),
+			})
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("invalid receipt Put = %v, want InvalidArgument", err)
+			}
+			if _, live := runtime.graph.GetVertex("valid"); live ||
+				runtime.log.Len() != 0 || runtime.ReceiptStats().Entries != 0 ||
+				svc.LocalSeq(svc.clock.NodeID()) != 0 {
+				t.Fatal("invalid receipt Put changed graph, Store, log, or origin")
+			}
+		})
+	}
+}
+
+func TestPublicVertexPutReceiptCapacityRejectsBeforePublication(t *testing.T) {
+	runtime, service, _ := newActivatedReceiptService(t, 1)
+	receiptContext := publicReceiptContext(
+		t,
+		runtime,
+		0x24,
+		2,
+	)
+	if _, err := service.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices:       []*pb.Vertex{{Key: "capacity-a"}, {Key: "capacity-b"}},
+		ReceiptContext: receiptContext,
+	}); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("public Put capacity = %v, want ResourceExhausted", err)
+	}
+	if _, live := runtime.graph.GetVertex("capacity-a"); live ||
+		runtime.log.Len() != 0 || runtime.ReceiptStats().Entries != 0 ||
+		service.LocalSeq(service.clock.NodeID()) != 0 {
+		t.Fatal("public Put capacity rejection changed graph, Store, log, or origin")
+	}
+}
+
+func TestVertexPutReceiptCoordinatorPreservesExactOutcomesAndRetry(t *testing.T) {
+	f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x73}, 32, nil)
+	now := time.Now()
+	if err := f.cache.PutVertexWithExpiration(
+		"existing",
+		&pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "old"}},
+		now.Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	f.cache.ApplyVertexCausalBarrierHLC("superseded", hlc.Timestamp{
+		WallNs: now.Add(time.Minute).UnixNano(), NodeID: hlc.NodeID{0x7f},
+	})
+	first := &pb.Vertex{
+		Key: "new", Value: &pb.Vertex_String_{String_: "first"},
+		Expiration: timestamppb.New(now.Add(time.Hour)),
+	}
+	call := receiptVertexPutTestCall(t, f.epoch, 0x11, true,
+		first,
+		&pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "blocked"}},
+		&pb.Vertex{
+			Key: "expired", Value: &pb.Vertex_String_{String_: "dead"},
+			Expiration: timestamppb.New(now.Add(-time.Minute)),
+		},
+		&pb.Vertex{Key: "superseded", Value: &pb.Vertex_String_{String_: "stale"}},
+		&pb.Vertex{Key: "new", Value: &pb.Vertex_String_{String_: "duplicate"}},
+	)
+	want := []pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+		pb.PutOutcome_PUT_OUTCOME_SUPERSEDED,
+		pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+	}
+	response, err := f.coordinator.Commit(context.Background(), call)
+	if err != nil || !slices.Equal(response.GetOutcomes(), want) {
+		t.Fatalf("Commit = (%v, %v), want %v", response, err, want)
+	}
+	if f.log.Len() != 1 || f.service.LocalSeq(f.service.clock.NodeID()) != 1 {
+		t.Fatalf("publication = log %d seq %d, want 1/1",
+			f.log.Len(), f.service.LocalSeq(f.service.clock.NodeID()))
+	}
+	envelope, ok := f.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+	if !ok || len(envelope.Accepted) != 2 ||
+		envelope.Accepted[0].Index != 0 ||
+		envelope.Accepted[0].Outcome != graphcache.PutOutcomeAppliedAndLive ||
+		envelope.Accepted[1].Index != 2 ||
+		envelope.Accepted[1].Outcome != graphcache.PutOutcomeExpired {
+		t.Fatalf("accepted projection = %#v", envelope)
+	}
+	retry, err := f.coordinator.Commit(context.Background(), call)
+	if err != nil || !slices.Equal(retry.GetOutcomes(), want) || f.log.Len() != 1 {
+		t.Fatalf("duplicate retry = (%v, %v), log=%d", retry, err, f.log.Len())
+	}
+	first.GetValue().(*pb.Vertex_String_).String_ = "caller-mutated"
+	if got, live := f.cache.GetVertex("new"); !live || got.GetString_() != "first" ||
+		envelope.Original[0].GetString_() != "first" {
+		t.Fatalf("caller alias changed committed value or receipt: live=%v value=%v envelope=%v",
+			live, got, envelope.Original[0])
+	}
+	conflict := call
+	conflict.Items = append([]receiptVertexPutItem(nil), call.Items...)
+	conflict.Items[0].Vertex = &pb.Vertex{Key: "new", Value: &pb.Vertex_String_{String_: "changed"}}
+	if _, err := f.coordinator.Commit(context.Background(), conflict); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("intent conflict = %v, want InvalidArgument", err)
+	}
+
+	noOp := receiptVertexPutTestCall(t, f.epoch, 0x12, true,
+		&pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "still-blocked"}},
+	)
+	noOpResponse, err := f.coordinator.Commit(context.Background(), noOp)
+	if err != nil || !slices.Equal(noOpResponse.GetOutcomes(),
+		[]pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET}) {
+		t.Fatalf("all-no-op Commit = (%v, %v)", noOpResponse, err)
+	}
+	noOpEnvelope, ok := f.log.RetainedEntries()[1].Op.(*vertexPutReceiptEnvelope)
+	if !ok || len(noOpEnvelope.Accepted) != 0 ||
+		f.service.LocalSeq(f.service.clock.NodeID()) != 2 || f.log.Len() != 2 {
+		t.Fatalf("receipt-only publication = %#v seq=%d log=%d",
+			noOpEnvelope, f.service.LocalSeq(f.service.clock.NodeID()), f.log.Len())
+	}
+}
+
+func TestVertexPutReceiptRelayMaximumBoundsSparseFollower(t *testing.T) {
+	origin := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x91}, 8, nil)
+	follower := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x92}, 8, nil)
+	vertex := &pb.Vertex{
+		Key:        "sparse-relay",
+		Value:      &pb.Vertex_Bytes{Bytes: make([]byte, 512)},
+		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+	}
+	call := receiptVertexPutTestCall(t, origin.epoch, 0x91, false, vertex)
+	if _, err := origin.coordinator.Commit(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := origin.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope).ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !follower.cache.ApplyVertexCausalBarrierHLC(vertex.Key, hlc.Timestamp{
+		WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: follower.service.clock.NodeID(),
+	}) {
+		t.Fatal("cannot install follower causal barrier")
+	}
+	if err := follower.service.ApplyMutation(context.Background(), proto.Clone(wire).(*pb.Mutation)); err != nil {
+		t.Fatal(err)
+	}
+	retained := follower.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+	if len(retained.Accepted) != 0 ||
+		retained.Receipts[0].Result[0] != byte(pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE) {
+		t.Fatalf("receiver-local Vertex Put envelope = %+v", retained)
+	}
+	sparseSize, err := validateReplicationFrameSize(retained, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalSize, err := validateReplicationRelayFrameSize(retained, 0)
+	if err != nil || maximalSize <= sparseSize {
+		t.Fatalf("sparse/maximal Vertex Put frames = %d/%d, %v", sparseSize, maximalSize, err)
+	}
+	if _, err := validateReplicationRelayFrameSize(retained, maximalSize-1); err == nil {
+		t.Fatal("one-byte-under maximal Vertex Put relay was admitted")
+	}
+	if size, err := validateReplicationRelayFrameSize(retained, maximalSize); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit maximal Vertex Put relay = %d, %v", size, err)
+	}
+
+	sparseWire, err := retained.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x93}, 8, nil)
+	rejected.service.replicationFrameCertified = true
+	rejected.service.replicationSendMaxBytes = maximalSize - 1
+	if err := rejected.service.ApplyMutation(context.Background(), sparseWire); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("one-byte-under sparse Vertex Put relay = %v, want ResourceExhausted", err)
+	}
+	if _, live := rejected.cache.GetVertex(vertex.Key); live ||
+		rejected.store.Stats().Entries != 0 || rejected.log.Len() != 0 ||
+		rejected.service.LocalSeq(origin.service.clock.NodeID()) != 0 {
+		t.Fatal("rejected sparse Vertex Put relay changed graph, Store, log, or origin")
+	}
+
+	exact := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x94}, 8, nil)
+	exact.service.replicationFrameCertified = true
+	exact.service.replicationSendMaxBytes = maximalSize
+	if err := exact.service.ApplyMutation(context.Background(), sparseWire); err != nil {
+		t.Fatalf("exact-fit sparse Vertex Put relay: %v", err)
+	}
+	if got, live := exact.cache.GetVertex(vertex.Key); !live || got.GetBytes() == nil ||
+		exact.store.Stats().Entries != 1 || exact.log.Len() != 1 ||
+		exact.service.LocalSeq(origin.service.clock.NodeID()) != 1 {
+		t.Fatal("exact-fit Vertex Put relay lost live value, receipt, log, or origin")
+	}
+	if size, err := validateReplicationFrameSize(exact.log.RetainedEntries()[0].Op, 0); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit Vertex Put relay frame = %d, %v, want %d", size, err, maximalSize)
+	}
+}
+
+func TestVertexPutReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
+	t.Run("Hard batch limit", func(t *testing.T) {
+		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x70}, 1, nil)
+		call := receiptVertexPutCall{
+			Group: mutationreceipt.GroupID{0x20},
+			Items: make([]receiptVertexPutItem, receiptVertexWALMaxItems+1),
+		}
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("batch-limit rejection = %v, want InvalidArgument", err)
+		}
+		if f.log.Len() != 0 || f.store.Stats().Entries != 0 {
+			t.Fatal("batch-limit rejection changed log or Store")
+		}
+	})
+
+	t.Run("Store capacity", func(t *testing.T) {
+		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x74}, 1, nil)
+		call := receiptVertexPutTestCall(t, f.epoch, 0x21, false,
+			&pb.Vertex{Key: "one"}, &pb.Vertex{Key: "two"})
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("capacity rejection = %v, want ResourceExhausted", err)
+		}
+		if _, live := f.cache.GetVertex("one"); live || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 {
+			t.Fatal("capacity rejection changed graph, log, or origin")
+		}
+	})
+
+	t.Run("Semantic invalid before WAL capacity", func(t *testing.T) {
+		var walWrites atomic.Int32
+		f := newReceiptVertexPutFixture(t, receiptVertexPutWALFunc(func(mutationlog.Entry) error {
+			walWrites.Add(1)
+			return nil
+		}), hlc.NodeID{0x77}, 8, nil)
+		beforeStore := f.store.Stats()
+		call := receiptVertexPutTestCall(t, f.epoch, 0x24, false,
+			&pb.Vertex{
+				Key: "oversized-valid",
+				Value: &pb.Vertex_Bytes{
+					Bytes: make([]byte, receiptVertexWALMaxBytes/2),
+				},
+			},
+			&pb.Vertex{Key: "invalid", Value: &pb.Vertex_Timestamp{}},
+		)
+		_, err := f.coordinator.Commit(context.Background(), call)
+		if connect.CodeOf(err) != connect.CodeInvalidArgument ||
+			errors.Is(err, errReceiptVertexWALCapacity) {
+			t.Fatalf("semantic invalid input = %v, want InvalidArgument before WAL capacity", err)
+		}
+		graph := f.cache.SnapshotReplication()
+		if len(graph.Graph.Vertices) != 0 || len(graph.Tombstones.Vertices) != 0 ||
+			len(graph.Barriers.Vertices) != 0 || f.cache.VertexHLCCount() != 0 ||
+			f.store.Stats() != beforeStore || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 || walWrites.Load() != 0 {
+			t.Fatal("invalid input changed graph, Store, WAL, log, or origin")
+		}
+	})
+
+	t.Run("WAL capacity", func(t *testing.T) {
+		var walWrites atomic.Int32
+		f := newReceiptVertexPutFixture(t, receiptVertexPutWALFunc(func(mutationlog.Entry) error {
+			walWrites.Add(1)
+			return nil
+		}), hlc.NodeID{0x76}, 8, nil)
+		beforeStore := f.store.Stats()
+		call := receiptVertexPutTestCall(t, f.epoch, 0x23, false, &pb.Vertex{
+			Key: "oversized-wal",
+			Value: &pb.Vertex_String_{
+				String_: strings.Repeat("x", receiptVertexWALMaxBytes/2),
+			},
+		})
+		_, err := f.coordinator.Commit(context.Background(), call)
+		if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!errors.Is(err, errReceiptVertexWALCapacity) {
+			t.Fatalf("WAL capacity rejection = %v, want ResourceExhausted capacity error", err)
+		}
+		graph := f.cache.SnapshotReplication()
+		if len(graph.Graph.Vertices) != 0 || len(graph.Tombstones.Vertices) != 0 ||
+			len(graph.Barriers.Vertices) != 0 ||
+			f.store.Stats() != beforeStore || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 ||
+			f.cache.VertexHLCCount() != 0 || walWrites.Load() != 0 {
+			t.Fatal("WAL capacity rejection changed graph, Store, WAL, log, or origin")
+		}
+	})
+
+	t.Run("Search preparation", func(t *testing.T) {
+		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x75}, 8,
+			func(cache *graphcache.GraphCache[string, *pb.Vertex]) {
+				cache.EnableSearchIndex(
+					func(_ string, value *pb.Vertex) search.Document {
+						return search.Text(value.GetString_())
+					},
+					strings.Compare,
+					graphcache.WithSearchAnalysisLimits(search.SearchAnalysisLimits{MaxDocumentBytes: 4}),
+				)
+			})
+		call := receiptVertexPutTestCall(t, f.epoch, 0x22, false,
+			&pb.Vertex{Key: "search", Value: &pb.Vertex_String_{String_: "oversized"}})
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("search rejection = %v, want ResourceExhausted", err)
+		}
+		if _, live := f.cache.GetVertex("search"); live || f.log.Len() != 0 ||
+			f.store.Stats().Entries != 0 {
+			t.Fatal("search rejection changed graph, receipt Store, or log")
+		}
+	})
+}
+
+func TestVertexPutReceiptCoordinatorWALFailureSemantics(t *testing.T) {
+	t.Run("Definite rollback and retry", func(t *testing.T) {
+		var writes atomic.Int32
+		wal := receiptVertexPutWALFunc(func(mutationlog.Entry) error {
+			if writes.Add(1) == 1 {
+				return &mutationlog.DefiniteWALAbort{Cause: errors.New("injected definite abort")}
+			}
+			return nil
+		})
+		f := newReceiptVertexPutFixture(t, wal, hlc.NodeID{0x76}, 8, nil)
+		call := receiptVertexPutTestCall(t, f.epoch, 0x31, false,
+			&pb.Vertex{Key: "definite", Value: &pb.Vertex_String_{String_: "value"}})
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("definite WAL failure = %v, want Unavailable", err)
+		}
+		if _, live := f.cache.GetVertex("definite"); live || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 || f.store.Stats().Entries != 0 ||
+			f.service.receiptCommitFaulted {
+			t.Fatal("definite WAL abort did not roll back exactly")
+		}
+		if _, err := f.coordinator.Commit(context.Background(), call); err != nil {
+			t.Fatalf("retry after definite abort: %v", err)
+		}
+	})
+
+	t.Run("Ambiguous failure fail-stops", func(t *testing.T) {
+		f := newReceiptVertexPutFixture(t,
+			receiptVertexPutWALFunc(func(mutationlog.Entry) error {
+				return errors.New("lost WAL acknowledgement")
+			}),
+			hlc.NodeID{0x77}, 8, nil,
+		)
+		call := receiptVertexPutTestCall(t, f.epoch, 0x32, false,
+			&pb.Vertex{Key: "ambiguous", Value: &pb.Vertex_String_{String_: "value"}})
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("ambiguous WAL failure = %v, want Unavailable", err)
+		}
+		if _, live := f.cache.GetVertex("ambiguous"); live || !f.service.receiptCommitFaulted ||
+			f.store.Stats().Entries != 0 || f.log.Len() != 0 {
+			t.Fatal("ambiguous WAL failure leaked state or did not fail-stop")
+		}
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("post-ambiguity write = %v, want FailedPrecondition", err)
+		}
+		if _, _, err := f.coordinator.Lookup(call.Items[0].ID, time.Now()); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("post-ambiguity lookup = %v, want FailedPrecondition", err)
+		}
+	})
+}
+
+func TestVertexPutReceiptMultiHopReconstructsOriginEffects(t *testing.T) {
+	a := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x61}, 16, nil)
+	b := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x62}, 16, nil)
+	c := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x63}, 16, nil)
+	shortExpiration := time.Now().Add(750 * time.Millisecond)
+	call := receiptVertexPutTestCall(t, a.epoch, 0x41, true,
+		&pb.Vertex{
+			Key: "live", Value: &pb.Vertex_String_{String_: "origin"},
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		},
+		&pb.Vertex{
+			Key: "becomes-barrier", Value: &pb.Vertex_String_{String_: "origin"},
+			Expiration: timestamppb.New(shortExpiration),
+		},
+	)
+	if _, err := a.coordinator.Commit(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	originEnvelope := a.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+	wire, err := originEnvelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := originEnvelope.HLC
+	newer.WallNs++
+	b.cache.ApplyVertexCausalBarrierHLC("live", newer)
+	b.cache.ApplyVertexCausalBarrierHLC("becomes-barrier", newer)
+	if err := b.service.ApplyMutation(context.Background(), wire); err != nil {
+		t.Fatalf("B apply: %v", err)
+	}
+	bEnvelope := b.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+	if len(bEnvelope.Accepted) != 0 {
+		t.Fatalf("B receiver-local projection = %#v, want receipt-only", bEnvelope.Accepted)
+	}
+	bWire, err := bEnvelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Until(shortExpiration) + 20*time.Millisecond)
+	if err := c.service.ApplyMutation(context.Background(), bWire); err != nil {
+		t.Fatalf("C apply: %v", err)
+	}
+	if vertex, live := c.cache.GetVertex("live"); !live || vertex.GetString_() != "origin" {
+		t.Fatalf("C lost origin-authoritative live effect: live=%v vertex=%v", live, vertex)
+	}
+	if _, live := c.cache.GetVertex("becomes-barrier"); live {
+		t.Fatal("C reclassified expired origin value as live")
+	}
+	cEnvelope := c.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+	if len(cEnvelope.Accepted) != 2 ||
+		cEnvelope.Accepted[0].Outcome != graphcache.PutOutcomeAppliedAndLive ||
+		cEnvelope.Accepted[1].Outcome != graphcache.PutOutcomeExpired ||
+		!cEnvelope.Accepted[1].Item.CausalBarrier {
+		t.Fatalf("C receiver-local projection = %#v", cEnvelope.Accepted)
+	}
+	barriers := c.cache.SnapshotCausalBarriers()
+	if len(barriers.Vertices) != 1 || barriers.Vertices[0].Key != "becomes-barrier" {
+		t.Fatalf("C causal barriers = %#v", barriers.Vertices)
+	}
+}

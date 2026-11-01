@@ -198,7 +198,7 @@ def policy_fixture(root, expected, scenario):
                          for i, endpoint in enumerate(pair.ENDPOINTS)], "verdict": "captured"})
         posts.append({**timing, "capture": capture, "profile": write(root / f"goroutine_policy_post_{offset}_profile.json", profile)})
     source_refs = []
-    for suffix in ("server/internal/security/control_renewal_network_test.go", "server/service/replication_delivery_test.go", "server/replication/pump_test.go"):
+    for suffix in ("server/internal/security/control_renewal_network_test.go", "server/internal/dataruntime/replication_delivery_test.go", "server/replication/pump_test.go"):
         path = root.parent / "source" / suffix
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("// synthetic source-reference fixture; not a runtime join proof\n"); path.chmod(0o644)

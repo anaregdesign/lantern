@@ -1,0 +1,775 @@
+package dataruntime
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
+
+	"connectrpc.com/connect"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+)
+
+// Sender is the slim, transport-agnostic surface Subscribe and
+// Snapshot need from a server-streaming client connection: a single
+// typed Send method. *connect.ServerStream[T] satisfies it directly.
+// Tests that need to observe the streamed messages provide their own
+// implementation (see replication_test.go).
+type Sender[T any] interface {
+	Send(*T) error
+}
+
+// replicationSnapshotter is optional so lightweight test backends do not
+// need to model replication-only retained state. The production GraphCache
+// satisfies it. Barriers and active Delete tombstones stream before live
+// entries, allowing a receiver to retain the older floor and then apply a
+// newer live value for the same identity without losing either fact.
+type replicationSnapshotter interface {
+	SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex]
+}
+
+// ReplicationServiceName is the fully-qualified RPC service name for the
+// replication surface. Used for per-service health reporting via
+// grpc.health.v1.
+const ReplicationServiceName = "graph.v1.LanternReplicationService"
+
+// SubscribeMetrics is the narrow surface the replication service uses to
+// publish per-stream metrics. *server/metrics.DomainMetrics satisfies it.
+// Defined here so the service stays independent of provider/metrics.
+type SubscribeMetrics interface {
+	OnSubscribeStarted()
+	OnSubscribeEnded()
+	OnSubscribeDropped(reason string)
+}
+
+// nopSubscribeMetrics is the default when no metrics handle is wired (test
+// path). All methods are no-ops.
+type nopSubscribeMetrics struct{}
+
+func (nopSubscribeMetrics) OnSubscribeStarted()       {}
+func (nopSubscribeMetrics) OnSubscribeEnded()         {}
+func (nopSubscribeMetrics) OnSubscribeDropped(string) {}
+
+// OriginStatesProvider is the narrow read surface the PeerStatus RPC
+// uses to enumerate per-origin watermarks. *Executor satisfies
+// it via OriginStates(). Defined here so the replication service can
+// be constructed without a hard dependency on Executor.
+type OriginStatesProvider interface {
+	OriginStates() []OriginState
+}
+
+// snapshotCutProvider is implemented by Executor when origin states
+// and the graph share its replication commit boundary. A narrow fake origin
+// provider may omit it; production always passes Executor here.
+type snapshotCutProvider interface {
+	withReplicationSnapshotCut(capture func()) error
+}
+
+// subscribeCutProvider registers a log tail and captures its publication
+// fault generation under the same cut as graph writes and Snapshot.
+type subscribeCutProvider interface {
+	withReplicationSubscribeCut(capture func(<-chan struct{})) error
+}
+
+// publicationStatusProvider exposes a local/relay log fault generation. It
+// is implemented by the production Executor; narrow test providers
+// can omit it when they do not publish mutations.
+type publicationStatusProvider interface {
+	publicationStatus() (<-chan struct{}, bool)
+}
+
+func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
+	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_GraphMutation:
+		_, err := decodeGraphMutation(m)
+		return true, err
+	case *pb.MutationOp_EdgeCreateEffect:
+		effect, err := decodeEdgeCreateMutation(m)
+		return effect != nil && len(effect.Receipts) != 0, err
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		_, err := acceptedReceiptEdgeAddEdges(m)
+		return true, err
+	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
+		_, err := acceptedReceiptEdgeDeleteKeys(m)
+		return true, err
+	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
+		_, err := acceptedReceiptEdgeContributionDeleteKeys(m)
+		return true, err
+	case *pb.MutationOp_ReplicatedReceiptVertexPut:
+		_, err := acceptedReceiptVertexPutKeys(m)
+		return true, err
+	case *pb.MutationOp_ReplicatedReceiptVertexDelete:
+		_, err := acceptedReceiptVertexDeleteKeys(m)
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+// cursorEntryFilter rejects proven already-covered graph-only mutations
+// before they occupy the log's live subscriber buffer. An untrusted or
+// receipt-bearing entry stays on the ordinary validation path.
+func (s *Replication) cursorEntryFilter(cursor map[string]uint64) func(mutationlog.Entry) bool {
+	if !s.replicationFrameCertified || s.receiptSnapshotRequired || len(cursor) == 0 {
+		return nil
+	}
+	return func(entry mutationlog.Entry) bool {
+		m, ok := graphMutationFromLog(entry.Op)
+		if !ok || m.GetSeq() == 0 || len(m.GetOrigin()) != 16 ||
+			m.GetHlc() == nil || !bytes.Equal(m.GetHlc().GetNodeId(), m.GetOrigin()) ||
+			m.GetOp() == nil || m.GetOp().GetOp() == nil {
+			return true
+		}
+		want, present := cursor[hex.EncodeToString(m.GetOrigin())]
+		if !present || m.GetSeq() >= want {
+			return true
+		}
+		if receipt, _ := validateSubscribeReceiptEnvelope(m); receipt {
+			return true
+		}
+		return false
+	}
+}
+
+// SearchConfigFingerprintProvider supplies the search contract carried by
+// PeerStatus. *Executor satisfies it with the same fingerprint exposed
+// through GetServerStatus.
+type SearchConfigFingerprintProvider interface {
+	SearchConfigFingerprint() string
+}
+
+// Replication is the in-process implementation of the
+// graph.v1.LanternReplicationService surface. It exposes the
+// mutation log as a resumable, back-pressured server-streaming RPC
+// for peer replication and CDC consumers.
+//
+// The service holds a reference to the same *mutationlog.Log that
+// Executor.WithReplication wired into the write path, so
+// subscribers see every successfully appended mutation in seq order.
+type Replication struct {
+	namespaceFormat           string
+	log                       *mutationlog.Log
+	backend                   Backend
+	clock                     *hlc.Clock
+	runtime                   *ServingRuntime
+	replicationSendMaxBytes   int
+	replicationFrameCertified bool
+	metrics                   SubscribeMetrics
+	logger                    *slog.Logger
+	origins                   OriginStatesProvider
+	search                    SearchConfigFingerprintProvider
+	// Set before serving any receipt-capable write. It is deliberately a
+	// lifetime latch: a graph-only Snapshot may never certify receipt state,
+	// including after receipt log entries have been evicted.
+	receiptSnapshotRequired bool
+	receiptSnapshotSource   *ReceiptWholeStateSource
+	receiptSnapshotPolicy   mutationreceipt.Config
+	snapshotTails           *snapshotTailManager
+}
+
+// NewReplication constructs the service. log MUST be the same
+// instance handed to Executor.WithReplication; otherwise subscribers
+// will not see locally-originated mutations. backend is the graph cache
+// the Snapshot RPC walks; clock supplies the cutoff HLC stamped into the
+// snapshot header. Both must be non-nil — Snapshot returns Unavailable
+// when backend is unset, mirroring how Subscribe handles a nil log.
+func NewReplication(log *mutationlog.Log, backend Backend, clock *hlc.Clock) *Replication {
+	return &Replication{
+		log:           log,
+		backend:       backend,
+		clock:         clock,
+		metrics:       nopSubscribeMetrics{},
+		snapshotTails: &snapshotTailManager{active: make(map[string]*snapshotTail)},
+	}
+}
+
+// WithMetrics attaches a SubscribeMetrics handle. Nil is treated as the
+// no-op implementation so test wiring stays simple.
+func (s *Replication) WithMetrics(m SubscribeMetrics) *Replication {
+	if m == nil {
+		s.metrics = nopSubscribeMetrics{}
+	} else {
+		s.metrics = m
+	}
+	return s
+}
+
+// WithLogger replaces the slog handle used for replication-side warnings.
+// Defaults to slog.Default() when unset.
+func (s *Replication) WithLogger(l *slog.Logger) *Replication {
+	s.logger = l
+	return s
+}
+
+// WithOriginStates wires the per-origin watermark provider used by the
+// PeerStatus RPC (#186). Nil disables the RPC (handler returns
+// Unavailable). Wired in production by passing the Executor
+// instance — its OriginStates() method satisfies the interface.
+func (s *Replication) WithOriginStates(p OriginStatesProvider) *Replication {
+	s.origins = p
+	if provider, ok := p.(interface{ DataNamespaceFormat() string }); ok {
+		s.namespaceFormat = provider.DataNamespaceFormat()
+	}
+	return s
+}
+
+// WithSearchConfig wires the search fingerprint published by PeerStatus.
+// Nil leaves the field empty, which callers must treat as unverified rather
+// than compatible.
+func (s *Replication) WithSearchConfig(p SearchConfigFingerprintProvider) *Replication {
+	s.search = p
+	return s
+}
+
+// WithReceiptSnapshotRequired latches the service into receipt-continuity
+// mode without configuring a producer. Snapshot fails closed rather than
+// falling back to a graph-only image. Production durable-runtime
+// certification uses ConfigureReceiptSnapshot instead.
+func (s *Replication) WithReceiptSnapshotRequired() *Replication {
+	s.receiptSnapshotRequired = true
+	return s
+}
+
+// ConfigureReceiptSnapshot latches receipt-continuity mode and installs the
+// exact executor-owned whole-state source used by the private archive producer.
+// Configuration happens before serving. A failed or duplicate configuration
+// leaves the service latched so it can never silently downgrade to graph-only.
+func (s *Replication) ConfigureReceiptSnapshot(source *ReceiptWholeStateSource, policy mutationreceipt.Config) error {
+	s.receiptSnapshotRequired = true
+	if s.receiptSnapshotSource != nil {
+		return errors.New("receipt Snapshot source is already configured")
+	}
+	if source == nil {
+		return errors.New("receipt Snapshot source is nil")
+	}
+	if !source.belongsTo(s) {
+		return errors.New("receipt Snapshot source does not belong to this replication service")
+	}
+	if _, err := mutationreceipt.New(policy); err != nil {
+		return fmt.Errorf("receipt Snapshot policy: %w", err)
+	}
+	s.receiptSnapshotSource = source
+	s.receiptSnapshotPolicy = policy
+	return nil
+}
+
+// Subscribe streams every mutation log entry whose (origin, seq)
+// satisfies the per-origin resume cursor in req.FromSeqPerOrigin to
+// the supplied Sender, honouring ctx cancellation throughout.
+//
+// Under the leaderless Subscribe contract (#415), every replica's log
+// carries entries from every cluster origin (each stamped with its
+// writer's HLC NodeID on Entry.HLC.NodeID, which round-trips to the
+// wire as Mutation.Hlc.NodeId / Mutation.Origin). A consumer attaches
+// to any replica and resumes per-origin so failover between replicas
+// does not require deduplication or seq remapping.
+//
+// Flow:
+//  1. Open a log subscription under the executor publication cut. A nonempty
+//     portable origin cursor is proved against the contiguous published
+//     frontier and retained ring before selecting its earliest needed entry.
+//     An empty cursor still starts at req.FromLocalSeq (or local seq 1).
+//  2. For each entry, filter by the per-origin cursor: deliver only
+//     when mu.Seq >= cursor[origin]. Origins absent from the cursor
+//     are delivered from the oldest retained entry — this lets a
+//     consumer that has never seen origin X (e.g. X joined the
+//     cluster while the consumer was offline) catch up naturally.
+//     mu.Seq carries the originating writer's seq (stamped at local
+//     publication / preserved across relay), NOT the forwarding
+//     replica's local log seq.
+//  3. A missing needed origin entry or ErrGapped from the local log surfaces
+//     as FailedPrecondition + reason "gapped" so the client knows to
+//     snapshot and resubscribe (RFC §8.2).
+//  4. Observe subscriber loss independently of queued entries and interrupt
+//     a blocked private Send through its original HTTP owner. Reconnect from
+//     the committed cursor; overflow alone does not prove missing history.
+//  5. Wait for the publication cut before forwarding a dispatched entry,
+//     then release it before Send so slow consumers do not stall writers.
+//     Honor ctx cancellation throughout.
+//
+// Send errors terminate the stream and increment
+// dropped{reason="send_failed"}.
+func (s *Replication) Subscribe(ctx context.Context, req *pb.SubscribeRequest, stream Sender[pb.SubscribeResponse]) error {
+	metadata, metadataErr := tailMetadata(ctx)
+	if metadataErr != nil {
+		return metadataErr
+	}
+	token := ""
+	if len(metadata.values) == 1 {
+		token = metadata.values[0]
+		decoded, err := hex.DecodeString(token)
+		if err != nil || len(decoded) != 32 || req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY || req.GetBootstrap() {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("invalid Snapshot tail claim"))
+		}
+	}
+	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
+		return err
+	}
+	if s.log == nil {
+		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
+	}
+	// Check before opening the ring. A receipt entry may already have been
+	// evicted, so a per-entry opt-in check alone cannot guard a receipt-less
+	// peer from treating a gap as permission to install a graph-only Snapshot.
+	if s.receiptSnapshotRequired &&
+		(req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_UNSPECIFIED ||
+			req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION) &&
+		!req.GetAcceptReceiptEnvelopes() {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("full Subscribe consumer must accept receipt envelopes"))
+	}
+	switch req.GetProjection() {
+	case pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY:
+		return s.subscribeIdentity(ctx, req, stream)
+	case pb.SubscribeProjection_SUBSCRIBE_PROJECTION_UNSPECIFIED, pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION:
+		if req.GetBootstrap() {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("bootstrap requires identity-only projection"))
+		}
+	default:
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown Subscribe projection %d", req.GetProjection()))
+	}
+	cursor, err := parseOriginCursor(req.GetFromSeqPerOrigin())
+	if err != nil {
+		return err
+	}
+	fromLocalSeq := req.GetFromLocalSeq()
+	if fromLocalSeq == 0 {
+		fromLocalSeq = 1
+	}
+	cut, hasCut := s.origins.(subscribeCutProvider)
+	var (
+		faultCh      <-chan struct{}
+		ch           <-chan mutationlog.Entry
+		cancel       func() error
+		openErr      error
+		subscription *mutationlog.Subscription
+		tail         *snapshotTail
+	)
+	register := func(generation <-chan struct{}) {
+		faultCh = generation
+		if token != "" {
+			tail, openErr = s.claimSnapshotTail(ctx, token, req, cursor, generation)
+			if openErr == nil {
+				subscription = tail.currentSubscription()
+				ch, cancel = subscription.Entries(), subscription.Close
+			}
+			return
+		}
+		if hasCut && len(cursor) > 0 {
+			frontier := make(map[string]uint64)
+			for _, state := range s.origins.OriginStates() {
+				frontier[hex.EncodeToString(state.Origin[:])] = state.LastSeq
+			}
+			retained := s.log.RetainedEntries()
+			if openErr = validateRetainedOriginResume(cursor, frontier, retained); openErr != nil {
+				return
+			}
+			lastLocal, _ := s.log.LastSeq()
+			if lastLocal == math.MaxUint64 {
+				openErr = connect.NewError(connect.CodeResourceExhausted, errors.New("replica-local log sequence exhausted"))
+				return
+			}
+			fromLocalSeq = lastLocal + 1
+			for _, entry := range retained {
+				mutation, _ := graphMutationFromLog(entry.Op) // validated above
+				if mutation.GetSeq() >= cursorNext(cursor, hex.EncodeToString(mutation.GetOrigin())) {
+					fromLocalSeq = entry.Seq
+					break
+				}
+			}
+		}
+		subscription, openErr = s.log.SubscribeStream(fromLocalSeq, s.cursorEntryFilter(cursor))
+		if openErr == nil {
+			ch, cancel = subscription.Entries(), subscription.Close
+		}
+	}
+	if hasCut {
+		if err := cut.withReplicationSubscribeCut(register); err != nil {
+			s.metrics.OnSubscribeDropped("gapped")
+			return err
+		}
+	} else {
+		// Narrow test origin providers may lack the production publication
+		// gate. Retain their historical read-only fallback.
+		if status, ok := s.origins.(publicationStatusProvider); ok {
+			var faulted bool
+			faultCh, faulted = status.publicationStatus()
+			if faulted {
+				s.metrics.OnSubscribeDropped("gapped")
+				return publicationGapError()
+			}
+		}
+		register(faultCh)
+	}
+	if openErr != nil {
+		if connect.CodeOf(openErr) == connect.CodeFailedPrecondition || errors.Is(openErr, mutationlog.ErrGapped) {
+			s.metrics.OnSubscribeDropped("gapped")
+		}
+		if errors.Is(openErr, mutationlog.ErrGapped) {
+			return connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("gapped: log truncated below requested local seq %d; snapshot and resubscribe", fromLocalSeq))
+		}
+		if _, ok := openErr.(*connect.Error); ok {
+			return openErr
+		}
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", openErr))
+	}
+	defer func() { _ = cancel() }()
+	if tail != nil {
+		defer tail.Close()
+	}
+	delivery := newReplicationDelivery(ctx, stream, subscription, faultCh)
+	defer delivery.Close()
+
+	s.metrics.OnSubscribeStarted()
+	defer s.metrics.OnSubscribeEnded()
+	// Complete an accepted idle stream's transport handshake without an event,
+	// sequence advance or synthetic checkpoint. Keep all validation above it.
+	if err := delivery.FlushHeaders(); err != nil {
+		return err
+	}
+
+	heldTailBytes := 0
+	for {
+		if heldTailBytes != 0 {
+			tail.release(heldTailBytes)
+			heldTailBytes = 0
+		}
+		select {
+		case <-ctx.Done():
+			return ctxToConnect(ctx.Err())
+		case <-faultCh:
+			s.metrics.OnSubscribeDropped("gapped")
+			return publicationGapError()
+		case entry, ok := <-ch:
+			if encoded, owned := entry.Op.(snapshotTailFrame); owned {
+				heldTailBytes = len(encoded)
+			}
+			// Append can hand an entry to the log dispatcher before its
+			// enclosing graph/receipt publication gate is released. Wait for
+			// that cut before exposing the frame, without holding the gate
+			// across a potentially slow network Send.
+			if cut, hasCut := s.origins.(snapshotCutProvider); hasCut {
+				if err := cut.withReplicationSnapshotCut(func() {}); err != nil {
+					s.metrics.OnSubscribeDropped("gapped")
+					return err
+				}
+			}
+			// When log and fault channels are both ready, the select may
+			// choose an entry. Do not send it on a poisoned stream.
+			select {
+			case <-faultCh:
+				s.metrics.OnSubscribeDropped("gapped")
+				return publicationGapError()
+			default:
+			}
+			if !ok {
+				// A closed channel may be a live-buffer overflow or a replay
+				// tail evicted while forwarding. The next cursor validation
+				// determines whether Snapshot is actually required.
+				s.metrics.OnSubscribeDropped("gapped")
+				return replicationStreamClosedError()
+			}
+			frame, err := subscribeMutationFrame(entry.Op)
+			if err != nil {
+				l := s.loggerOrDefault()
+				l.Warn("replication: unexpected mutation log entry type",
+					slog.String("type", "non-Mutation payload"),
+					slog.Uint64("seq", entry.Seq),
+					slog.Any("err", err))
+				return connect.NewError(connect.CodeInternal, fmt.Errorf(
+					"replication: malformed mutation log entry at seq=%d", entry.Seq))
+			}
+			mu := frame.GetMutation()
+			if mu.GetNamespaceFormat() != s.namespaceFormat {
+				return connect.NewError(connect.CodeInternal, errors.New("retained mutation namespace format differs"))
+			}
+			if s.namespaceFormat != "" {
+				if err := validatePhysicalDataIdentities(mu.ProtoReflect()); err != nil {
+					return connect.NewError(connect.CodeInternal, err)
+				}
+			}
+			if s.replicationFrameCertified {
+				if _, err := validateReplicationFrameSize(entry.Op, s.replicationSendMaxBytes); err != nil {
+					l := s.loggerOrDefault()
+					l.Error("replication: certified mutation exceeds send limit",
+						slog.Uint64("seq", entry.Seq),
+						slog.Any("err", err))
+					return connect.NewError(connect.CodeInternal, fmt.Errorf(
+						"replication: certified mutation frame at seq=%d: %w", entry.Seq, err))
+				}
+			}
+			if receipt, err := validateSubscribeReceiptEnvelope(mu); receipt {
+				if mu.GetOp().GetGraphMutation() != nil && !req.GetAcceptGraphMutations() {
+					return connect.NewError(connect.CodeInvalidArgument, errors.New("full Subscribe consumer must explicitly accept graph mutations"))
+				}
+				if !req.GetAcceptReceiptEnvelopes() {
+					return connect.NewError(connect.CodeInvalidArgument,
+						errors.New("full Subscribe consumer must accept receipt envelopes before receiving them"))
+				}
+				if err != nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: malformed receipt envelope at seq=%d: %w", entry.Seq, err))
+				}
+			}
+			// Per-origin filter: skip entries whose origin watermark
+			// the consumer already covers. Origins absent from the
+			// cursor are NOT skipped — they are delivered from the
+			// oldest retained entry, matching the contract documented
+			// on pb.SubscribeRequest.
+			if want, present := cursor[hex.EncodeToString(mu.GetOrigin())]; present && mu.GetSeq() < want {
+				continue
+			}
+			// Forward the mutation as stamped at the originating
+			// writer (mu.Seq = origin's seq). The relay does NOT
+			// overwrite Seq with entry.Seq (this replica's local
+			// log seq), because downstream consumers in the
+			// leaderless Subscribe contract (#415) key on
+			// (origin, origin_seq), not on the forwarding replica's
+			// local seq. Forwarding entry.Seq instead would make
+			// the same (origin, origin_seq) tuple appear with a
+			// different Seq value on every hop, breaking the
+			// per-origin dedup gate in ApplyMutation.
+			if err := delivery.Send(frame); err != nil {
+				s.metrics.OnSubscribeDropped("send_failed")
+				return err
+			}
+		}
+	}
+}
+
+func (s *Replication) loggerOrDefault() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
+}
+
+// Snapshot produces the private replication Snapshot stream.
+//
+// Flow:
+//  1. GRAPH_ONLY_V1 captures the per-origin/local-log cutoffs, cutoff_hlc,
+//     causal floors, vertices, and edges in one Snapshot cut.
+//  2. An explicitly configured RECEIPT producer instead calls its
+//     executor-owned source once and preflights the complete detached receipt,
+//     graph, clock, and cutoff image before sending anything.
+//  3. Send SnapshotHeader first, each owned body frame in phase order, and a
+//     counted SnapshotFooter last. No commit gate is held while sending.
+//
+// The implementation deliberately materialises the snapshot in memory.
+// Replication bootstrap is bounded (one peer per call, infrequent), so
+// the O(N+E) memory overhead is acceptable. True streaming is a follow-up
+// once the snapshot path is wired end-to-end.
+func (s *Replication) Snapshot(ctx context.Context, req *pb.SnapshotRequest, stream Sender[pb.SnapshotResponse]) error {
+	reserveTail, metadata, err := s.snapshotTailRequest(ctx)
+	if err != nil {
+		return err
+	}
+	var tail *snapshotTail
+	complete := false
+	defer func() {
+		if tail != nil && !complete {
+			tail.Close()
+		}
+	}()
+	openTail := func(local uint64, origins map[string]uint64, fault <-chan struct{}) error {
+		var openErr error
+		tail, openErr = s.openSnapshotTail(ctx, local, origins, fault)
+		if openErr == nil {
+			metadata.header.Set(SnapshotTailHeader, tail.token)
+		}
+		return openErr
+	}
+	finishTail := func() error {
+		if tail != nil {
+			if err := tail.finish(ctx); err != nil {
+				return err
+			}
+		}
+		complete = true
+		return nil
+	}
+	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
+		return err
+	}
+	if s.backend == nil {
+		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
+	}
+	if s.receiptSnapshotRequired {
+		switch req.GetRequiredFormat() {
+		case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is required"))
+		case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT:
+		default:
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
+		}
+		if s.receiptSnapshotSource == nil {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot producer is not configured"))
+		}
+		var capture ReceiptWholeStateCapture
+		var err error
+		if reserveTail {
+			capture, err = s.receiptSnapshotSource.captureWithTail(ctx, s.receiptSnapshotPolicy, openTail)
+		} else {
+			capture, err = s.receiptSnapshotSource.Capture(ctx, s.receiptSnapshotPolicy)
+		}
+		if err != nil {
+			return err
+		}
+		frames, err := PrepareReceiptSnapshotFrames(capture, s.receiptSnapshotPolicy)
+		if err != nil {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("receipt-bearing Snapshot is invalid: %w", err))
+		}
+		for _, frame := range frames {
+			if err := ctx.Err(); err != nil {
+				return ctxToConnect(err)
+			}
+			if err := stream.Send(frame); err != nil {
+				return err
+			}
+		}
+		return finishTail()
+	}
+	switch req.GetRequiredFormat() {
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT:
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is not configured"))
+	default:
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
+	}
+
+	var cutoffPerOrigin map[string]uint64
+	var cutoffHLC hlc.Timestamp
+	var cutoffLocalSeq uint64
+	var barriers graphcache.CausalBarrierSnapshot[string]
+	var tombstones graphcache.TombstoneSnapshot[string]
+	var graph graphcache.GraphSnapshot[string, *pb.Vertex]
+	var tailErr error
+	capture := func() {
+		if s.origins != nil {
+			states := s.origins.OriginStates()
+			if len(states) > 0 {
+				cutoffPerOrigin = make(map[string]uint64, len(states))
+				for _, st := range states {
+					cutoffPerOrigin[hex.EncodeToString(st.Origin[:])] = st.LastSeq
+				}
+			}
+		}
+		if s.clock != nil {
+			cutoffHLC = s.clock.Now()
+		}
+		if s.log != nil {
+			cutoffLocalSeq, _ = s.log.LastSeq()
+		}
+		if snapshotter, ok := s.backend.(replicationSnapshotter); ok {
+			snapshot := snapshotter.SnapshotReplication()
+			barriers = snapshot.Barriers
+			tombstones = snapshot.Tombstones
+			graph = snapshot.Graph
+		} else {
+			// Compatibility seam for narrow fake backends. Production
+			// GraphCache always captures causal and live state in one pass.
+			graph = graphcache.GraphSnapshot[string, *pb.Vertex]{
+				Vertices: s.backend.SnapshotVertices(),
+				Edges:    s.backend.SnapshotEdges(),
+			}
+		}
+		detachSnapshotVertices(graph.Vertices)
+		if reserveTail {
+			// A native reservation requires the production publication owner;
+			// its fault generation is sampled under this same cut.
+			owner := s.origins.(*Executor) // checked before native reservation
+			tailErr = openTail(cutoffLocalSeq, cutoffPerOrigin, owner.publicationFaultCh)
+		}
+	}
+	if gate, ok := s.origins.(snapshotCutProvider); ok {
+		if err := gate.withReplicationSnapshotCut(capture); err != nil {
+			return err
+		}
+	} else {
+		capture()
+	}
+	if tailErr != nil {
+		return tailErr
+	}
+	if err := sendSnapshotFrames(ctx, replicationSnapshotCut{
+		namespaceFormat: s.namespaceFormat,
+		cutoffPerOrigin: cutoffPerOrigin,
+		cutoffHLC:       cutoffHLC,
+		cutoffLocalSeq:  cutoffLocalSeq,
+		barriers:        barriers,
+		tombstones:      tombstones,
+		graph:           graph,
+	}, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, stream); err != nil {
+		return err
+	}
+	return finishTail()
+}
+
+// PeerStatus reports the private replication frontier.
+//
+// Returns the responder's per-origin (last_seq, last_hlc) map. The
+// reply set always includes the local origin (sourced from the
+// mutation log via WithOriginStates) plus every remote origin whose
+// mutation has ever been applied via ApplyMutation since process
+// start.
+//
+// Returns Unavailable when the origin-state provider is unwired —
+// either because replication is disabled on this server (single-
+// instance test path) or because WithOriginStates was never called.
+func (s *Replication) PeerStatus(ctx context.Context, req *pb.PeerStatusRequest) (*pb.PeerStatusResponse, error) {
+	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, ctxToConnect(err)
+	}
+	if s.origins == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
+	}
+	var rows []OriginState
+	if cut, ok := s.origins.(snapshotCutProvider); ok {
+		if err := cut.withReplicationSnapshotCut(func() {
+			rows = s.origins.OriginStates()
+		}); err != nil {
+			return nil, err
+		}
+	} else {
+		rows = s.origins.OriginStates()
+	}
+	out := &pb.PeerStatusResponse{NamespaceFormat: s.namespaceFormat, Origins: make([]*pb.OriginState, 0, len(rows))}
+	if s.receiptSnapshotRequired {
+		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
+	} else {
+		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+	}
+	if s.search != nil {
+		out.SearchConfigFingerprint = s.search.SearchConfigFingerprint()
+	}
+	if s.clock != nil {
+		nid := s.clock.NodeID()
+		out.SelfOrigin = append([]byte(nil), nid[:]...)
+	}
+	for _, r := range rows {
+		id := r.Origin
+		out.Origins = append(out.Origins, &pb.OriginState{
+			Origin:  append([]byte(nil), id[:]...),
+			LastSeq: r.LastSeq,
+			LastHlc: hlcToProto(r.LastHLC),
+		})
+	}
+	return out, nil
+}
+
+func (s *Replication) requireDataFormat(format string) error {
+	if err := validateDataFormat(format); err != nil || format != s.namespaceFormat {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("peer namespace format is incompatible"))
+	}
+	return nil
+}

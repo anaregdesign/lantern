@@ -14,8 +14,8 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
-	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -312,7 +312,7 @@ func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
 	if _, ok := runtime.GraphCache().GetVertex("startup-restored"); ok {
 		t.Fatal("fresh backup graph became visible before the restore barrier")
 	}
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
 	if _, err := NewRuntimeRestored(runtime, primary); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("optional missing fresh backup: %v", err)
 	}
-	optionalPrimary := optionalRuntime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	optionalPrimary := optionalRuntime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
 	if _, err := NewRuntimeRestored(optionalRuntime, optionalPrimary); err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestNewServingRuntimeRestartFallsBackOnlyForMissingBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
 	if _, err := NewRuntimeRestored(runtime, primary); err != nil {
 		cleanup()
 		t.Fatal(err)
@@ -690,8 +690,8 @@ func produceProviderReceiptBackup(
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	replication, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewReplication(primary)
 	if err != nil {
 		cleanup()
 		t.Fatal(err)
@@ -835,7 +835,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 		t.Fatalf("uncertified listener = %v, %v, %v", listener, cleanup != nil, err)
 	}
 
-	newGraphOnly := func(t *testing.T) (*service.ServingRuntime, func()) {
+	newGraphOnly := func(t *testing.T) (*dataruntime.ServingRuntime, func()) {
 		t.Helper()
 		runtime, cleanup, err := NewServingRuntime(
 			ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
@@ -853,8 +853,8 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	}
 	first, cleanupFirst := newGraphOnly(t)
 	defer cleanupFirst()
-	firstPrimary := first.NewLanternService(nil)
-	firstReplication, err := first.NewLanternReplicationService(firstPrimary)
+	firstPrimary := first.NewExecutor(nil)
+	firstReplication, err := first.NewReplication(firstPrimary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,8 +869,8 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 
 	second, cleanupSecond := newGraphOnly(t)
 	defer cleanupSecond()
-	secondPrimary := second.NewLanternService(nil)
-	secondReplication, err := second.NewLanternReplicationService(secondPrimary)
+	secondPrimary := second.NewExecutor(nil)
+	secondReplication, err := second.NewReplication(secondPrimary)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,8 +14,8 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/rpcwire"
-	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,12 +28,12 @@ func TestSecurityDataRequiresSameOwnedRuntime(t *testing.T) {
 	}
 	defer closeRuntime()
 	runtime.mode = "oidc"
-	foreign := service.NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).WithDataNamespace()
+	foreign := dataruntime.NewExecutor(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).WithDataNamespace()
 	if _, _, err := runtime.PublicDataHTTPHandler(foreign); err == nil {
 		t.Fatal("foreign graph passed serving composition")
 	}
 	runtime.mode = "off"
-	owned := data.NewLanternService(nil)
+	owned := data.NewExecutor(nil)
 	constructed := 0
 	observe := connect.WithConditionalHandlerOptions(func(connect.Spec) []connect.HandlerOption {
 		constructed++

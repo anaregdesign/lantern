@@ -23,7 +23,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func wholeStateArchiveFixture(t *testing.T) wholeStateArchive {
@@ -86,7 +86,7 @@ func wholeStateArchiveFixtureAt(t *testing.T, issued time.Time) wholeStateArchiv
 		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{VertexCount: 2, EdgeCount: 1}}},
 	}
 	return wholeStateArchive{Graph: graph, Receipts: receipts, Policy: policy,
-		Origins: []service.OriginState{{Origin: origin, LastSeq: 7, LastHLC: ts}}}
+		Origins: []dataruntime.OriginState{{Origin: origin, LastSeq: 7, LastHLC: ts}}}
 }
 
 func encodedWholeStateArchive(t *testing.T, a wholeStateArchive) []byte {

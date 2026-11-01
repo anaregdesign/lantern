@@ -146,8 +146,8 @@ func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
 
 func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
 	data := securityDataFixture(t)
-	svc := data.NewLanternService(nil)
-	rep, err := data.NewLanternReplicationService(svc)
+	svc := data.NewExecutor(nil)
+	rep, err := data.NewReplication(svc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +183,8 @@ func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
 
 func TestPeerListenerAdoptionRequiresExactRuntime(t *testing.T) {
 	data := securityDataFixture(t)
-	svc := data.NewLanternService(nil)
-	rep, err := data.NewLanternReplicationService(svc)
+	svc := data.NewExecutor(nil)
+	rep, err := data.NewReplication(svc)
 	if err != nil {
 		t.Fatal(err)
 	}

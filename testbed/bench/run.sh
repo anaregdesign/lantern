@@ -1093,7 +1093,7 @@ data = {"schema":1,"protocol":"receipt_goroutine_operational_v1",
         "before_post_profile":ref(root / "goroutine_policy_before_post_profile.json"),
         "barrier":ref(root / "goroutine_policy_barrier.json"),"posts":posts,"workload_report":ref(root / "workload_gate.json"),
         "owner_evidence":[ref(source / p) for p in ("server/internal/security/control_renewal_network_test.go",
-          "server/service/replication_delivery_test.go","server/replication/pump_test.go")]}
+          "server/internal/dataruntime/replication_delivery_test.go","server/replication/pump_test.go")]}
 fd = os.open(root / "goroutine_policy_input.json",os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
 with os.fdopen(fd,"w") as stream: json.dump(data,stream,separators=(",",":")); stream.write("\n")
 PY

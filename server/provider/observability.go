@@ -13,9 +13,9 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
-	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -58,7 +58,7 @@ type DomainMetricsWired struct{}
 
 func WireDomainMetrics(
 	cache *graphcache.GraphCache[string, *v1.Vertex],
-	runtime *service.ServingRuntime,
+	runtime *dataruntime.ServingRuntime,
 	m *domainmetrics.DomainMetrics,
 ) DomainMetricsWired {
 	m.BindSampler(func() (int, int) {

@@ -208,11 +208,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			workerStops = append(workerStops, stop)
 			t.Cleanup(stop)
 		}
-		svc := data.NewLanternService(nil)
+		svc := data.NewExecutor(nil)
 		if id == 1 {
 			svc.WithTombstoneTTL(time.Hour)
 		}
-		peer, err := data.NewLanternReplicationService(svc)
+		peer, err := data.NewReplication(svc)
 		if err != nil {
 			t.Fatal(err)
 		}

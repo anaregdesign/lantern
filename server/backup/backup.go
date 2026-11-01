@@ -45,8 +45,8 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 const (
@@ -89,11 +89,11 @@ type Config struct {
 	RestoreRequired bool
 }
 
-// Service is the subset of *service.LanternService the Backupper drives.
+// Service is the subset of *dataruntime.Executor the Backupper drives.
 // Declared as an interface so tests can inject a fake without standing up a
 // full GraphCache.
 type Service interface {
-	BackupSnapshot(ctx context.Context, req *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error
+	BackupSnapshot(ctx context.Context, req *pb.BackupSnapshotRequest, stream dataruntime.Sender[pb.BackupSnapshotResponse]) error
 	RestoreVertices(ctx context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error)
 	RestoreEdges(ctx context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error)
 	BeginSearchIndexRecovery()
@@ -528,7 +528,7 @@ func fileStamp(name string) (int64, bool) {
 	return n, true
 }
 
-// protoFileSender satisfies service.Sender[pb.BackupSnapshotResponse] by
+// protoFileSender satisfies dataruntime.Sender[pb.BackupSnapshotResponse] by
 // writing each frame as length-delimited protobuf — byte-identical to the
 // SDK / CLI proto dump format.
 type protoFileSender struct {

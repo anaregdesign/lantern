@@ -20,7 +20,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 const (
@@ -933,7 +933,7 @@ func receiptBackupWALWitness(metadata receiptBackupSetWALWitnessMetadata) (mutat
 	return witness, nil
 }
 
-func receiptBackupOriginCutoffsDigest(origins []service.OriginState) [sha256.Size]byte {
+func receiptBackupOriginCutoffsDigest(origins []dataruntime.OriginState) [sha256.Size]byte {
 	var payload bytes.Buffer
 	payload.WriteString(receiptBackupOriginsDigestDomain)
 	writeArchiveU64(&payload, uint64(len(origins)))

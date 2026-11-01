@@ -7,7 +7,8 @@ architecture.
 
 ## RPC surface is plural-first
 
-[service/service.go](service/service.go) implements `LanternService`. Every
+[internal/dataruntime/executor.go](internal/dataruntime/executor.go) implements
+`Executor`; `service/connect.go` supplies the Connect adapter. Every
 read/write/delete has a **singular** and a **plural** form. The plural is the canonical
 implementation; the singular forwards a one-element batch to its plural counterpart
 (e.g. for `GetVertex`/`GetEdge`, `len(Missing)==1` maps to `codes.NotFound`; for

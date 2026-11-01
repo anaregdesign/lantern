@@ -219,10 +219,10 @@ func newCertifiedPumpNode(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	svc := runtime.NewLanternService(nil).
+	svc := runtime.NewExecutor(nil).
 		WithSearchLimits(limits).
 		WithTombstoneTTL(time.Hour)
-	rep, err := runtime.NewLanternReplicationService(svc)
+	rep, err := runtime.NewReplication(svc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2975,7 +2975,7 @@ func TestPeerPump_SnapshotTailWireContinuity(t *testing.T) {
 					if index != 0 {
 						return
 					}
-					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					source, err := runtime.NewReplication(f.primary[index])
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -3117,7 +3117,7 @@ func TestPeerPump_SnapshotTailHandoffDuringInstall(t *testing.T) {
 					if index != 0 {
 						return
 					}
-					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					source, err := runtime.NewReplication(f.primary[index])
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -4287,7 +4287,7 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 					if index != 0 {
 						return
 					}
-					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					source, err := runtime.NewReplication(f.primary[index])
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -4678,7 +4678,7 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		LogOptions:   func(int) mutationlog.Options { return mutationlog.Options{Capacity: 4, SubscriberBuffer: 512} },
 		Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
 			graphs[index] = runtime.GraphCache()
-			source, err := runtime.NewLanternReplicationService(f.primary[index])
+			source, err := runtime.NewReplication(f.primary[index])
 			if err != nil {
 				t.Fatal(err)
 			}
