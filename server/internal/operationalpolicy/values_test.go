@@ -118,8 +118,11 @@ func TestValuesValidation(t *testing.T) {
 		{"search minimum overflow", GroupSearch, func(v *Values) { v.Search.DefaultMinShould = math.MaxUint32 + 1 }},
 		{"search timeout", GroupSearch, func(v *Values) { v.Search.TimeoutMS = 0 }},
 		{"search timeout overflow", GroupSearch, func(v *Values) { v.Search.TimeoutMS = math.MaxInt64/int64(time.Millisecond) + 1 }},
+		{"search timeout capability overflow", GroupSearch, func(v *Values) { v.Search.TimeoutMS = math.MaxUint32 + 1 }},
 		{"search bytes", GroupSearch, func(v *Values) { v.Search.MaxQueryBytes = 0 }},
+		{"search bytes capability overflow", GroupSearch, func(v *Values) { v.Search.MaxQueryBytes = math.MaxUint32 + 1 }},
 		{"search terms", GroupSearch, func(v *Values) { v.Search.MaxQueryTerms = 0 }},
+		{"search terms capability overflow", GroupSearch, func(v *Values) { v.Search.MaxQueryBytes, v.Search.MaxQueryTerms = math.MaxUint32+1, math.MaxUint32+1 }},
 		{"search terms exceed bytes", GroupSearch, func(v *Values) { v.Search.MaxQueryTerms = v.Search.MaxQueryBytes + 1 }},
 		{"search dictionary", GroupSearch, func(v *Values) { v.Search.MaxDictionaryVisits = 0 }},
 		{"search postings", GroupSearch, func(v *Values) { v.Search.MaxPostingVisits = 0 }},
@@ -172,4 +175,19 @@ func TestValuesValidation(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestSearchValuesFitPublishedCapabilityBounds(t *testing.T) {
+	values, _ := Defaults(GroupSearch)
+	values.Search.TimeoutMS = math.MaxUint32
+	values.Search.MaxQueryBytes = math.MaxUint32
+	values.Search.MaxQueryTerms = math.MaxUint32
+	if values.Validate() != nil {
+		t.Fatal("largest accurately publishable Search policy refused")
+	}
+	// These fields are advertised as uint32 by the established public Search
+	// capability contract. Do not admit a managed value that would wrap to zero.
+	if uint32(values.Search.TimeoutMS) != math.MaxUint32 || uint32(values.Search.MaxQueryBytes) != math.MaxUint32 || uint32(values.Search.MaxQueryTerms) != math.MaxUint32 {
+		t.Fatal("capability boundary does not preserve exact values")
+	}
 }

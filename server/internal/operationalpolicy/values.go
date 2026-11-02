@@ -183,7 +183,8 @@ func (v Values) Validate() error {
 		s := v.Search
 		valid = positivePair(s.DefaultLimit, s.MaxLimit) && s.DefaultMinShould > 0 && s.DefaultMinShould <= math.MaxUint32 &&
 			(s.DefaultMode == MatchAny || s.DefaultMode == MatchAll || s.DefaultMode == MatchMinShould) &&
-			duration(s.TimeoutMS, time.Millisecond, false) && s.MaxQueryBytes > 0 && s.MaxQueryTerms > 0 && s.MaxQueryTerms <= s.MaxQueryBytes &&
+			duration(s.TimeoutMS, time.Millisecond, false) && s.TimeoutMS <= math.MaxUint32 &&
+			s.MaxQueryBytes > 0 && s.MaxQueryBytes <= math.MaxUint32 && s.MaxQueryTerms > 0 && s.MaxQueryTerms <= math.MaxUint32 && s.MaxQueryTerms <= s.MaxQueryBytes &&
 			s.MaxDictionaryVisits > 0 && s.MaxPostingVisits > 0 && s.MaxPositionVisits > 0 && s.MaxExpirationVisits > 0
 	case GroupReplication:
 		r := v.Replication

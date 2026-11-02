@@ -250,6 +250,9 @@ complete voter/origin certificate. Runtime delivery must still implement its
 engine/cursor transition and trusted RPC generation guard. Health readiness alone
 does not block direct data RPCs. The native projection reports desired policy
 only and never interprets a successful owner call as effective application.
+Managed Search timeout milliseconds, query bytes and query terms also fit the
+existing unsigned 32-bit capability fields, so discovery cannot wrap an admitted
+value. This bounds managed candidates without changing legacy environment parsing.
 
 Backup interval retains exact signed nanoseconds. Finite first adoption, keep-all
 (`retain=0`) to finite, and finite retention reduction require explicit
