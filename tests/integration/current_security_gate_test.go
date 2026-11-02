@@ -519,6 +519,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			deadline := time.Now().Add(15 * time.Second)
 			for {
 				status, e := c.GetSecurityChangeStatus(ctx, securityWireRequest(token, &pb.GetSecurityChangeStatusRequest{CurrentProfile: review.Profile, CurrentChangeId: review.ChangeId, CurrentIntentDigest: review.IntentDigest}))
+				if e != nil && connect.CodeOf(e) != connect.CodeUnavailable {
+					t.Fatal("valid credential misclassified during committed-cut renewal", i, e)
+				}
 				if e == nil && proto.Equal(status.Msg.GetCurrentResult().GetOriginal(), original) {
 					break
 				}
@@ -531,6 +534,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				case <-time.After(100 * time.Millisecond):
 				}
 			}
+		}
+		// A bad credential remains a single-attempt authentication refusal;
+		// it must never enter the valid-credential renewal retry path above.
+		if _, err := controls[0].GetSecurityChangeStatus(ctx, securityWireRequest("invalid-bearer", &pb.GetSecurityChangeStatusRequest{CurrentProfile: review.Profile, CurrentChangeId: review.ChangeId, CurrentIntentDigest: review.IntentDigest})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Fatal("invalid credential was converted to retryable authority loss", err)
 		}
 		current, e := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if e != nil {
