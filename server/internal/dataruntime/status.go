@@ -178,14 +178,14 @@ func nonNegativeUint64(value int) uint64 {
 }
 
 func (s *Executor) searchCapabilities() *pb.SearchCapabilities {
-	return query.Capabilities(s.search.Limits(), s.cache.SearchIndexMemoryStats())
+	return query.Capabilities(s.effectiveSearchEngine().Limits(), s.cache.SearchIndexMemoryStats())
 }
 
 // SearchConfigFingerprint returns the stable search-capability fingerprint
 // published by GetServerStatus. The replication PeerStatus surface uses the
 // same value so HA members compare exactly the contract clients discover.
 func (s *Executor) SearchConfigFingerprint() string {
-	return s.search.ConfigFingerprint()
+	return s.effectiveSearchEngine().ConfigFingerprint()
 }
 
 // statusVersion returns the configured version string, falling back to
