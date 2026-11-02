@@ -41,7 +41,7 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 	}
 	r.keys = oidc.NewKeyCacheWithClock(r.fetcher, r.now)
 	r.verifier = oidc.NewVerifierWithClock(r.keys, r.now)
-	r.logins, err = oidc.NewLoginTransactionsWithBounds(r.config.BrowserOrigin, []string{"/", "/vertices", "/edges", "/search", "/security/roles", "/security/users", "/security/issuers", "/server", "/replication"}, r.current.TimeBounds, r.currentAttemptPrefix())
+	r.logins, err = oidc.NewLoginTransactionsWithBounds(r.config.BrowserOrigin, currentBrowserLoginReturns(), r.current.TimeBounds, r.currentAttemptPrefix())
 	if err != nil {
 		return err
 	}
@@ -60,8 +60,12 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 			return oidc.ErrInvalidDocument
 		}
 		return r.fetcher.ValidateIssuer(ctx, i, r.secrets)
-	}, CurrentBeginAuthorization: r.authentication.BeginCurrentManagementAuthorization, CurrentReadAuthorization: r.authentication.ReadCurrentManagementAuthorization})
+	}, CurrentBeginAuthorization: r.authentication.BeginCurrentManagementAuthorization, CurrentReadAuthorization: r.authentication.ReadCurrentManagementAuthorization, LogSettingsObserver: r.logSettingsObservation})
 	return err
+}
+
+func currentBrowserLoginReturns() []string {
+	return []string{"/", "/vertices", "/edges", "/search", "/security/roles", "/security/users", "/security/issuers", "/server", "/replication", "/settings"}
 }
 
 // loadSecurityProvisioning joins independent historical trust with this

@@ -3,6 +3,7 @@ package provider
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -112,21 +113,33 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, runtimeCertified{}); err == nil {
+	logging, err := NewManagedLogRuntime(t.Context(), runtime, newServingLogger(ObservabilityConfig{}, io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, managedLogCertified{}); err == nil {
+		t.Fatal("missing logger certification accepted")
+	}
+	foreignLogging := logging
+	foreignLogging.owner = newServingLogger(ObservabilityConfig{}, io.Discard)
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, foreignLogging); err == nil {
+		t.Fatal("foreign logger owner certified")
+	}
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, runtimeCertified{}, logging); err == nil {
 		t.Fatal("missing data certification accepted")
 	}
 	foreign := dataruntime.NewExecutor(data.GraphCache())
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, foreign, cert); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, foreign, cert, logging); err == nil {
 		t.Fatal("foreign service certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, data, primary, cert); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, data, primary, cert, logging); err == nil {
 		t.Fatal("unbound workload certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert); err != nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging); err != nil {
 		t.Fatal(err)
 	}
 	runtime.mode = "oidc"
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging); err == nil {
 		t.Fatal("OIDC without its authority was certified")
 	}
 

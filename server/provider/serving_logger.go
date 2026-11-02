@@ -11,8 +11,9 @@ import (
 // Construction uses only the startup configuration. Managed policy adoption is
 // unavailable until a verified committed projection adapter is installed.
 type ServingLogger struct {
-	level  slog.LevelVar
-	logger *slog.Logger
+	level           slog.LevelVar
+	logger          *slog.Logger
+	fromEnvironment bool
 }
 
 // NewServingLogger constructs the focused serving log owner for Wire.
@@ -21,7 +22,7 @@ func NewServingLogger(o ObservabilityConfig) *ServingLogger {
 }
 
 func newServingLogger(o ObservabilityConfig, w io.Writer) *ServingLogger {
-	owner := &ServingLogger{}
+	owner := &ServingLogger{fromEnvironment: o.LogLevelFromEnvironment}
 	owner.level.Set(o.LogLevel)
 	owner.logger = newLoggerWithLevel(o, w, &owner.level)
 	return owner

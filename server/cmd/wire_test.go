@@ -170,6 +170,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewRuntimeRestored(",
 		"provider.NewRuntimeCertified(",
 		"provider.NewBackupper(",
+		"provider.NewManagedLogRuntime(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
 		"provider.NewListener(",

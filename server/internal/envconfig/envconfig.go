@@ -422,23 +422,31 @@ func (r *Reader) Bool(key string, def bool) bool {
 // "warn"|"warning"/"error", case- and whitespace-insensitive), or def when
 // unset or unrecognised. It is the registry-aware sibling of LogLevel.
 func (r *Reader) Level(key string, def slog.Level) slog.Level {
+	level, _ := r.LevelWithSource(key, def)
+	return level
+}
+
+// LevelWithSource also reports whether a recognized, nonempty explicit value
+// supplied the level. A present empty or malformed value still uses the default;
+// presence alone must not label that fallback as an environment-owned value.
+func (r *Reader) LevelWithSource(key string, def slog.Level) (slog.Level, bool) {
 	r.register(key, "level", strings.ToLower(def.String()))
 	raw, ok := r.lookup(key)
 	if !ok {
-		return def
+		return def, false
 	}
 	switch strings.ToLower(raw) {
 	case "debug":
-		return slog.LevelDebug
+		return slog.LevelDebug, true
 	case "info":
-		return slog.LevelInfo
+		return slog.LevelInfo, true
 	case "warn", "warning":
-		return slog.LevelWarn
+		return slog.LevelWarn, true
 	case "error":
-		return slog.LevelError
+		return slog.LevelError, true
 	default:
 		r.Malformed(key, raw, `not a log level ("debug"/"info"/"warn"/"error")`)
-		return def
+		return def, false
 	}
 }
 

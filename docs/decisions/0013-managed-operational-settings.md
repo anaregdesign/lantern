@@ -160,12 +160,37 @@ One focused runtime owner controls a shared `slog.LevelVar`. Retained/default
 loggers and their `With` descendants observe its updates. Log format, metrics
 and pprof listeners remain startup-owned.
 
+Startup source metadata reflects successful parsing: valid explicit environment
+input, including an explicit `info`, is environment-owned; absent, blank or
+malformed input uses the default. An adopted policy reports managed ownership.
+Presence alone cannot determine the effective source.
+
+`LANTERN_LOG_LEVEL` remains a validated bootstrap input even after adoption.
+Malformed input with `LANTERN_STRICT_CONFIG=true` refuses startup before verified
+recovery. Without strict mode it produces the existing diagnostic and bootstrap
+default. After verified recovery succeeds, managed policy supplies the serving
+level; a valid conflicting environment value never overwrites it.
+
+Public certification requires the exact logger owner and a successfully verified
+local recovery projection. Install recovered policy before binding native runtime
+support. The existing private authority listener starts independently so other
+members can form a quorum; fresh native eligibility and local application are
+still required before public readiness. The bounded existing readiness worker
+reconciles later policy generations without constructing a full Image each poll.
+
 Expose immutable snapshots of the contacted node: effective value/source,
 desired/applied generation, exact committed cut, pending/error and whether restart
 is required. Mark a generation applied only after successful installation.
 Superseded work cannot regress the generation. A commit response proves a saved
 policy, not application on every node. Peer state that has not been observed is
 unknown; the pilot makes no all-node application claim or new aggregation protocol.
+
+The applied cut is historical installation provenance. An unrelated security
+commit does not reinstall an unchanged log policy or manufacture pending state.
+Fresh admission and guarded output separately bind a settings read to the current
+security cut. Authority loss fails fresh reads/readiness while retaining the last
+verified installed level; a fresh read can confirm that installation after
+visibility returns.
 
 A dedicated Admin settings feature follows existing use-case/port/adapter
 boundaries and reuses reviewed-change and unknown-result recovery. It is separate
