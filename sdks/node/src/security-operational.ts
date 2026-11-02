@@ -308,18 +308,14 @@ export function validateOperationalSettings(settings: GetOperationalSettingsResp
     )
       fail();
     if (!state.effective) {
-      if (
-        state.effectiveCompatibilityFingerprint !== "" ||
-        state.appliedGeneration !== 0n ||
-        state.appliedCut
-      )
-        fail();
+      if (state.appliedGeneration !== 0n || state.appliedCut) fail();
       if (
         state.changeMode === OperationalSettingsChangeMode.UNAVAILABLE &&
         state.application === OperationalSettingsApplicationState.UNAVAILABLE &&
         state.error === OperationalSettingsError.OWNER_UNAVAILABLE &&
         state.provenance.length === 0 &&
-        !state.restartRequired
+        !state.restartRequired &&
+        state.effectiveCompatibilityFingerprint === ""
       )
         return;
       if (
@@ -329,6 +325,10 @@ export function validateOperationalSettings(settings: GetOperationalSettingsResp
         state.error !== OperationalSettingsError.INVALID_POLICY
       )
         fail();
+      // Known actual Search engine metadata is independent of an unknown
+      // effective managed-value payload or an unapplied desired generation.
+      if (state.effectiveCompatibilityFingerprint !== "")
+        fingerprint(group, state.effectiveCompatibilityFingerprint);
       validateOperationalProvenance(state, group);
       return;
     }

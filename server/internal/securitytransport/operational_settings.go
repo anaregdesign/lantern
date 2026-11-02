@@ -80,14 +80,20 @@ func encodeOperationalGroupSettings(p security.OperationalPolicyProjection, grou
 		return nil, security.ErrAuthorityUnavailable
 	}
 	if observed.Effective == nil {
-		if observed.EffectiveCompatibilityFingerprint != "" || observed.AppliedGeneration != 0 || observed.AppliedCut != (security.SemanticCut{}) || (observed.Pending && policy == nil) {
+		if observed.AppliedGeneration != 0 || observed.AppliedCut != (security.SemanticCut{}) || (observed.Pending && policy == nil) {
 			return nil, security.ErrAuthorityUnavailable
 		}
-		if observed.Mode == OperationalModeUnavailable && observed.Error == OperationalErrorOwnerUnavailable && len(observed.Sources) == 0 && !observed.RestartRequired && !observed.Pending {
+		if observed.Mode == OperationalModeUnavailable && observed.Error == OperationalErrorOwnerUnavailable && len(observed.Sources) == 0 && !observed.RestartRequired && !observed.Pending && observed.EffectiveCompatibilityFingerprint == "" {
 			state.Application = pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE
 			return state, nil
 		}
 		if observed.Mode < OperationalModeHot || observed.Mode > OperationalModeCoordinatedRestart || observed.Error != OperationalErrorInvalidPolicy {
+			return nil, security.ErrAuthorityUnavailable
+		}
+		// The actual Search engine can be known even when legacy selected
+		// values cannot be represented by the managed schema. This metadata
+		// neither substitutes typed values nor establishes an applied policy.
+		if observed.EffectiveCompatibilityFingerprint != "" && (group != operationalpolicy.GroupSearch || !validOperationalPreviewFingerprint(observed.EffectiveCompatibilityFingerprint, true)) {
 			return nil, security.ErrAuthorityUnavailable
 		}
 		provenance, err := encodeOperationalProvenance(group, observed)

@@ -228,3 +228,70 @@ func TestOperationalInvalidBootstrapCanStageAValidRestartRepair(t *testing.T) {
 		t.Fatal("pending restart repair hidden or invented effective values")
 	}
 }
+
+func TestOperationalInvalidSearchRetainsKnownActualFingerprintThroughRepair(t *testing.T) {
+	p := operationalProjection()
+	group := operationalpolicy.GroupSearch
+	values, _ := operationalpolicy.Defaults(group)
+	observed := operationalObservation(group, values)
+	observed.Effective = nil
+	observed.Error = OperationalErrorInvalidPolicy
+	observations := operationalObservations()
+	observations[group] = observed
+	response, err := encodeOperationalSettings(p, observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := response.Groups[6]
+	if state.Effective != nil || state.Desired != nil || state.EffectiveCompatibilityFingerprint != observed.EffectiveCompatibilityFingerprint || state.AppliedGeneration != 0 || state.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR {
+		t.Fatal("known engine metadata was hidden or treated as a typed installation")
+	}
+	p.Preparations = []security.OperationalPolicyPreparation{operationalPreparation(p, group)}
+	desiredFingerprint := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if err := p.Policies.Set(group, &operationalpolicy.Policy{Version: 1, Generation: 1, Values: values, CompatibilityFingerprint: desiredFingerprint}); err != nil {
+		t.Fatal(err)
+	}
+	observed.Pending = true
+	observed.RestartRequired = true
+	observations[group] = observed
+	response, err = encodeOperationalSettings(p, observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = response.Groups[6]
+	if state.Effective != nil || state.Desired == nil || state.Desired.CompatibilityFingerprint != desiredFingerprint || state.EffectiveCompatibilityFingerprint == desiredFingerprint || !state.RestartRequired || state.AppliedGeneration != 0 || state.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR {
+		t.Fatal("pending repair lost actual or desired fingerprint, or invented application")
+	}
+}
+func TestOperationalUnknownEffectiveFingerprintStaysSearchOnlyAndCanonical(t *testing.T) {
+	p := operationalProjection()
+	values, _ := operationalpolicy.Defaults(operationalpolicy.GroupSearch)
+	search := operationalObservation(operationalpolicy.GroupSearch, values)
+	search.Effective = nil
+	search.Error = OperationalErrorInvalidPolicy
+	observations := operationalObservations()
+	for _, invalid := range []string{"abc", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"} {
+		search.EffectiveCompatibilityFingerprint = invalid
+		observations[operationalpolicy.GroupSearch] = search
+		if _, err := encodeOperationalSettings(p, observations); err == nil {
+			t.Fatal("malformed actual Search fingerprint accepted", invalid)
+		}
+	}
+	observations = operationalObservations()
+	unsupported := observations[operationalpolicy.GroupSearch]
+	unsupported.EffectiveCompatibilityFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	observations[operationalpolicy.GroupSearch] = unsupported
+	if _, err := encodeOperationalSettings(p, observations); err == nil {
+		t.Fatal("unsupported owner invented an actual fingerprint")
+	}
+	observations = operationalObservations()
+	rateValues, _ := operationalpolicy.Defaults(operationalpolicy.GroupRate)
+	rate := operationalObservation(operationalpolicy.GroupRate, rateValues)
+	rate.Effective = nil
+	rate.Error = OperationalErrorInvalidPolicy
+	rate.EffectiveCompatibilityFingerprint = unsupported.EffectiveCompatibilityFingerprint
+	observations[operationalpolicy.GroupRate] = rate
+	if _, err := encodeOperationalSettings(p, observations); err == nil {
+		t.Fatal("non-Search fingerprint accepted with unknown values")
+	}
+}

@@ -316,3 +316,74 @@ test("managed Search capability fields cannot wrap uint32 at the public boundary
     expect(() => validateOperationalChange(candidate)).toThrow();
   }
 });
+
+test("invalid Search keeps known actual engine fingerprint before and during restart repair", () => {
+  const r = settings(),
+    search = r.groups[6]!;
+  search.changeMode = OperationalSettingsChangeMode.COORDINATED_RESTART;
+  search.application = OperationalSettingsApplicationState.ERROR;
+  search.error = OperationalSettingsError.INVALID_POLICY;
+  search.effectiveCompatibilityFingerprint = "a".repeat(64);
+  search.provenance = Array.from({ length: 11 }, (_, i) => ({
+    $typeName: "graph.v1.OperationalSettingProvenance" as const,
+    setting: 28 + i,
+    source: OperationalSettingsSource.ENVIRONMENT,
+  }));
+  expect(() => validateOperationalSettings(r)).not.toThrow();
+  expect(search.effective).toBeUndefined();
+  expect(search.appliedGeneration).toBe(0n);
+  search.desired = {
+    $typeName: "graph.v1.ManagedOperationalPolicy",
+    version: 1,
+    generation: 1n,
+    compatibilityFingerprint: "b".repeat(64),
+    values: create(OperationalPolicyValuesSchema, {
+      group: {
+        case: "search",
+        value: {
+          defaultLimit: 100n,
+          maxLimit: 1000n,
+          defaultMode: 1,
+          defaultMinShould: 1n,
+          timeoutMs: 5000n,
+          maxQueryBytes: 1000n,
+          maxQueryTerms: 100n,
+          maxDictionaryVisits: 100n,
+          maxPostingVisits: 100n,
+          maxPositionVisits: 100n,
+          maxExpirationVisits: 100n,
+        },
+      },
+    }),
+  };
+  search.preparation = pending().groups[0]!.preparation;
+  search.adoption = LogPolicyAdoptionState.MANAGED;
+  search.restartRequired = true;
+  expect(() => validateOperationalSettings(r)).not.toThrow();
+  expect(search.effective).toBeUndefined();
+  expect(search.effectiveCompatibilityFingerprint).not.toBe(
+    search.desired.compatibilityFingerprint,
+  );
+  expect(search.appliedGeneration).toBe(0n);
+  for (const invalid of ["abc", "A".repeat(64), "g".repeat(64)]) {
+    search.effectiveCompatibilityFingerprint = invalid;
+    expect(() => validateOperationalSettings(r)).toThrow();
+  }
+});
+test("actual fingerprints with unknown values cannot cross groups or invent an unsupported owner", () => {
+  const r = settings(),
+    rate = r.groups[1]!;
+  rate.changeMode = OperationalSettingsChangeMode.HOT;
+  rate.application = OperationalSettingsApplicationState.ERROR;
+  rate.error = OperationalSettingsError.INVALID_POLICY;
+  rate.effectiveCompatibilityFingerprint = "a".repeat(64);
+  rate.provenance = [2, 3].map((setting) => ({
+    $typeName: "graph.v1.OperationalSettingProvenance",
+    setting,
+    source: OperationalSettingsSource.ENVIRONMENT,
+  }));
+  expect(() => validateOperationalSettings(r)).toThrow();
+  const unsupported = settings();
+  unsupported.groups[6]!.effectiveCompatibilityFingerprint = "a".repeat(64);
+  expect(() => validateOperationalSettings(unsupported)).toThrow();
+});

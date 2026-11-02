@@ -375,3 +375,10 @@ operational rows under the four-field security owner are refused without
 rewriting stored bytes; only the existing explicit legacy-log normalization is
 supported. A Search preview that observes a different complete security version
 retires the stale local version and requires a reload before a new review.
+
+An installed Search engine may have a known actual compatibility fingerprint even
+when legacy selected startup values cannot be represented by the managed schema.
+That canonical Search-only metadata remains visible beside an absent effective
+payload and explicit invalid-policy error, including a committed repair waiting
+for coordinated restart. It does not establish an applied managed generation or
+substitute effective values. An unsupported owner has no actual fingerprint.
