@@ -38,5 +38,11 @@ func (p *ShutdownPlan) Current() Snapshot {
 	if fixed := p.fixed.Load(); fixed != nil {
 		return *fixed
 	}
-	return p.source.LifecycleSnapshot()
+	snapshot := p.source.LifecycleSnapshot()
+	// Capture may finish while the source read is in progress. Prefer its
+	// immutable plan to a newer source generation observed after shutdown.
+	if fixed := p.fixed.Load(); fixed != nil {
+		return *fixed
+	}
+	return snapshot
 }

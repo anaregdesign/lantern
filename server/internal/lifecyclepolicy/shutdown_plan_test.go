@@ -2,9 +2,54 @@ package lifecyclepolicy
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type blockedLifecycleSource struct {
+	owner            *Owner
+	first            atomic.Bool
+	entered, release chan struct{}
+}
+
+func (s *blockedLifecycleSource) LifecycleSnapshot() Snapshot {
+	if s.first.CompareAndSwap(false, true) {
+		close(s.entered)
+		<-s.release
+	}
+	return s.owner.LifecycleSnapshot()
+}
+
+func TestShutdownPlanCurrentRechecksConcurrentCapture(t *testing.T) {
+	initial := Snapshot{Generation: 1}
+	owner, err := NewOwner(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &blockedLifecycleSource{owner: owner, entered: make(chan struct{}), release: make(chan struct{})}
+	plan, err := NewShutdownPlan(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := make(chan Snapshot, 1)
+	go func() { current <- plan.Current() }()
+	select {
+	case <-source.entered:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	if plan.Capture() != initial {
+		t.Fatal("concurrent capture did not freeze initial generation")
+	}
+	if err := owner.Apply(Snapshot{Generation: 2}); err != nil {
+		t.Fatal(err)
+	}
+	close(source.release)
+	if got := <-current; got != initial {
+		t.Fatalf("Current reported post-capture source generation: %+v", got)
+	}
+}
 
 func TestShutdownPlanCapturesAtFirstActionAndKeepsGeneration(t *testing.T) {
 	if _, err := NewShutdownPlan(nil); err == nil {
