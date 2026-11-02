@@ -12,6 +12,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 )
 
@@ -56,7 +57,14 @@ func NewRateLimitInterceptorProvider(
 func (v *ValidationInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			if err := v.validate(req.Any()); err != nil {
+			ctx = dataruntime.CaptureRequestPolicy(ctx, v.policies)
+			// Copy only the validator's value fields. The Executor and its
+			// synchronization state remain owned by the shared runtime.
+			validator := *v
+			if snapshot, ok := dataruntime.RequestPolicyFromContext(ctx); ok {
+				validator.limits = ValidationLimits(snapshot.Policy.Validation)
+			}
+			if err := validator.validate(req.Any()); err != nil {
 				return nil, err
 			}
 			return next(ctx, req)

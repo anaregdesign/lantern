@@ -235,6 +235,7 @@ func (s *Executor) mapDataResponse(response proto.Message, binding []byte) (prot
 }
 
 func invokePublic[Req, Resp any](ctx context.Context, req *Req, svc *Executor, fn func(context.Context, *Req) (*Resp, error)) (*Resp, error) {
+	ctx = svc.captureRequestPolicy(ctx)
 	admission, err := svc.authorizeData(ctx, any(req).(proto.Message))
 	if err != nil {
 		return nil, err

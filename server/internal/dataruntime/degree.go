@@ -39,6 +39,8 @@ import (
 // Direct GraphCache writes still bypass that check: prefer a narrow prefix
 // and treat IN/BOTH totals on a large, actively-written graph as advisory.
 func (s *Executor) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesByDegreeRequest) (*pb.TopVerticesByDegreeResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
+	scan := s.requestPolicy(ctx).Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -49,7 +51,7 @@ func (s *Executor) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesBy
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("prefix is required"))
 	}
 	start := time.Now()
-	k := clampLimit(in.GetK(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
+	k := clampLimit(in.GetK(), scan.ScanDefaultLimit, scan.ScanMaxLimit)
 
 	dir := degreeDirection(in.GetDirection())
 	var ranked []graphcache.DegreeEntry[string]

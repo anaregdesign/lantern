@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 )
 
@@ -48,6 +49,57 @@ func TestRateLimitInterceptor_ProviderRetainsDisabledMetricsHook(t *testing.T) {
 		}
 	}
 	t.Fatal("rate-limit rejection metric is absent")
+}
+
+type validationPolicySequence struct {
+	current dataruntime.RequestPolicySnapshot
+	reads   int
+}
+
+func (s *validationPolicySequence) RequestPolicySnapshot() dataruntime.RequestPolicySnapshot {
+	s.reads++
+	return s.current
+}
+
+func TestValidationInterceptorCapturesAllManagedDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  connect.AnyRequest
+	}{
+		{"key", connect.NewRequest(&pb.GetVertexRequest{Key: "long"})},
+		{"batch", connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"a", "b"}})},
+		{"step", connect.NewRequest(&pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 2}}})},
+		{"k", connect.NewRequest(&pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 2}}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := &validationPolicySequence{current: dataruntime.RequestPolicySnapshot{Generation: 9, Policy: dataruntime.RequestPolicy{Validation: dataruntime.RequestValidationLimits{MaxKeyLen: 1, MaxBatchSize: 1, IlluminateMaxStep: 1, IlluminateMaxK: 1}}}}
+			validator := NewValidationInterceptor(ValidationLimits{}).WithRequestPolicySource(source)
+			called := false
+			wrapped := validator.ConnectInterceptor()(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+				called = true
+				if snapshot, ok := dataruntime.RequestPolicyFromContext(ctx); !ok || snapshot != source.current {
+					t.Errorf("captured generation = %+v/%v", snapshot, ok)
+				}
+				return connect.NewResponse(&pb.GetVertexResponse{}), nil
+			})
+			if _, err := wrapped(context.Background(), tc.req); connect.CodeOf(err) != connect.CodeInvalidArgument || called {
+				t.Fatalf("managed validation = %v, called=%v", err, called)
+			}
+			if source.reads != 1 {
+				t.Fatalf("source read %d times", source.reads)
+			}
+			// An explicit zero group disables all four bounds, while mandatory
+			// structural checks (such as an empty key) remain independent.
+			source.current.Generation++
+			source.current.Policy.Validation = dataruntime.RequestValidationLimits{}
+			if _, err := wrapped(context.Background(), tc.req); err != nil || !called {
+				t.Fatalf("disabled bounds = %v, called=%v", err, called)
+			}
+			if source.reads != 2 {
+				t.Fatalf("source read %d times", source.reads)
+			}
+		})
+	}
 }
 
 // TestValidationInterceptor_ConnectInterceptor_RejectsAndFiresHook

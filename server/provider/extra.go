@@ -40,12 +40,20 @@ type ValidationLimits = config.ValidationLimits
 
 type ValidationInterceptor struct {
 	limits     ValidationLimits
+	policies   dataruntime.RequestPolicySource
 	rejectHook func(reason string)
 	logger     *slog.Logger
 }
 
 func NewValidationInterceptor(l ValidationLimits) *ValidationInterceptor {
 	return &ValidationInterceptor{limits: l}
+}
+
+// WithRequestPolicySource binds the effective owner shared with data execution.
+// It must be called during composition, before any requests are accepted.
+func (v *ValidationInterceptor) WithRequestPolicySource(source dataruntime.RequestPolicySource) *ValidationInterceptor {
+	v.policies = source
+	return v
 }
 
 // WithRejectHook registers a callback invoked once per rejected request

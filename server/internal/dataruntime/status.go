@@ -13,8 +13,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// StatusInfo is the static slice of GetServerStatus that the wire layer
-// can fully populate at boot from the various Config sub-structs. The
+// StatusInfo is the startup fallback for GetServerStatus that the wire layer
+// can populate at boot from the various Config sub-structs. A captured request
+// policy overrides its request and scan ceilings with locally effective values. The
 // dynamic pieces — startedAt, uptime, vertex/edge counts — are filled in
 // at request time by GetServerStatus itself.
 //
@@ -71,6 +72,7 @@ func (s *Executor) Uptime() time.Duration {
 // test path) every static field defaults to its zero value; the response
 // is still well-formed.
 func (s *Executor) GetServerStatus(ctx context.Context, _ *pb.GetServerStatusRequest) (*pb.GetServerStatusResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -78,7 +80,7 @@ func (s *Executor) GetServerStatus(ctx context.Context, _ *pb.GetServerStatusReq
 	defer s.snapshotReadCutMu.RUnlock()
 	var resp *pb.GetServerStatusResponse
 	err := s.withCommittedView(func() error {
-		resp = s.serverStatusSnapshot()
+		resp = s.serverStatusSnapshot(ctx)
 		return nil
 	})
 	return resp, err
@@ -87,18 +89,25 @@ func (s *Executor) GetServerStatus(ctx context.Context, _ *pb.GetServerStatusReq
 // serverStatusSnapshot reads the graph, index, and causal counters under the
 // caller's committed view. Keeping the copy together prevents a direct
 // GetServerStatus caller from observing a receipt publication midpoint.
-func (s *Executor) serverStatusSnapshot() *pb.GetServerStatusResponse {
+func (s *Executor) serverStatusSnapshot(ctx context.Context) *pb.GetServerStatusResponse {
+	info := s.statusInfo
+	if snapshot, ok := RequestPolicyFromContext(ctx); ok {
+		info.MaxBatchSize = nonnegativeRequestLimit(snapshot.Policy.Validation.MaxBatchSize)
+		info.MaxKeyBytes = nonnegativeRequestLimit(snapshot.Policy.Validation.MaxKeyLen)
+		info.ScanDefaultLimit = snapshot.Policy.Scan.ScanDefaultLimit
+		info.ScanMaxLimit = snapshot.Policy.Scan.ScanMaxLimit
+	}
 	now := time.Now()
 	resp := &pb.GetServerStatusResponse{
-		Version:            statusVersion(s.statusInfo.Version),
+		Version:            statusVersion(info.Version),
 		GoVersion:          runtime.Version(),
-		DefaultTtl:         durationpb.New(s.statusInfo.DefaultTTL),
-		MaxBatchSize:       s.statusInfo.MaxBatchSize,
-		MaxKeyBytes:        s.statusInfo.MaxKeyBytes,
-		ScanDefaultLimit:   s.statusInfo.ScanDefaultLimit,
-		ScanMaxLimit:       s.statusInfo.ScanMaxLimit,
-		TlsEnabled:         s.statusInfo.TLSEnabled,
-		ReplicationEnabled: s.statusInfo.ReplicationEnabled,
+		DefaultTtl:         durationpb.New(info.DefaultTTL),
+		MaxBatchSize:       info.MaxBatchSize,
+		MaxKeyBytes:        info.MaxKeyBytes,
+		ScanDefaultLimit:   info.ScanDefaultLimit,
+		ScanMaxLimit:       info.ScanMaxLimit,
+		TlsEnabled:         info.TLSEnabled,
+		ReplicationEnabled: info.ReplicationEnabled,
 		VertexCount:        uint64(s.cache.VertexCount()),
 		EdgeCount:          uint64(s.cache.EdgeCount()),
 		Search:             s.searchCapabilities(),
@@ -202,4 +211,15 @@ func statusVersion(configured string) string {
 		}
 	}
 	return "dev"
+}
+
+// Status uses zero for an unlimited validation dimension.
+func nonnegativeRequestLimit(limit int) uint32 {
+	if limit <= 0 {
+		return 0
+	}
+	if uint64(limit) > uint64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(limit)
 }
