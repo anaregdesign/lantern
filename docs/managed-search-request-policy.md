@@ -24,8 +24,11 @@ fingerprint. It never reads environment input, clamps managed values or changes
 the core index. Default and maximum limits are positive with default at most
 maximum. Modes form a closed enum. Min-should, whole-millisecond timeout,
 query bytes and all five work budgets are positive; query terms cannot exceed
-query bytes. The local excluded session hit cap must exceed the selected
-maximum. Local admission/session resources must already be positive. The
+query bytes. Managed timeout milliseconds, query bytes and query terms are at
+most `4294967295`, preserving their exact existing `uint32` capability fields.
+Values outside that range are rejected before activation; legacy environment
+normalization is unchanged. The local excluded session hit cap must exceed the
+selected maximum. Local admission/session resources must already be positive. The
 ordinary startup validation remains responsible for the excluded index inputs;
 their exact values also participate in the full fingerprint.
 

@@ -84,3 +84,34 @@ func TestRequestPolicyResolveKeepsActualExcludedBaseline(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestPolicyResolveCapabilityBoundaries(t *testing.T) {
+	const maxCapability = int64(1<<32 - 1)
+	baseline := policyTestLimits()
+	for _, field := range []struct {
+		name string
+		set  func(*RequestPolicy, int64)
+	}{
+		{"timeout milliseconds", func(p *RequestPolicy, value int64) { p.Timeout = time.Duration(value) * time.Millisecond }},
+		{"query bytes", func(p *RequestPolicy, value int64) { p.MaxQueryBytes = int(value) }},
+		{"query terms", func(p *RequestPolicy, value int64) {
+			p.MaxQueryBytes = int(maxCapability)
+			p.WorkBudget.MaxQueryTerms = value
+		}},
+	} {
+		t.Run(field.name, func(t *testing.T) {
+			for _, value := range []int64{0, maxCapability, maxCapability + 1} {
+				policy := RequestPolicyFromLimits(baseline)
+				field.set(&policy, value)
+				resolved, _, err := policy.Resolve(baseline)
+				if value == maxCapability {
+					if err != nil || RequestPolicyFromLimits(resolved) != policy {
+						t.Fatalf("maximum did not remain exact: %+v/%v", resolved, err)
+					}
+				} else if err == nil {
+					t.Fatalf("out-of-range value %d accepted", value)
+				}
+			}
+		})
+	}
+}

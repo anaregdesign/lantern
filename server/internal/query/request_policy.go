@@ -36,6 +36,12 @@ func (p RequestPolicy) Resolve(baseline Limits) (Limits, string, error) {
 	if p.DefaultMinShould == 0 || p.Timeout <= 0 || p.Timeout%time.Millisecond != 0 || p.MaxQueryBytes <= 0 {
 		return Limits{}, "", errors.New("search min-should, whole-millisecond timeout and query bytes must be positive")
 	}
+	// These existing public capabilities are uint32. Managed policy must
+	// preserve their exact representation rather than wrapping the status.
+	const maxCapability = int64(1<<32 - 1)
+	if p.Timeout.Milliseconds() > maxCapability || int64(p.MaxQueryBytes) > maxCapability || p.WorkBudget.MaxQueryTerms > maxCapability {
+		return Limits{}, "", errors.New("managed search timeout, query bytes and query terms must fit uint32 capabilities")
+	}
 	b := p.WorkBudget
 	if b.MaxQueryTerms <= 0 || b.MaxQueryTerms > int64(p.MaxQueryBytes) || b.MaxDictionaryVisits <= 0 || b.MaxPostingVisits <= 0 || b.MaxPositionVisits <= 0 || b.MaxExpirationVisits <= 0 {
 		return Limits{}, "", errors.New("search work budgets must be positive and query terms must not exceed query bytes")

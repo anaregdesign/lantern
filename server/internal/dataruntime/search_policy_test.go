@@ -3,6 +3,7 @@ package dataruntime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -218,5 +219,53 @@ func TestSearchPolicyInFlightPinsEngineAndRefusesTransitionOutput(t *testing.T) 
 	}
 	if _, err := svc.GetServerStatus(ctx, &pb.GetServerStatusRequest{}); err != nil {
 		t.Fatalf("status unavailable during transition: %v", err)
+	}
+}
+
+func TestSearchPolicyOwnerRejectsCapabilityOverflowAndReportsExactMaximum(t *testing.T) {
+	const maxCapability = int64(1<<32 - 1)
+	owner, initial := newSearchPolicyFixture(t, nil)
+	for _, change := range []func(*SearchRequestPolicy){
+		func(p *SearchRequestPolicy) { p.Timeout = time.Duration(maxCapability+1) * time.Millisecond },
+		func(p *SearchRequestPolicy) { p.MaxQueryBytes = int(maxCapability + 1) },
+		func(p *SearchRequestPolicy) {
+			p.MaxQueryBytes = int(maxCapability)
+			p.WorkBudget.MaxQueryTerms = maxCapability + 1
+		},
+	} {
+		invalid := initial
+		invalid.Version.Generation++
+		change(&invalid.Policy)
+		if err := owner.StageDesired(invalid); err == nil || !strings.Contains(err.Error(), "uint32") {
+			t.Fatalf("invalid candidate not rejected by capability validation: %v", err)
+		}
+		if _, err := NewSearchPolicyOwner(owner.baseline, invalid, nil); err == nil || !strings.Contains(err.Error(), "uint32") {
+			t.Fatalf("invalid restore not rejected by capability validation: %v", err)
+		}
+		if owner.Status().Desired != initial || owner.Status().Effective != initial || owner.Status().PendingRestart {
+			t.Fatal("invalid candidate changed owner state")
+		}
+	}
+	maximum := initial.Policy
+	maximum.Timeout = time.Duration(maxCapability) * time.Millisecond
+	maximum.MaxQueryBytes = int(maxCapability)
+	maximum.WorkBudget.MaxQueryTerms = maxCapability
+	next, err := ResolveSearchPolicy(owner.baseline, initial.Version.Generation+1, maximum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.StageDesired(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Restart(next); err != nil {
+		t.Fatal(err)
+	}
+	status, err := NewExecutor(newFakeBackend()).WithSearchPolicyOwner(owner).GetServerStatus(t.Context(), &pb.GetServerStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := status.GetSearch()
+	if capabilities.GetTimeoutMs() != uint32(maxCapability) || capabilities.GetMaxQueryBytes() != uint32(maxCapability) || capabilities.GetMaxQueryTerms() != uint32(maxCapability) {
+		t.Fatalf("maximum capability wrapped: %+v", capabilities)
 	}
 }
