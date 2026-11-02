@@ -51,31 +51,32 @@ type TLSConfig struct {
 // it (SRP). main / App may keep *Config because they observe several aspects
 // for startup logging.
 type Config struct {
-	Net                NetConfig
-	TLS                TLSConfig
-	RateLimit          RateLimitConfig
-	Observability      ObservabilityConfig
-	Tracing            TracingConfig
-	Cache              CacheConfig
-	Shutdown           ShutdownConfig
-	Validation         ValidationLimits
-	Traversal          TraversalConfig
-	Auth               AuthConfig
-	Security           SecurityConfig
-	Changes            ChangeConfig
-	LLM                LLMConfig
-	Scan               ScanConfig
-	Search             SearchConfig
-	MutationLog        MutationLogConfig
-	ReceiptWAL         ReceiptWALConfig
-	GraphSnapshotSpool GraphSnapshotSpoolConfig
-	Replication        ReplicationConfig
-	Peer               PeerConfig
-	PeerPlane          PeerPlaneConfig
-	AntiEntropy        AntiEntropyConfig
-	Readiness          ReadinessConfig
-	CORS               CORSConfig
-	Backup             backup.Config
+	Net                  NetConfig
+	TLS                  TLSConfig
+	RateLimit            RateLimitConfig
+	Observability        ObservabilityConfig
+	Tracing              TracingConfig
+	Cache                CacheConfig
+	Shutdown             ShutdownConfig
+	Validation           ValidationLimits
+	Traversal            TraversalConfig
+	Auth                 AuthConfig
+	Security             SecurityConfig
+	Changes              ChangeConfig
+	LLM                  LLMConfig
+	Scan                 ScanConfig
+	Search               SearchConfig
+	MutationLog          MutationLogConfig
+	ReceiptWAL           ReceiptWALConfig
+	GraphSnapshotSpool   GraphSnapshotSpoolConfig
+	Replication          ReplicationConfig
+	Peer                 PeerConfig
+	PeerPlane            PeerPlaneConfig
+	AntiEntropy          AntiEntropyConfig
+	Readiness            ReadinessConfig
+	CORS                 CORSConfig
+	Backup               backup.Config
+	operationalBootstrap OperationalBootstrapConfig
 }
 
 // NewConfig loads every sub-config from the environment, then validates the
@@ -174,6 +175,7 @@ func LoadConfig(reader *envconfig.Reader) (*Config, error) {
 	if err := validateGraphSnapshotSpoolConfig(cfg.GraphSnapshotSpool, cfg.ReceiptWAL.Mode, cfg.PeerPlane); err != nil {
 		return nil, err
 	}
+	cfg.operationalBootstrap = captureOperationalBootstrap(reader, cfg.RateLimit, cfg.Backup)
 	return cfg, nil
 }
 

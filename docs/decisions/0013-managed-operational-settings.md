@@ -262,6 +262,17 @@ certification. This extension does not reorder authority opening or data restore
 add a store, change bootstrap ownership, enable every runtime group, or complete
 the API/Admin/runtime delivery exits by itself.
 
+The initial load also captures immutable provenance for these exact 43 inputs
+from its existing Reader snapshot and completed parser diagnostics. It retains
+only default/environment/derived metadata, never raw values, findings or secret
+inputs. Empty or malformed primitive fallbacks report default; valid explicit
+zero/false report environment. Loader-derived Burst and path-disabled backup
+production report derived. An invalid parsed NaN RPS remains an environment input
+and an invalid runtime observation, never a fabricated default. Runtime owners
+can additionally mark their actual constructor normalization derived. Hand-built
+Configs without captured provenance report unknown. Settings observations never
+reread the process environment.
+
 ### Pilot delivery history
 
 | Order | Issue | Cohesive outcome |
