@@ -3893,11 +3893,68 @@ pub struct GetRegistrationPolicyResponse {
     #[prost(message, optional, tag = "2")]
     pub version: ::core::option::Option<SecurityVersion>,
 }
+/// Typed business intent only. The committed owner allocates the generation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ManagedLogPolicy {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(enumeration = "ManagedLogLevel", tag = "2")]
+    pub level: i32,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetLogSettingsRequest {}
+/// Correlation with the exact retained signed adoption intent. This is not the
+/// signed proof, an authorization credential or an internal journal position.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LogPolicyPreparationReference {
+    #[prost(message, optional, tag = "1")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub actor_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetLogSettingsResponse {
+    #[prost(uint32, tag = "1")]
+    pub schema_version: u32,
+    /// Fixed configured member identity, never a private endpoint or listener.
+    #[prost(uint32, tag = "2")]
+    pub member: u32,
+    #[prost(enumeration = "ManagedLogLevel", tag = "3")]
+    pub effective_level: i32,
+    #[prost(enumeration = "LogSettingsSource", tag = "4")]
+    pub source: i32,
+    /// Absent only in verified unadopted state; never an unavailable-state fallback.
+    #[prost(message, optional, tag = "5")]
+    pub desired: ::core::option::Option<ManagedLogPolicy>,
+    #[prost(uint64, tag = "6")]
+    pub desired_generation: u64,
+    #[prost(uint64, tag = "7")]
+    pub applied_generation: u64,
+    #[prost(enumeration = "LogPolicyAdoptionState", tag = "8")]
+    pub adoption: i32,
+    #[prost(enumeration = "LogSettingsApplicationState", tag = "9")]
+    pub application: i32,
+    /// Closed content-free diagnostics; raw provider errors and paths are private.
+    #[prost(enumeration = "LogSettingsError", tag = "10")]
+    pub error: i32,
+    #[prost(bool, tag = "11")]
+    pub restart_required: bool,
+    #[prost(message, optional, tag = "12")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    /// The exact cut successfully installed by this node, not a peer acknowledgement.
+    #[prost(message, optional, tag = "13")]
+    pub applied_cut: ::core::option::Option<CurrentSemanticCut>,
+    /// Required for fenced-but-unadopted state; may remain after adoption.
+    #[prost(message, optional, tag = "14")]
+    pub preparation: ::core::option::Option<LogPolicyPreparationReference>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityChange {
     #[prost(
         oneof = "security_change::Operation",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
     )]
     pub operation: ::core::option::Option<security_change::Operation>,
 }
@@ -3927,6 +3984,8 @@ pub mod security_change {
         RevokeUserSessions(super::SecurityIdentity),
         #[prost(message, tag = "11")]
         PutRegistrationPolicy(super::SecurityRegistrationPolicy),
+        #[prost(message, tag = "12")]
+        PutLogPolicy(super::ManagedLogPolicy),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -4482,6 +4541,173 @@ impl NativeClientKind {
             "NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN" => Some(Self::GoogleIdToken),
             "NATIVE_CLIENT_KIND_APPLE_NATIVE" => Some(Self::AppleNative),
             "NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB" => Some(Self::AppleAndroidWeb),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ManagedLogLevel {
+    Unspecified = 0,
+    Debug = 1,
+    Info = 2,
+    Warn = 3,
+    Error = 4,
+}
+impl ManagedLogLevel {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MANAGED_LOG_LEVEL_UNSPECIFIED",
+            Self::Debug => "MANAGED_LOG_LEVEL_DEBUG",
+            Self::Info => "MANAGED_LOG_LEVEL_INFO",
+            Self::Warn => "MANAGED_LOG_LEVEL_WARN",
+            Self::Error => "MANAGED_LOG_LEVEL_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MANAGED_LOG_LEVEL_UNSPECIFIED" => Some(Self::Unspecified),
+            "MANAGED_LOG_LEVEL_DEBUG" => Some(Self::Debug),
+            "MANAGED_LOG_LEVEL_INFO" => Some(Self::Info),
+            "MANAGED_LOG_LEVEL_WARN" => Some(Self::Warn),
+            "MANAGED_LOG_LEVEL_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LogSettingsSource {
+    Unspecified = 0,
+    Default = 1,
+    Environment = 2,
+    Managed = 3,
+}
+impl LogSettingsSource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LOG_SETTINGS_SOURCE_UNSPECIFIED",
+            Self::Default => "LOG_SETTINGS_SOURCE_DEFAULT",
+            Self::Environment => "LOG_SETTINGS_SOURCE_ENVIRONMENT",
+            Self::Managed => "LOG_SETTINGS_SOURCE_MANAGED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LOG_SETTINGS_SOURCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "LOG_SETTINGS_SOURCE_DEFAULT" => Some(Self::Default),
+            "LOG_SETTINGS_SOURCE_ENVIRONMENT" => Some(Self::Environment),
+            "LOG_SETTINGS_SOURCE_MANAGED" => Some(Self::Managed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LogPolicyAdoptionState {
+    Unspecified = 0,
+    Unadopted = 1,
+    /// No policy has committed, but this node has a durable format floor.
+    FencedUnadopted = 2,
+    Managed = 3,
+}
+impl LogPolicyAdoptionState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LOG_POLICY_ADOPTION_STATE_UNSPECIFIED",
+            Self::Unadopted => "LOG_POLICY_ADOPTION_STATE_UNADOPTED",
+            Self::FencedUnadopted => "LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED",
+            Self::Managed => "LOG_POLICY_ADOPTION_STATE_MANAGED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LOG_POLICY_ADOPTION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "LOG_POLICY_ADOPTION_STATE_UNADOPTED" => Some(Self::Unadopted),
+            "LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED" => Some(Self::FencedUnadopted),
+            "LOG_POLICY_ADOPTION_STATE_MANAGED" => Some(Self::Managed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LogSettingsApplicationState {
+    Unspecified = 0,
+    Applied = 1,
+    Pending = 2,
+    Error = 3,
+}
+impl LogSettingsApplicationState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED",
+            Self::Applied => "LOG_SETTINGS_APPLICATION_STATE_APPLIED",
+            Self::Pending => "LOG_SETTINGS_APPLICATION_STATE_PENDING",
+            Self::Error => "LOG_SETTINGS_APPLICATION_STATE_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "LOG_SETTINGS_APPLICATION_STATE_APPLIED" => Some(Self::Applied),
+            "LOG_SETTINGS_APPLICATION_STATE_PENDING" => Some(Self::Pending),
+            "LOG_SETTINGS_APPLICATION_STATE_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LogSettingsError {
+    Unspecified = 0,
+    None = 1,
+    InvalidPolicy = 2,
+    OwnerUnavailable = 3,
+    ApplyFailed = 4,
+}
+impl LogSettingsError {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LOG_SETTINGS_ERROR_UNSPECIFIED",
+            Self::None => "LOG_SETTINGS_ERROR_NONE",
+            Self::InvalidPolicy => "LOG_SETTINGS_ERROR_INVALID_POLICY",
+            Self::OwnerUnavailable => "LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE",
+            Self::ApplyFailed => "LOG_SETTINGS_ERROR_APPLY_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LOG_SETTINGS_ERROR_UNSPECIFIED" => Some(Self::Unspecified),
+            "LOG_SETTINGS_ERROR_NONE" => Some(Self::None),
+            "LOG_SETTINGS_ERROR_INVALID_POLICY" => Some(Self::InvalidPolicy),
+            "LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE" => Some(Self::OwnerUnavailable),
+            "LOG_SETTINGS_ERROR_APPLY_FAILED" => Some(Self::ApplyFailed),
             _ => None,
         }
     }
@@ -5096,6 +5322,33 @@ pub mod lantern_security_service_client {
                         "graph.v1.LanternSecurityService",
                         "GetRegistrationPolicy",
                     ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Contacted-node application state; a committed policy is not all-node application.
+        pub async fn get_log_settings(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetLogSettingsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetLogSettingsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetLogSettings",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternSecurityService", "GetLogSettings"),
                 );
             self.inner.unary(req, path, codec).await
         }

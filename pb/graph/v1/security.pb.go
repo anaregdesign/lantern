@@ -364,6 +364,273 @@ func (NativeClientKind) EnumDescriptor() ([]byte, []int) {
 	return file_graph_v1_security_proto_rawDescGZIP(), []int{5}
 }
 
+type ManagedLogLevel int32
+
+const (
+	ManagedLogLevel_MANAGED_LOG_LEVEL_UNSPECIFIED ManagedLogLevel = 0
+	ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG       ManagedLogLevel = 1
+	ManagedLogLevel_MANAGED_LOG_LEVEL_INFO        ManagedLogLevel = 2
+	ManagedLogLevel_MANAGED_LOG_LEVEL_WARN        ManagedLogLevel = 3
+	ManagedLogLevel_MANAGED_LOG_LEVEL_ERROR       ManagedLogLevel = 4
+)
+
+// Enum value maps for ManagedLogLevel.
+var (
+	ManagedLogLevel_name = map[int32]string{
+		0: "MANAGED_LOG_LEVEL_UNSPECIFIED",
+		1: "MANAGED_LOG_LEVEL_DEBUG",
+		2: "MANAGED_LOG_LEVEL_INFO",
+		3: "MANAGED_LOG_LEVEL_WARN",
+		4: "MANAGED_LOG_LEVEL_ERROR",
+	}
+	ManagedLogLevel_value = map[string]int32{
+		"MANAGED_LOG_LEVEL_UNSPECIFIED": 0,
+		"MANAGED_LOG_LEVEL_DEBUG":       1,
+		"MANAGED_LOG_LEVEL_INFO":        2,
+		"MANAGED_LOG_LEVEL_WARN":        3,
+		"MANAGED_LOG_LEVEL_ERROR":       4,
+	}
+)
+
+func (x ManagedLogLevel) Enum() *ManagedLogLevel {
+	p := new(ManagedLogLevel)
+	*p = x
+	return p
+}
+
+func (x ManagedLogLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ManagedLogLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_security_proto_enumTypes[6].Descriptor()
+}
+
+func (ManagedLogLevel) Type() protoreflect.EnumType {
+	return &file_graph_v1_security_proto_enumTypes[6]
+}
+
+func (x ManagedLogLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ManagedLogLevel.Descriptor instead.
+func (ManagedLogLevel) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{6}
+}
+
+type LogSettingsSource int32
+
+const (
+	LogSettingsSource_LOG_SETTINGS_SOURCE_UNSPECIFIED LogSettingsSource = 0
+	LogSettingsSource_LOG_SETTINGS_SOURCE_DEFAULT     LogSettingsSource = 1
+	LogSettingsSource_LOG_SETTINGS_SOURCE_ENVIRONMENT LogSettingsSource = 2
+	LogSettingsSource_LOG_SETTINGS_SOURCE_MANAGED     LogSettingsSource = 3
+)
+
+// Enum value maps for LogSettingsSource.
+var (
+	LogSettingsSource_name = map[int32]string{
+		0: "LOG_SETTINGS_SOURCE_UNSPECIFIED",
+		1: "LOG_SETTINGS_SOURCE_DEFAULT",
+		2: "LOG_SETTINGS_SOURCE_ENVIRONMENT",
+		3: "LOG_SETTINGS_SOURCE_MANAGED",
+	}
+	LogSettingsSource_value = map[string]int32{
+		"LOG_SETTINGS_SOURCE_UNSPECIFIED": 0,
+		"LOG_SETTINGS_SOURCE_DEFAULT":     1,
+		"LOG_SETTINGS_SOURCE_ENVIRONMENT": 2,
+		"LOG_SETTINGS_SOURCE_MANAGED":     3,
+	}
+)
+
+func (x LogSettingsSource) Enum() *LogSettingsSource {
+	p := new(LogSettingsSource)
+	*p = x
+	return p
+}
+
+func (x LogSettingsSource) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LogSettingsSource) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_security_proto_enumTypes[7].Descriptor()
+}
+
+func (LogSettingsSource) Type() protoreflect.EnumType {
+	return &file_graph_v1_security_proto_enumTypes[7]
+}
+
+func (x LogSettingsSource) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LogSettingsSource.Descriptor instead.
+func (LogSettingsSource) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{7}
+}
+
+type LogPolicyAdoptionState int32
+
+const (
+	LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_UNSPECIFIED LogPolicyAdoptionState = 0
+	LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_UNADOPTED   LogPolicyAdoptionState = 1
+	// No policy has committed, but this node has a durable format floor.
+	LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED LogPolicyAdoptionState = 2
+	LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_MANAGED          LogPolicyAdoptionState = 3
+)
+
+// Enum value maps for LogPolicyAdoptionState.
+var (
+	LogPolicyAdoptionState_name = map[int32]string{
+		0: "LOG_POLICY_ADOPTION_STATE_UNSPECIFIED",
+		1: "LOG_POLICY_ADOPTION_STATE_UNADOPTED",
+		2: "LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED",
+		3: "LOG_POLICY_ADOPTION_STATE_MANAGED",
+	}
+	LogPolicyAdoptionState_value = map[string]int32{
+		"LOG_POLICY_ADOPTION_STATE_UNSPECIFIED":      0,
+		"LOG_POLICY_ADOPTION_STATE_UNADOPTED":        1,
+		"LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED": 2,
+		"LOG_POLICY_ADOPTION_STATE_MANAGED":          3,
+	}
+)
+
+func (x LogPolicyAdoptionState) Enum() *LogPolicyAdoptionState {
+	p := new(LogPolicyAdoptionState)
+	*p = x
+	return p
+}
+
+func (x LogPolicyAdoptionState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LogPolicyAdoptionState) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_security_proto_enumTypes[8].Descriptor()
+}
+
+func (LogPolicyAdoptionState) Type() protoreflect.EnumType {
+	return &file_graph_v1_security_proto_enumTypes[8]
+}
+
+func (x LogPolicyAdoptionState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LogPolicyAdoptionState.Descriptor instead.
+func (LogPolicyAdoptionState) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{8}
+}
+
+type LogSettingsApplicationState int32
+
+const (
+	LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED LogSettingsApplicationState = 0
+	LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_APPLIED     LogSettingsApplicationState = 1
+	LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_PENDING     LogSettingsApplicationState = 2
+	LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_ERROR       LogSettingsApplicationState = 3
+)
+
+// Enum value maps for LogSettingsApplicationState.
+var (
+	LogSettingsApplicationState_name = map[int32]string{
+		0: "LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED",
+		1: "LOG_SETTINGS_APPLICATION_STATE_APPLIED",
+		2: "LOG_SETTINGS_APPLICATION_STATE_PENDING",
+		3: "LOG_SETTINGS_APPLICATION_STATE_ERROR",
+	}
+	LogSettingsApplicationState_value = map[string]int32{
+		"LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED": 0,
+		"LOG_SETTINGS_APPLICATION_STATE_APPLIED":     1,
+		"LOG_SETTINGS_APPLICATION_STATE_PENDING":     2,
+		"LOG_SETTINGS_APPLICATION_STATE_ERROR":       3,
+	}
+)
+
+func (x LogSettingsApplicationState) Enum() *LogSettingsApplicationState {
+	p := new(LogSettingsApplicationState)
+	*p = x
+	return p
+}
+
+func (x LogSettingsApplicationState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LogSettingsApplicationState) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_security_proto_enumTypes[9].Descriptor()
+}
+
+func (LogSettingsApplicationState) Type() protoreflect.EnumType {
+	return &file_graph_v1_security_proto_enumTypes[9]
+}
+
+func (x LogSettingsApplicationState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LogSettingsApplicationState.Descriptor instead.
+func (LogSettingsApplicationState) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{9}
+}
+
+type LogSettingsError int32
+
+const (
+	LogSettingsError_LOG_SETTINGS_ERROR_UNSPECIFIED       LogSettingsError = 0
+	LogSettingsError_LOG_SETTINGS_ERROR_NONE              LogSettingsError = 1
+	LogSettingsError_LOG_SETTINGS_ERROR_INVALID_POLICY    LogSettingsError = 2
+	LogSettingsError_LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE LogSettingsError = 3
+	LogSettingsError_LOG_SETTINGS_ERROR_APPLY_FAILED      LogSettingsError = 4
+)
+
+// Enum value maps for LogSettingsError.
+var (
+	LogSettingsError_name = map[int32]string{
+		0: "LOG_SETTINGS_ERROR_UNSPECIFIED",
+		1: "LOG_SETTINGS_ERROR_NONE",
+		2: "LOG_SETTINGS_ERROR_INVALID_POLICY",
+		3: "LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE",
+		4: "LOG_SETTINGS_ERROR_APPLY_FAILED",
+	}
+	LogSettingsError_value = map[string]int32{
+		"LOG_SETTINGS_ERROR_UNSPECIFIED":       0,
+		"LOG_SETTINGS_ERROR_NONE":              1,
+		"LOG_SETTINGS_ERROR_INVALID_POLICY":    2,
+		"LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE": 3,
+		"LOG_SETTINGS_ERROR_APPLY_FAILED":      4,
+	}
+)
+
+func (x LogSettingsError) Enum() *LogSettingsError {
+	p := new(LogSettingsError)
+	*p = x
+	return p
+}
+
+func (x LogSettingsError) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LogSettingsError) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_security_proto_enumTypes[10].Descriptor()
+}
+
+func (LogSettingsError) Type() protoreflect.EnumType {
+	return &file_graph_v1_security_proto_enumTypes[10]
+}
+
+func (x LogSettingsError) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LogSettingsError.Descriptor instead.
+func (LogSettingsError) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{10}
+}
+
 type SecurityEnforcementState int32
 
 const (
@@ -397,11 +664,11 @@ func (x SecurityEnforcementState) String() string {
 }
 
 func (SecurityEnforcementState) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[6].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[11].Descriptor()
 }
 
 func (SecurityEnforcementState) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[6]
+	return &file_graph_v1_security_proto_enumTypes[11]
 }
 
 func (x SecurityEnforcementState) Number() protoreflect.EnumNumber {
@@ -410,7 +677,7 @@ func (x SecurityEnforcementState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SecurityEnforcementState.Descriptor instead.
 func (SecurityEnforcementState) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{6}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{11}
 }
 
 type SecurityChangeRejectionReason int32
@@ -458,11 +725,11 @@ func (x SecurityChangeRejectionReason) String() string {
 }
 
 func (SecurityChangeRejectionReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[7].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[12].Descriptor()
 }
 
 func (SecurityChangeRejectionReason) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[7]
+	return &file_graph_v1_security_proto_enumTypes[12]
 }
 
 func (x SecurityChangeRejectionReason) Number() protoreflect.EnumNumber {
@@ -471,7 +738,7 @@ func (x SecurityChangeRejectionReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SecurityChangeRejectionReason.Descriptor instead.
 func (SecurityChangeRejectionReason) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{7}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{12}
 }
 
 type SecurityAuthorizationRequirement int32
@@ -507,11 +774,11 @@ func (x SecurityAuthorizationRequirement) String() string {
 }
 
 func (SecurityAuthorizationRequirement) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[8].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[13].Descriptor()
 }
 
 func (SecurityAuthorizationRequirement) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[8]
+	return &file_graph_v1_security_proto_enumTypes[13]
 }
 
 func (x SecurityAuthorizationRequirement) Number() protoreflect.EnumNumber {
@@ -520,7 +787,7 @@ func (x SecurityAuthorizationRequirement) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SecurityAuthorizationRequirement.Descriptor instead.
 func (SecurityAuthorizationRequirement) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{8}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{13}
 }
 
 type SecurityAuthorizationState int32
@@ -559,11 +826,11 @@ func (x SecurityAuthorizationState) String() string {
 }
 
 func (SecurityAuthorizationState) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[9].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[14].Descriptor()
 }
 
 func (SecurityAuthorizationState) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[9]
+	return &file_graph_v1_security_proto_enumTypes[14]
 }
 
 func (x SecurityAuthorizationState) Number() protoreflect.EnumNumber {
@@ -572,7 +839,7 @@ func (x SecurityAuthorizationState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SecurityAuthorizationState.Descriptor instead.
 func (SecurityAuthorizationState) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{9}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{14}
 }
 
 type CurrentSecurityDisposition int32
@@ -623,11 +890,11 @@ func (x CurrentSecurityDisposition) String() string {
 }
 
 func (CurrentSecurityDisposition) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[10].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[15].Descriptor()
 }
 
 func (CurrentSecurityDisposition) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[10]
+	return &file_graph_v1_security_proto_enumTypes[15]
 }
 
 func (x CurrentSecurityDisposition) Number() protoreflect.EnumNumber {
@@ -636,7 +903,7 @@ func (x CurrentSecurityDisposition) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CurrentSecurityDisposition.Descriptor instead.
 func (CurrentSecurityDisposition) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{10}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{15}
 }
 
 type CurrentSecurityProgress int32
@@ -679,11 +946,11 @@ func (x CurrentSecurityProgress) String() string {
 }
 
 func (CurrentSecurityProgress) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[11].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[16].Descriptor()
 }
 
 func (CurrentSecurityProgress) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[11]
+	return &file_graph_v1_security_proto_enumTypes[16]
 }
 
 func (x CurrentSecurityProgress) Number() protoreflect.EnumNumber {
@@ -692,7 +959,7 @@ func (x CurrentSecurityProgress) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CurrentSecurityProgress.Descriptor instead.
 func (CurrentSecurityProgress) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{11}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{16}
 }
 
 type CurrentAuthorizationStopObservation int32
@@ -733,11 +1000,11 @@ func (x CurrentAuthorizationStopObservation) String() string {
 }
 
 func (CurrentAuthorizationStopObservation) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_security_proto_enumTypes[12].Descriptor()
+	return file_graph_v1_security_proto_enumTypes[17].Descriptor()
 }
 
 func (CurrentAuthorizationStopObservation) Type() protoreflect.EnumType {
-	return &file_graph_v1_security_proto_enumTypes[12]
+	return &file_graph_v1_security_proto_enumTypes[17]
 }
 
 func (x CurrentAuthorizationStopObservation) Number() protoreflect.EnumNumber {
@@ -746,7 +1013,7 @@ func (x CurrentAuthorizationStopObservation) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CurrentAuthorizationStopObservation.Descriptor instead.
 func (CurrentAuthorizationStopObservation) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{12}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{17}
 }
 
 type GetAuthCapabilitiesRequest struct {
@@ -3918,6 +4185,310 @@ func (x *GetRegistrationPolicyResponse) GetVersion() *SecurityVersion {
 	return nil
 }
 
+// Typed business intent only. The committed owner allocates the generation.
+type ManagedLogPolicy struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       uint32                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Level         ManagedLogLevel        `protobuf:"varint,2,opt,name=level,proto3,enum=graph.v1.ManagedLogLevel" json:"level,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ManagedLogPolicy) Reset() {
+	*x = ManagedLogPolicy{}
+	mi := &file_graph_v1_security_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ManagedLogPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ManagedLogPolicy) ProtoMessage() {}
+
+func (x *ManagedLogPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_security_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ManagedLogPolicy.ProtoReflect.Descriptor instead.
+func (*ManagedLogPolicy) Descriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *ManagedLogPolicy) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ManagedLogPolicy) GetLevel() ManagedLogLevel {
+	if x != nil {
+		return x.Level
+	}
+	return ManagedLogLevel_MANAGED_LOG_LEVEL_UNSPECIFIED
+}
+
+type GetLogSettingsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetLogSettingsRequest) Reset() {
+	*x = GetLogSettingsRequest{}
+	mi := &file_graph_v1_security_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetLogSettingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetLogSettingsRequest) ProtoMessage() {}
+
+func (x *GetLogSettingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_security_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetLogSettingsRequest.ProtoReflect.Descriptor instead.
+func (*GetLogSettingsRequest) Descriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{50}
+}
+
+// Correlation with the exact retained signed adoption intent. This is not the
+// signed proof, an authorization credential or an internal journal position.
+type LogPolicyPreparationReference struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	ChangeId      *CurrentSecurityChangeID `protobuf:"bytes,1,opt,name=change_id,json=changeId,proto3" json:"change_id,omitempty"`
+	IntentDigest  []byte                   `protobuf:"bytes,2,opt,name=intent_digest,json=intentDigest,proto3" json:"intent_digest,omitempty"`
+	ActorDigest   []byte                   `protobuf:"bytes,3,opt,name=actor_digest,json=actorDigest,proto3" json:"actor_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogPolicyPreparationReference) Reset() {
+	*x = LogPolicyPreparationReference{}
+	mi := &file_graph_v1_security_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogPolicyPreparationReference) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogPolicyPreparationReference) ProtoMessage() {}
+
+func (x *LogPolicyPreparationReference) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_security_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogPolicyPreparationReference.ProtoReflect.Descriptor instead.
+func (*LogPolicyPreparationReference) Descriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *LogPolicyPreparationReference) GetChangeId() *CurrentSecurityChangeID {
+	if x != nil {
+		return x.ChangeId
+	}
+	return nil
+}
+
+func (x *LogPolicyPreparationReference) GetIntentDigest() []byte {
+	if x != nil {
+		return x.IntentDigest
+	}
+	return nil
+}
+
+func (x *LogPolicyPreparationReference) GetActorDigest() []byte {
+	if x != nil {
+		return x.ActorDigest
+	}
+	return nil
+}
+
+type GetLogSettingsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	// Fixed configured member identity, never a private endpoint or listener.
+	Member         uint32            `protobuf:"varint,2,opt,name=member,proto3" json:"member,omitempty"`
+	EffectiveLevel ManagedLogLevel   `protobuf:"varint,3,opt,name=effective_level,json=effectiveLevel,proto3,enum=graph.v1.ManagedLogLevel" json:"effective_level,omitempty"`
+	Source         LogSettingsSource `protobuf:"varint,4,opt,name=source,proto3,enum=graph.v1.LogSettingsSource" json:"source,omitempty"`
+	// Absent only in verified unadopted state; never an unavailable-state fallback.
+	Desired           *ManagedLogPolicy           `protobuf:"bytes,5,opt,name=desired,proto3" json:"desired,omitempty"`
+	DesiredGeneration uint64                      `protobuf:"varint,6,opt,name=desired_generation,json=desiredGeneration,proto3" json:"desired_generation,omitempty"`
+	AppliedGeneration uint64                      `protobuf:"varint,7,opt,name=applied_generation,json=appliedGeneration,proto3" json:"applied_generation,omitempty"`
+	Adoption          LogPolicyAdoptionState      `protobuf:"varint,8,opt,name=adoption,proto3,enum=graph.v1.LogPolicyAdoptionState" json:"adoption,omitempty"`
+	Application       LogSettingsApplicationState `protobuf:"varint,9,opt,name=application,proto3,enum=graph.v1.LogSettingsApplicationState" json:"application,omitempty"`
+	// Closed content-free diagnostics; raw provider errors and paths are private.
+	Error           LogSettingsError `protobuf:"varint,10,opt,name=error,proto3,enum=graph.v1.LogSettingsError" json:"error,omitempty"`
+	RestartRequired bool             `protobuf:"varint,11,opt,name=restart_required,json=restartRequired,proto3" json:"restart_required,omitempty"`
+	Version         *SecurityVersion `protobuf:"bytes,12,opt,name=version,proto3" json:"version,omitempty"`
+	// The exact cut successfully installed by this node, not a peer acknowledgement.
+	AppliedCut *CurrentSemanticCut `protobuf:"bytes,13,opt,name=applied_cut,json=appliedCut,proto3" json:"applied_cut,omitempty"`
+	// Required for fenced-but-unadopted state; may remain after adoption.
+	Preparation   *LogPolicyPreparationReference `protobuf:"bytes,14,opt,name=preparation,proto3" json:"preparation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetLogSettingsResponse) Reset() {
+	*x = GetLogSettingsResponse{}
+	mi := &file_graph_v1_security_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetLogSettingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetLogSettingsResponse) ProtoMessage() {}
+
+func (x *GetLogSettingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_security_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetLogSettingsResponse.ProtoReflect.Descriptor instead.
+func (*GetLogSettingsResponse) Descriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *GetLogSettingsResponse) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *GetLogSettingsResponse) GetMember() uint32 {
+	if x != nil {
+		return x.Member
+	}
+	return 0
+}
+
+func (x *GetLogSettingsResponse) GetEffectiveLevel() ManagedLogLevel {
+	if x != nil {
+		return x.EffectiveLevel
+	}
+	return ManagedLogLevel_MANAGED_LOG_LEVEL_UNSPECIFIED
+}
+
+func (x *GetLogSettingsResponse) GetSource() LogSettingsSource {
+	if x != nil {
+		return x.Source
+	}
+	return LogSettingsSource_LOG_SETTINGS_SOURCE_UNSPECIFIED
+}
+
+func (x *GetLogSettingsResponse) GetDesired() *ManagedLogPolicy {
+	if x != nil {
+		return x.Desired
+	}
+	return nil
+}
+
+func (x *GetLogSettingsResponse) GetDesiredGeneration() uint64 {
+	if x != nil {
+		return x.DesiredGeneration
+	}
+	return 0
+}
+
+func (x *GetLogSettingsResponse) GetAppliedGeneration() uint64 {
+	if x != nil {
+		return x.AppliedGeneration
+	}
+	return 0
+}
+
+func (x *GetLogSettingsResponse) GetAdoption() LogPolicyAdoptionState {
+	if x != nil {
+		return x.Adoption
+	}
+	return LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_UNSPECIFIED
+}
+
+func (x *GetLogSettingsResponse) GetApplication() LogSettingsApplicationState {
+	if x != nil {
+		return x.Application
+	}
+	return LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED
+}
+
+func (x *GetLogSettingsResponse) GetError() LogSettingsError {
+	if x != nil {
+		return x.Error
+	}
+	return LogSettingsError_LOG_SETTINGS_ERROR_UNSPECIFIED
+}
+
+func (x *GetLogSettingsResponse) GetRestartRequired() bool {
+	if x != nil {
+		return x.RestartRequired
+	}
+	return false
+}
+
+func (x *GetLogSettingsResponse) GetVersion() *SecurityVersion {
+	if x != nil {
+		return x.Version
+	}
+	return nil
+}
+
+func (x *GetLogSettingsResponse) GetAppliedCut() *CurrentSemanticCut {
+	if x != nil {
+		return x.AppliedCut
+	}
+	return nil
+}
+
+func (x *GetLogSettingsResponse) GetPreparation() *LogPolicyPreparationReference {
+	if x != nil {
+		return x.Preparation
+	}
+	return nil
+}
+
 type SecurityChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Operation:
@@ -3933,6 +4504,7 @@ type SecurityChange struct {
 	//	*SecurityChange_DeleteAssignment
 	//	*SecurityChange_RevokeUserSessions
 	//	*SecurityChange_PutRegistrationPolicy
+	//	*SecurityChange_PutLogPolicy
 	Operation     isSecurityChange_Operation `protobuf_oneof:"operation"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3940,7 +4512,7 @@ type SecurityChange struct {
 
 func (x *SecurityChange) Reset() {
 	*x = SecurityChange{}
-	mi := &file_graph_v1_security_proto_msgTypes[49]
+	mi := &file_graph_v1_security_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3952,7 +4524,7 @@ func (x *SecurityChange) String() string {
 func (*SecurityChange) ProtoMessage() {}
 
 func (x *SecurityChange) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[49]
+	mi := &file_graph_v1_security_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3965,7 +4537,7 @@ func (x *SecurityChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityChange.ProtoReflect.Descriptor instead.
 func (*SecurityChange) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{49}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SecurityChange) GetOperation() isSecurityChange_Operation {
@@ -4074,6 +4646,15 @@ func (x *SecurityChange) GetPutRegistrationPolicy() *SecurityRegistrationPolicy 
 	return nil
 }
 
+func (x *SecurityChange) GetPutLogPolicy() *ManagedLogPolicy {
+	if x != nil {
+		if x, ok := x.Operation.(*SecurityChange_PutLogPolicy); ok {
+			return x.PutLogPolicy
+		}
+	}
+	return nil
+}
+
 type isSecurityChange_Operation interface {
 	isSecurityChange_Operation()
 }
@@ -4122,6 +4703,10 @@ type SecurityChange_PutRegistrationPolicy struct {
 	PutRegistrationPolicy *SecurityRegistrationPolicy `protobuf:"bytes,11,opt,name=put_registration_policy,json=putRegistrationPolicy,proto3,oneof"`
 }
 
+type SecurityChange_PutLogPolicy struct {
+	PutLogPolicy *ManagedLogPolicy `protobuf:"bytes,12,opt,name=put_log_policy,json=putLogPolicy,proto3,oneof"`
+}
+
 func (*SecurityChange_PutIssuer) isSecurityChange_Operation() {}
 
 func (*SecurityChange_DisableIssuer) isSecurityChange_Operation() {}
@@ -4144,6 +4729,8 @@ func (*SecurityChange_RevokeUserSessions) isSecurityChange_Operation() {}
 
 func (*SecurityChange_PutRegistrationPolicy) isSecurityChange_Operation() {}
 
+func (*SecurityChange_PutLogPolicy) isSecurityChange_Operation() {}
+
 type ApplySecurityChangesRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ExpectedRevision uint64                 `protobuf:"varint,1,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
@@ -4159,7 +4746,7 @@ type ApplySecurityChangesRequest struct {
 
 func (x *ApplySecurityChangesRequest) Reset() {
 	*x = ApplySecurityChangesRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[50]
+	mi := &file_graph_v1_security_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4171,7 +4758,7 @@ func (x *ApplySecurityChangesRequest) String() string {
 func (*ApplySecurityChangesRequest) ProtoMessage() {}
 
 func (x *ApplySecurityChangesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[50]
+	mi := &file_graph_v1_security_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4184,7 +4771,7 @@ func (x *ApplySecurityChangesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangesRequest.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{50}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ApplySecurityChangesRequest) GetExpectedRevision() uint64 {
@@ -4235,7 +4822,7 @@ type ApplySecurityChangesResponse struct {
 
 func (x *ApplySecurityChangesResponse) Reset() {
 	*x = ApplySecurityChangesResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[51]
+	mi := &file_graph_v1_security_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4247,7 +4834,7 @@ func (x *ApplySecurityChangesResponse) String() string {
 func (*ApplySecurityChangesResponse) ProtoMessage() {}
 
 func (x *ApplySecurityChangesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[51]
+	mi := &file_graph_v1_security_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4260,7 +4847,7 @@ func (x *ApplySecurityChangesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangesResponse.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{51}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ApplySecurityChangesResponse) GetVersion() *SecurityVersion {
@@ -4312,7 +4899,7 @@ type ApplySecurityChangeRequest struct {
 
 func (x *ApplySecurityChangeRequest) Reset() {
 	*x = ApplySecurityChangeRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[52]
+	mi := &file_graph_v1_security_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4324,7 +4911,7 @@ func (x *ApplySecurityChangeRequest) String() string {
 func (*ApplySecurityChangeRequest) ProtoMessage() {}
 
 func (x *ApplySecurityChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[52]
+	mi := &file_graph_v1_security_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4337,7 +4924,7 @@ func (x *ApplySecurityChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangeRequest.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{52}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ApplySecurityChangeRequest) GetExpectedRevision() uint64 {
@@ -4386,7 +4973,7 @@ type SecurityChangeReview struct {
 
 func (x *SecurityChangeReview) Reset() {
 	*x = SecurityChangeReview{}
-	mi := &file_graph_v1_security_proto_msgTypes[53]
+	mi := &file_graph_v1_security_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4398,7 +4985,7 @@ func (x *SecurityChangeReview) String() string {
 func (*SecurityChangeReview) ProtoMessage() {}
 
 func (x *SecurityChangeReview) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[53]
+	mi := &file_graph_v1_security_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4411,7 +4998,7 @@ func (x *SecurityChangeReview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityChangeReview.ProtoReflect.Descriptor instead.
 func (*SecurityChangeReview) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{53}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *SecurityChangeReview) GetExpectedVersion() *SecurityVersion {
@@ -4449,7 +5036,7 @@ type SecurityOperationAuthorizationRequired struct {
 
 func (x *SecurityOperationAuthorizationRequired) Reset() {
 	*x = SecurityOperationAuthorizationRequired{}
-	mi := &file_graph_v1_security_proto_msgTypes[54]
+	mi := &file_graph_v1_security_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4461,7 +5048,7 @@ func (x *SecurityOperationAuthorizationRequired) String() string {
 func (*SecurityOperationAuthorizationRequired) ProtoMessage() {}
 
 func (x *SecurityOperationAuthorizationRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[54]
+	mi := &file_graph_v1_security_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4474,7 +5061,7 @@ func (x *SecurityOperationAuthorizationRequired) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use SecurityOperationAuthorizationRequired.ProtoReflect.Descriptor instead.
 func (*SecurityOperationAuthorizationRequired) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{54}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *SecurityOperationAuthorizationRequired) GetChangeId() []byte {
@@ -4511,7 +5098,7 @@ type SecurityChangePrecommitRejected struct {
 
 func (x *SecurityChangePrecommitRejected) Reset() {
 	*x = SecurityChangePrecommitRejected{}
-	mi := &file_graph_v1_security_proto_msgTypes[55]
+	mi := &file_graph_v1_security_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4523,7 +5110,7 @@ func (x *SecurityChangePrecommitRejected) String() string {
 func (*SecurityChangePrecommitRejected) ProtoMessage() {}
 
 func (x *SecurityChangePrecommitRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[55]
+	mi := &file_graph_v1_security_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4536,7 +5123,7 @@ func (x *SecurityChangePrecommitRejected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityChangePrecommitRejected.ProtoReflect.Descriptor instead.
 func (*SecurityChangePrecommitRejected) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{55}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *SecurityChangePrecommitRejected) GetChangeId() []byte {
@@ -4572,7 +5159,7 @@ type PrepareSecurityChangesRequest struct {
 
 func (x *PrepareSecurityChangesRequest) Reset() {
 	*x = PrepareSecurityChangesRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[56]
+	mi := &file_graph_v1_security_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4584,7 +5171,7 @@ func (x *PrepareSecurityChangesRequest) String() string {
 func (*PrepareSecurityChangesRequest) ProtoMessage() {}
 
 func (x *PrepareSecurityChangesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[56]
+	mi := &file_graph_v1_security_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4597,7 +5184,7 @@ func (x *PrepareSecurityChangesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareSecurityChangesRequest.ProtoReflect.Descriptor instead.
 func (*PrepareSecurityChangesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{56}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *PrepareSecurityChangesRequest) GetReview() *SecurityChangeReview {
@@ -4630,7 +5217,7 @@ type PrepareSecurityChangesResponse struct {
 
 func (x *PrepareSecurityChangesResponse) Reset() {
 	*x = PrepareSecurityChangesResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[57]
+	mi := &file_graph_v1_security_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4642,7 +5229,7 @@ func (x *PrepareSecurityChangesResponse) String() string {
 func (*PrepareSecurityChangesResponse) ProtoMessage() {}
 
 func (x *PrepareSecurityChangesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[57]
+	mi := &file_graph_v1_security_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4655,7 +5242,7 @@ func (x *PrepareSecurityChangesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareSecurityChangesResponse.ProtoReflect.Descriptor instead.
 func (*PrepareSecurityChangesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{57}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *PrepareSecurityChangesResponse) GetExpectedVersion() *SecurityVersion {
@@ -4717,7 +5304,7 @@ type BeginSecurityChangeAuthorizationRequest struct {
 
 func (x *BeginSecurityChangeAuthorizationRequest) Reset() {
 	*x = BeginSecurityChangeAuthorizationRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[58]
+	mi := &file_graph_v1_security_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4729,7 +5316,7 @@ func (x *BeginSecurityChangeAuthorizationRequest) String() string {
 func (*BeginSecurityChangeAuthorizationRequest) ProtoMessage() {}
 
 func (x *BeginSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[58]
+	mi := &file_graph_v1_security_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4742,7 +5329,7 @@ func (x *BeginSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use BeginSecurityChangeAuthorizationRequest.ProtoReflect.Descriptor instead.
 func (*BeginSecurityChangeAuthorizationRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{58}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *BeginSecurityChangeAuthorizationRequest) GetReview() *SecurityChangeReview {
@@ -4773,7 +5360,7 @@ type BeginSecurityChangeAuthorizationResponse struct {
 
 func (x *BeginSecurityChangeAuthorizationResponse) Reset() {
 	*x = BeginSecurityChangeAuthorizationResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[59]
+	mi := &file_graph_v1_security_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4785,7 +5372,7 @@ func (x *BeginSecurityChangeAuthorizationResponse) String() string {
 func (*BeginSecurityChangeAuthorizationResponse) ProtoMessage() {}
 
 func (x *BeginSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[59]
+	mi := &file_graph_v1_security_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4798,7 +5385,7 @@ func (x *BeginSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.M
 
 // Deprecated: Use BeginSecurityChangeAuthorizationResponse.ProtoReflect.Descriptor instead.
 func (*BeginSecurityChangeAuthorizationResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{59}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *BeginSecurityChangeAuthorizationResponse) GetAuthorizationId() []byte {
@@ -4847,7 +5434,7 @@ type GetSecurityChangeAuthorizationRequest struct {
 
 func (x *GetSecurityChangeAuthorizationRequest) Reset() {
 	*x = GetSecurityChangeAuthorizationRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[60]
+	mi := &file_graph_v1_security_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4859,7 +5446,7 @@ func (x *GetSecurityChangeAuthorizationRequest) String() string {
 func (*GetSecurityChangeAuthorizationRequest) ProtoMessage() {}
 
 func (x *GetSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[60]
+	mi := &file_graph_v1_security_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4872,7 +5459,7 @@ func (x *GetSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use GetSecurityChangeAuthorizationRequest.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeAuthorizationRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{60}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *GetSecurityChangeAuthorizationRequest) GetAuthorizationId() []byte {
@@ -4909,7 +5496,7 @@ type GetSecurityChangeAuthorizationResponse struct {
 
 func (x *GetSecurityChangeAuthorizationResponse) Reset() {
 	*x = GetSecurityChangeAuthorizationResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[61]
+	mi := &file_graph_v1_security_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4921,7 +5508,7 @@ func (x *GetSecurityChangeAuthorizationResponse) String() string {
 func (*GetSecurityChangeAuthorizationResponse) ProtoMessage() {}
 
 func (x *GetSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[61]
+	mi := &file_graph_v1_security_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4934,7 +5521,7 @@ func (x *GetSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use GetSecurityChangeAuthorizationResponse.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeAuthorizationResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{61}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *GetSecurityChangeAuthorizationResponse) GetAuthorizationId() []byte {
@@ -4985,7 +5572,7 @@ type ApplySecurityChangeResponse struct {
 
 func (x *ApplySecurityChangeResponse) Reset() {
 	*x = ApplySecurityChangeResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[62]
+	mi := &file_graph_v1_security_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4997,7 +5584,7 @@ func (x *ApplySecurityChangeResponse) String() string {
 func (*ApplySecurityChangeResponse) ProtoMessage() {}
 
 func (x *ApplySecurityChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[62]
+	mi := &file_graph_v1_security_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5010,7 +5597,7 @@ func (x *ApplySecurityChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangeResponse.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{62}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *ApplySecurityChangeResponse) GetVersion() *SecurityVersion {
@@ -5060,7 +5647,7 @@ type GetSecurityChangeStatusRequest struct {
 
 func (x *GetSecurityChangeStatusRequest) Reset() {
 	*x = GetSecurityChangeStatusRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[63]
+	mi := &file_graph_v1_security_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5072,7 +5659,7 @@ func (x *GetSecurityChangeStatusRequest) String() string {
 func (*GetSecurityChangeStatusRequest) ProtoMessage() {}
 
 func (x *GetSecurityChangeStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[63]
+	mi := &file_graph_v1_security_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5085,7 +5672,7 @@ func (x *GetSecurityChangeStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSecurityChangeStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{63}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *GetSecurityChangeStatusRequest) GetChangeId() []byte {
@@ -5130,7 +5717,7 @@ type GetSecurityChangeStatusResponse struct {
 
 func (x *GetSecurityChangeStatusResponse) Reset() {
 	*x = GetSecurityChangeStatusResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[64]
+	mi := &file_graph_v1_security_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5142,7 +5729,7 @@ func (x *GetSecurityChangeStatusResponse) String() string {
 func (*GetSecurityChangeStatusResponse) ProtoMessage() {}
 
 func (x *GetSecurityChangeStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[64]
+	mi := &file_graph_v1_security_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5155,7 +5742,7 @@ func (x *GetSecurityChangeStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSecurityChangeStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{64}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *GetSecurityChangeStatusResponse) GetVersion() *SecurityVersion {
@@ -5204,7 +5791,7 @@ type CurrentAuthorityProfile struct {
 
 func (x *CurrentAuthorityProfile) Reset() {
 	*x = CurrentAuthorityProfile{}
-	mi := &file_graph_v1_security_proto_msgTypes[65]
+	mi := &file_graph_v1_security_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5216,7 +5803,7 @@ func (x *CurrentAuthorityProfile) String() string {
 func (*CurrentAuthorityProfile) ProtoMessage() {}
 
 func (x *CurrentAuthorityProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[65]
+	mi := &file_graph_v1_security_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5229,7 +5816,7 @@ func (x *CurrentAuthorityProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentAuthorityProfile.ProtoReflect.Descriptor instead.
 func (*CurrentAuthorityProfile) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{65}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *CurrentAuthorityProfile) GetVersion() uint32 {
@@ -5306,7 +5893,7 @@ type CurrentSemanticCut struct {
 
 func (x *CurrentSemanticCut) Reset() {
 	*x = CurrentSemanticCut{}
-	mi := &file_graph_v1_security_proto_msgTypes[66]
+	mi := &file_graph_v1_security_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5318,7 +5905,7 @@ func (x *CurrentSemanticCut) String() string {
 func (*CurrentSemanticCut) ProtoMessage() {}
 
 func (x *CurrentSemanticCut) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[66]
+	mi := &file_graph_v1_security_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5331,7 +5918,7 @@ func (x *CurrentSemanticCut) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSemanticCut.ProtoReflect.Descriptor instead.
 func (*CurrentSemanticCut) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{66}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *CurrentSemanticCut) GetVersion() uint32 {
@@ -5417,7 +6004,7 @@ type CurrentSecurityChangeID struct {
 
 func (x *CurrentSecurityChangeID) Reset() {
 	*x = CurrentSecurityChangeID{}
-	mi := &file_graph_v1_security_proto_msgTypes[67]
+	mi := &file_graph_v1_security_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5429,7 +6016,7 @@ func (x *CurrentSecurityChangeID) String() string {
 func (*CurrentSecurityChangeID) ProtoMessage() {}
 
 func (x *CurrentSecurityChangeID) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[67]
+	mi := &file_graph_v1_security_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5442,7 +6029,7 @@ func (x *CurrentSecurityChangeID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityChangeID.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityChangeID) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{67}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *CurrentSecurityChangeID) GetVersion() uint32 {
@@ -5494,7 +6081,7 @@ type CurrentSecurityReview struct {
 
 func (x *CurrentSecurityReview) Reset() {
 	*x = CurrentSecurityReview{}
-	mi := &file_graph_v1_security_proto_msgTypes[68]
+	mi := &file_graph_v1_security_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5506,7 +6093,7 @@ func (x *CurrentSecurityReview) String() string {
 func (*CurrentSecurityReview) ProtoMessage() {}
 
 func (x *CurrentSecurityReview) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[68]
+	mi := &file_graph_v1_security_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5519,7 +6106,7 @@ func (x *CurrentSecurityReview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityReview.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityReview) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{68}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *CurrentSecurityReview) GetProfile() *CurrentAuthorityProfile {
@@ -5579,7 +6166,7 @@ type CurrentControlCommit struct {
 
 func (x *CurrentControlCommit) Reset() {
 	*x = CurrentControlCommit{}
-	mi := &file_graph_v1_security_proto_msgTypes[69]
+	mi := &file_graph_v1_security_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5591,7 +6178,7 @@ func (x *CurrentControlCommit) String() string {
 func (*CurrentControlCommit) ProtoMessage() {}
 
 func (x *CurrentControlCommit) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[69]
+	mi := &file_graph_v1_security_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5604,7 +6191,7 @@ func (x *CurrentControlCommit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentControlCommit.ProtoReflect.Descriptor instead.
 func (*CurrentControlCommit) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{69}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *CurrentControlCommit) GetVersion() uint32 {
@@ -5667,7 +6254,7 @@ type CurrentSecurityItemOutcome struct {
 
 func (x *CurrentSecurityItemOutcome) Reset() {
 	*x = CurrentSecurityItemOutcome{}
-	mi := &file_graph_v1_security_proto_msgTypes[70]
+	mi := &file_graph_v1_security_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5679,7 +6266,7 @@ func (x *CurrentSecurityItemOutcome) String() string {
 func (*CurrentSecurityItemOutcome) ProtoMessage() {}
 
 func (x *CurrentSecurityItemOutcome) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[70]
+	mi := &file_graph_v1_security_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5692,7 +6279,7 @@ func (x *CurrentSecurityItemOutcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityItemOutcome.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityItemOutcome) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{70}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *CurrentSecurityItemOutcome) GetIndex() uint32 {
@@ -5732,7 +6319,7 @@ type CurrentSecurityOriginalOutcome struct {
 
 func (x *CurrentSecurityOriginalOutcome) Reset() {
 	*x = CurrentSecurityOriginalOutcome{}
-	mi := &file_graph_v1_security_proto_msgTypes[71]
+	mi := &file_graph_v1_security_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5744,7 +6331,7 @@ func (x *CurrentSecurityOriginalOutcome) String() string {
 func (*CurrentSecurityOriginalOutcome) ProtoMessage() {}
 
 func (x *CurrentSecurityOriginalOutcome) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[71]
+	mi := &file_graph_v1_security_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5757,7 +6344,7 @@ func (x *CurrentSecurityOriginalOutcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityOriginalOutcome.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityOriginalOutcome) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{71}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *CurrentSecurityOriginalOutcome) GetChangeId() *CurrentSecurityChangeID {
@@ -5830,7 +6417,7 @@ type CurrentSecurityChangeResult struct {
 
 func (x *CurrentSecurityChangeResult) Reset() {
 	*x = CurrentSecurityChangeResult{}
-	mi := &file_graph_v1_security_proto_msgTypes[72]
+	mi := &file_graph_v1_security_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5842,7 +6429,7 @@ func (x *CurrentSecurityChangeResult) String() string {
 func (*CurrentSecurityChangeResult) ProtoMessage() {}
 
 func (x *CurrentSecurityChangeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[72]
+	mi := &file_graph_v1_security_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5855,7 +6442,7 @@ func (x *CurrentSecurityChangeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityChangeResult.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityChangeResult) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{72}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *CurrentSecurityChangeResult) GetProfile() *CurrentAuthorityProfile {
@@ -5911,7 +6498,7 @@ type CurrentSecurityAuditRecord struct {
 
 func (x *CurrentSecurityAuditRecord) Reset() {
 	*x = CurrentSecurityAuditRecord{}
-	mi := &file_graph_v1_security_proto_msgTypes[73]
+	mi := &file_graph_v1_security_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5923,7 +6510,7 @@ func (x *CurrentSecurityAuditRecord) String() string {
 func (*CurrentSecurityAuditRecord) ProtoMessage() {}
 
 func (x *CurrentSecurityAuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[73]
+	mi := &file_graph_v1_security_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5936,7 +6523,7 @@ func (x *CurrentSecurityAuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityAuditRecord.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityAuditRecord) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{73}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *CurrentSecurityAuditRecord) GetResult() *CurrentSecurityChangeResult {
@@ -5974,7 +6561,7 @@ type CurrentSecurityInvocationRejected struct {
 
 func (x *CurrentSecurityInvocationRejected) Reset() {
 	*x = CurrentSecurityInvocationRejected{}
-	mi := &file_graph_v1_security_proto_msgTypes[74]
+	mi := &file_graph_v1_security_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5986,7 +6573,7 @@ func (x *CurrentSecurityInvocationRejected) String() string {
 func (*CurrentSecurityInvocationRejected) ProtoMessage() {}
 
 func (x *CurrentSecurityInvocationRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[74]
+	mi := &file_graph_v1_security_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5999,7 +6586,7 @@ func (x *CurrentSecurityInvocationRejected) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CurrentSecurityInvocationRejected.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityInvocationRejected) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{74}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *CurrentSecurityInvocationRejected) GetProfile() *CurrentAuthorityProfile {
@@ -6279,7 +6866,32 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\x1cGetRegistrationPolicyRequest\"\x92\x01\n" +
 	"\x1dGetRegistrationPolicyResponse\x12<\n" +
 	"\x06policy\x18\x01 \x01(\v2$.graph.v1.SecurityRegistrationPolicyR\x06policy\x123\n" +
-	"\aversion\x18\x02 \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\"\xcb\x05\n" +
+	"\aversion\x18\x02 \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\"]\n" +
+	"\x10ManagedLogPolicy\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x12/\n" +
+	"\x05level\x18\x02 \x01(\x0e2\x19.graph.v1.ManagedLogLevelR\x05level\"\x17\n" +
+	"\x15GetLogSettingsRequest\"\xa7\x01\n" +
+	"\x1dLogPolicyPreparationReference\x12>\n" +
+	"\tchange_id\x18\x01 \x01(\v2!.graph.v1.CurrentSecurityChangeIDR\bchangeId\x12#\n" +
+	"\rintent_digest\x18\x02 \x01(\fR\fintentDigest\x12!\n" +
+	"\factor_digest\x18\x03 \x01(\fR\vactorDigest\"\x87\x06\n" +
+	"\x16GetLogSettingsResponse\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x16\n" +
+	"\x06member\x18\x02 \x01(\rR\x06member\x12B\n" +
+	"\x0feffective_level\x18\x03 \x01(\x0e2\x19.graph.v1.ManagedLogLevelR\x0eeffectiveLevel\x123\n" +
+	"\x06source\x18\x04 \x01(\x0e2\x1b.graph.v1.LogSettingsSourceR\x06source\x124\n" +
+	"\adesired\x18\x05 \x01(\v2\x1a.graph.v1.ManagedLogPolicyR\adesired\x12-\n" +
+	"\x12desired_generation\x18\x06 \x01(\x04R\x11desiredGeneration\x12-\n" +
+	"\x12applied_generation\x18\a \x01(\x04R\x11appliedGeneration\x12<\n" +
+	"\badoption\x18\b \x01(\x0e2 .graph.v1.LogPolicyAdoptionStateR\badoption\x12G\n" +
+	"\vapplication\x18\t \x01(\x0e2%.graph.v1.LogSettingsApplicationStateR\vapplication\x120\n" +
+	"\x05error\x18\n" +
+	" \x01(\x0e2\x1a.graph.v1.LogSettingsErrorR\x05error\x12)\n" +
+	"\x10restart_required\x18\v \x01(\bR\x0frestartRequired\x123\n" +
+	"\aversion\x18\f \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\x12=\n" +
+	"\vapplied_cut\x18\r \x01(\v2\x1c.graph.v1.CurrentSemanticCutR\n" +
+	"appliedCut\x12I\n" +
+	"\vpreparation\x18\x0e \x01(\v2'.graph.v1.LogPolicyPreparationReferenceR\vpreparation\"\x8f\x06\n" +
 	"\x0eSecurityChange\x129\n" +
 	"\n" +
 	"put_issuer\x18\x01 \x01(\v2\x18.graph.v1.SecurityIssuerH\x00R\tputIssuer\x12'\n" +
@@ -6295,7 +6907,8 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\x11delete_assignment\x18\t \x01(\v2 .graph.v1.SecurityRoleAssignmentH\x00R\x10deleteAssignment\x12N\n" +
 	"\x14revoke_user_sessions\x18\n" +
 	" \x01(\v2\x1a.graph.v1.SecurityIdentityH\x00R\x12revokeUserSessions\x12^\n" +
-	"\x17put_registration_policy\x18\v \x01(\v2$.graph.v1.SecurityRegistrationPolicyH\x00R\x15putRegistrationPolicyB\v\n" +
+	"\x17put_registration_policy\x18\v \x01(\v2$.graph.v1.SecurityRegistrationPolicyH\x00R\x15putRegistrationPolicy\x12B\n" +
+	"\x0eput_log_policy\x18\f \x01(\v2\x1a.graph.v1.ManagedLogPolicyH\x00R\fputLogPolicyB\v\n" +
 	"\toperation\"\x94\x02\n" +
 	"\x1bApplySecurityChangesRequest\x12+\n" +
 	"\x11expected_revision\x18\x01 \x01(\x04R\x10expectedRevision\x12\x1b\n" +
@@ -6496,7 +7109,34 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\x1eNATIVE_CLIENT_KIND_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN\x10\x01\x12#\n" +
 	"\x1fNATIVE_CLIENT_KIND_APPLE_NATIVE\x10\x02\x12(\n" +
-	"$NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB\x10\x03*\xa1\x01\n" +
+	"$NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB\x10\x03*\xa6\x01\n" +
+	"\x0fManagedLogLevel\x12!\n" +
+	"\x1dMANAGED_LOG_LEVEL_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17MANAGED_LOG_LEVEL_DEBUG\x10\x01\x12\x1a\n" +
+	"\x16MANAGED_LOG_LEVEL_INFO\x10\x02\x12\x1a\n" +
+	"\x16MANAGED_LOG_LEVEL_WARN\x10\x03\x12\x1b\n" +
+	"\x17MANAGED_LOG_LEVEL_ERROR\x10\x04*\x9f\x01\n" +
+	"\x11LogSettingsSource\x12#\n" +
+	"\x1fLOG_SETTINGS_SOURCE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bLOG_SETTINGS_SOURCE_DEFAULT\x10\x01\x12#\n" +
+	"\x1fLOG_SETTINGS_SOURCE_ENVIRONMENT\x10\x02\x12\x1f\n" +
+	"\x1bLOG_SETTINGS_SOURCE_MANAGED\x10\x03*\xc3\x01\n" +
+	"\x16LogPolicyAdoptionState\x12)\n" +
+	"%LOG_POLICY_ADOPTION_STATE_UNSPECIFIED\x10\x00\x12'\n" +
+	"#LOG_POLICY_ADOPTION_STATE_UNADOPTED\x10\x01\x12.\n" +
+	"*LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED\x10\x02\x12%\n" +
+	"!LOG_POLICY_ADOPTION_STATE_MANAGED\x10\x03*\xcf\x01\n" +
+	"\x1bLogSettingsApplicationState\x12.\n" +
+	"*LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED\x10\x00\x12*\n" +
+	"&LOG_SETTINGS_APPLICATION_STATE_APPLIED\x10\x01\x12*\n" +
+	"&LOG_SETTINGS_APPLICATION_STATE_PENDING\x10\x02\x12(\n" +
+	"$LOG_SETTINGS_APPLICATION_STATE_ERROR\x10\x03*\xc9\x01\n" +
+	"\x10LogSettingsError\x12\"\n" +
+	"\x1eLOG_SETTINGS_ERROR_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17LOG_SETTINGS_ERROR_NONE\x10\x01\x12%\n" +
+	"!LOG_SETTINGS_ERROR_INVALID_POLICY\x10\x02\x12(\n" +
+	"$LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE\x10\x03\x12#\n" +
+	"\x1fLOG_SETTINGS_ERROR_APPLY_FAILED\x10\x04*\xa1\x01\n" +
 	"\x18SecurityEnforcementState\x12*\n" +
 	"&SECURITY_ENFORCEMENT_STATE_UNSPECIFIED\x10\x00\x120\n" +
 	",SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING\x10\x01\x12'\n" +
@@ -6537,7 +7177,7 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"2CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED\x10\x00\x127\n" +
 	"3CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED\x10\x01\x122\n" +
 	".CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING\x10\x02\x12M\n" +
-	"ICURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED\x10\x032\xe6\x0e\n" +
+	"ICURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED\x10\x032\xbb\x0f\n" +
 	"\x16LanternSecurityService\x12b\n" +
 	"\x13GetAuthCapabilities\x12$.graph.v1.GetAuthCapabilitiesRequest\x1a%.graph.v1.GetAuthCapabilitiesResponse\x12b\n" +
 	"\x13GetCurrentPrincipal\x12$.graph.v1.GetCurrentPrincipalRequest\x1a%.graph.v1.GetCurrentPrincipalResponse\x12J\n" +
@@ -6547,7 +7187,8 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\aGetRole\x12\x18.graph.v1.GetRoleRequest\x1a\x19.graph.v1.GetRoleResponse\x12D\n" +
 	"\tListUsers\x12\x1a.graph.v1.ListUsersRequest\x1a\x1b.graph.v1.ListUsersResponse\x12>\n" +
 	"\aGetUser\x12\x18.graph.v1.GetUserRequest\x1a\x19.graph.v1.GetUserResponse\x12h\n" +
-	"\x15GetRegistrationPolicy\x12&.graph.v1.GetRegistrationPolicyRequest\x1a'.graph.v1.GetRegistrationPolicyResponse\x12b\n" +
+	"\x15GetRegistrationPolicy\x12&.graph.v1.GetRegistrationPolicyRequest\x1a'.graph.v1.GetRegistrationPolicyResponse\x12S\n" +
+	"\x0eGetLogSettings\x12\x1f.graph.v1.GetLogSettingsRequest\x1a .graph.v1.GetLogSettingsResponse\x12b\n" +
 	"\x13ListRoleAssignments\x12$.graph.v1.ListRoleAssignmentsRequest\x1a%.graph.v1.ListRoleAssignmentsResponse\x12\\\n" +
 	"\x11ListSecurityAudit\x12\".graph.v1.ListSecurityAuditRequest\x1a#.graph.v1.ListSecurityAuditResponse\x12Y\n" +
 	"\x10GetRoleTemplates\x12!.graph.v1.GetRoleTemplatesRequest\x1a\".graph.v1.GetRoleTemplatesResponse\x12P\n" +
@@ -6573,8 +7214,8 @@ func file_graph_v1_security_proto_rawDescGZIP() []byte {
 	return file_graph_v1_security_proto_rawDescData
 }
 
-var file_graph_v1_security_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_graph_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
+var file_graph_v1_security_proto_enumTypes = make([]protoimpl.EnumInfo, 18)
+var file_graph_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 79)
 var file_graph_v1_security_proto_goTypes = []any{
 	(AuthMode)(0),                                    // 0: graph.v1.AuthMode
 	(SecurityPrincipalKind)(0),                       // 1: graph.v1.SecurityPrincipalKind
@@ -6582,267 +7223,290 @@ var file_graph_v1_security_proto_goTypes = []any{
 	(SecurityAction)(0),                              // 3: graph.v1.SecurityAction
 	(SecurityEffect)(0),                              // 4: graph.v1.SecurityEffect
 	(NativeClientKind)(0),                            // 5: graph.v1.NativeClientKind
-	(SecurityEnforcementState)(0),                    // 6: graph.v1.SecurityEnforcementState
-	(SecurityChangeRejectionReason)(0),               // 7: graph.v1.SecurityChangeRejectionReason
-	(SecurityAuthorizationRequirement)(0),            // 8: graph.v1.SecurityAuthorizationRequirement
-	(SecurityAuthorizationState)(0),                  // 9: graph.v1.SecurityAuthorizationState
-	(CurrentSecurityDisposition)(0),                  // 10: graph.v1.CurrentSecurityDisposition
-	(CurrentSecurityProgress)(0),                     // 11: graph.v1.CurrentSecurityProgress
-	(CurrentAuthorizationStopObservation)(0),         // 12: graph.v1.CurrentAuthorizationStopObservation
-	(*GetAuthCapabilitiesRequest)(nil),               // 13: graph.v1.GetAuthCapabilitiesRequest
-	(*LoginIssuer)(nil),                              // 14: graph.v1.LoginIssuer
-	(*GetAuthCapabilitiesResponse)(nil),              // 15: graph.v1.GetAuthCapabilitiesResponse
-	(*SecurityIdentity)(nil),                         // 16: graph.v1.SecurityIdentity
-	(*SecurityPrefixPair)(nil),                       // 17: graph.v1.SecurityPrefixPair
-	(*SecurityPrincipalUIDPrefix)(nil),               // 18: graph.v1.SecurityPrincipalUIDPrefix
-	(*SecurityRule)(nil),                             // 19: graph.v1.SecurityRule
-	(*SecurityRole)(nil),                             // 20: graph.v1.SecurityRole
-	(*SecurityRoleAssignment)(nil),                   // 21: graph.v1.SecurityRoleAssignment
-	(*SecurityUser)(nil),                             // 22: graph.v1.SecurityUser
-	(*SecurityIssuer)(nil),                           // 23: graph.v1.SecurityIssuer
-	(*SecurityNativeClient)(nil),                     // 24: graph.v1.SecurityNativeClient
-	(*SecurityVersion)(nil),                          // 25: graph.v1.SecurityVersion
-	(*GetCurrentPrincipalRequest)(nil),               // 26: graph.v1.GetCurrentPrincipalRequest
-	(*GetCurrentPrincipalResponse)(nil),              // 27: graph.v1.GetCurrentPrincipalResponse
-	(*BrowserSession)(nil),                           // 28: graph.v1.BrowserSession
-	(*SessionRevocation)(nil),                        // 29: graph.v1.SessionRevocation
-	(*CurrentSessionRevocationReview)(nil),           // 30: graph.v1.CurrentSessionRevocationReview
-	(*CurrentLogoutRequest)(nil),                     // 31: graph.v1.CurrentLogoutRequest
-	(*ListIssuersRequest)(nil),                       // 32: graph.v1.ListIssuersRequest
-	(*ListRolesRequest)(nil),                         // 33: graph.v1.ListRolesRequest
-	(*ListUsersRequest)(nil),                         // 34: graph.v1.ListUsersRequest
-	(*ListSecurityAuditRequest)(nil),                 // 35: graph.v1.ListSecurityAuditRequest
-	(*GetIssuerRequest)(nil),                         // 36: graph.v1.GetIssuerRequest
-	(*GetIssuerResponse)(nil),                        // 37: graph.v1.GetIssuerResponse
-	(*GetRoleRequest)(nil),                           // 38: graph.v1.GetRoleRequest
-	(*GetRoleResponse)(nil),                          // 39: graph.v1.GetRoleResponse
-	(*GetUserRequest)(nil),                           // 40: graph.v1.GetUserRequest
-	(*GetUserResponse)(nil),                          // 41: graph.v1.GetUserResponse
-	(*ListIssuersResponse)(nil),                      // 42: graph.v1.ListIssuersResponse
-	(*ListRolesResponse)(nil),                        // 43: graph.v1.ListRolesResponse
-	(*ListUsersResponse)(nil),                        // 44: graph.v1.ListUsersResponse
-	(*ListRoleAssignmentsRequest)(nil),               // 45: graph.v1.ListRoleAssignmentsRequest
-	(*ListRoleAssignmentsResponse)(nil),              // 46: graph.v1.ListRoleAssignmentsResponse
-	(*SecurityAuditRecord)(nil),                      // 47: graph.v1.SecurityAuditRecord
-	(*ListSecurityAuditResponse)(nil),                // 48: graph.v1.ListSecurityAuditResponse
-	(*GetRoleTemplatesRequest)(nil),                  // 49: graph.v1.GetRoleTemplatesRequest
-	(*GetRoleTemplatesResponse)(nil),                 // 50: graph.v1.GetRoleTemplatesResponse
-	(*SecurityEdgeIdentity)(nil),                     // 51: graph.v1.SecurityEdgeIdentity
-	(*ExplainAccessRequest)(nil),                     // 52: graph.v1.ExplainAccessRequest
-	(*SecurityRuleMatch)(nil),                        // 53: graph.v1.SecurityRuleMatch
-	(*ExplainAccessResponse)(nil),                    // 54: graph.v1.ExplainAccessResponse
-	(*ValidateIssuerRequest)(nil),                    // 55: graph.v1.ValidateIssuerRequest
-	(*ValidateIssuerResponse)(nil),                   // 56: graph.v1.ValidateIssuerResponse
-	(*SecurityUserStateChange)(nil),                  // 57: graph.v1.SecurityUserStateChange
-	(*SecurityRegistrationProfile)(nil),              // 58: graph.v1.SecurityRegistrationProfile
-	(*SecurityRegistrationPolicy)(nil),               // 59: graph.v1.SecurityRegistrationPolicy
-	(*GetRegistrationPolicyRequest)(nil),             // 60: graph.v1.GetRegistrationPolicyRequest
-	(*GetRegistrationPolicyResponse)(nil),            // 61: graph.v1.GetRegistrationPolicyResponse
-	(*SecurityChange)(nil),                           // 62: graph.v1.SecurityChange
-	(*ApplySecurityChangesRequest)(nil),              // 63: graph.v1.ApplySecurityChangesRequest
-	(*ApplySecurityChangesResponse)(nil),             // 64: graph.v1.ApplySecurityChangesResponse
-	(*ApplySecurityChangeRequest)(nil),               // 65: graph.v1.ApplySecurityChangeRequest
-	(*SecurityChangeReview)(nil),                     // 66: graph.v1.SecurityChangeReview
-	(*SecurityOperationAuthorizationRequired)(nil),   // 67: graph.v1.SecurityOperationAuthorizationRequired
-	(*SecurityChangePrecommitRejected)(nil),          // 68: graph.v1.SecurityChangePrecommitRejected
-	(*PrepareSecurityChangesRequest)(nil),            // 69: graph.v1.PrepareSecurityChangesRequest
-	(*PrepareSecurityChangesResponse)(nil),           // 70: graph.v1.PrepareSecurityChangesResponse
-	(*BeginSecurityChangeAuthorizationRequest)(nil),  // 71: graph.v1.BeginSecurityChangeAuthorizationRequest
-	(*BeginSecurityChangeAuthorizationResponse)(nil), // 72: graph.v1.BeginSecurityChangeAuthorizationResponse
-	(*GetSecurityChangeAuthorizationRequest)(nil),    // 73: graph.v1.GetSecurityChangeAuthorizationRequest
-	(*GetSecurityChangeAuthorizationResponse)(nil),   // 74: graph.v1.GetSecurityChangeAuthorizationResponse
-	(*ApplySecurityChangeResponse)(nil),              // 75: graph.v1.ApplySecurityChangeResponse
-	(*GetSecurityChangeStatusRequest)(nil),           // 76: graph.v1.GetSecurityChangeStatusRequest
-	(*GetSecurityChangeStatusResponse)(nil),          // 77: graph.v1.GetSecurityChangeStatusResponse
-	(*CurrentAuthorityProfile)(nil),                  // 78: graph.v1.CurrentAuthorityProfile
-	(*CurrentSemanticCut)(nil),                       // 79: graph.v1.CurrentSemanticCut
-	(*CurrentSecurityChangeID)(nil),                  // 80: graph.v1.CurrentSecurityChangeID
-	(*CurrentSecurityReview)(nil),                    // 81: graph.v1.CurrentSecurityReview
-	(*CurrentControlCommit)(nil),                     // 82: graph.v1.CurrentControlCommit
-	(*CurrentSecurityItemOutcome)(nil),               // 83: graph.v1.CurrentSecurityItemOutcome
-	(*CurrentSecurityOriginalOutcome)(nil),           // 84: graph.v1.CurrentSecurityOriginalOutcome
-	(*CurrentSecurityChangeResult)(nil),              // 85: graph.v1.CurrentSecurityChangeResult
-	(*CurrentSecurityAuditRecord)(nil),               // 86: graph.v1.CurrentSecurityAuditRecord
-	(*CurrentSecurityInvocationRejected)(nil),        // 87: graph.v1.CurrentSecurityInvocationRejected
-	(*timestamppb.Timestamp)(nil),                    // 88: google.protobuf.Timestamp
+	(ManagedLogLevel)(0),                             // 6: graph.v1.ManagedLogLevel
+	(LogSettingsSource)(0),                           // 7: graph.v1.LogSettingsSource
+	(LogPolicyAdoptionState)(0),                      // 8: graph.v1.LogPolicyAdoptionState
+	(LogSettingsApplicationState)(0),                 // 9: graph.v1.LogSettingsApplicationState
+	(LogSettingsError)(0),                            // 10: graph.v1.LogSettingsError
+	(SecurityEnforcementState)(0),                    // 11: graph.v1.SecurityEnforcementState
+	(SecurityChangeRejectionReason)(0),               // 12: graph.v1.SecurityChangeRejectionReason
+	(SecurityAuthorizationRequirement)(0),            // 13: graph.v1.SecurityAuthorizationRequirement
+	(SecurityAuthorizationState)(0),                  // 14: graph.v1.SecurityAuthorizationState
+	(CurrentSecurityDisposition)(0),                  // 15: graph.v1.CurrentSecurityDisposition
+	(CurrentSecurityProgress)(0),                     // 16: graph.v1.CurrentSecurityProgress
+	(CurrentAuthorizationStopObservation)(0),         // 17: graph.v1.CurrentAuthorizationStopObservation
+	(*GetAuthCapabilitiesRequest)(nil),               // 18: graph.v1.GetAuthCapabilitiesRequest
+	(*LoginIssuer)(nil),                              // 19: graph.v1.LoginIssuer
+	(*GetAuthCapabilitiesResponse)(nil),              // 20: graph.v1.GetAuthCapabilitiesResponse
+	(*SecurityIdentity)(nil),                         // 21: graph.v1.SecurityIdentity
+	(*SecurityPrefixPair)(nil),                       // 22: graph.v1.SecurityPrefixPair
+	(*SecurityPrincipalUIDPrefix)(nil),               // 23: graph.v1.SecurityPrincipalUIDPrefix
+	(*SecurityRule)(nil),                             // 24: graph.v1.SecurityRule
+	(*SecurityRole)(nil),                             // 25: graph.v1.SecurityRole
+	(*SecurityRoleAssignment)(nil),                   // 26: graph.v1.SecurityRoleAssignment
+	(*SecurityUser)(nil),                             // 27: graph.v1.SecurityUser
+	(*SecurityIssuer)(nil),                           // 28: graph.v1.SecurityIssuer
+	(*SecurityNativeClient)(nil),                     // 29: graph.v1.SecurityNativeClient
+	(*SecurityVersion)(nil),                          // 30: graph.v1.SecurityVersion
+	(*GetCurrentPrincipalRequest)(nil),               // 31: graph.v1.GetCurrentPrincipalRequest
+	(*GetCurrentPrincipalResponse)(nil),              // 32: graph.v1.GetCurrentPrincipalResponse
+	(*BrowserSession)(nil),                           // 33: graph.v1.BrowserSession
+	(*SessionRevocation)(nil),                        // 34: graph.v1.SessionRevocation
+	(*CurrentSessionRevocationReview)(nil),           // 35: graph.v1.CurrentSessionRevocationReview
+	(*CurrentLogoutRequest)(nil),                     // 36: graph.v1.CurrentLogoutRequest
+	(*ListIssuersRequest)(nil),                       // 37: graph.v1.ListIssuersRequest
+	(*ListRolesRequest)(nil),                         // 38: graph.v1.ListRolesRequest
+	(*ListUsersRequest)(nil),                         // 39: graph.v1.ListUsersRequest
+	(*ListSecurityAuditRequest)(nil),                 // 40: graph.v1.ListSecurityAuditRequest
+	(*GetIssuerRequest)(nil),                         // 41: graph.v1.GetIssuerRequest
+	(*GetIssuerResponse)(nil),                        // 42: graph.v1.GetIssuerResponse
+	(*GetRoleRequest)(nil),                           // 43: graph.v1.GetRoleRequest
+	(*GetRoleResponse)(nil),                          // 44: graph.v1.GetRoleResponse
+	(*GetUserRequest)(nil),                           // 45: graph.v1.GetUserRequest
+	(*GetUserResponse)(nil),                          // 46: graph.v1.GetUserResponse
+	(*ListIssuersResponse)(nil),                      // 47: graph.v1.ListIssuersResponse
+	(*ListRolesResponse)(nil),                        // 48: graph.v1.ListRolesResponse
+	(*ListUsersResponse)(nil),                        // 49: graph.v1.ListUsersResponse
+	(*ListRoleAssignmentsRequest)(nil),               // 50: graph.v1.ListRoleAssignmentsRequest
+	(*ListRoleAssignmentsResponse)(nil),              // 51: graph.v1.ListRoleAssignmentsResponse
+	(*SecurityAuditRecord)(nil),                      // 52: graph.v1.SecurityAuditRecord
+	(*ListSecurityAuditResponse)(nil),                // 53: graph.v1.ListSecurityAuditResponse
+	(*GetRoleTemplatesRequest)(nil),                  // 54: graph.v1.GetRoleTemplatesRequest
+	(*GetRoleTemplatesResponse)(nil),                 // 55: graph.v1.GetRoleTemplatesResponse
+	(*SecurityEdgeIdentity)(nil),                     // 56: graph.v1.SecurityEdgeIdentity
+	(*ExplainAccessRequest)(nil),                     // 57: graph.v1.ExplainAccessRequest
+	(*SecurityRuleMatch)(nil),                        // 58: graph.v1.SecurityRuleMatch
+	(*ExplainAccessResponse)(nil),                    // 59: graph.v1.ExplainAccessResponse
+	(*ValidateIssuerRequest)(nil),                    // 60: graph.v1.ValidateIssuerRequest
+	(*ValidateIssuerResponse)(nil),                   // 61: graph.v1.ValidateIssuerResponse
+	(*SecurityUserStateChange)(nil),                  // 62: graph.v1.SecurityUserStateChange
+	(*SecurityRegistrationProfile)(nil),              // 63: graph.v1.SecurityRegistrationProfile
+	(*SecurityRegistrationPolicy)(nil),               // 64: graph.v1.SecurityRegistrationPolicy
+	(*GetRegistrationPolicyRequest)(nil),             // 65: graph.v1.GetRegistrationPolicyRequest
+	(*GetRegistrationPolicyResponse)(nil),            // 66: graph.v1.GetRegistrationPolicyResponse
+	(*ManagedLogPolicy)(nil),                         // 67: graph.v1.ManagedLogPolicy
+	(*GetLogSettingsRequest)(nil),                    // 68: graph.v1.GetLogSettingsRequest
+	(*LogPolicyPreparationReference)(nil),            // 69: graph.v1.LogPolicyPreparationReference
+	(*GetLogSettingsResponse)(nil),                   // 70: graph.v1.GetLogSettingsResponse
+	(*SecurityChange)(nil),                           // 71: graph.v1.SecurityChange
+	(*ApplySecurityChangesRequest)(nil),              // 72: graph.v1.ApplySecurityChangesRequest
+	(*ApplySecurityChangesResponse)(nil),             // 73: graph.v1.ApplySecurityChangesResponse
+	(*ApplySecurityChangeRequest)(nil),               // 74: graph.v1.ApplySecurityChangeRequest
+	(*SecurityChangeReview)(nil),                     // 75: graph.v1.SecurityChangeReview
+	(*SecurityOperationAuthorizationRequired)(nil),   // 76: graph.v1.SecurityOperationAuthorizationRequired
+	(*SecurityChangePrecommitRejected)(nil),          // 77: graph.v1.SecurityChangePrecommitRejected
+	(*PrepareSecurityChangesRequest)(nil),            // 78: graph.v1.PrepareSecurityChangesRequest
+	(*PrepareSecurityChangesResponse)(nil),           // 79: graph.v1.PrepareSecurityChangesResponse
+	(*BeginSecurityChangeAuthorizationRequest)(nil),  // 80: graph.v1.BeginSecurityChangeAuthorizationRequest
+	(*BeginSecurityChangeAuthorizationResponse)(nil), // 81: graph.v1.BeginSecurityChangeAuthorizationResponse
+	(*GetSecurityChangeAuthorizationRequest)(nil),    // 82: graph.v1.GetSecurityChangeAuthorizationRequest
+	(*GetSecurityChangeAuthorizationResponse)(nil),   // 83: graph.v1.GetSecurityChangeAuthorizationResponse
+	(*ApplySecurityChangeResponse)(nil),              // 84: graph.v1.ApplySecurityChangeResponse
+	(*GetSecurityChangeStatusRequest)(nil),           // 85: graph.v1.GetSecurityChangeStatusRequest
+	(*GetSecurityChangeStatusResponse)(nil),          // 86: graph.v1.GetSecurityChangeStatusResponse
+	(*CurrentAuthorityProfile)(nil),                  // 87: graph.v1.CurrentAuthorityProfile
+	(*CurrentSemanticCut)(nil),                       // 88: graph.v1.CurrentSemanticCut
+	(*CurrentSecurityChangeID)(nil),                  // 89: graph.v1.CurrentSecurityChangeID
+	(*CurrentSecurityReview)(nil),                    // 90: graph.v1.CurrentSecurityReview
+	(*CurrentControlCommit)(nil),                     // 91: graph.v1.CurrentControlCommit
+	(*CurrentSecurityItemOutcome)(nil),               // 92: graph.v1.CurrentSecurityItemOutcome
+	(*CurrentSecurityOriginalOutcome)(nil),           // 93: graph.v1.CurrentSecurityOriginalOutcome
+	(*CurrentSecurityChangeResult)(nil),              // 94: graph.v1.CurrentSecurityChangeResult
+	(*CurrentSecurityAuditRecord)(nil),               // 95: graph.v1.CurrentSecurityAuditRecord
+	(*CurrentSecurityInvocationRejected)(nil),        // 96: graph.v1.CurrentSecurityInvocationRejected
+	(*timestamppb.Timestamp)(nil),                    // 97: google.protobuf.Timestamp
 }
 var file_graph_v1_security_proto_depIdxs = []int32{
 	0,   // 0: graph.v1.GetAuthCapabilitiesResponse.mode:type_name -> graph.v1.AuthMode
-	14,  // 1: graph.v1.GetAuthCapabilitiesResponse.login_issuers:type_name -> graph.v1.LoginIssuer
-	78,  // 2: graph.v1.GetAuthCapabilitiesResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	19,  // 1: graph.v1.GetAuthCapabilitiesResponse.login_issuers:type_name -> graph.v1.LoginIssuer
+	87,  // 2: graph.v1.GetAuthCapabilitiesResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
 	1,   // 3: graph.v1.SecurityIdentity.kind:type_name -> graph.v1.SecurityPrincipalKind
 	4,   // 4: graph.v1.SecurityRule.effect:type_name -> graph.v1.SecurityEffect
 	3,   // 5: graph.v1.SecurityRule.action:type_name -> graph.v1.SecurityAction
-	17,  // 6: graph.v1.SecurityRule.pair:type_name -> graph.v1.SecurityPrefixPair
-	18,  // 7: graph.v1.SecurityRule.principal_uid_prefix:type_name -> graph.v1.SecurityPrincipalUIDPrefix
-	19,  // 8: graph.v1.SecurityRole.rules:type_name -> graph.v1.SecurityRule
-	16,  // 9: graph.v1.SecurityRoleAssignment.identity:type_name -> graph.v1.SecurityIdentity
-	16,  // 10: graph.v1.SecurityUser.identity:type_name -> graph.v1.SecurityIdentity
+	22,  // 6: graph.v1.SecurityRule.pair:type_name -> graph.v1.SecurityPrefixPair
+	23,  // 7: graph.v1.SecurityRule.principal_uid_prefix:type_name -> graph.v1.SecurityPrincipalUIDPrefix
+	24,  // 8: graph.v1.SecurityRole.rules:type_name -> graph.v1.SecurityRule
+	21,  // 9: graph.v1.SecurityRoleAssignment.identity:type_name -> graph.v1.SecurityIdentity
+	21,  // 10: graph.v1.SecurityUser.identity:type_name -> graph.v1.SecurityIdentity
 	2,   // 11: graph.v1.SecurityUser.state:type_name -> graph.v1.SecurityPrincipalState
-	21,  // 12: graph.v1.SecurityUser.assignments:type_name -> graph.v1.SecurityRoleAssignment
-	24,  // 13: graph.v1.SecurityIssuer.native_clients:type_name -> graph.v1.SecurityNativeClient
+	26,  // 12: graph.v1.SecurityUser.assignments:type_name -> graph.v1.SecurityRoleAssignment
+	29,  // 13: graph.v1.SecurityIssuer.native_clients:type_name -> graph.v1.SecurityNativeClient
 	5,   // 14: graph.v1.SecurityNativeClient.kind:type_name -> graph.v1.NativeClientKind
-	78,  // 15: graph.v1.SecurityVersion.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	79,  // 16: graph.v1.SecurityVersion.current_cut:type_name -> graph.v1.CurrentSemanticCut
-	16,  // 17: graph.v1.GetCurrentPrincipalResponse.identity:type_name -> graph.v1.SecurityIdentity
-	20,  // 18: graph.v1.GetCurrentPrincipalResponse.roles:type_name -> graph.v1.SecurityRole
-	25,  // 19: graph.v1.GetCurrentPrincipalResponse.version:type_name -> graph.v1.SecurityVersion
-	88,  // 20: graph.v1.GetCurrentPrincipalResponse.expires_at:type_name -> google.protobuf.Timestamp
+	87,  // 15: graph.v1.SecurityVersion.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	88,  // 16: graph.v1.SecurityVersion.current_cut:type_name -> graph.v1.CurrentSemanticCut
+	21,  // 17: graph.v1.GetCurrentPrincipalResponse.identity:type_name -> graph.v1.SecurityIdentity
+	25,  // 18: graph.v1.GetCurrentPrincipalResponse.roles:type_name -> graph.v1.SecurityRole
+	30,  // 19: graph.v1.GetCurrentPrincipalResponse.version:type_name -> graph.v1.SecurityVersion
+	97,  // 20: graph.v1.GetCurrentPrincipalResponse.expires_at:type_name -> google.protobuf.Timestamp
 	0,   // 21: graph.v1.BrowserSession.mode:type_name -> graph.v1.AuthMode
-	27,  // 22: graph.v1.BrowserSession.principal:type_name -> graph.v1.GetCurrentPrincipalResponse
-	78,  // 23: graph.v1.BrowserSession.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	25,  // 24: graph.v1.SessionRevocation.version:type_name -> graph.v1.SecurityVersion
-	6,   // 25: graph.v1.SessionRevocation.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	85,  // 26: graph.v1.SessionRevocation.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	30,  // 27: graph.v1.SessionRevocation.current_review:type_name -> graph.v1.CurrentSessionRevocationReview
-	78,  // 28: graph.v1.CurrentSessionRevocationReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	79,  // 29: graph.v1.CurrentSessionRevocationReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
-	80,  // 30: graph.v1.CurrentSessionRevocationReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	16,  // 31: graph.v1.CurrentSessionRevocationReview.actor:type_name -> graph.v1.SecurityIdentity
-	78,  // 32: graph.v1.CurrentLogoutRequest.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	30,  // 33: graph.v1.CurrentLogoutRequest.review:type_name -> graph.v1.CurrentSessionRevocationReview
-	23,  // 34: graph.v1.GetIssuerResponse.issuer:type_name -> graph.v1.SecurityIssuer
-	25,  // 35: graph.v1.GetIssuerResponse.version:type_name -> graph.v1.SecurityVersion
-	20,  // 36: graph.v1.GetRoleResponse.role:type_name -> graph.v1.SecurityRole
-	25,  // 37: graph.v1.GetRoleResponse.version:type_name -> graph.v1.SecurityVersion
-	16,  // 38: graph.v1.GetUserRequest.identity:type_name -> graph.v1.SecurityIdentity
-	22,  // 39: graph.v1.GetUserResponse.user:type_name -> graph.v1.SecurityUser
-	25,  // 40: graph.v1.GetUserResponse.version:type_name -> graph.v1.SecurityVersion
-	23,  // 41: graph.v1.ListIssuersResponse.issuers:type_name -> graph.v1.SecurityIssuer
-	25,  // 42: graph.v1.ListIssuersResponse.version:type_name -> graph.v1.SecurityVersion
-	20,  // 43: graph.v1.ListRolesResponse.roles:type_name -> graph.v1.SecurityRole
-	25,  // 44: graph.v1.ListRolesResponse.version:type_name -> graph.v1.SecurityVersion
-	22,  // 45: graph.v1.ListUsersResponse.users:type_name -> graph.v1.SecurityUser
-	25,  // 46: graph.v1.ListUsersResponse.version:type_name -> graph.v1.SecurityVersion
-	16,  // 47: graph.v1.ListRoleAssignmentsRequest.identity:type_name -> graph.v1.SecurityIdentity
-	21,  // 48: graph.v1.ListRoleAssignmentsResponse.assignments:type_name -> graph.v1.SecurityRoleAssignment
-	25,  // 49: graph.v1.ListRoleAssignmentsResponse.version:type_name -> graph.v1.SecurityVersion
-	88,  // 50: graph.v1.SecurityAuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
-	47,  // 51: graph.v1.ListSecurityAuditResponse.records:type_name -> graph.v1.SecurityAuditRecord
-	25,  // 52: graph.v1.ListSecurityAuditResponse.version:type_name -> graph.v1.SecurityVersion
-	86,  // 53: graph.v1.ListSecurityAuditResponse.current_records:type_name -> graph.v1.CurrentSecurityAuditRecord
-	20,  // 54: graph.v1.GetRoleTemplatesResponse.roles:type_name -> graph.v1.SecurityRole
-	25,  // 55: graph.v1.GetRoleTemplatesResponse.version:type_name -> graph.v1.SecurityVersion
-	16,  // 56: graph.v1.ExplainAccessRequest.identity:type_name -> graph.v1.SecurityIdentity
+	32,  // 22: graph.v1.BrowserSession.principal:type_name -> graph.v1.GetCurrentPrincipalResponse
+	87,  // 23: graph.v1.BrowserSession.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	30,  // 24: graph.v1.SessionRevocation.version:type_name -> graph.v1.SecurityVersion
+	11,  // 25: graph.v1.SessionRevocation.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	94,  // 26: graph.v1.SessionRevocation.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	35,  // 27: graph.v1.SessionRevocation.current_review:type_name -> graph.v1.CurrentSessionRevocationReview
+	87,  // 28: graph.v1.CurrentSessionRevocationReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	88,  // 29: graph.v1.CurrentSessionRevocationReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
+	89,  // 30: graph.v1.CurrentSessionRevocationReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	21,  // 31: graph.v1.CurrentSessionRevocationReview.actor:type_name -> graph.v1.SecurityIdentity
+	87,  // 32: graph.v1.CurrentLogoutRequest.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	35,  // 33: graph.v1.CurrentLogoutRequest.review:type_name -> graph.v1.CurrentSessionRevocationReview
+	28,  // 34: graph.v1.GetIssuerResponse.issuer:type_name -> graph.v1.SecurityIssuer
+	30,  // 35: graph.v1.GetIssuerResponse.version:type_name -> graph.v1.SecurityVersion
+	25,  // 36: graph.v1.GetRoleResponse.role:type_name -> graph.v1.SecurityRole
+	30,  // 37: graph.v1.GetRoleResponse.version:type_name -> graph.v1.SecurityVersion
+	21,  // 38: graph.v1.GetUserRequest.identity:type_name -> graph.v1.SecurityIdentity
+	27,  // 39: graph.v1.GetUserResponse.user:type_name -> graph.v1.SecurityUser
+	30,  // 40: graph.v1.GetUserResponse.version:type_name -> graph.v1.SecurityVersion
+	28,  // 41: graph.v1.ListIssuersResponse.issuers:type_name -> graph.v1.SecurityIssuer
+	30,  // 42: graph.v1.ListIssuersResponse.version:type_name -> graph.v1.SecurityVersion
+	25,  // 43: graph.v1.ListRolesResponse.roles:type_name -> graph.v1.SecurityRole
+	30,  // 44: graph.v1.ListRolesResponse.version:type_name -> graph.v1.SecurityVersion
+	27,  // 45: graph.v1.ListUsersResponse.users:type_name -> graph.v1.SecurityUser
+	30,  // 46: graph.v1.ListUsersResponse.version:type_name -> graph.v1.SecurityVersion
+	21,  // 47: graph.v1.ListRoleAssignmentsRequest.identity:type_name -> graph.v1.SecurityIdentity
+	26,  // 48: graph.v1.ListRoleAssignmentsResponse.assignments:type_name -> graph.v1.SecurityRoleAssignment
+	30,  // 49: graph.v1.ListRoleAssignmentsResponse.version:type_name -> graph.v1.SecurityVersion
+	97,  // 50: graph.v1.SecurityAuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	52,  // 51: graph.v1.ListSecurityAuditResponse.records:type_name -> graph.v1.SecurityAuditRecord
+	30,  // 52: graph.v1.ListSecurityAuditResponse.version:type_name -> graph.v1.SecurityVersion
+	95,  // 53: graph.v1.ListSecurityAuditResponse.current_records:type_name -> graph.v1.CurrentSecurityAuditRecord
+	25,  // 54: graph.v1.GetRoleTemplatesResponse.roles:type_name -> graph.v1.SecurityRole
+	30,  // 55: graph.v1.GetRoleTemplatesResponse.version:type_name -> graph.v1.SecurityVersion
+	21,  // 56: graph.v1.ExplainAccessRequest.identity:type_name -> graph.v1.SecurityIdentity
 	3,   // 57: graph.v1.ExplainAccessRequest.action:type_name -> graph.v1.SecurityAction
-	51,  // 58: graph.v1.ExplainAccessRequest.edge:type_name -> graph.v1.SecurityEdgeIdentity
+	56,  // 58: graph.v1.ExplainAccessRequest.edge:type_name -> graph.v1.SecurityEdgeIdentity
 	4,   // 59: graph.v1.SecurityRuleMatch.effect:type_name -> graph.v1.SecurityEffect
 	3,   // 60: graph.v1.SecurityRuleMatch.action:type_name -> graph.v1.SecurityAction
-	53,  // 61: graph.v1.ExplainAccessResponse.matches:type_name -> graph.v1.SecurityRuleMatch
-	25,  // 62: graph.v1.ExplainAccessResponse.version:type_name -> graph.v1.SecurityVersion
-	23,  // 63: graph.v1.ValidateIssuerRequest.issuer:type_name -> graph.v1.SecurityIssuer
-	16,  // 64: graph.v1.SecurityUserStateChange.identity:type_name -> graph.v1.SecurityIdentity
+	58,  // 61: graph.v1.ExplainAccessResponse.matches:type_name -> graph.v1.SecurityRuleMatch
+	30,  // 62: graph.v1.ExplainAccessResponse.version:type_name -> graph.v1.SecurityVersion
+	28,  // 63: graph.v1.ValidateIssuerRequest.issuer:type_name -> graph.v1.SecurityIssuer
+	21,  // 64: graph.v1.SecurityUserStateChange.identity:type_name -> graph.v1.SecurityIdentity
 	2,   // 65: graph.v1.SecurityUserStateChange.state:type_name -> graph.v1.SecurityPrincipalState
-	58,  // 66: graph.v1.SecurityRegistrationPolicy.profiles:type_name -> graph.v1.SecurityRegistrationProfile
-	59,  // 67: graph.v1.GetRegistrationPolicyResponse.policy:type_name -> graph.v1.SecurityRegistrationPolicy
-	25,  // 68: graph.v1.GetRegistrationPolicyResponse.version:type_name -> graph.v1.SecurityVersion
-	23,  // 69: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
-	20,  // 70: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
-	57,  // 71: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
-	16,  // 72: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
-	21,  // 73: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	21,  // 74: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	16,  // 75: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
-	59,  // 76: graph.v1.SecurityChange.put_registration_policy:type_name -> graph.v1.SecurityRegistrationPolicy
-	62,  // 77: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
-	81,  // 78: graph.v1.ApplySecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	25,  // 79: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
-	6,   // 80: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	85,  // 81: graph.v1.ApplySecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	62,  // 82: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
-	81,  // 83: graph.v1.ApplySecurityChangeRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	25,  // 84: graph.v1.SecurityChangeReview.expected_version:type_name -> graph.v1.SecurityVersion
-	62,  // 85: graph.v1.SecurityChangeReview.changes:type_name -> graph.v1.SecurityChange
-	25,  // 86: graph.v1.SecurityOperationAuthorizationRequired.expected_version:type_name -> graph.v1.SecurityVersion
-	7,   // 87: graph.v1.SecurityChangePrecommitRejected.reason:type_name -> graph.v1.SecurityChangeRejectionReason
-	66,  // 88: graph.v1.PrepareSecurityChangesRequest.review:type_name -> graph.v1.SecurityChangeReview
-	81,  // 89: graph.v1.PrepareSecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	25,  // 90: graph.v1.PrepareSecurityChangesResponse.expected_version:type_name -> graph.v1.SecurityVersion
-	8,   // 91: graph.v1.PrepareSecurityChangesResponse.requirement:type_name -> graph.v1.SecurityAuthorizationRequirement
-	77,  // 92: graph.v1.PrepareSecurityChangesResponse.retained_commit:type_name -> graph.v1.GetSecurityChangeStatusResponse
-	81,  // 93: graph.v1.PrepareSecurityChangesResponse.current_review:type_name -> graph.v1.CurrentSecurityReview
-	85,  // 94: graph.v1.PrepareSecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	66,  // 95: graph.v1.BeginSecurityChangeAuthorizationRequest.review:type_name -> graph.v1.SecurityChangeReview
-	81,  // 96: graph.v1.BeginSecurityChangeAuthorizationRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	88,  // 97: graph.v1.BeginSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	78,  // 98: graph.v1.BeginSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	78,  // 99: graph.v1.GetSecurityChangeAuthorizationRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	9,   // 100: graph.v1.GetSecurityChangeAuthorizationResponse.state:type_name -> graph.v1.SecurityAuthorizationState
-	88,  // 101: graph.v1.GetSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	78,  // 102: graph.v1.GetSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	25,  // 103: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
-	6,   // 104: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	85,  // 105: graph.v1.ApplySecurityChangeResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	80,  // 106: graph.v1.GetSecurityChangeStatusRequest.current_change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	78,  // 107: graph.v1.GetSecurityChangeStatusRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	25,  // 108: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
-	6,   // 109: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	85,  // 110: graph.v1.GetSecurityChangeStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	78,  // 111: graph.v1.CurrentSecurityReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	79,  // 112: graph.v1.CurrentSecurityReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
-	80,  // 113: graph.v1.CurrentSecurityReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	16,  // 114: graph.v1.CurrentSecurityReview.actor:type_name -> graph.v1.SecurityIdentity
-	62,  // 115: graph.v1.CurrentSecurityReview.changes:type_name -> graph.v1.SecurityChange
-	10,  // 116: graph.v1.CurrentSecurityItemOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
-	80,  // 117: graph.v1.CurrentSecurityOriginalOutcome.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	82,  // 118: graph.v1.CurrentSecurityOriginalOutcome.commit:type_name -> graph.v1.CurrentControlCommit
-	10,  // 119: graph.v1.CurrentSecurityOriginalOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
-	83,  // 120: graph.v1.CurrentSecurityOriginalOutcome.items:type_name -> graph.v1.CurrentSecurityItemOutcome
-	79,  // 121: graph.v1.CurrentSecurityOriginalOutcome.observed_cut:type_name -> graph.v1.CurrentSemanticCut
-	79,  // 122: graph.v1.CurrentSecurityOriginalOutcome.resulting_cut:type_name -> graph.v1.CurrentSemanticCut
-	78,  // 123: graph.v1.CurrentSecurityChangeResult.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	80,  // 124: graph.v1.CurrentSecurityChangeResult.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	11,  // 125: graph.v1.CurrentSecurityChangeResult.progress:type_name -> graph.v1.CurrentSecurityProgress
-	84,  // 126: graph.v1.CurrentSecurityChangeResult.original:type_name -> graph.v1.CurrentSecurityOriginalOutcome
-	12,  // 127: graph.v1.CurrentSecurityChangeResult.stop_observation:type_name -> graph.v1.CurrentAuthorizationStopObservation
-	85,  // 128: graph.v1.CurrentSecurityAuditRecord.result:type_name -> graph.v1.CurrentSecurityChangeResult
-	78,  // 129: graph.v1.CurrentSecurityInvocationRejected.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	80,  // 130: graph.v1.CurrentSecurityInvocationRejected.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	13,  // 131: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
-	26,  // 132: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
-	32,  // 133: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
-	36,  // 134: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
-	33,  // 135: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
-	38,  // 136: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
-	34,  // 137: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
-	40,  // 138: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
-	60,  // 139: graph.v1.LanternSecurityService.GetRegistrationPolicy:input_type -> graph.v1.GetRegistrationPolicyRequest
-	45,  // 140: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
-	35,  // 141: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
-	49,  // 142: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
-	52,  // 143: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
-	55,  // 144: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
-	69,  // 145: graph.v1.LanternSecurityService.PrepareSecurityChanges:input_type -> graph.v1.PrepareSecurityChangesRequest
-	71,  // 146: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:input_type -> graph.v1.BeginSecurityChangeAuthorizationRequest
-	73,  // 147: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:input_type -> graph.v1.GetSecurityChangeAuthorizationRequest
-	63,  // 148: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
-	65,  // 149: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
-	76,  // 150: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
-	15,  // 151: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
-	27,  // 152: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
-	42,  // 153: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
-	37,  // 154: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
-	43,  // 155: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
-	39,  // 156: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
-	44,  // 157: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
-	41,  // 158: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
-	61,  // 159: graph.v1.LanternSecurityService.GetRegistrationPolicy:output_type -> graph.v1.GetRegistrationPolicyResponse
-	46,  // 160: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
-	48,  // 161: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
-	50,  // 162: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
-	54,  // 163: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
-	56,  // 164: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
-	70,  // 165: graph.v1.LanternSecurityService.PrepareSecurityChanges:output_type -> graph.v1.PrepareSecurityChangesResponse
-	72,  // 166: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:output_type -> graph.v1.BeginSecurityChangeAuthorizationResponse
-	74,  // 167: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:output_type -> graph.v1.GetSecurityChangeAuthorizationResponse
-	64,  // 168: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
-	75,  // 169: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
-	77,  // 170: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
-	151, // [151:171] is the sub-list for method output_type
-	131, // [131:151] is the sub-list for method input_type
-	131, // [131:131] is the sub-list for extension type_name
-	131, // [131:131] is the sub-list for extension extendee
-	0,   // [0:131] is the sub-list for field type_name
+	63,  // 66: graph.v1.SecurityRegistrationPolicy.profiles:type_name -> graph.v1.SecurityRegistrationProfile
+	64,  // 67: graph.v1.GetRegistrationPolicyResponse.policy:type_name -> graph.v1.SecurityRegistrationPolicy
+	30,  // 68: graph.v1.GetRegistrationPolicyResponse.version:type_name -> graph.v1.SecurityVersion
+	6,   // 69: graph.v1.ManagedLogPolicy.level:type_name -> graph.v1.ManagedLogLevel
+	89,  // 70: graph.v1.LogPolicyPreparationReference.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	6,   // 71: graph.v1.GetLogSettingsResponse.effective_level:type_name -> graph.v1.ManagedLogLevel
+	7,   // 72: graph.v1.GetLogSettingsResponse.source:type_name -> graph.v1.LogSettingsSource
+	67,  // 73: graph.v1.GetLogSettingsResponse.desired:type_name -> graph.v1.ManagedLogPolicy
+	8,   // 74: graph.v1.GetLogSettingsResponse.adoption:type_name -> graph.v1.LogPolicyAdoptionState
+	9,   // 75: graph.v1.GetLogSettingsResponse.application:type_name -> graph.v1.LogSettingsApplicationState
+	10,  // 76: graph.v1.GetLogSettingsResponse.error:type_name -> graph.v1.LogSettingsError
+	30,  // 77: graph.v1.GetLogSettingsResponse.version:type_name -> graph.v1.SecurityVersion
+	88,  // 78: graph.v1.GetLogSettingsResponse.applied_cut:type_name -> graph.v1.CurrentSemanticCut
+	69,  // 79: graph.v1.GetLogSettingsResponse.preparation:type_name -> graph.v1.LogPolicyPreparationReference
+	28,  // 80: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
+	25,  // 81: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
+	62,  // 82: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
+	21,  // 83: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
+	26,  // 84: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	26,  // 85: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	21,  // 86: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
+	64,  // 87: graph.v1.SecurityChange.put_registration_policy:type_name -> graph.v1.SecurityRegistrationPolicy
+	67,  // 88: graph.v1.SecurityChange.put_log_policy:type_name -> graph.v1.ManagedLogPolicy
+	71,  // 89: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
+	90,  // 90: graph.v1.ApplySecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	30,  // 91: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
+	11,  // 92: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	94,  // 93: graph.v1.ApplySecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	71,  // 94: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
+	90,  // 95: graph.v1.ApplySecurityChangeRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	30,  // 96: graph.v1.SecurityChangeReview.expected_version:type_name -> graph.v1.SecurityVersion
+	71,  // 97: graph.v1.SecurityChangeReview.changes:type_name -> graph.v1.SecurityChange
+	30,  // 98: graph.v1.SecurityOperationAuthorizationRequired.expected_version:type_name -> graph.v1.SecurityVersion
+	12,  // 99: graph.v1.SecurityChangePrecommitRejected.reason:type_name -> graph.v1.SecurityChangeRejectionReason
+	75,  // 100: graph.v1.PrepareSecurityChangesRequest.review:type_name -> graph.v1.SecurityChangeReview
+	90,  // 101: graph.v1.PrepareSecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	30,  // 102: graph.v1.PrepareSecurityChangesResponse.expected_version:type_name -> graph.v1.SecurityVersion
+	13,  // 103: graph.v1.PrepareSecurityChangesResponse.requirement:type_name -> graph.v1.SecurityAuthorizationRequirement
+	86,  // 104: graph.v1.PrepareSecurityChangesResponse.retained_commit:type_name -> graph.v1.GetSecurityChangeStatusResponse
+	90,  // 105: graph.v1.PrepareSecurityChangesResponse.current_review:type_name -> graph.v1.CurrentSecurityReview
+	94,  // 106: graph.v1.PrepareSecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	75,  // 107: graph.v1.BeginSecurityChangeAuthorizationRequest.review:type_name -> graph.v1.SecurityChangeReview
+	90,  // 108: graph.v1.BeginSecurityChangeAuthorizationRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	97,  // 109: graph.v1.BeginSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	87,  // 110: graph.v1.BeginSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	87,  // 111: graph.v1.GetSecurityChangeAuthorizationRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	14,  // 112: graph.v1.GetSecurityChangeAuthorizationResponse.state:type_name -> graph.v1.SecurityAuthorizationState
+	97,  // 113: graph.v1.GetSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	87,  // 114: graph.v1.GetSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	30,  // 115: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
+	11,  // 116: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	94,  // 117: graph.v1.ApplySecurityChangeResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	89,  // 118: graph.v1.GetSecurityChangeStatusRequest.current_change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	87,  // 119: graph.v1.GetSecurityChangeStatusRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	30,  // 120: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
+	11,  // 121: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	94,  // 122: graph.v1.GetSecurityChangeStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	87,  // 123: graph.v1.CurrentSecurityReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	88,  // 124: graph.v1.CurrentSecurityReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
+	89,  // 125: graph.v1.CurrentSecurityReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	21,  // 126: graph.v1.CurrentSecurityReview.actor:type_name -> graph.v1.SecurityIdentity
+	71,  // 127: graph.v1.CurrentSecurityReview.changes:type_name -> graph.v1.SecurityChange
+	15,  // 128: graph.v1.CurrentSecurityItemOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
+	89,  // 129: graph.v1.CurrentSecurityOriginalOutcome.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	91,  // 130: graph.v1.CurrentSecurityOriginalOutcome.commit:type_name -> graph.v1.CurrentControlCommit
+	15,  // 131: graph.v1.CurrentSecurityOriginalOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
+	92,  // 132: graph.v1.CurrentSecurityOriginalOutcome.items:type_name -> graph.v1.CurrentSecurityItemOutcome
+	88,  // 133: graph.v1.CurrentSecurityOriginalOutcome.observed_cut:type_name -> graph.v1.CurrentSemanticCut
+	88,  // 134: graph.v1.CurrentSecurityOriginalOutcome.resulting_cut:type_name -> graph.v1.CurrentSemanticCut
+	87,  // 135: graph.v1.CurrentSecurityChangeResult.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	89,  // 136: graph.v1.CurrentSecurityChangeResult.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	16,  // 137: graph.v1.CurrentSecurityChangeResult.progress:type_name -> graph.v1.CurrentSecurityProgress
+	93,  // 138: graph.v1.CurrentSecurityChangeResult.original:type_name -> graph.v1.CurrentSecurityOriginalOutcome
+	17,  // 139: graph.v1.CurrentSecurityChangeResult.stop_observation:type_name -> graph.v1.CurrentAuthorizationStopObservation
+	94,  // 140: graph.v1.CurrentSecurityAuditRecord.result:type_name -> graph.v1.CurrentSecurityChangeResult
+	87,  // 141: graph.v1.CurrentSecurityInvocationRejected.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	89,  // 142: graph.v1.CurrentSecurityInvocationRejected.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	18,  // 143: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
+	31,  // 144: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
+	37,  // 145: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
+	41,  // 146: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
+	38,  // 147: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
+	43,  // 148: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
+	39,  // 149: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
+	45,  // 150: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
+	65,  // 151: graph.v1.LanternSecurityService.GetRegistrationPolicy:input_type -> graph.v1.GetRegistrationPolicyRequest
+	68,  // 152: graph.v1.LanternSecurityService.GetLogSettings:input_type -> graph.v1.GetLogSettingsRequest
+	50,  // 153: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
+	40,  // 154: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
+	54,  // 155: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
+	57,  // 156: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
+	60,  // 157: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
+	78,  // 158: graph.v1.LanternSecurityService.PrepareSecurityChanges:input_type -> graph.v1.PrepareSecurityChangesRequest
+	80,  // 159: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:input_type -> graph.v1.BeginSecurityChangeAuthorizationRequest
+	82,  // 160: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:input_type -> graph.v1.GetSecurityChangeAuthorizationRequest
+	72,  // 161: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
+	74,  // 162: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
+	85,  // 163: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
+	20,  // 164: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
+	32,  // 165: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
+	47,  // 166: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
+	42,  // 167: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
+	48,  // 168: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
+	44,  // 169: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
+	49,  // 170: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
+	46,  // 171: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
+	66,  // 172: graph.v1.LanternSecurityService.GetRegistrationPolicy:output_type -> graph.v1.GetRegistrationPolicyResponse
+	70,  // 173: graph.v1.LanternSecurityService.GetLogSettings:output_type -> graph.v1.GetLogSettingsResponse
+	51,  // 174: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
+	53,  // 175: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
+	55,  // 176: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
+	59,  // 177: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
+	61,  // 178: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
+	79,  // 179: graph.v1.LanternSecurityService.PrepareSecurityChanges:output_type -> graph.v1.PrepareSecurityChangesResponse
+	81,  // 180: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:output_type -> graph.v1.BeginSecurityChangeAuthorizationResponse
+	83,  // 181: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:output_type -> graph.v1.GetSecurityChangeAuthorizationResponse
+	73,  // 182: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
+	84,  // 183: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
+	86,  // 184: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
+	164, // [164:185] is the sub-list for method output_type
+	143, // [143:164] is the sub-list for method input_type
+	143, // [143:143] is the sub-list for extension type_name
+	143, // [143:143] is the sub-list for extension extendee
+	0,   // [0:143] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_security_proto_init() }
@@ -6861,7 +7525,7 @@ func file_graph_v1_security_proto_init() {
 	file_graph_v1_security_proto_msgTypes[11].OneofWrappers = []any{}
 	file_graph_v1_security_proto_msgTypes[14].OneofWrappers = []any{}
 	file_graph_v1_security_proto_msgTypes[39].OneofWrappers = []any{}
-	file_graph_v1_security_proto_msgTypes[49].OneofWrappers = []any{
+	file_graph_v1_security_proto_msgTypes[53].OneofWrappers = []any{
 		(*SecurityChange_PutIssuer)(nil),
 		(*SecurityChange_DisableIssuer)(nil),
 		(*SecurityChange_DeleteIssuer)(nil),
@@ -6873,14 +7537,15 @@ func file_graph_v1_security_proto_init() {
 		(*SecurityChange_DeleteAssignment)(nil),
 		(*SecurityChange_RevokeUserSessions)(nil),
 		(*SecurityChange_PutRegistrationPolicy)(nil),
+		(*SecurityChange_PutLogPolicy)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_security_proto_rawDesc), len(file_graph_v1_security_proto_rawDesc)),
-			NumEnums:      13,
-			NumMessages:   75,
+			NumEnums:      18,
+			NumMessages:   79,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

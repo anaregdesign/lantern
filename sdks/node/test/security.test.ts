@@ -14,14 +14,217 @@ import {
   parseBrowserSession,
   currentUserId,
   SecurityPrincipalKind,
+  ManagedLogLevel,
+  LogSettingsSource,
+  LogPolicyAdoptionState,
+  LogSettingsApplicationState,
+  LogSettingsError,
 } from "../src/security-types.js";
 import {
   LanternSecurityService,
   SecurityOperationAuthorizationRequiredSchema,
   SecurityChangePrecommitRejectedSchema,
   SecurityChangeRejectionReason,
+  GetLogSettingsResponseSchema,
+  LogPolicyPreparationReferenceSchema,
 } from "../src/gen/graph/v1/security_pb.js";
 import { FailedPreconditionError } from "../src/errors.js";
+
+function logSettingsFixture() {
+  const bytes = (length: number, value: number) => new Uint8Array(length).fill(value);
+  const profile = {
+    version: 2,
+    domain: bytes(32, 1),
+    cohort: bytes(32, 2),
+    generation: bytes(16, 3),
+    protocol: bytes(32, 4),
+    timeProfile: bytes(32, 5),
+    membership: bytes(32, 6),
+    configuration: bytes(32, 7),
+  };
+  const cut = {
+    version: 1,
+    domain: profile.domain,
+    cohort: profile.cohort,
+    generation: profile.generation,
+    sequence: 9n,
+    previous: bytes(32, 0),
+    projection: bytes(32, 8),
+    frontier: bytes(32, 9),
+    fences: bytes(32, 10),
+    policy: bytes(32, 11),
+  };
+  return create(GetLogSettingsResponseSchema, {
+    schemaVersion: 1,
+    member: 1,
+    effectiveLevel: ManagedLogLevel.INFO,
+    source: LogSettingsSource.ENVIRONMENT,
+    adoption: LogPolicyAdoptionState.UNADOPTED,
+    application: LogSettingsApplicationState.APPLIED,
+    error: LogSettingsError.NONE,
+    version: { currentProfile: profile, currentCut: cut, admissionBinding: bytes(32, 12) },
+  });
+}
+
+function logPreparationFixture(settings: ReturnType<typeof logSettingsFixture>) {
+  const profile = settings.version!.currentProfile!;
+  return create(LogPolicyPreparationReferenceSchema, {
+    changeId: {
+      version: 1,
+      domain: profile.domain,
+      cohort: profile.cohort,
+      namespace: 11n,
+      nonce: new Uint8Array(16).fill(3),
+    },
+    intentDigest: new Uint8Array(32).fill(4),
+    actorDigest: new Uint8Array(32).fill(5),
+  });
+}
+
+test("log settings distinguish unadopted, committed pending, installed and local apply failure", async () => {
+  const settings = logSettingsFixture();
+  let calls = 0;
+  const client = SecurityClient.withTransport(
+    createRouterTransport(({ service }) =>
+      service(LanternSecurityService, {
+        getLogSettings: () => {
+          calls++;
+          return settings;
+        },
+      }),
+    ),
+  );
+  expect((await client.getLogSettings()).appliedGeneration).toBe(0n);
+  settings.adoption = LogPolicyAdoptionState.FENCED_UNADOPTED;
+  settings.preparation = logPreparationFixture(settings);
+  expect((await client.getLogSettings()).adoption).toBe(LogPolicyAdoptionState.FENCED_UNADOPTED);
+  settings.desired = {
+    $typeName: "graph.v1.ManagedLogPolicy",
+    version: 1,
+    level: ManagedLogLevel.WARN,
+  };
+  settings.desiredGeneration = 2n;
+  settings.adoption = LogPolicyAdoptionState.MANAGED;
+  settings.application = LogSettingsApplicationState.PENDING;
+  const pending = await client.getLogSettings();
+  expect(pending.effectiveLevel).toBe(ManagedLogLevel.INFO);
+  expect(pending.appliedGeneration).toBe(0n);
+  settings.application = LogSettingsApplicationState.ERROR;
+  settings.error = LogSettingsError.APPLY_FAILED;
+  expect((await client.getLogSettings()).source).toBe(LogSettingsSource.ENVIRONMENT);
+  settings.application = LogSettingsApplicationState.APPLIED;
+  settings.error = LogSettingsError.NONE;
+  settings.effectiveLevel = ManagedLogLevel.WARN;
+  settings.source = LogSettingsSource.MANAGED;
+  settings.appliedGeneration = 2n;
+  settings.appliedCut = settings.version!.currentCut;
+  expect((await client.getLogSettings()).appliedGeneration).toBe(2n);
+  settings.appliedCut = { ...settings.version!.currentCut!, sequence: 8n };
+  expect((await client.getLogSettings()).application).toBe(LogSettingsApplicationState.APPLIED);
+  settings.appliedCut = { ...settings.appliedCut, generation: new Uint8Array(16).fill(99) };
+  await expect(client.getLogSettings()).rejects.toThrow();
+  settings.appliedCut = settings.version!.currentCut;
+  settings.effectiveLevel = ManagedLogLevel.INFO;
+  await expect(client.getLogSettings()).rejects.toThrow();
+  expect(calls).toBe(8);
+});
+
+test("log settings reject unknown schemas and false local application claims", async () => {
+  let settings = logSettingsFixture();
+  const client = SecurityClient.withTransport(
+    createRouterTransport(({ service }) =>
+      service(LanternSecurityService, {
+        getLogSettings: () => settings,
+      }),
+    ),
+  );
+  for (const edit of [
+    () => {
+      settings.schemaVersion = 2;
+    },
+    () => {
+      settings.member = 0;
+    },
+    () => {
+      settings.effectiveLevel = 99;
+    },
+    () => {
+      settings.source = 99;
+    },
+    () => {
+      settings.error = LogSettingsError.UNSPECIFIED;
+    },
+    () => {
+      settings.adoption = LogPolicyAdoptionState.MANAGED;
+    },
+    () => {
+      settings.appliedGeneration = 1n;
+    },
+    () => {
+      settings.source = LogSettingsSource.MANAGED;
+    },
+    () => {
+      settings.appliedCut = settings.version!.currentCut;
+    },
+    () => {
+      settings.application = LogSettingsApplicationState.PENDING;
+    },
+    () => {
+      settings.application = LogSettingsApplicationState.ERROR;
+    },
+    () => {
+      settings.error = LogSettingsError.APPLY_FAILED;
+    },
+    () => {
+      settings.version = undefined;
+    },
+  ]) {
+    settings = logSettingsFixture();
+    edit();
+    await expect(client.getLogSettings()).rejects.toThrow();
+  }
+});
+
+test("fenced log preparation references are complete, bounded and profile-bound", async () => {
+  let settings = logSettingsFixture();
+  const client = SecurityClient.withTransport(
+    createRouterTransport(({ service }) =>
+      service(LanternSecurityService, { getLogSettings: () => settings }),
+    ),
+  );
+  for (const edit of [
+    () => {
+      settings.preparation = undefined;
+    },
+    () => {
+      settings.adoption = LogPolicyAdoptionState.UNADOPTED;
+    },
+    () => {
+      settings.preparation!.changeId = undefined;
+    },
+    () => {
+      settings.preparation!.changeId!.version = 2;
+    },
+    () => {
+      settings.preparation!.changeId!.cohort = new Uint8Array(32).fill(99);
+    },
+    () => {
+      settings.preparation!.changeId!.nonce = new Uint8Array(16);
+    },
+    () => {
+      settings.preparation!.intentDigest = new Uint8Array(31).fill(4);
+    },
+    () => {
+      settings.preparation!.actorDigest = new Uint8Array(32);
+    },
+  ]) {
+    settings = logSettingsFixture();
+    settings.adoption = LogPolicyAdoptionState.FENCED_UNADOPTED;
+    settings.preparation = logPreparationFixture(settings);
+    edit();
+    await expect(client.getLogSettings()).rejects.toThrow();
+  }
+});
 test("Security facade preserves protocol readiness and makes one mutation attempt", async () => {
   let attempts = 0;
   const transport = createRouterTransport(({ service }) =>

@@ -260,16 +260,45 @@ in this tab's dedicated sessionStorage entry across ordinary OIDC login and
 document replacement. History is partitioned by the canonical gateway URL,
 exact Issuer/subject and full authority profile. New cookies, CSRF and policy
 cuts do not rename the original. Restored history requires an authenticated
-original status check before another change, even when it contains a cached
+original status check before another change in that lane, even when it contains a cached
 terminal result; Apply is never resent by restoration. Current-v2 status can
 return the original request-aligned outcomes, which remain separate from
 current grants and the observed stop of new authorizations under earlier policy.
 
-Recovery stores no credentials or purpose proofs. Twenty owners and a one-MiB
+Recovery stores no credentials or purpose proofs. Twenty history slots and a one-MiB
 UTF-8 envelope bound this private metadata; unavailable, corrupt or full storage
 refuses new dispatch rather than dropping an unresolved original. Credential
 expiry and sign-out do not erase it. This is same-tab navigation continuity;
 lost/cleared browser storage is not a server journal or nonexecution proof.
+
+## Managed log level
+
+The **Settings** page manages log level through the existing OIDC control plane
+and `security.manage` permission. OFF keeps startup environment ownership. Until
+explicit adoption, each node uses its startup environment/default; after adoption,
+the committed policy survives restart and environment changes cannot replace it.
+Log format, listeners and secrets remain outside this screen.
+
+Choose a level, review the change and apply it. First adoption requires every
+enrolled participant and can prevent an older Server version from restarting,
+even if the final policy is not committed. A prepared-but-unadopted node shows
+that restriction and the original preparation change ID. Rollback selects a prior
+level through another reviewed change; it does not reset ownership to environment.
+
+The desired policy is shared; effective value, source and applied generation
+describe only the connected node. A committed change does not prove local
+application. Current settings remain readable while an original response is
+unknown, but matching values do not settle that original. Check its retained
+status before another logging change; restoration never resends Apply.
+
+Logging has one fixed lane in the same app recovery store, so its unresolved
+original does not lock the security lane. New logging work reserves its matching
+security history slot, including when replacing a confirmed logging original.
+An unresolved security original can still block a new logging dispatch. Existing
+original IDs remain intact when capacity or a write fails, and already-loaded
+originals remain available for status checks. Arbitrarily full or corrupt browser
+storage cannot guarantee a new dispatch.
+See [ADR 0013](../docs/decisions/0013-managed-operational-settings.md).
 
 ## Fixed Server and diagnostics proxy
 

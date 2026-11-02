@@ -75,6 +75,14 @@ abstract final class LanternSecurityService {
     graphv1security.GetRegistrationPolicyResponse.new,
   );
 
+  /// Contacted-node application state; a committed policy is not all-node application.
+  static const getLogSettings = connect.Spec(
+    '/$name/GetLogSettings',
+    connect.StreamType.unary,
+    graphv1security.GetLogSettingsRequest.new,
+    graphv1security.GetLogSettingsResponse.new,
+  );
+
   static const listRoleAssignments = connect.Spec(
     '/$name/ListRoleAssignments',
     connect.StreamType.unary,

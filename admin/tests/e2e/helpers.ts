@@ -4,6 +4,7 @@ import {
   CurrentAuthorityProfileSchema,
   CurrentSecurityReviewSchema,
   CurrentSecurityChangeResultSchema,
+  CurrentSecurityChangeIDSchema,
   SecurityVersionSchema,
   CurrentSecurityDisposition,
   CurrentAuthorizationStopObservation,
@@ -112,9 +113,16 @@ export async function securityUI(
     apply?: "conflict" | "lost" | "unknown-role-once" | "generic-conflict";
     status?: "pending-then-enforced" | "unknown" | "mismatch";
     denied?: boolean;
+    readOnly?: boolean;
+    logRecoveryAfterRevocation?: boolean;
     reauthentication?: boolean;
     roles?: Array<Record<string, unknown>>;
     uidRole?: boolean;
+    logSettings?: {
+      adoption?: "unadopted" | "fenced" | "managed";
+      application?: "pending" | "applied" | "error";
+      source?: "default" | "environment";
+    };
   } = {},
 ) {
   const calls: Array<{
@@ -134,6 +142,12 @@ export async function securityUI(
     mismatch = false,
   ) => {
     const value = makeResult(review, undefined, disposition);
+    value.original?.items.forEach((item, index) => {
+      if (review.changes[index]?.operation.case === "putLogPolicy")
+        item.kind = "log_policy.put";
+      if (review.changes[index]?.operation.case === "revokeUserSessions")
+        item.kind = "session.revoke_user";
+    });
     if (stopped && disposition === CurrentSecurityDisposition.APPLIED)
       value.stopObservation =
         CurrentAuthorizationStopObservation.OLD_CUT_NEW_AUTHORIZATIONS_STOPPED;
@@ -143,6 +157,15 @@ export async function securityUI(
   let signedIn = options.mode !== "login";
   let statusCalls = 0;
   let applyCalls = 0;
+  let managedLogLevel = options.logSettings?.adoption === "managed" ? 3 : 0;
+  let logPreparationReview =
+    options.logSettings?.adoption === "managed" ||
+    options.logSettings?.adoption === "fenced"
+      ? makeReview(23)
+      : undefined;
+  let logApplicationReads = 0;
+  let unresolvedLogReview: CurrentSecurityReview | undefined;
+  let securityRevocationApplied = false;
   const primary = "https://admin.example";
   let approved = false;
   const authorizationPath = "/auth/management-authorization/" + "A".repeat(43);
@@ -179,7 +202,7 @@ export async function securityUI(
               mode: "AUTH_MODE_OIDC",
               protocolVersion: 2,
               currentProfile: profile,
-              currentOriginEnabled: true,
+              currentOriginEnabled: options.readOnly !== true,
               currentMember: 1,
               ready: options.mode !== "unavailable",
               loginPath: "/auth/login",
@@ -240,6 +263,57 @@ export async function securityUI(
       });
       if (options.denied)
         return json({ code: "permission_denied", message: "Denied" }, 403);
+      if (method === "GetLogSettings") {
+        const managed = managedLogLevel !== 0;
+        const pending =
+          managed &&
+          options.logSettings?.application === "pending" &&
+          logApplicationReads++ === 0;
+        const failed = managed && options.logSettings?.application === "error";
+        return json({
+          schemaVersion: 1,
+          member: 1,
+          version,
+          effectiveLevel: managed && !pending && !failed ? managedLogLevel : 2,
+          source:
+            managed && !pending && !failed
+              ? "LOG_SETTINGS_SOURCE_MANAGED"
+              : options.logSettings?.source === "default"
+                ? "LOG_SETTINGS_SOURCE_DEFAULT"
+                : "LOG_SETTINGS_SOURCE_ENVIRONMENT",
+          desired: managed ? { version: 1, level: managedLogLevel } : undefined,
+          desiredGeneration: managed ? "1" : "0",
+          appliedGeneration: managed && !pending && !failed ? "1" : "0",
+          appliedCut:
+            managed && !pending && !failed
+              ? (version as Record<string, unknown>).currentCut
+              : undefined,
+          adoption: managed
+            ? "LOG_POLICY_ADOPTION_STATE_MANAGED"
+            : logPreparationReview
+              ? "LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED"
+              : "LOG_POLICY_ADOPTION_STATE_UNADOPTED",
+          application: pending
+            ? "LOG_SETTINGS_APPLICATION_STATE_PENDING"
+            : failed
+              ? "LOG_SETTINGS_APPLICATION_STATE_ERROR"
+              : "LOG_SETTINGS_APPLICATION_STATE_APPLIED",
+          error: failed
+            ? "LOG_SETTINGS_ERROR_APPLY_FAILED"
+            : "LOG_SETTINGS_ERROR_NONE",
+          restartRequired: false,
+          preparation: logPreparationReview
+            ? {
+                changeId: toJson(
+                  CurrentSecurityChangeIDSchema,
+                  logPreparationReview.changeId!,
+                ),
+                intentDigest: bytesToBase64(new Uint8Array(32).fill(24)),
+                actorDigest: bytesToBase64(new Uint8Array(32).fill(25)),
+              }
+            : undefined,
+        });
+      }
       if (method === "ListRoles")
         return json({
           version,
@@ -342,6 +416,23 @@ export async function securityUI(
                 : CurrentSecurityDisposition.REJECTED_INVARIANT,
             ),
           });
+        const logPolicy = reviewed.changes.find(
+          (change) => change.operation.case === "putLogPolicy",
+        );
+        if (logPolicy && !logPreparationReview) logPreparationReview = reviewed;
+        if (options.logRecoveryAfterRevocation && logPolicy) {
+          unresolvedLogReview = reviewed;
+          return route.abort("failed");
+        }
+        if (
+          options.logRecoveryAfterRevocation &&
+          reviewed.changes.some(
+            (change) => change.operation.case === "revokeUserSessions",
+          )
+        )
+          securityRevocationApplied = true;
+        if (logPolicy?.operation.case === "putLogPolicy")
+          managedLogLevel = logPolicy.operation.value.level;
         if (options.apply === "lost") return route.abort("failed");
         return json({ currentResult: wireResult(reviewed) });
       }
@@ -388,6 +479,33 @@ export async function securityUI(
         });
       if (method === "GetSecurityChangeStatus") {
         statusCalls++;
+        if (options.logRecoveryAfterRevocation && unresolvedLogReview) {
+          const requestedId = body.currentChangeId as
+            | { namespace?: string; nonce?: string }
+            | undefined;
+          const originalId = unresolvedLogReview.changeId!;
+          if (
+            String(requestedId?.namespace) === String(originalId.namespace) &&
+            requestedId?.nonce ===
+              Buffer.from(originalId.nonce).toString("base64")
+          ) {
+            if (!securityRevocationApplied)
+              return json(
+                {
+                  code: "failed_precondition",
+                  message: "Original is unresolved",
+                },
+                412,
+              );
+            return json({
+              currentResult: wireResult(
+                unresolvedLogReview,
+                false,
+                CurrentSecurityDisposition.REJECTED_CAS,
+              ),
+            });
+          }
+        }
         if (options.status === "unknown")
           return json(
             {

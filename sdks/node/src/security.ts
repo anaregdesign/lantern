@@ -1,5 +1,5 @@
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
-import { currentUserId } from "./security-types.js";
+import { currentUserId, validateLogSettings } from "./security-types.js";
 import {
   copySecurityContract,
   currentOriginalBinding,
@@ -30,6 +30,7 @@ import {
   GetAuthCapabilitiesRequestSchema,
   GetCurrentPrincipalRequestSchema,
   GetRegistrationPolicyRequestSchema,
+  GetLogSettingsRequestSchema,
   GetIssuerRequestSchema,
   GetRoleRequestSchema,
   GetRoleTemplatesRequestSchema,
@@ -197,6 +198,14 @@ export class SecurityClient {
     options?: CallOptions,
   ) {
     return this.invoke(() => this.client.getRegistrationPolicy(request, options));
+  }
+  async getLogSettings(
+    request: MessageInitShape<typeof GetLogSettingsRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    const response = await this.invoke(() => this.client.getLogSettings(request, options));
+    validateLogSettings(response);
+    return response;
   }
   listIssuers(
     request: MessageInitShape<typeof ListIssuersRequestSchema> = {},

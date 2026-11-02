@@ -136,6 +136,97 @@ final $typed_data.Uint8List nativeClientKindDescriptor = $convert.base64Decode(
     'X0tJTkRfQVBQTEVfTkFUSVZFEAISKAokTkFUSVZFX0NMSUVOVF9LSU5EX0FQUExFX0FORFJPSU'
     'RfV0VCEAM=');
 
+@$core.Deprecated('Use managedLogLevelDescriptor instead')
+const ManagedLogLevel$json = {
+  '1': 'ManagedLogLevel',
+  '2': [
+    {'1': 'MANAGED_LOG_LEVEL_UNSPECIFIED', '2': 0},
+    {'1': 'MANAGED_LOG_LEVEL_DEBUG', '2': 1},
+    {'1': 'MANAGED_LOG_LEVEL_INFO', '2': 2},
+    {'1': 'MANAGED_LOG_LEVEL_WARN', '2': 3},
+    {'1': 'MANAGED_LOG_LEVEL_ERROR', '2': 4},
+  ],
+};
+
+/// Descriptor for `ManagedLogLevel`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List managedLogLevelDescriptor = $convert.base64Decode(
+    'Cg9NYW5hZ2VkTG9nTGV2ZWwSIQodTUFOQUdFRF9MT0dfTEVWRUxfVU5TUEVDSUZJRUQQABIbCh'
+    'dNQU5BR0VEX0xPR19MRVZFTF9ERUJVRxABEhoKFk1BTkFHRURfTE9HX0xFVkVMX0lORk8QAhIa'
+    'ChZNQU5BR0VEX0xPR19MRVZFTF9XQVJOEAMSGwoXTUFOQUdFRF9MT0dfTEVWRUxfRVJST1IQBA'
+    '==');
+
+@$core.Deprecated('Use logSettingsSourceDescriptor instead')
+const LogSettingsSource$json = {
+  '1': 'LogSettingsSource',
+  '2': [
+    {'1': 'LOG_SETTINGS_SOURCE_UNSPECIFIED', '2': 0},
+    {'1': 'LOG_SETTINGS_SOURCE_DEFAULT', '2': 1},
+    {'1': 'LOG_SETTINGS_SOURCE_ENVIRONMENT', '2': 2},
+    {'1': 'LOG_SETTINGS_SOURCE_MANAGED', '2': 3},
+  ],
+};
+
+/// Descriptor for `LogSettingsSource`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List logSettingsSourceDescriptor = $convert.base64Decode(
+    'ChFMb2dTZXR0aW5nc1NvdXJjZRIjCh9MT0dfU0VUVElOR1NfU09VUkNFX1VOU1BFQ0lGSUVEEA'
+    'ASHwobTE9HX1NFVFRJTkdTX1NPVVJDRV9ERUZBVUxUEAESIwofTE9HX1NFVFRJTkdTX1NPVVJD'
+    'RV9FTlZJUk9OTUVOVBACEh8KG0xPR19TRVRUSU5HU19TT1VSQ0VfTUFOQUdFRBAD');
+
+@$core.Deprecated('Use logPolicyAdoptionStateDescriptor instead')
+const LogPolicyAdoptionState$json = {
+  '1': 'LogPolicyAdoptionState',
+  '2': [
+    {'1': 'LOG_POLICY_ADOPTION_STATE_UNSPECIFIED', '2': 0},
+    {'1': 'LOG_POLICY_ADOPTION_STATE_UNADOPTED', '2': 1},
+    {'1': 'LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED', '2': 2},
+    {'1': 'LOG_POLICY_ADOPTION_STATE_MANAGED', '2': 3},
+  ],
+};
+
+/// Descriptor for `LogPolicyAdoptionState`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List logPolicyAdoptionStateDescriptor = $convert.base64Decode(
+    'ChZMb2dQb2xpY3lBZG9wdGlvblN0YXRlEikKJUxPR19QT0xJQ1lfQURPUFRJT05fU1RBVEVfVU'
+    '5TUEVDSUZJRUQQABInCiNMT0dfUE9MSUNZX0FET1BUSU9OX1NUQVRFX1VOQURPUFRFRBABEi4K'
+    'KkxPR19QT0xJQ1lfQURPUFRJT05fU1RBVEVfRkVOQ0VEX1VOQURPUFRFRBACEiUKIUxPR19QT0'
+    'xJQ1lfQURPUFRJT05fU1RBVEVfTUFOQUdFRBAD');
+
+@$core.Deprecated('Use logSettingsApplicationStateDescriptor instead')
+const LogSettingsApplicationState$json = {
+  '1': 'LogSettingsApplicationState',
+  '2': [
+    {'1': 'LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED', '2': 0},
+    {'1': 'LOG_SETTINGS_APPLICATION_STATE_APPLIED', '2': 1},
+    {'1': 'LOG_SETTINGS_APPLICATION_STATE_PENDING', '2': 2},
+    {'1': 'LOG_SETTINGS_APPLICATION_STATE_ERROR', '2': 3},
+  ],
+};
+
+/// Descriptor for `LogSettingsApplicationState`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List logSettingsApplicationStateDescriptor = $convert.base64Decode(
+    'ChtMb2dTZXR0aW5nc0FwcGxpY2F0aW9uU3RhdGUSLgoqTE9HX1NFVFRJTkdTX0FQUExJQ0FUSU'
+    '9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASKgomTE9HX1NFVFRJTkdTX0FQUExJQ0FUSU9OX1NUQVRF'
+    'X0FQUExJRUQQARIqCiZMT0dfU0VUVElOR1NfQVBQTElDQVRJT05fU1RBVEVfUEVORElORxACEi'
+    'gKJExPR19TRVRUSU5HU19BUFBMSUNBVElPTl9TVEFURV9FUlJPUhAD');
+
+@$core.Deprecated('Use logSettingsErrorDescriptor instead')
+const LogSettingsError$json = {
+  '1': 'LogSettingsError',
+  '2': [
+    {'1': 'LOG_SETTINGS_ERROR_UNSPECIFIED', '2': 0},
+    {'1': 'LOG_SETTINGS_ERROR_NONE', '2': 1},
+    {'1': 'LOG_SETTINGS_ERROR_INVALID_POLICY', '2': 2},
+    {'1': 'LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE', '2': 3},
+    {'1': 'LOG_SETTINGS_ERROR_APPLY_FAILED', '2': 4},
+  ],
+};
+
+/// Descriptor for `LogSettingsError`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List logSettingsErrorDescriptor = $convert.base64Decode(
+    'ChBMb2dTZXR0aW5nc0Vycm9yEiIKHkxPR19TRVRUSU5HU19FUlJPUl9VTlNQRUNJRklFRBAAEh'
+    'sKF0xPR19TRVRUSU5HU19FUlJPUl9OT05FEAESJQohTE9HX1NFVFRJTkdTX0VSUk9SX0lOVkFM'
+    'SURfUE9MSUNZEAISKAokTE9HX1NFVFRJTkdTX0VSUk9SX09XTkVSX1VOQVZBSUxBQkxFEAMSIw'
+    'ofTE9HX1NFVFRJTkdTX0VSUk9SX0FQUExZX0ZBSUxFRBAE');
+
 @$core.Deprecated('Use securityEnforcementStateDescriptor instead')
 const SecurityEnforcementState$json = {
   '1': 'SecurityEnforcementState',
@@ -1702,6 +1793,173 @@ final $typed_data.Uint8List getRegistrationPolicyResponseDescriptor =
         '52MS5TZWN1cml0eVJlZ2lzdHJhdGlvblBvbGljeVIGcG9saWN5EjMKB3ZlcnNpb24YAiABKAsy'
         'GS5ncmFwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24=');
 
+@$core.Deprecated('Use managedLogPolicyDescriptor instead')
+const ManagedLogPolicy$json = {
+  '1': 'ManagedLogPolicy',
+  '2': [
+    {'1': 'version', '3': 1, '4': 1, '5': 13, '10': 'version'},
+    {
+      '1': 'level',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.ManagedLogLevel',
+      '10': 'level'
+    },
+  ],
+};
+
+/// Descriptor for `ManagedLogPolicy`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List managedLogPolicyDescriptor = $convert.base64Decode(
+    'ChBNYW5hZ2VkTG9nUG9saWN5EhgKB3ZlcnNpb24YASABKA1SB3ZlcnNpb24SLwoFbGV2ZWwYAi'
+    'ABKA4yGS5ncmFwaC52MS5NYW5hZ2VkTG9nTGV2ZWxSBWxldmVs');
+
+@$core.Deprecated('Use getLogSettingsRequestDescriptor instead')
+const GetLogSettingsRequest$json = {
+  '1': 'GetLogSettingsRequest',
+};
+
+/// Descriptor for `GetLogSettingsRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getLogSettingsRequestDescriptor =
+    $convert.base64Decode('ChVHZXRMb2dTZXR0aW5nc1JlcXVlc3Q=');
+
+@$core.Deprecated('Use logPolicyPreparationReferenceDescriptor instead')
+const LogPolicyPreparationReference$json = {
+  '1': 'LogPolicyPreparationReference',
+  '2': [
+    {
+      '1': 'change_id',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSecurityChangeID',
+      '10': 'changeId'
+    },
+    {'1': 'intent_digest', '3': 2, '4': 1, '5': 12, '10': 'intentDigest'},
+    {'1': 'actor_digest', '3': 3, '4': 1, '5': 12, '10': 'actorDigest'},
+  ],
+};
+
+/// Descriptor for `LogPolicyPreparationReference`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List logPolicyPreparationReferenceDescriptor = $convert.base64Decode(
+    'Ch1Mb2dQb2xpY3lQcmVwYXJhdGlvblJlZmVyZW5jZRI+CgljaGFuZ2VfaWQYASABKAsyIS5ncm'
+    'FwaC52MS5DdXJyZW50U2VjdXJpdHlDaGFuZ2VJRFIIY2hhbmdlSWQSIwoNaW50ZW50X2RpZ2Vz'
+    'dBgCIAEoDFIMaW50ZW50RGlnZXN0EiEKDGFjdG9yX2RpZ2VzdBgDIAEoDFILYWN0b3JEaWdlc3'
+    'Q=');
+
+@$core.Deprecated('Use getLogSettingsResponseDescriptor instead')
+const GetLogSettingsResponse$json = {
+  '1': 'GetLogSettingsResponse',
+  '2': [
+    {'1': 'schema_version', '3': 1, '4': 1, '5': 13, '10': 'schemaVersion'},
+    {'1': 'member', '3': 2, '4': 1, '5': 13, '10': 'member'},
+    {
+      '1': 'effective_level',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.ManagedLogLevel',
+      '10': 'effectiveLevel'
+    },
+    {
+      '1': 'source',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.LogSettingsSource',
+      '10': 'source'
+    },
+    {
+      '1': 'desired',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ManagedLogPolicy',
+      '10': 'desired'
+    },
+    {
+      '1': 'desired_generation',
+      '3': 6,
+      '4': 1,
+      '5': 4,
+      '10': 'desiredGeneration'
+    },
+    {
+      '1': 'applied_generation',
+      '3': 7,
+      '4': 1,
+      '5': 4,
+      '10': 'appliedGeneration'
+    },
+    {
+      '1': 'adoption',
+      '3': 8,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.LogPolicyAdoptionState',
+      '10': 'adoption'
+    },
+    {
+      '1': 'application',
+      '3': 9,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.LogSettingsApplicationState',
+      '10': 'application'
+    },
+    {
+      '1': 'error',
+      '3': 10,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.LogSettingsError',
+      '10': 'error'
+    },
+    {'1': 'restart_required', '3': 11, '4': 1, '5': 8, '10': 'restartRequired'},
+    {
+      '1': 'version',
+      '3': 12,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'version'
+    },
+    {
+      '1': 'applied_cut',
+      '3': 13,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSemanticCut',
+      '10': 'appliedCut'
+    },
+    {
+      '1': 'preparation',
+      '3': 14,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.LogPolicyPreparationReference',
+      '10': 'preparation'
+    },
+  ],
+};
+
+/// Descriptor for `GetLogSettingsResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getLogSettingsResponseDescriptor = $convert.base64Decode(
+    'ChZHZXRMb2dTZXR0aW5nc1Jlc3BvbnNlEiUKDnNjaGVtYV92ZXJzaW9uGAEgASgNUg1zY2hlbW'
+    'FWZXJzaW9uEhYKBm1lbWJlchgCIAEoDVIGbWVtYmVyEkIKD2VmZmVjdGl2ZV9sZXZlbBgDIAEo'
+    'DjIZLmdyYXBoLnYxLk1hbmFnZWRMb2dMZXZlbFIOZWZmZWN0aXZlTGV2ZWwSMwoGc291cmNlGA'
+    'QgASgOMhsuZ3JhcGgudjEuTG9nU2V0dGluZ3NTb3VyY2VSBnNvdXJjZRI0CgdkZXNpcmVkGAUg'
+    'ASgLMhouZ3JhcGgudjEuTWFuYWdlZExvZ1BvbGljeVIHZGVzaXJlZBItChJkZXNpcmVkX2dlbm'
+    'VyYXRpb24YBiABKARSEWRlc2lyZWRHZW5lcmF0aW9uEi0KEmFwcGxpZWRfZ2VuZXJhdGlvbhgH'
+    'IAEoBFIRYXBwbGllZEdlbmVyYXRpb24SPAoIYWRvcHRpb24YCCABKA4yIC5ncmFwaC52MS5Mb2'
+    'dQb2xpY3lBZG9wdGlvblN0YXRlUghhZG9wdGlvbhJHCgthcHBsaWNhdGlvbhgJIAEoDjIlLmdy'
+    'YXBoLnYxLkxvZ1NldHRpbmdzQXBwbGljYXRpb25TdGF0ZVILYXBwbGljYXRpb24SMAoFZXJyb3'
+    'IYCiABKA4yGi5ncmFwaC52MS5Mb2dTZXR0aW5nc0Vycm9yUgVlcnJvchIpChByZXN0YXJ0X3Jl'
+    'cXVpcmVkGAsgASgIUg9yZXN0YXJ0UmVxdWlyZWQSMwoHdmVyc2lvbhgMIAEoCzIZLmdyYXBoLn'
+    'YxLlNlY3VyaXR5VmVyc2lvblIHdmVyc2lvbhI9CgthcHBsaWVkX2N1dBgNIAEoCzIcLmdyYXBo'
+    'LnYxLkN1cnJlbnRTZW1hbnRpY0N1dFIKYXBwbGllZEN1dBJJCgtwcmVwYXJhdGlvbhgOIAEoCz'
+    'InLmdyYXBoLnYxLkxvZ1BvbGljeVByZXBhcmF0aW9uUmVmZXJlbmNlUgtwcmVwYXJhdGlvbg==');
+
 @$core.Deprecated('Use securityChangeDescriptor instead')
 const SecurityChange$json = {
   '1': 'SecurityChange',
@@ -1795,6 +2053,15 @@ const SecurityChange$json = {
       '9': 0,
       '10': 'putRegistrationPolicy'
     },
+    {
+      '1': 'put_log_policy',
+      '3': 12,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ManagedLogPolicy',
+      '9': 0,
+      '10': 'putLogPolicy'
+    },
   ],
   '8': [
     {'1': 'operation'},
@@ -1815,7 +2082,9 @@ final $typed_data.Uint8List securityChangeDescriptor = $convert.base64Decode(
     'lnbm1lbnRIAFIQZGVsZXRlQXNzaWdubWVudBJOChRyZXZva2VfdXNlcl9zZXNzaW9ucxgKIAEo'
     'CzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHlIAFIScmV2b2tlVXNlclNlc3Npb25zEl4KF3'
     'B1dF9yZWdpc3RyYXRpb25fcG9saWN5GAsgASgLMiQuZ3JhcGgudjEuU2VjdXJpdHlSZWdpc3Ry'
-    'YXRpb25Qb2xpY3lIAFIVcHV0UmVnaXN0cmF0aW9uUG9saWN5QgsKCW9wZXJhdGlvbg==');
+    'YXRpb25Qb2xpY3lIAFIVcHV0UmVnaXN0cmF0aW9uUG9saWN5EkIKDnB1dF9sb2dfcG9saWN5GA'
+    'wgASgLMhouZ3JhcGgudjEuTWFuYWdlZExvZ1BvbGljeUgAUgxwdXRMb2dQb2xpY3lCCwoJb3Bl'
+    'cmF0aW9u');
 
 @$core.Deprecated('Use applySecurityChangesRequestDescriptor instead')
 const ApplySecurityChangesRequest$json = {
@@ -2799,6 +3068,11 @@ const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
       '3': '.graph.v1.GetRegistrationPolicyResponse'
     },
     {
+      '1': 'GetLogSettings',
+      '2': '.graph.v1.GetLogSettingsRequest',
+      '3': '.graph.v1.GetLogSettingsResponse'
+    },
+    {
       '1': 'ListRoleAssignments',
       '2': '.graph.v1.ListRoleAssignmentsRequest',
       '3': '.graph.v1.ListRoleAssignmentsResponse'
@@ -2893,6 +3167,11 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetRegistrationPolicyResponse': GetRegistrationPolicyResponse$json,
   '.graph.v1.SecurityRegistrationPolicy': SecurityRegistrationPolicy$json,
   '.graph.v1.SecurityRegistrationProfile': SecurityRegistrationProfile$json,
+  '.graph.v1.GetLogSettingsRequest': GetLogSettingsRequest$json,
+  '.graph.v1.GetLogSettingsResponse': GetLogSettingsResponse$json,
+  '.graph.v1.ManagedLogPolicy': ManagedLogPolicy$json,
+  '.graph.v1.LogPolicyPreparationReference': LogPolicyPreparationReference$json,
+  '.graph.v1.CurrentSecurityChangeID': CurrentSecurityChangeID$json,
   '.graph.v1.ListRoleAssignmentsRequest': ListRoleAssignmentsRequest$json,
   '.graph.v1.ListRoleAssignmentsResponse': ListRoleAssignmentsResponse$json,
   '.graph.v1.ListSecurityAuditRequest': ListSecurityAuditRequest$json,
@@ -2900,7 +3179,6 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SecurityAuditRecord': SecurityAuditRecord$json,
   '.graph.v1.CurrentSecurityAuditRecord': CurrentSecurityAuditRecord$json,
   '.graph.v1.CurrentSecurityChangeResult': CurrentSecurityChangeResult$json,
-  '.graph.v1.CurrentSecurityChangeID': CurrentSecurityChangeID$json,
   '.graph.v1.CurrentSecurityOriginalOutcome':
       CurrentSecurityOriginalOutcome$json,
   '.graph.v1.CurrentControlCommit': CurrentControlCommit$json,
@@ -2953,25 +3231,26 @@ final $typed_data.Uint8List lanternSecurityServiceDescriptor = $convert.base64De
     'MS5MaXN0VXNlcnNSZXNwb25zZRI+CgdHZXRVc2VyEhguZ3JhcGgudjEuR2V0VXNlclJlcXVlc3'
     'QaGS5ncmFwaC52MS5HZXRVc2VyUmVzcG9uc2USaAoVR2V0UmVnaXN0cmF0aW9uUG9saWN5EiYu'
     'Z3JhcGgudjEuR2V0UmVnaXN0cmF0aW9uUG9saWN5UmVxdWVzdBonLmdyYXBoLnYxLkdldFJlZ2'
-    'lzdHJhdGlvblBvbGljeVJlc3BvbnNlEmIKE0xpc3RSb2xlQXNzaWdubWVudHMSJC5ncmFwaC52'
-    'MS5MaXN0Um9sZUFzc2lnbm1lbnRzUmVxdWVzdBolLmdyYXBoLnYxLkxpc3RSb2xlQXNzaWdubW'
-    'VudHNSZXNwb25zZRJcChFMaXN0U2VjdXJpdHlBdWRpdBIiLmdyYXBoLnYxLkxpc3RTZWN1cml0'
-    'eUF1ZGl0UmVxdWVzdBojLmdyYXBoLnYxLkxpc3RTZWN1cml0eUF1ZGl0UmVzcG9uc2USWQoQR2'
-    'V0Um9sZVRlbXBsYXRlcxIhLmdyYXBoLnYxLkdldFJvbGVUZW1wbGF0ZXNSZXF1ZXN0GiIuZ3Jh'
-    'cGgudjEuR2V0Um9sZVRlbXBsYXRlc1Jlc3BvbnNlElAKDUV4cGxhaW5BY2Nlc3MSHi5ncmFwaC'
-    '52MS5FeHBsYWluQWNjZXNzUmVxdWVzdBofLmdyYXBoLnYxLkV4cGxhaW5BY2Nlc3NSZXNwb25z'
-    'ZRJTCg5WYWxpZGF0ZUlzc3VlchIfLmdyYXBoLnYxLlZhbGlkYXRlSXNzdWVyUmVxdWVzdBogLm'
-    'dyYXBoLnYxLlZhbGlkYXRlSXNzdWVyUmVzcG9uc2USawoWUHJlcGFyZVNlY3VyaXR5Q2hhbmdl'
-    'cxInLmdyYXBoLnYxLlByZXBhcmVTZWN1cml0eUNoYW5nZXNSZXF1ZXN0GiguZ3JhcGgudjEuUH'
-    'JlcGFyZVNlY3VyaXR5Q2hhbmdlc1Jlc3BvbnNlEokBCiBCZWdpblNlY3VyaXR5Q2hhbmdlQXV0'
-    'aG9yaXphdGlvbhIxLmdyYXBoLnYxLkJlZ2luU2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUm'
-    'VxdWVzdBoyLmdyYXBoLnYxLkJlZ2luU2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVzcG9u'
-    'c2USgwEKHkdldFNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvbhIvLmdyYXBoLnYxLkdldFNlY3'
-    'VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlcXVlc3QaMC5ncmFwaC52MS5HZXRTZWN1cml0eUNo'
-    'YW5nZUF1dGhvcml6YXRpb25SZXNwb25zZRJlChRBcHBseVNlY3VyaXR5Q2hhbmdlcxIlLmdyYX'
-    'BoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VzUmVxdWVzdBomLmdyYXBoLnYxLkFwcGx5U2VjdXJp'
-    'dHlDaGFuZ2VzUmVzcG9uc2USYgoTQXBwbHlTZWN1cml0eUNoYW5nZRIkLmdyYXBoLnYxLkFwcG'
-    'x5U2VjdXJpdHlDaGFuZ2VSZXF1ZXN0GiUuZ3JhcGgudjEuQXBwbHlTZWN1cml0eUNoYW5nZVJl'
-    'c3BvbnNlEm4KF0dldFNlY3VyaXR5Q2hhbmdlU3RhdHVzEiguZ3JhcGgudjEuR2V0U2VjdXJpdH'
-    'lDaGFuZ2VTdGF0dXNSZXF1ZXN0GikuZ3JhcGgudjEuR2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXNS'
-    'ZXNwb25zZQ==');
+    'lzdHJhdGlvblBvbGljeVJlc3BvbnNlElMKDkdldExvZ1NldHRpbmdzEh8uZ3JhcGgudjEuR2V0'
+    'TG9nU2V0dGluZ3NSZXF1ZXN0GiAuZ3JhcGgudjEuR2V0TG9nU2V0dGluZ3NSZXNwb25zZRJiCh'
+    'NMaXN0Um9sZUFzc2lnbm1lbnRzEiQuZ3JhcGgudjEuTGlzdFJvbGVBc3NpZ25tZW50c1JlcXVl'
+    'c3QaJS5ncmFwaC52MS5MaXN0Um9sZUFzc2lnbm1lbnRzUmVzcG9uc2USXAoRTGlzdFNlY3VyaX'
+    'R5QXVkaXQSIi5ncmFwaC52MS5MaXN0U2VjdXJpdHlBdWRpdFJlcXVlc3QaIy5ncmFwaC52MS5M'
+    'aXN0U2VjdXJpdHlBdWRpdFJlc3BvbnNlElkKEEdldFJvbGVUZW1wbGF0ZXMSIS5ncmFwaC52MS'
+    '5HZXRSb2xlVGVtcGxhdGVzUmVxdWVzdBoiLmdyYXBoLnYxLkdldFJvbGVUZW1wbGF0ZXNSZXNw'
+    'b25zZRJQCg1FeHBsYWluQWNjZXNzEh4uZ3JhcGgudjEuRXhwbGFpbkFjY2Vzc1JlcXVlc3QaHy'
+    '5ncmFwaC52MS5FeHBsYWluQWNjZXNzUmVzcG9uc2USUwoOVmFsaWRhdGVJc3N1ZXISHy5ncmFw'
+    'aC52MS5WYWxpZGF0ZUlzc3VlclJlcXVlc3QaIC5ncmFwaC52MS5WYWxpZGF0ZUlzc3VlclJlc3'
+    'BvbnNlEmsKFlByZXBhcmVTZWN1cml0eUNoYW5nZXMSJy5ncmFwaC52MS5QcmVwYXJlU2VjdXJp'
+    'dHlDaGFuZ2VzUmVxdWVzdBooLmdyYXBoLnYxLlByZXBhcmVTZWN1cml0eUNoYW5nZXNSZXNwb2'
+    '5zZRKJAQogQmVnaW5TZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb24SMS5ncmFwaC52MS5CZWdp'
+    'blNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlcXVlc3QaMi5ncmFwaC52MS5CZWdpblNlY3'
+    'VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlc3BvbnNlEoMBCh5HZXRTZWN1cml0eUNoYW5nZUF1'
+    'dGhvcml6YXRpb24SLy5ncmFwaC52MS5HZXRTZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25SZX'
+    'F1ZXN0GjAuZ3JhcGgudjEuR2V0U2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVzcG9uc2US'
+    'ZQoUQXBwbHlTZWN1cml0eUNoYW5nZXMSJS5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hhbmdlc1'
+    'JlcXVlc3QaJi5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hhbmdlc1Jlc3BvbnNlEmIKE0FwcGx5'
+    'U2VjdXJpdHlDaGFuZ2USJC5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hhbmdlUmVxdWVzdBolLm'
+    'dyYXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VSZXNwb25zZRJuChdHZXRTZWN1cml0eUNoYW5n'
+    'ZVN0YXR1cxIoLmdyYXBoLnYxLkdldFNlY3VyaXR5Q2hhbmdlU3RhdHVzUmVxdWVzdBopLmdyYX'
+    'BoLnYxLkdldFNlY3VyaXR5Q2hhbmdlU3RhdHVzUmVzcG9uc2U=');

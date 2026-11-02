@@ -1,6 +1,7 @@
 # ADR 0013: Managed operational settings
 
-Status: accepted direction; staged implementation, not a shipped management API.
+Status: log-level pilot implemented. Qualification evidence is tracked in
+[Issue #1995](https://github.com/anaregdesign/lantern/issues/1995).
 Tracking: [Epic #1990](https://github.com/anaregdesign/lantern/issues/1990).
 Baseline: `196dc9bcaf2f94ef3b94de6059367b2da8cf73de`.
 

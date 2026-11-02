@@ -71,6 +71,10 @@ func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.Res
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	configuredSourceIntegration := os.Getenv("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION") == "1"
+	adminBrowser := os.Getenv("LANTERN_CURRENT_ADMIN_BROWSER") == "1"
+	if adminBrowser && configuredSourceIntegration {
+		t.Fatal("managed Admin browser proof requires controlled functional validation")
+	}
 	serving, servingErr := nativeFixtureServingFromEnv(os.Getenv)
 	if servingErr != nil {
 		t.Fatal(servingErr)
@@ -123,6 +127,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var runtimes []*provider.SecurityRuntime
 	var servingLoggers []*slog.Logger
 	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
+	var managedLogGeneration uint64
 	previousDefaultLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousDefaultLogger) })
 	var initializationCounts []decisiontrace.AcquisitionCounts
@@ -185,6 +190,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		logging, err := provider.NewManagedLogRuntime(t.Context(), runtime, logOwner)
 		if err != nil {
 			t.Fatal("restore managed log owner before public listener", id, err)
+		}
+		if id == 2 && managedLogGeneration != 0 && startupLogLevels[id] == slog.LevelDebug {
+			// The existing controlled restart supplies a conflicting startup
+			// value. Verify the recovered logger before publishing its listener.
+			assertCurrentLogFilter(t, logger, slog.LevelWarn)
 		}
 		servingLoggers = append(servingLoggers, logger)
 		runtimes = append(runtimes, runtime)
@@ -563,6 +573,176 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if _, e := controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{ExpectedRevision: 1, ChangeId: bytes.Repeat([]byte{1}, 16), Changes: []*pb.SecurityChange{change}})); connect.CodeOf(e) != connect.CodeInvalidArgument {
 			t.Fatal("legacy scalar refusal", e)
 		}
+		t.Run("managed log policy", func(t *testing.T) {
+			// These observations never call Ready: a committed policy must not
+			// be reported as installed in any other member's logger.
+			initial := make([]*pb.GetLogSettingsResponse, len(controls))
+			for i, control := range controls {
+				initial[i] = awaitCurrentLogSettings(t, ctx, control, ordinaryToken, 0)
+				state := initial[i]
+				if state.SchemaVersion != 1 || state.Member != uint32(i+1) || state.EffectiveLevel != pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN || state.Source != pb.LogSettingsSource_LOG_SETTINGS_SOURCE_ENVIRONMENT || state.Desired != nil || state.AppliedGeneration != 0 || state.AppliedCut != nil || state.Adoption != pb.LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_UNADOPTED || state.Application != pb.LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_APPLIED || state.Error != pb.LogSettingsError_LOG_SETTINGS_ERROR_NONE || state.RestartRequired || state.Version == nil {
+					t.Fatalf("member %d initial log ownership: %v", i+1, state)
+				}
+				assertCurrentLogFilter(t, servingLoggers[i], slog.LevelWarn)
+			}
+			version := initial[0].Version
+			intent := func(level pb.ManagedLogLevel) []*pb.SecurityChange {
+				return []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutLogPolicy{PutLogPolicy: &pb.ManagedLogPolicy{Version: 1, Level: level}}}}
+			}
+			prepare := func(t *testing.T, version *pb.SecurityVersion, changes []*pb.SecurityChange) *pb.CurrentSecurityReview {
+				t.Helper()
+				response, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(ordinaryToken, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: version.CurrentProfile, ExpectedCut: version.CurrentCut, Changes: changes}}))
+				if err != nil || response.Msg.CurrentReview == nil || response.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+					t.Fatal("ordinary typed log review", response, err)
+				}
+				return response.Msg.CurrentReview
+			}
+			t.Run("authorization and malformed intent refuse without mutation", func(t *testing.T) {
+				expired := f.token(t, "admin", func(c map[string]any) {
+					c["iat"] = f.accessIssuedAt.Add(-2 * time.Hour).Unix()
+					c["exp"] = f.accessIssuedAt.Add(-time.Hour).Unix()
+					delete(c, "auth_time")
+				})
+				for _, credential := range []struct{ name, value string }{{"invalid", "invalid-bearer"}, {"expired", expired}} {
+					// These calls are single attempts: authentication failures must
+					// never enter the current-renewal observation retry helper.
+					if _, err := controls[0].GetLogSettings(ctx, securityWireRequest(credential.value, &pb.GetLogSettingsRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+						t.Fatal(credential.name, "Bearer disclosed log settings", err)
+					}
+				}
+				reader := f.token(t, "reader", func(c map[string]any) { c["iat"] = time.Now().Add(-time.Minute).Unix(); delete(c, "auth_time") })
+				if _, err := controls[0].GetLogSettings(ctx, securityWireRequest(reader, &pb.GetLogSettingsRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+					t.Fatal("reader disclosed managed operational settings", err)
+				}
+				machine, err := os.ReadFile(filepath.Join(dir, "machine.token"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				machineSelf, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(string(machine), &pb.GetCurrentPrincipalRequest{}))
+				if err != nil || machineSelf.Msg.Identity.GetKind() != pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE || machineSelf.Msg.Identity.GetMachineName() != "public-worker" {
+					t.Fatal("native fixture token was not authenticated as the registered machine", err)
+				}
+				machineManages := false
+				for _, role := range machineSelf.Msg.Roles {
+					machineManages = machineManages || role.Id == "security_admin"
+				}
+				if !machineManages {
+					t.Fatal("machine class refusal lacks the fixture management Role")
+				}
+				// GetLogSettings itself requires security.manage. Its positive
+				// control separates the trusted machine mutation prohibition from
+				// the reader's ordinary missing-permission refusal below.
+				_ = awaitCurrentLogSettings(t, ctx, controls[0], string(machine), 0)
+				for _, credential := range []string{reader, string(machine)} {
+					_, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(credential, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: version.CurrentProfile, ExpectedCut: version.CurrentCut, Changes: intent(pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG)}}))
+					if connect.CodeOf(err) != connect.CodePermissionDenied {
+						t.Fatal("unqualified actor prepared log policy", err)
+					}
+				}
+				for _, policy := range []*pb.ManagedLogPolicy{{Version: 2, Level: pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG}, {Version: 1}, {Version: 1, Level: pb.ManagedLogLevel(255)}} {
+					_, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(ordinaryToken, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: version.CurrentProfile, ExpectedCut: version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutLogPolicy{PutLogPolicy: policy}}}}}))
+					if connect.CodeOf(err) != connect.CodeInvalidArgument {
+						t.Fatal("unsupported log policy intent accepted", policy, err)
+					}
+				}
+				unchanged := awaitCurrentLogSettings(t, ctx, controls[0], ordinaryToken, 0)
+				if !proto.Equal(unchanged.Version.CurrentCut, version.CurrentCut) || unchanged.Desired != nil {
+					t.Fatal("refused log intent changed committed state")
+				}
+			})
+			review := prepare(t, version, intent(pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG))
+			var original *pb.CurrentSecurityOriginalOutcome
+			t.Run("one lost response recovers by status and preserves per member pending", func(t *testing.T) {
+				var dispatches int
+				var receivedStatus int
+				var receivedErr error
+				lossHTTP := &http.Client{Transport: currentWireTransport{roundTrip: func(request *http.Request) (*http.Response, error) {
+					if request.URL.Path != graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure {
+						return nil, errors.New("unexpected request on log Apply response-loss transport")
+					}
+					dispatches++
+					response, err := transport.Transport.RoundTrip(request)
+					if err != nil {
+						return nil, err
+					}
+					receivedStatus = response.StatusCode
+					_, readErr := io.Copy(io.Discard, response.Body)
+					receivedErr = errors.Join(readErr, response.Body.Close())
+					return nil, errors.New("fixture lost completed log Apply response")
+				}, closeIdle: func() {}}}
+				lossControl := graphv1connect.NewLanternSecurityServiceClient(lossHTTP, servers[0].URL)
+				if _, err := lossControl.ApplySecurityChanges(ctx, securityWireRequest(ordinaryToken, &pb.ApplySecurityChangesRequest{CurrentReview: review})); err == nil || dispatches != 1 || receivedStatus != http.StatusOK || receivedErr != nil {
+					t.Fatal("actual Apply response was not lost exactly once", dispatches, receivedStatus, receivedErr, err)
+				}
+				original = awaitCurrentPublicOriginal(t, ctx, controls[0], ordinaryToken, review)
+				if original.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+					t.Fatal("log adoption not committed", original)
+				}
+				for i, control := range controls {
+					if foreign := awaitCurrentPublicOriginal(t, ctx, control, ordinaryToken, review); !proto.Equal(original, foreign) {
+						t.Fatal("member changed original log adoption result", i+1)
+					}
+					state := awaitCurrentLogSettings(t, ctx, control, ordinaryToken, 1)
+					assertCurrentManagedLogSettings(t, state, uint32(i+1), pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG, 1, 0, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN)
+					assertCurrentLogFilter(t, servingLoggers[i], slog.LevelWarn)
+				}
+				if dispatches != 1 {
+					t.Fatal("status recovery replayed Apply", dispatches)
+				}
+			})
+			t.Run("each resident owner applies its own committed generation", func(t *testing.T) {
+				awaitCurrentLogOwnerReady(t, ctx, runtimes[0])
+				for i, control := range controls {
+					state := awaitCurrentLogSettings(t, ctx, control, ordinaryToken, 1)
+					applied, effective := uint64(0), pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN
+					if i == 0 {
+						applied, effective = 1, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG
+					}
+					assertCurrentManagedLogSettings(t, state, uint32(i+1), pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG, 1, applied, effective)
+				}
+				for i, control := range controls {
+					awaitCurrentLogOwnerReady(t, ctx, runtimes[i])
+					state := awaitCurrentLogSettings(t, ctx, control, ordinaryToken, 1)
+					assertCurrentManagedLogSettings(t, state, uint32(i+1), pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG, 1, 1, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG)
+					assertCurrentLogFilter(t, servingLoggers[i], slog.LevelDebug)
+				}
+			})
+			t.Run("exact replay and stale cut cannot create another generation", func(t *testing.T) {
+				replayed, err := controls[0].ApplySecurityChanges(ctx, securityWireRequest(ordinaryToken, &pb.ApplySecurityChangesRequest{CurrentReview: review}))
+				if err != nil || !proto.Equal(replayed.Msg.GetCurrentResult().GetOriginal(), original) {
+					t.Fatal("log replay changed retained original", replayed, err)
+				}
+				_, err = controls[0].PrepareSecurityChanges(ctx, securityWireRequest(ordinaryToken, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: version.CurrentProfile, ExpectedCut: version.CurrentCut, Changes: intent(pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN)}}))
+				if connect.CodeOf(err) != connect.CodeAborted {
+					t.Fatal("stale log review cut was accepted", err)
+				}
+				state := awaitCurrentLogSettings(t, ctx, controls[0], ordinaryToken, 1)
+				assertCurrentManagedLogSettings(t, state, 1, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG, 1, 1, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_DEBUG)
+			})
+			t.Run("rollback is a new committed generation", func(t *testing.T) {
+				current := awaitCurrentLogSettings(t, ctx, controls[0], ordinaryToken, 1)
+				rollback := prepare(t, current.Version, intent(pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN))
+				if proto.Equal(rollback.ChangeId, review.ChangeId) || bytes.Equal(rollback.IntentDigest, review.IntentDigest) {
+					t.Fatal("rollback reused the original committed change")
+				}
+				// Dispatch once. Only status is used if the response is unresolved.
+				_, _ = controls[0].ApplySecurityChanges(ctx, securityWireRequest(ordinaryToken, &pb.ApplySecurityChangesRequest{CurrentReview: rollback}))
+				result := awaitCurrentPublicOriginal(t, ctx, controls[0], ordinaryToken, rollback)
+				if result.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED || proto.Equal(result.ResultingCut, original.ResultingCut) {
+					t.Fatal("rollback did not commit a new cut", result)
+				}
+				for i, control := range controls {
+					// Observe this member's committed successor before asking its
+					// local owner to reconcile; Ready at an older cut is insufficient.
+					_ = awaitCurrentLogSettings(t, ctx, control, ordinaryToken, 2)
+					awaitCurrentLogOwnerReady(t, ctx, runtimes[i])
+					state := awaitCurrentLogSettings(t, ctx, control, ordinaryToken, 2)
+					assertCurrentManagedLogSettings(t, state, uint32(i+1), pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN, 2, 2, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN)
+					assertCurrentLogFilter(t, servingLoggers[i], slog.LevelWarn)
+				}
+				managedLogGeneration = 2
+			})
+		})
 	})
 	runCase("full-cut and profile mismatch refuse before dispatch", func(t *testing.T) {
 		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
@@ -1022,9 +1202,20 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if e := runtimes[1].Shutdown(); e != nil {
 			t.Fatal("orderly floor custody", e)
 		}
+		if managedLogGeneration != 0 {
+			// This is the existing controlled-source restart, not another normal
+			// configured-source owner. Parse an actual conflicting env input.
+			t.Setenv("LANTERN_LOG_LEVEL", "debug")
+			startup, err := provider.NewConfig()
+			if err != nil || startup.Observability.LogLevel != slog.LevelDebug || !startup.Observability.LogLevelFromEnvironment {
+				t.Fatal("conflicting startup log environment was not loaded", err)
+			}
+			startupLogLevels[2] = startup.Observability.LogLevel
+		}
 		startNode(2, "resume")
 		last := len(runtimes) - 1
 		runtimes[1], stops[1], servers[1], controls[1] = runtimes[last], stops[last], servers[last], controls[last]
+		servingLoggers[1] = servingLoggers[last]
 		deadline = time.Now().Add(60 * time.Second)
 		for !runtimes[1].Ready(ctx) {
 			if time.Now().After(deadline) || ctx.Err() != nil {
@@ -1035,6 +1226,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(ctx.Err())
 			case <-time.After(100 * time.Millisecond):
 			}
+		}
+		if managedLogGeneration != 0 {
+			t.Run("managed log restart ignores conflicting environment", func(t *testing.T) {
+				state := awaitCurrentLogSettings(t, ctx, controls[1], token, managedLogGeneration)
+				assertCurrentManagedLogSettings(t, state, 2, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN, managedLogGeneration, managedLogGeneration, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN)
+				assertCurrentLogFilter(t, servingLoggers[1], slog.LevelWarn)
+				t.Logf("managed log restart recovery: member=%d desired_generation=%d applied_generation=%d effective_level=%s source=%s; conflicting startup DEBUG did not overwrite recovered policy", state.Member, state.DesiredGeneration, state.AppliedGeneration, state.EffectiveLevel, state.Source)
+			})
 		}
 		f.server = servers[1]
 		listed, e := controls[1].ListIssuers(ctx, securityWireRequest(token, &pb.ListIssuersRequest{Exact: futureIssuer}))
@@ -1108,43 +1307,59 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if e != nil || freshSession.StatusCode != http.StatusOK || protojson.Unmarshal(freshBody, &current) != nil {
 			t.Fatal("replacement fresh session", e)
 		}
-		logout := func(message *pb.CurrentLogoutRequest, csrf string) *pb.SessionRevocation {
-			raw, e := protojson.Marshal(message)
-			if e != nil {
-				t.Fatal(e)
+		revocationCalls := 0
+		revoke := func() {
+			revocationCalls++
+			if revocationCalls != 1 {
+				t.Fatal("browser proof repeated the existing logout operation")
 			}
-			request := f.browserRequest(t, http.MethodPost, "/auth/logout", cookies, csrf)
-			request.Body = io.NopCloser(bytes.NewReader(raw))
-			request.ContentLength = int64(len(raw))
-			request.Header.Set("Content-Type", "application/json")
-			response := browserDo(t, request)
-			body, e := io.ReadAll(response.Body)
-			if csrf == "" {
-				if response.StatusCode == http.StatusOK || len(response.Cookies()) != 0 {
-					t.Fatal("GET bootstrap became mutation proof")
+			logout := func(message *pb.CurrentLogoutRequest, csrf string) *pb.SessionRevocation {
+				raw, e := protojson.Marshal(message)
+				if e != nil {
+					t.Fatal(e)
 				}
-				return nil
+				request := f.browserRequest(t, http.MethodPost, "/auth/logout", cookies, csrf)
+				request.Body = io.NopCloser(bytes.NewReader(raw))
+				request.ContentLength = int64(len(raw))
+				request.Header.Set("Content-Type", "application/json")
+				response := browserDo(t, request)
+				body, e := io.ReadAll(response.Body)
+				if csrf == "" {
+					if response.StatusCode == http.StatusOK || len(response.Cookies()) != 0 {
+						t.Fatal("GET bootstrap became mutation proof")
+					}
+					return nil
+				}
+				var result pb.SessionRevocation
+				if e != nil || response.StatusCode != http.StatusOK || protojson.Unmarshal(body, &result) != nil {
+					t.Fatalf("logout response %d %v: %s", response.StatusCode, e, body)
+				}
+				return &result
 			}
-			var result pb.SessionRevocation
-			if e != nil || response.StatusCode != http.StatusOK || protojson.Unmarshal(body, &result) != nil {
-				t.Fatalf("logout response %d %v: %s", response.StatusCode, e, body)
+			logout(&pb.CurrentLogoutRequest{Profile: current.CurrentProfile, PrepareOnly: true}, "")
+			prepared := logout(&pb.CurrentLogoutRequest{Profile: current.CurrentProfile, PrepareOnly: true}, current.Principal.CsrfToken)
+			if prepared.CurrentReview == nil || prepared.LocalCookieCleared {
+				t.Fatal("logout preparation lost retained ID")
 			}
-			return &result
+			// Retained before the single dispatch; successful local deletion must
+			// not disclose a protected cluster outcome via the revoked cookie.
+			retained := proto.Clone(prepared.CurrentReview).(*pb.CurrentSessionRevocationReview)
+			revoked := logout(&pb.CurrentLogoutRequest{Profile: current.CurrentProfile, Review: retained}, current.Principal.CsrfToken)
+			if !revoked.LocalCookieCleared || revoked.CurrentResult != nil {
+				t.Fatal("self-revoked admission disclosed cluster original")
+			}
+			if after := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); after.StatusCode == http.StatusOK {
+				t.Fatal("revoked session retained current authorization")
+			}
 		}
-		logout(&pb.CurrentLogoutRequest{Profile: current.CurrentProfile, PrepareOnly: true}, "")
-		prepared := logout(&pb.CurrentLogoutRequest{Profile: current.CurrentProfile, PrepareOnly: true}, current.Principal.CsrfToken)
-		if prepared.CurrentReview == nil || prepared.LocalCookieCleared {
-			t.Fatal("logout preparation lost retained ID")
-		}
-		// Retained before the single dispatch; successful local deletion must
-		// not disclose a protected cluster outcome via the revoked cookie.
-		retained := proto.Clone(prepared.CurrentReview).(*pb.CurrentSessionRevocationReview)
-		revoked := logout(&pb.CurrentLogoutRequest{Profile: current.CurrentProfile, Review: retained}, current.Principal.CsrfToken)
-		if !revoked.LocalCookieCleared || revoked.CurrentResult != nil {
-			t.Fatal("self-revoked admission disclosed cluster original")
-		}
-		if after := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); after.StatusCode == http.StatusOK {
-			t.Fatal("revoked session retained current authorization")
+		if adminBrowser {
+			beforeGeneration := managedLogGeneration
+			managedLogGeneration = runCurrentAdminBrowser(t, ctx, servers[0], http1Transport, cookies, revoke)
+			if revocationCalls != 1 || managedLogGeneration != beforeGeneration+1 {
+				t.Fatal("browser proof did not perform exactly one log update and the existing logout", revocationCalls, beforeGeneration, managedLogGeneration)
+			}
+		} else {
+			revoke()
 		}
 	})
 	runCase("original stop observation remains separate from Apply", func(t *testing.T) {
@@ -1179,17 +1394,33 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		logBefore := awaitCurrentLogSettings(t, ctx, controls[0], token, managedLogGeneration)
+		logReview, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Msg.Version.CurrentProfile, ExpectedCut: current.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutLogPolicy{PutLogPolicy: &pb.ManagedLogPolicy{Version: 1, Level: pb.ManagedLogLevel_MANAGED_LOG_LEVEL_ERROR}}}}}}))
+		if err != nil || logReview.Msg.CurrentReview == nil || logReview.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+			t.Fatal("prepare retained log review before administrator revocation", err)
+		}
 		bob := f.token(t, "bob", func(c map[string]any) { c["iat"] = time.Now().Add(-time.Minute).Unix(); delete(c, "auth_time") })
 		revoke, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(bob, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Msg.Version.CurrentProfile, ExpectedCut: current.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: current.Msg.Identity, RoleId: "security_admin"}}}}}}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, _ = controls[0].ApplySecurityChanges(ctx, securityWireRequest(bob, &pb.ApplySecurityChangesRequest{CurrentReview: revoke.Msg.CurrentReview}))
-		if original := awaitCurrentPublicOriginal(t, ctx, controls[0], bob, revoke.Msg.CurrentReview); original.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
-			t.Fatal("restrictive control Apply", original)
+		revocationOriginal := awaitCurrentPublicOriginal(t, ctx, controls[0], bob, revoke.Msg.CurrentReview)
+		if revocationOriginal.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+			t.Fatal("restrictive control Apply", revocationOriginal)
 		}
 		if _, err := controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: prepared.Msg.CurrentReview})); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatal("stale admin consumed new H", err)
+		}
+		if _, err := controls[0].GetLogSettings(ctx, securityWireRequest(token, &pb.GetLogSettingsRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatal("revoked administrator disclosed managed log settings", err)
+		}
+		if _, err := controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: logReview.Msg.CurrentReview})); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatal("revoked administrator consumed the retained log review", err)
+		}
+		logAfter := awaitCurrentLogSettings(t, ctx, controls[0], bob, logBefore.DesiredGeneration)
+		if !proto.Equal(logAfter.Desired, logBefore.Desired) || logAfter.EffectiveLevel != logBefore.EffectiveLevel || logAfter.Source != logBefore.Source || logAfter.AppliedGeneration != logBefore.AppliedGeneration || !proto.Equal(logAfter.Version.CurrentCut, revocationOriginal.ResultingCut) {
+			t.Fatal("refused revoked administrator changed managed log state or committed another cut")
 		}
 		roles, err := controls[0].ListRoles(ctx, securityWireRequest(bob, &pb.ListRolesRequest{Exact: "stale_admin_never_installed"}))
 		if err != nil || len(roles.Msg.Roles) != 0 {
@@ -1719,6 +1950,80 @@ func TestCurrentSDKExecutionEvidence(t *testing.T) {
 				t.Fatalf("evidence acceptance=%v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func assertCurrentLogFilter(t *testing.T, logger *slog.Logger, minimum slog.Level) {
+	t.Helper()
+	if logger == nil {
+		t.Fatal("resident serving logger is absent")
+	}
+	for _, level := range []slog.Level{slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError} {
+		if logger.Enabled(t.Context(), level) != (level >= minimum) {
+			t.Fatalf("retained logger filtering at %s differs from installed minimum %s", level, minimum)
+		}
+	}
+}
+
+func awaitCurrentLogSettings(t *testing.T, ctx context.Context, control graphv1connect.LanternSecurityServiceClient, token string, generation uint64) *pb.GetLogSettingsResponse {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		response, err := control.GetLogSettings(ctx, securityWireRequest(token, &pb.GetLogSettingsRequest{}))
+		if err == nil {
+			if response.Msg.DesiredGeneration == generation {
+				return response.Msg
+			}
+			if response.Msg.DesiredGeneration > generation {
+				t.Fatalf("log policy passed expected generation %d: %d", generation, response.Msg.DesiredGeneration)
+			}
+		} else if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatal("log settings read failed outside current renewal", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("committed log policy not visible through status-only observation", generation, err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func awaitCurrentLogOwnerReady(t *testing.T, ctx context.Context, runtime *provider.SecurityRuntime) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for !runtime.Ready(ctx) {
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			t.Fatal("resident log owner did not reconcile the committed generation", ctx.Err())
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func assertCurrentManagedLogSettings(t *testing.T, state *pb.GetLogSettingsResponse, member uint32, desired pb.ManagedLogLevel, desiredGeneration, appliedGeneration uint64, effective pb.ManagedLogLevel) {
+	t.Helper()
+	source, application := pb.LogSettingsSource_LOG_SETTINGS_SOURCE_ENVIRONMENT, pb.LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_PENDING
+	if appliedGeneration != 0 {
+		source = pb.LogSettingsSource_LOG_SETTINGS_SOURCE_MANAGED
+	}
+	if appliedGeneration == desiredGeneration {
+		application = pb.LogSettingsApplicationState_LOG_SETTINGS_APPLICATION_STATE_APPLIED
+	}
+	if state == nil || state.SchemaVersion != 1 || state.Member != member || state.Desired == nil || state.Desired.Version != 1 || state.Desired.Level != desired || state.DesiredGeneration != desiredGeneration || state.AppliedGeneration != appliedGeneration || state.EffectiveLevel != effective || state.Source != source || state.Adoption != pb.LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_MANAGED || state.Application != application || state.Error != pb.LogSettingsError_LOG_SETTINGS_ERROR_NONE || state.RestartRequired || state.Version == nil || state.Version.CurrentCut == nil {
+		t.Fatalf("member %d desired/applied log state differs: %v", member, state)
+	}
+	if appliedGeneration == 0 {
+		if state.AppliedCut != nil {
+			t.Fatal("unapplied logger invented an applied cut")
+		}
+	} else if state.AppliedCut == nil || state.AppliedCut.Sequence == 0 || state.AppliedCut.Sequence > state.Version.CurrentCut.Sequence {
+		t.Fatal("applied logger lacks a valid historical installation cut", state.AppliedCut)
 	}
 }
 
