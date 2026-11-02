@@ -1,11 +1,84 @@
 package readiness
 
 import (
+	"math"
 	"sync"
 	"testing"
 
 	"connectrpc.com/grpchealth"
 )
+
+func TestGateUpdateMaxLagKeepsIndependentReadinessState(t *testing.T) {
+	g := NewGate(10, true, nil)
+	g.SetLag("peer", "origin", 5)
+	g.UpdateMaxLag(math.MaxUint64)
+	if g.Ready() {
+		t.Fatal("threshold update bypassed bootstrap")
+	}
+	g.MarkBootstrapped()
+	if !g.Ready() {
+		t.Fatal("bootstrap/lag observations lost")
+	}
+	g.UpdateMaxLag(0)
+	if g.Ready() {
+		t.Fatal("zero threshold disabled lag checking")
+	}
+	g.UpdateMaxLag(5)
+	if !g.Ready() {
+		t.Fatal("new threshold did not reevaluate retained row")
+	}
+	g.SetServingPermission(false)
+	g.UpdateMaxLag(100)
+	if g.Ready() {
+		t.Fatal("threshold update restored native serving permission")
+	}
+	g.SetSearchConfig("peer", false)
+	g.SetServingPermission(true)
+	g.UpdateMaxLag(1000)
+	if g.Ready() {
+		t.Fatal("threshold update bypassed search mismatch")
+	}
+	g.SetSearchConfig("peer", true)
+	if !g.Ready() {
+		t.Fatal("independent conditions did not recover")
+	}
+	g.BeginDrain()
+	g.UpdateMaxLag(math.MaxUint64)
+	g.SetLag("peer", "origin", 0)
+	g.MarkBootstrapped()
+	if g.Ready() {
+		t.Fatal("threshold update reversed drain latch")
+	}
+	solo := NewGate(1, false, nil)
+	solo.SetServingPermission(false)
+	solo.UpdateMaxLag(0)
+	if solo.Ready() {
+		t.Fatal("single-instance update bypassed native unready")
+	}
+}
+
+func TestGateUpdateMaxLagConcurrent(t *testing.T) {
+	g := NewGate(1, true, nil)
+	g.MarkBootstrapped()
+	var workers sync.WaitGroup
+	workers.Go(func() {
+		for i := range 1000 {
+			g.UpdateMaxLag(uint64(i))
+		}
+	})
+	workers.Go(func() {
+		for i := range 1000 {
+			g.SetLag("peer", "origin", uint64(i))
+			_ = g.Ready()
+		}
+	})
+	workers.Wait()
+	g.SetLag("peer", "origin", 1)
+	g.UpdateMaxLag(0)
+	if g.Ready() {
+		t.Fatal("concurrent updates lost final threshold")
+	}
+}
 
 type fakeHealth struct {
 	mu     sync.Mutex

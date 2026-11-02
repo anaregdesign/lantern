@@ -30,6 +30,7 @@ type LanternServer struct {
 	logger          *slog.Logger
 	gcInterval      time.Duration
 	shutdownTimeout time.Duration
+	shutdownPlan    *ShutdownPlan
 	health          HealthSetter
 	watcher         Watcher
 }
@@ -42,6 +43,13 @@ func (s *LanternServer) UsesWatcher(watcher Watcher) bool {
 	owner, ok := watcher.(*dataruntime.GraphPolicyOwner)
 	installed, installedOK := s.watcher.(*dataruntime.GraphPolicyOwner)
 	return ok && installedOK && owner != nil && installed == owner
+}
+
+// WithShutdownPlan binds App's exact shared plan during composition, before
+// Run. An omitted plan preserves the existing static lifecycle behavior.
+func (s *LanternServer) WithShutdownPlan(plan *ShutdownPlan) *LanternServer {
+	s.shutdownPlan = plan
+	return s
 }
 
 // Watcher is the lifecycle hook LanternServer uses to drive the cache GC
@@ -132,7 +140,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		slog.String("addr", s.listener.Addr().String()),
 		slog.Bool("tls", s.useTLS),
 		slog.Duration("gc_interval", s.gcInterval),
-		slog.Duration("shutdown_timeout", s.shutdownTimeout),
+		slog.Duration("shutdown_timeout", s.currentShutdownTimeout()),
 	)
 
 	var err error
@@ -171,16 +179,20 @@ func (s *LanternServer) Run(ctx context.Context) error {
 // deadline.
 func (s *LanternServer) gracefulShutdown(ctx context.Context) error {
 	<-ctx.Done()
+	timeout := s.shutdownTimeout
+	if s.shutdownPlan != nil {
+		timeout = s.shutdownPlan.Capture().Policy.ShutdownTimeout
+	}
 	s.logger.Info("shutting down lantern server",
-		slog.Duration("timeout", s.shutdownTimeout))
+		slog.Duration("timeout", timeout))
 	if s.health != nil {
 		s.health.SetServingStatus(ServiceName, grpchealth.StatusNotServing)
 		s.health.SetServingStatus(ReplicationServiceName, grpchealth.StatusNotServing)
 	}
 	shutdownCtx := context.Background()
-	if s.shutdownTimeout > 0 {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		shutdownCtx, cancel = context.WithTimeout(shutdownCtx, s.shutdownTimeout)
+		shutdownCtx, cancel = context.WithTimeout(shutdownCtx, timeout)
 		defer cancel()
 	}
 	if err := s.server.Shutdown(shutdownCtx); err != nil {
@@ -192,4 +204,11 @@ func (s *LanternServer) gracefulShutdown(ctx context.Context) error {
 		return errors.Join(err, s.server.Close())
 	}
 	return nil
+}
+
+func (s *LanternServer) currentShutdownTimeout() time.Duration {
+	if s.shutdownPlan != nil {
+		return s.shutdownPlan.Current().Policy.ShutdownTimeout
+	}
+	return s.shutdownTimeout
 }

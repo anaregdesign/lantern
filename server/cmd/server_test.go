@@ -47,6 +47,43 @@ func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
 	}
 }
 
+func TestDrainPhaseWithPlanCapturesAfterCancellationBeforeBegin(t *testing.T) {
+	owner, err := service.NewLifecyclePolicyOwner(service.LifecyclePolicySnapshot{Generation: 1, Policy: service.LifecyclePolicy{DrainDelay: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.NewShutdownPlan(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := (&App{}).WithShutdownPlan(plan)
+	parent, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan bool, 1)
+	go func() {
+		done <- drainPhaseWithPlan(parent, make(chan struct{}), app.shutdownDrainDelay, func() {
+			if got := plan.Capture(); got.Generation != 2 {
+				t.Errorf("begin saw generation %d", got.Generation)
+			}
+			if err := owner.Apply(service.LifecyclePolicySnapshot{Generation: 3, Policy: service.LifecyclePolicy{DrainDelay: time.Hour}}); err != nil {
+				t.Error(err)
+			}
+		})
+	}()
+	if err := owner.Apply(service.LifecyclePolicySnapshot{Generation: 2}); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case drained := <-done:
+		if !drained || plan.Capture().Generation != 2 || owner.LifecycleSnapshot().Generation != 3 {
+			t.Fatal("shutdown plan changed after first action")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown used startup or post-begin drain delay")
+	}
+}
+
 func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
