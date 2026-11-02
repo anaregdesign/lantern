@@ -21,28 +21,29 @@ import (
 // one exact data runtime. The production listener requires certification of
 // its role/query/CDC/peer/browser boundaries before accepting requests.
 type SecurityRuntime struct {
-	mode           string
-	authentication *securitytransport.AuthenticationAdapter
-	workflow       *authn.Workflow
-	credentials    *authn.Credentials
-	current        *security.CurrentAuthority
-	managedLog     *managedLogRuntime
-	output         *security.CurrentOutput
-	attemptProcess [32]byte
-	peer           *PeerIdentityRuntime
-	fetcher        *oidc.Fetcher
-	secrets        *oidc.SecretRegistry
-	keys           *oidc.KeyCache
-	verifier       *oidc.Verifier
-	logins         *oidc.LoginTransactions
-	nativeLogins   *oidc.NativeTransactions
-	control        *securitytransport.SecurityConnectHandler
-	data           *dataruntime.ServingRuntime
-	config         SecurityConfig
-	now            func() time.Time
-	closeOnce      sync.Once
-	closeErr       error
-	closeOrderly   bool
+	mode               string
+	authentication     *securitytransport.AuthenticationAdapter
+	workflow           *authn.Workflow
+	credentials        *authn.Credentials
+	current            *security.CurrentAuthority
+	managedLog         *managedLogRuntime
+	managedOperational *ManagedOperationalRuntime
+	output             *security.CurrentOutput
+	attemptProcess     [32]byte
+	peer               *PeerIdentityRuntime
+	fetcher            *oidc.Fetcher
+	secrets            *oidc.SecretRegistry
+	keys               *oidc.KeyCache
+	verifier           *oidc.Verifier
+	logins             *oidc.LoginTransactions
+	nativeLogins       *oidc.NativeTransactions
+	control            *securitytransport.SecurityConnectHandler
+	data               *dataruntime.ServingRuntime
+	config             SecurityConfig
+	now                func() time.Time
+	closeOnce          sync.Once
+	closeErr           error
+	closeOrderly       bool
 
 	readinessObservation *readinessdiag.Observer
 }

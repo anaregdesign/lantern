@@ -90,6 +90,92 @@ func TestSlowRPCInterceptor_ValidatedUpdates(t *testing.T) {
 	}
 }
 
+func TestSlowRPCInterceptorManagedGenerations(t *testing.T) {
+	s := NewSlowRPCInterceptor(500*time.Millisecond, slog.New(slog.DiscardHandler))
+	if got := s.Snapshot(); got != (SlowRPCPolicySnapshot{Threshold: 500 * time.Millisecond}) {
+		t.Fatalf("bootstrap snapshot = %+v", got)
+	}
+	const maximum = int64(1<<63-1) / int64(time.Millisecond)
+	for _, invalid := range []struct {
+		milliseconds int64
+		generation   uint64
+	}{{-1, 1}, {maximum + 1, 1}, {5, 0}} {
+		before := s.Snapshot()
+		if err := s.ApplyManagedThresholdMilliseconds(invalid.milliseconds, invalid.generation); err == nil || s.Snapshot() != before {
+			t.Fatal("invalid managed callback changed the installed tuple", err)
+		}
+	}
+	for _, owner := range []*SlowRPCInterceptor{nil, NewSlowRPCInterceptor(0, nil)} {
+		if err := owner.ApplyManagedThresholdMilliseconds(5, 1); err == nil {
+			t.Fatal("missing real logger accepted managed policy")
+		}
+	}
+	for _, next := range []struct {
+		milliseconds int64
+		generation   uint64
+	}{{5, 7}, {5, 7}, {0, 8}, {maximum, ^uint64(0)}} {
+		if err := s.ApplyManagedThresholdMilliseconds(next.milliseconds, next.generation); err != nil {
+			t.Fatal(err)
+		}
+		want := SlowRPCPolicySnapshot{Threshold: time.Duration(next.milliseconds) * time.Millisecond, Generation: next.generation}
+		if s.Snapshot() != want || s.Threshold() != want.Threshold || s.Enabled() != (want.Threshold > 0) {
+			t.Fatal("effective managed snapshot is inconsistent")
+		}
+	}
+	before := s.Snapshot()
+	if s.ApplyManagedThresholdMilliseconds(5, 7) == nil || s.ApplyManagedThresholdMilliseconds(0, before.Generation) == nil {
+		t.Fatal("stale or conflicting managed callback accepted")
+	}
+	if s.SetThresholdMilliseconds(0) == nil || s.Snapshot() != before {
+		t.Fatal("bootstrap setter overrode managed ownership")
+	}
+	detached := s.Snapshot()
+	detached.Generation = 0
+	detached.Threshold = 0
+	if detached == s.Snapshot() || s.Snapshot() != before {
+		t.Fatal("snapshot leaked mutable ownership")
+	}
+}
+
+func TestSlowRPCInterceptorManagedConcurrentAtomicTuple(t *testing.T) {
+	s := NewSlowRPCInterceptor(0, slog.New(slog.DiscardHandler))
+	var workers sync.WaitGroup
+	for worker := range 8 {
+		workers.Go(func() {
+			for i := range 100 {
+				generation := uint64(worker*100 + i + 1)
+				// Competing older callbacks may legitimately be rejected.
+				_ = s.ApplyManagedThresholdMilliseconds(int64(generation), generation)
+				got := s.Snapshot()
+				if got.Threshold != time.Duration(got.Generation)*time.Millisecond {
+					t.Errorf("torn threshold/generation: %+v", got)
+				}
+			}
+		})
+	}
+	workers.Wait()
+	if got := s.Snapshot(); got != (SlowRPCPolicySnapshot{Threshold: 800 * time.Millisecond, Generation: 800}) {
+		t.Fatalf("newest callback not retained: %+v", got)
+	}
+}
+
+func TestSlowRPCInterceptorBootstrapCannotRaceManagedAdoption(t *testing.T) {
+	s := NewSlowRPCInterceptor(0, slog.New(slog.DiscardHandler))
+	var workers sync.WaitGroup
+	workers.Go(func() {
+		for range 1000 {
+			_ = s.SetThresholdMilliseconds(0)
+		}
+	})
+	if err := s.ApplyManagedThresholdMilliseconds(5, 1); err != nil {
+		t.Fatal(err)
+	}
+	workers.Wait()
+	if s.Snapshot() != (SlowRPCPolicySnapshot{Threshold: 5 * time.Millisecond, Generation: 1}) {
+		t.Fatal("concurrent bootstrap callback lost managed adoption")
+	}
+}
+
 func TestSlowRPCInterceptor_ResidentSnapshots(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewSlowRPCInterceptor(0, newJSONLogger(&buf, slog.LevelWarn))

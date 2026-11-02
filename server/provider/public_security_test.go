@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -117,29 +118,30 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, managedLogCertified{}); err == nil {
+	operational := operationalPublicTestCertification(t, runtime, NewSlowRPCInterceptor(0, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, managedLogCertified{}, operational); err == nil {
 		t.Fatal("missing logger certification accepted")
 	}
 	foreignLogging := logging
 	foreignLogging.owner = newServingLogger(ObservabilityConfig{}, io.Discard)
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, foreignLogging); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, foreignLogging, operational); err == nil {
 		t.Fatal("foreign logger owner certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, runtimeCertified{}, logging); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, runtimeCertified{}, logging, operational); err == nil {
 		t.Fatal("missing data certification accepted")
 	}
 	foreign := dataruntime.NewExecutor(data.GraphCache())
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, foreign, cert, logging); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, foreign, cert, logging, operational); err == nil {
 		t.Fatal("foreign service certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, data, primary, cert, logging); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, data, primary, cert, logging, operational); err == nil {
 		t.Fatal("unbound workload certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging); err != nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational); err != nil {
 		t.Fatal(err)
 	}
 	runtime.mode = "oidc"
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational); err == nil {
 		t.Fatal("OIDC without its authority was certified")
 	}
 
