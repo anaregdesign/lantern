@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { securityUI } from "./helpers";
 
+// Finish lazy fixture asset transfers before Playwright closes the context.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+  await page.context().unrouteAll({ behavior: "wait" });
+});
+
 for (const width of [1280, 390]) {
   test(`Server Role scope selection clears old rows and scopes generated traversal at ${width}px`, async ({
     page,
