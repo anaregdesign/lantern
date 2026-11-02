@@ -98,6 +98,14 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getRegistrationPolicy, request, options: options);
   }
 
+  /// Contacted-node application state; a committed policy is not all-node application.
+  $grpc.ResponseFuture<$0.GetLogSettingsResponse> getLogSettings(
+    $0.GetLogSettingsRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getLogSettings, request, options: options);
+  }
+
   $grpc.ResponseFuture<$0.ListRoleAssignmentsResponse> listRoleAssignments(
     $0.ListRoleAssignmentsRequest request, {
     $grpc.CallOptions? options,
@@ -233,6 +241,11 @@ class LanternSecurityServiceClient extends $grpc.Client {
       '/graph.v1.LanternSecurityService/GetRegistrationPolicy',
       ($0.GetRegistrationPolicyRequest value) => value.writeToBuffer(),
       $0.GetRegistrationPolicyResponse.fromBuffer);
+  static final _$getLogSettings =
+      $grpc.ClientMethod<$0.GetLogSettingsRequest, $0.GetLogSettingsResponse>(
+          '/graph.v1.LanternSecurityService/GetLogSettings',
+          ($0.GetLogSettingsRequest value) => value.writeToBuffer(),
+          $0.GetLogSettingsResponse.fromBuffer);
   static final _$listRoleAssignments = $grpc.ClientMethod<
           $0.ListRoleAssignmentsRequest, $0.ListRoleAssignmentsResponse>(
       '/graph.v1.LanternSecurityService/ListRoleAssignments',
@@ -370,6 +383,15 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.GetRegistrationPolicyRequest.fromBuffer(value),
         ($0.GetRegistrationPolicyResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetLogSettingsRequest,
+            $0.GetLogSettingsResponse>(
+        'GetLogSettings',
+        getLogSettings_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetLogSettingsRequest.fromBuffer(value),
+        ($0.GetLogSettingsResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.ListRoleAssignmentsRequest,
             $0.ListRoleAssignmentsResponse>(
         'ListRoleAssignments',
@@ -547,6 +569,15 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
 
   $async.Future<$0.GetRegistrationPolicyResponse> getRegistrationPolicy(
       $grpc.ServiceCall call, $0.GetRegistrationPolicyRequest request);
+
+  $async.Future<$0.GetLogSettingsResponse> getLogSettings_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetLogSettingsRequest> $request) async {
+    return getLogSettings($call, await $request);
+  }
+
+  $async.Future<$0.GetLogSettingsResponse> getLogSettings(
+      $grpc.ServiceCall call, $0.GetLogSettingsRequest request);
 
   $async.Future<$0.ListRoleAssignmentsResponse> listRoleAssignments_Pre(
       $grpc.ServiceCall $call,

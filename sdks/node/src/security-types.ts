@@ -1,6 +1,11 @@
 import { create, fromJsonString, toJsonString, type MessageInitShape } from "@bufbuild/protobuf";
 import { reflect, isReflectMessage, type ReflectMessage } from "@bufbuild/protobuf/reflect";
 import {
+  currentChangeIdBinding,
+  currentCutBinding,
+  currentSecurityVersionBinding,
+} from "./security-current.js";
+import {
   BrowserSessionSchema,
   SessionRevocationSchema,
   CurrentLogoutRequestSchema,
@@ -10,6 +15,12 @@ import {
   type CurrentSecurityChangeResult,
   type GetCurrentPrincipalResponse,
   SecurityPrincipalKind,
+  ManagedLogLevel,
+  LogSettingsSource,
+  LogPolicyAdoptionState,
+  LogSettingsApplicationState,
+  LogSettingsError,
+  type GetLogSettingsResponse,
 } from "./gen/graph/v1/security_pb.js";
 export {
   AuthMode,
@@ -24,6 +35,11 @@ export {
   CurrentSecurityDisposition,
   CurrentSecurityProgress,
   CurrentAuthorizationStopObservation,
+  ManagedLogLevel,
+  LogSettingsSource,
+  LogPolicyAdoptionState,
+  LogSettingsApplicationState,
+  LogSettingsError,
 } from "./gen/graph/v1/security_pb.js";
 export type {
   SecurityOperationAuthorizationRequired,
@@ -41,6 +57,9 @@ export type {
   SecurityRegistrationPolicy,
   SecurityRegistrationProfile,
   GetRegistrationPolicyResponse,
+  ManagedLogPolicy,
+  LogPolicyPreparationReference,
+  GetLogSettingsResponse,
   SecurityEdgeIdentity,
   SecurityUser,
   SecurityIssuer,
@@ -91,6 +110,95 @@ export function currentUserId(
   )
     throw new Error("Invalid current user ID.");
   return id;
+}
+
+/** Validate contacted-node observations without inferring cluster application. */
+export function validateLogSettings(settings: GetLogSettingsResponse): void {
+  const fail = (): never => {
+    throw new Error("Invalid local log settings contract.");
+  };
+  const levels = [
+    ManagedLogLevel.DEBUG,
+    ManagedLogLevel.INFO,
+    ManagedLogLevel.WARN,
+    ManagedLogLevel.ERROR,
+  ];
+  const sources = [
+    LogSettingsSource.DEFAULT,
+    LogSettingsSource.ENVIRONMENT,
+    LogSettingsSource.MANAGED,
+  ];
+  const errors = [
+    LogSettingsError.NONE,
+    LogSettingsError.INVALID_POLICY,
+    LogSettingsError.OWNER_UNAVAILABLE,
+    LogSettingsError.APPLY_FAILED,
+  ];
+  const u64 = 0xffffffffffffffffn;
+  if (
+    settings.schemaVersion !== 1 ||
+    !Number.isInteger(settings.member) ||
+    settings.member < 1 ||
+    settings.member > 0xffffffff ||
+    !levels.includes(settings.effectiveLevel) ||
+    !sources.includes(settings.source) ||
+    !errors.includes(settings.error) ||
+    typeof settings.desiredGeneration !== "bigint" ||
+    settings.desiredGeneration < 0n ||
+    settings.desiredGeneration > u64 ||
+    typeof settings.appliedGeneration !== "bigint" ||
+    settings.appliedGeneration < 0n ||
+    settings.appliedGeneration > settings.desiredGeneration
+  )
+    fail();
+  currentSecurityVersionBinding(settings.version);
+  if (settings.preparation) {
+    if (settings.adoption === LogPolicyAdoptionState.UNADOPTED) fail();
+    currentChangeIdBinding(settings.preparation.changeId, settings.version?.currentProfile);
+    for (const digest of [settings.preparation.intentDigest, settings.preparation.actorDigest]) {
+      if (!(digest instanceof Uint8Array) || digest.length !== 32 || !digest.some(Boolean)) fail();
+    }
+  } else if (settings.adoption === LogPolicyAdoptionState.FENCED_UNADOPTED) fail();
+  if (settings.desired) {
+    if (
+      settings.desired.version !== 1 ||
+      !levels.includes(settings.desired.level) ||
+      settings.desiredGeneration === 0n ||
+      settings.adoption !== LogPolicyAdoptionState.MANAGED
+    )
+      fail();
+  } else if (
+    settings.desiredGeneration !== 0n ||
+    ![LogPolicyAdoptionState.UNADOPTED, LogPolicyAdoptionState.FENCED_UNADOPTED].includes(
+      settings.adoption,
+    )
+  )
+    fail();
+  if ((settings.source === LogSettingsSource.MANAGED) !== settings.appliedGeneration > 0n) fail();
+  if (settings.appliedGeneration > 0n) {
+    currentCutBinding(settings.appliedCut, settings.version?.currentProfile);
+    if (
+      !settings.appliedCut ||
+      !settings.version?.currentCut ||
+      settings.appliedCut.sequence > settings.version.currentCut.sequence
+    )
+      fail();
+    if (
+      settings.appliedGeneration === settings.desiredGeneration &&
+      settings.effectiveLevel !== settings.desired?.level
+    )
+      fail();
+  } else if (settings.appliedCut !== undefined) fail();
+  if (settings.error !== LogSettingsError.NONE) {
+    if (settings.application !== LogSettingsApplicationState.ERROR) fail();
+  } else if (settings.application === LogSettingsApplicationState.PENDING) {
+    if (!settings.desired || settings.appliedGeneration >= settings.desiredGeneration) fail();
+  } else if (
+    settings.application !== LogSettingsApplicationState.APPLIED ||
+    settings.appliedGeneration !== settings.desiredGeneration ||
+    settings.restartRequired
+  )
+    fail();
 }
 export function parseSessionRevocation(json: string) {
   return fromJsonString(SessionRevocationSchema, json);

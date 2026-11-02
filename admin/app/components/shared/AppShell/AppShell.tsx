@@ -38,6 +38,7 @@ const NAV: readonly NavEntry[] = [
   // operator-facing Ops page (#439, #431).
   { to: "/cli", label: "CLI" },
   { to: "/ops", label: "Ops" },
+  { to: "/settings", label: "Settings" },
   {
     to: "/security/issuers",
     label: "Security",

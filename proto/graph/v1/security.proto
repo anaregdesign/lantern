@@ -16,6 +16,8 @@ service LanternSecurityService {
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc GetRegistrationPolicy(GetRegistrationPolicyRequest) returns (GetRegistrationPolicyResponse);
+  // Contacted-node application state; a committed policy is not all-node application.
+  rpc GetLogSettings(GetLogSettingsRequest) returns (GetLogSettingsResponse);
   rpc ListRoleAssignments(ListRoleAssignmentsRequest) returns (ListRoleAssignmentsResponse);
   rpc ListSecurityAudit(ListSecurityAuditRequest) returns (ListSecurityAuditResponse);
   rpc GetRoleTemplates(GetRoleTemplatesRequest) returns (GetRoleTemplatesResponse);
@@ -389,6 +391,76 @@ message GetRegistrationPolicyResponse {
   SecurityRegistrationPolicy policy = 1;
   SecurityVersion version = 2;
 }
+
+enum ManagedLogLevel {
+  MANAGED_LOG_LEVEL_UNSPECIFIED = 0;
+  MANAGED_LOG_LEVEL_DEBUG = 1;
+  MANAGED_LOG_LEVEL_INFO = 2;
+  MANAGED_LOG_LEVEL_WARN = 3;
+  MANAGED_LOG_LEVEL_ERROR = 4;
+}
+
+// Typed business intent only. The committed owner allocates the generation.
+message ManagedLogPolicy {
+  uint32 version = 1;
+  ManagedLogLevel level = 2;
+}
+enum LogSettingsSource {
+  LOG_SETTINGS_SOURCE_UNSPECIFIED = 0;
+  LOG_SETTINGS_SOURCE_DEFAULT = 1;
+  LOG_SETTINGS_SOURCE_ENVIRONMENT = 2;
+  LOG_SETTINGS_SOURCE_MANAGED = 3;
+}
+enum LogPolicyAdoptionState {
+  LOG_POLICY_ADOPTION_STATE_UNSPECIFIED = 0;
+  LOG_POLICY_ADOPTION_STATE_UNADOPTED = 1;
+  // No policy has committed, but this node has a durable format floor.
+  LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED = 2;
+  LOG_POLICY_ADOPTION_STATE_MANAGED = 3;
+}
+enum LogSettingsApplicationState {
+  LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED = 0;
+  LOG_SETTINGS_APPLICATION_STATE_APPLIED = 1;
+  LOG_SETTINGS_APPLICATION_STATE_PENDING = 2;
+  LOG_SETTINGS_APPLICATION_STATE_ERROR = 3;
+}
+enum LogSettingsError {
+  LOG_SETTINGS_ERROR_UNSPECIFIED = 0;
+  LOG_SETTINGS_ERROR_NONE = 1;
+  LOG_SETTINGS_ERROR_INVALID_POLICY = 2;
+  LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE = 3;
+  LOG_SETTINGS_ERROR_APPLY_FAILED = 4;
+}
+message GetLogSettingsRequest {}
+
+// Correlation with the exact retained signed adoption intent. This is not the
+// signed proof, an authorization credential or an internal journal position.
+message LogPolicyPreparationReference {
+  CurrentSecurityChangeID change_id = 1;
+  bytes intent_digest = 2;
+  bytes actor_digest = 3;
+}
+message GetLogSettingsResponse {
+  uint32 schema_version = 1;
+  // Fixed configured member identity, never a private endpoint or listener.
+  uint32 member = 2;
+  ManagedLogLevel effective_level = 3;
+  LogSettingsSource source = 4;
+  // Absent only in verified unadopted state; never an unavailable-state fallback.
+  ManagedLogPolicy desired = 5;
+  uint64 desired_generation = 6;
+  uint64 applied_generation = 7;
+  LogPolicyAdoptionState adoption = 8;
+  LogSettingsApplicationState application = 9;
+  // Closed content-free diagnostics; raw provider errors and paths are private.
+  LogSettingsError error = 10;
+  bool restart_required = 11;
+  SecurityVersion version = 12;
+  // The exact cut successfully installed by this node, not a peer acknowledgement.
+  CurrentSemanticCut applied_cut = 13;
+  // Required for fenced-but-unadopted state; may remain after adoption.
+  LogPolicyPreparationReference preparation = 14;
+}
 message SecurityChange {
   oneof operation {
     SecurityIssuer put_issuer = 1;
@@ -402,6 +474,7 @@ message SecurityChange {
     SecurityRoleAssignment delete_assignment = 9;
     SecurityIdentity revoke_user_sessions = 10;
     SecurityRegistrationPolicy put_registration_policy = 11;
+    ManagedLogPolicy put_log_policy = 12;
   }
 }
 enum SecurityEnforcementState {

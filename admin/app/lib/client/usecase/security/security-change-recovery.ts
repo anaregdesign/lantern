@@ -11,6 +11,7 @@ import {
   encodeCurrentSecurityChangeResult,
   parseCurrentSecurityChangeResult,
   SecurityPrincipalKind,
+  ManagedLogLevel,
   type CurrentSecurityReview,
   type CurrentSecurityChangeResult,
   type GetCurrentPrincipalResponse,
@@ -67,11 +68,29 @@ export function securityRecoveryOwner(
     currentProfileBinding(principal.version?.currentProfile),
   ]);
 }
+/** A single bounded log-policy lane in the same app-lifetime recovery store. */
+export function logPolicyRecoveryOwner(
+  baseUrl: string,
+  principal: Pick<GetCurrentPrincipalResponse, "identity" | "version">,
+): string {
+  const fields: string[] = JSON.parse(
+    securityRecoveryOwner(baseUrl, principal),
+  );
+  return JSON.stringify([...fields, "log-policy"]);
+}
+
+function logPolicyOnly(review: CurrentSecurityReview): boolean {
+  return (
+    review.changes.length === 1 &&
+    review.changes[0].operation.case === "putLogPolicy"
+  );
+}
+
 function validateOwner(owner: string, review: CurrentSecurityReview) {
   const fields: unknown = JSON.parse(owner);
   if (
     !Array.isArray(fields) ||
-    fields.length !== 4 ||
+    (fields.length !== 4 && fields.length !== 5) ||
     fields.some((field) => typeof field !== "string") ||
     JSON.stringify(fields) !== owner ||
     // The connection normalizer removes one trailing slash. Append its
@@ -82,6 +101,23 @@ function validateOwner(owner: string, review: CurrentSecurityReview) {
     fields[3] !== currentProfileBinding(review.profile)
   )
     invalid();
+  if (fields.length === 5) {
+    const operation = review.changes[0]?.operation;
+    if (
+      fields[4] !== "log-policy" ||
+      !logPolicyOnly(review) ||
+      operation?.case !== "putLogPolicy" ||
+      operation.value.version !== 1 ||
+      ![
+        ManagedLogLevel.DEBUG,
+        ManagedLogLevel.INFO,
+        ManagedLogLevel.WARN,
+        ManagedLogLevel.ERROR,
+      ].includes(operation.value.level)
+    )
+      invalid();
+  }
+  return fields as string[];
 }
 function validated(record: PendingSecurityChange): PendingSecurityChange {
   validateCurrentReview(record.review);
@@ -106,6 +142,21 @@ function validated(record: PendingSecurityChange): PendingSecurityChange {
   )
     invalid();
   return result ? { review, result } : { review };
+}
+
+// A logging row without its matching security row accounts for that future
+// row now. Logging must not occupy the last slot needed by its own actor's
+// urgent security workflow. Existing status records remain readable/updatable.
+function historySlots(
+  records: ReadonlyMap<string, PendingSecurityChange>,
+): number {
+  let slots = records.size;
+  for (const owner of records.keys()) {
+    const fields: string[] = JSON.parse(owner);
+    if (fields.length === 5 && !records.has(JSON.stringify(fields.slice(0, 4))))
+      slots++;
+  }
+  return slots;
 }
 
 /** One tab-local writer. Saved bytes are historical metadata, never authority. */
@@ -141,14 +192,22 @@ export class SecurityChangeRecovery {
             ? { result: parseCurrentSecurityChangeResult(row.result) }
             : {}),
         });
-        validateOwner(row.owner, record.review);
+        const fields = validateOwner(row.owner, record.review);
+        // This one explicit lane upgrade changes only unsigned local indexing.
+        // Exact originals remain intact and persisted raw bytes are replaced
+        // only by the next successful atomic commit before any new dispatch.
+        const recordOwner =
+          fields.length === 4 && logPolicyOnly(record.review)
+            ? JSON.stringify([...fields, "log-policy"])
+            : row.owner;
+        validateOwner(recordOwner, record.review);
         const id =
           currentProfileBinding(record.review.profile) +
           "/" +
           currentChangeIdBinding(record.review.changeId, record.review.profile);
-        if (this.records.has(row.owner) || originals.has(id)) invalid();
+        if (this.records.has(recordOwner) || originals.has(id)) invalid();
         originals.add(id);
-        this.records.set(row.owner, record);
+        this.records.set(recordOwner, record);
       }
     } catch {
       // Corrupt/unreadable bytes are preserved, never replaced with an empty store.
@@ -159,9 +218,15 @@ export class SecurityChangeRecovery {
   private available() {
     if (this.unavailable) invalid();
   }
-  private commit(next: Map<string, PendingSecurityChange>) {
+  private commit(
+    next: Map<string, PendingSecurityChange>,
+    mode: "new-original" | "retained",
+  ) {
     this.available();
-    if (next.size > maxOwners)
+    if (
+      next.size > maxOwners ||
+      (mode === "new-original" && historySlots(next) > maxOwners)
+    )
       throw new Error(
         "Retained control history is full. No new operation was sent.",
       );
@@ -214,7 +279,15 @@ export class SecurityChangeRecovery {
   ) {
     this.available();
     const record = validated({ review });
-    validateOwner(owner, record.review);
+    const fields = validateOwner(owner, record.review);
+    if (
+      fields.length === 4 &&
+      record.review.changes.some(
+        (change) => change.operation.case === "putLogPolicy",
+      )
+    ) {
+      throw new Error("Log policy changes require their own recovery lane.");
+    }
     const prior = this.records.get(owner);
     if (
       prior &&
@@ -233,9 +306,23 @@ export class SecurityChangeRecovery {
         currentChangeIdBinding(record.review.changeId, record.review.profile)
     )
       throw new Error("A new reviewed change needs its own original identity.");
+    if (fields.length === 5) {
+      const securityOriginal = this.records.get(
+        JSON.stringify(fields.slice(0, 4)),
+      );
+      if (
+        securityOriginal &&
+        (!securityOriginal.result?.original ||
+          !this.confirmed.has(currentOriginalBinding(securityOriginal.review)))
+      ) {
+        throw new Error(
+          "Check the retained security original status before a logging change.",
+        );
+      }
+    }
     const next = new Map(this.records);
     next.set(owner, record);
-    this.commit(next);
+    this.commit(next, "new-original");
     if (prior) {
       this.confirmed.delete(currentOriginalBinding(prior.review));
       this.firstInvocations.delete(currentOriginalBinding(prior.review));
@@ -261,7 +348,7 @@ export class SecurityChangeRecovery {
     });
     const next = new Map(this.records);
     next.set(owner, record);
-    this.commit(next);
+    this.commit(next, "retained");
     const binding = currentOriginalBinding(review);
     this.firstInvocations.delete(binding);
     if (freshOriginal) this.confirmed.add(binding);
@@ -281,7 +368,7 @@ export class SecurityChangeRecovery {
       invalid();
     const next = new Map(this.records);
     next.delete(owner);
-    this.commit(next);
+    this.commit(next, "retained");
     this.firstInvocations.delete(binding);
     this.confirmed.delete(binding);
   }

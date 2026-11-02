@@ -1,0 +1,46 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusMedium);
+  padding: 20px;
+  min-width: 0;
+}
+.panel > button {
+  align-self: flex-start;
+}
+.values {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr);
+  gap: 8px 20px;
+  margin: 0;
+}
+.values dt {
+  color: var(--colorNeutralForeground2);
+}
+.values dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.notice {
+  padding: 12px;
+  background: var(--colorNeutralBackground2);
+  margin: 0;
+}
+.preparation {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 520px) {
+  .panel {
+    padding: 16px;
+  }
+  .values {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .values dd {
+    margin-bottom: 8px;
+  }
+}

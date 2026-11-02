@@ -208,6 +208,159 @@ class NativeClientKind extends $pb.ProtobufEnum {
   const NativeClientKind._(super.value, super.name);
 }
 
+class ManagedLogLevel extends $pb.ProtobufEnum {
+  static const ManagedLogLevel MANAGED_LOG_LEVEL_UNSPECIFIED =
+      ManagedLogLevel._(
+          0, _omitEnumNames ? '' : 'MANAGED_LOG_LEVEL_UNSPECIFIED');
+  static const ManagedLogLevel MANAGED_LOG_LEVEL_DEBUG =
+      ManagedLogLevel._(1, _omitEnumNames ? '' : 'MANAGED_LOG_LEVEL_DEBUG');
+  static const ManagedLogLevel MANAGED_LOG_LEVEL_INFO =
+      ManagedLogLevel._(2, _omitEnumNames ? '' : 'MANAGED_LOG_LEVEL_INFO');
+  static const ManagedLogLevel MANAGED_LOG_LEVEL_WARN =
+      ManagedLogLevel._(3, _omitEnumNames ? '' : 'MANAGED_LOG_LEVEL_WARN');
+  static const ManagedLogLevel MANAGED_LOG_LEVEL_ERROR =
+      ManagedLogLevel._(4, _omitEnumNames ? '' : 'MANAGED_LOG_LEVEL_ERROR');
+
+  static const $core.List<ManagedLogLevel> values = <ManagedLogLevel>[
+    MANAGED_LOG_LEVEL_UNSPECIFIED,
+    MANAGED_LOG_LEVEL_DEBUG,
+    MANAGED_LOG_LEVEL_INFO,
+    MANAGED_LOG_LEVEL_WARN,
+    MANAGED_LOG_LEVEL_ERROR,
+  ];
+
+  static final $core.List<ManagedLogLevel?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static ManagedLogLevel? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const ManagedLogLevel._(super.value, super.name);
+}
+
+class LogSettingsSource extends $pb.ProtobufEnum {
+  static const LogSettingsSource LOG_SETTINGS_SOURCE_UNSPECIFIED =
+      LogSettingsSource._(
+          0, _omitEnumNames ? '' : 'LOG_SETTINGS_SOURCE_UNSPECIFIED');
+  static const LogSettingsSource LOG_SETTINGS_SOURCE_DEFAULT =
+      LogSettingsSource._(
+          1, _omitEnumNames ? '' : 'LOG_SETTINGS_SOURCE_DEFAULT');
+  static const LogSettingsSource LOG_SETTINGS_SOURCE_ENVIRONMENT =
+      LogSettingsSource._(
+          2, _omitEnumNames ? '' : 'LOG_SETTINGS_SOURCE_ENVIRONMENT');
+  static const LogSettingsSource LOG_SETTINGS_SOURCE_MANAGED =
+      LogSettingsSource._(
+          3, _omitEnumNames ? '' : 'LOG_SETTINGS_SOURCE_MANAGED');
+
+  static const $core.List<LogSettingsSource> values = <LogSettingsSource>[
+    LOG_SETTINGS_SOURCE_UNSPECIFIED,
+    LOG_SETTINGS_SOURCE_DEFAULT,
+    LOG_SETTINGS_SOURCE_ENVIRONMENT,
+    LOG_SETTINGS_SOURCE_MANAGED,
+  ];
+
+  static final $core.List<LogSettingsSource?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static LogSettingsSource? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const LogSettingsSource._(super.value, super.name);
+}
+
+class LogPolicyAdoptionState extends $pb.ProtobufEnum {
+  static const LogPolicyAdoptionState LOG_POLICY_ADOPTION_STATE_UNSPECIFIED =
+      LogPolicyAdoptionState._(
+          0, _omitEnumNames ? '' : 'LOG_POLICY_ADOPTION_STATE_UNSPECIFIED');
+  static const LogPolicyAdoptionState LOG_POLICY_ADOPTION_STATE_UNADOPTED =
+      LogPolicyAdoptionState._(
+          1, _omitEnumNames ? '' : 'LOG_POLICY_ADOPTION_STATE_UNADOPTED');
+
+  /// No policy has committed, but this node has a durable format floor.
+  static const LogPolicyAdoptionState
+      LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED = LogPolicyAdoptionState._(2,
+          _omitEnumNames ? '' : 'LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED');
+  static const LogPolicyAdoptionState LOG_POLICY_ADOPTION_STATE_MANAGED =
+      LogPolicyAdoptionState._(
+          3, _omitEnumNames ? '' : 'LOG_POLICY_ADOPTION_STATE_MANAGED');
+
+  static const $core.List<LogPolicyAdoptionState> values =
+      <LogPolicyAdoptionState>[
+    LOG_POLICY_ADOPTION_STATE_UNSPECIFIED,
+    LOG_POLICY_ADOPTION_STATE_UNADOPTED,
+    LOG_POLICY_ADOPTION_STATE_FENCED_UNADOPTED,
+    LOG_POLICY_ADOPTION_STATE_MANAGED,
+  ];
+
+  static final $core.List<LogPolicyAdoptionState?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static LogPolicyAdoptionState? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const LogPolicyAdoptionState._(super.value, super.name);
+}
+
+class LogSettingsApplicationState extends $pb.ProtobufEnum {
+  static const LogSettingsApplicationState
+      LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED =
+      LogSettingsApplicationState._(0,
+          _omitEnumNames ? '' : 'LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED');
+  static const LogSettingsApplicationState
+      LOG_SETTINGS_APPLICATION_STATE_APPLIED = LogSettingsApplicationState._(
+          1, _omitEnumNames ? '' : 'LOG_SETTINGS_APPLICATION_STATE_APPLIED');
+  static const LogSettingsApplicationState
+      LOG_SETTINGS_APPLICATION_STATE_PENDING = LogSettingsApplicationState._(
+          2, _omitEnumNames ? '' : 'LOG_SETTINGS_APPLICATION_STATE_PENDING');
+  static const LogSettingsApplicationState
+      LOG_SETTINGS_APPLICATION_STATE_ERROR = LogSettingsApplicationState._(
+          3, _omitEnumNames ? '' : 'LOG_SETTINGS_APPLICATION_STATE_ERROR');
+
+  static const $core.List<LogSettingsApplicationState> values =
+      <LogSettingsApplicationState>[
+    LOG_SETTINGS_APPLICATION_STATE_UNSPECIFIED,
+    LOG_SETTINGS_APPLICATION_STATE_APPLIED,
+    LOG_SETTINGS_APPLICATION_STATE_PENDING,
+    LOG_SETTINGS_APPLICATION_STATE_ERROR,
+  ];
+
+  static final $core.List<LogSettingsApplicationState?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static LogSettingsApplicationState? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const LogSettingsApplicationState._(super.value, super.name);
+}
+
+class LogSettingsError extends $pb.ProtobufEnum {
+  static const LogSettingsError LOG_SETTINGS_ERROR_UNSPECIFIED =
+      LogSettingsError._(
+          0, _omitEnumNames ? '' : 'LOG_SETTINGS_ERROR_UNSPECIFIED');
+  static const LogSettingsError LOG_SETTINGS_ERROR_NONE =
+      LogSettingsError._(1, _omitEnumNames ? '' : 'LOG_SETTINGS_ERROR_NONE');
+  static const LogSettingsError LOG_SETTINGS_ERROR_INVALID_POLICY =
+      LogSettingsError._(
+          2, _omitEnumNames ? '' : 'LOG_SETTINGS_ERROR_INVALID_POLICY');
+  static const LogSettingsError LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE =
+      LogSettingsError._(
+          3, _omitEnumNames ? '' : 'LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE');
+  static const LogSettingsError LOG_SETTINGS_ERROR_APPLY_FAILED =
+      LogSettingsError._(
+          4, _omitEnumNames ? '' : 'LOG_SETTINGS_ERROR_APPLY_FAILED');
+
+  static const $core.List<LogSettingsError> values = <LogSettingsError>[
+    LOG_SETTINGS_ERROR_UNSPECIFIED,
+    LOG_SETTINGS_ERROR_NONE,
+    LOG_SETTINGS_ERROR_INVALID_POLICY,
+    LOG_SETTINGS_ERROR_OWNER_UNAVAILABLE,
+    LOG_SETTINGS_ERROR_APPLY_FAILED,
+  ];
+
+  static final $core.List<LogSettingsError?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static LogSettingsError? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const LogSettingsError._(super.value, super.name);
+}
+
 class SecurityEnforcementState extends $pb.ProtobufEnum {
   static const SecurityEnforcementState SECURITY_ENFORCEMENT_STATE_UNSPECIFIED =
       SecurityEnforcementState._(

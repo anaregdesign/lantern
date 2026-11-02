@@ -1,0 +1,19 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  min-width: 0;
+}
+.page > button {
+  align-self: flex-start;
+}
+.status {
+  padding: 12px;
+  background: var(--colorNeutralBackground2);
+  border-radius: var(--borderRadiusMedium);
+  overflow-wrap: anywhere;
+}
+.status p {
+  margin: 0 0 12px;
+}

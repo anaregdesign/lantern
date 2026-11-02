@@ -4230,6 +4230,440 @@ class GetRegistrationPolicyResponse extends $pb.GeneratedMessage {
   SecurityVersion ensureVersion() => $_ensure(1);
 }
 
+/// Typed business intent only. The committed owner allocates the generation.
+class ManagedLogPolicy extends $pb.GeneratedMessage {
+  factory ManagedLogPolicy({
+    $core.int? version,
+    ManagedLogLevel? level,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (level != null) result.level = level;
+    return result;
+  }
+
+  ManagedLogPolicy._();
+
+  factory ManagedLogPolicy.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ManagedLogPolicy.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ManagedLogPolicy',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aI(1, _omitFieldNames ? '' : 'version', fieldType: $pb.PbFieldType.OU3)
+    ..aE<ManagedLogLevel>(2, _omitFieldNames ? '' : 'level',
+        enumValues: ManagedLogLevel.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ManagedLogPolicy clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ManagedLogPolicy copyWith(void Function(ManagedLogPolicy) updates) =>
+      super.copyWith((message) => updates(message as ManagedLogPolicy))
+          as ManagedLogPolicy;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ManagedLogPolicy create() => ManagedLogPolicy._();
+  @$core.override
+  ManagedLogPolicy createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ManagedLogPolicy getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ManagedLogPolicy>(create);
+  static ManagedLogPolicy? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  ManagedLogLevel get level => $_getN(1);
+  @$pb.TagNumber(2)
+  set level(ManagedLogLevel value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasLevel() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearLevel() => $_clearField(2);
+}
+
+class GetLogSettingsRequest extends $pb.GeneratedMessage {
+  factory GetLogSettingsRequest() => create();
+
+  GetLogSettingsRequest._();
+
+  factory GetLogSettingsRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetLogSettingsRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetLogSettingsRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetLogSettingsRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetLogSettingsRequest copyWith(
+          void Function(GetLogSettingsRequest) updates) =>
+      super.copyWith((message) => updates(message as GetLogSettingsRequest))
+          as GetLogSettingsRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetLogSettingsRequest create() => GetLogSettingsRequest._();
+  @$core.override
+  GetLogSettingsRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetLogSettingsRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetLogSettingsRequest>(create);
+  static GetLogSettingsRequest? _defaultInstance;
+}
+
+/// Correlation with the exact retained signed adoption intent. This is not the
+/// signed proof, an authorization credential or an internal journal position.
+class LogPolicyPreparationReference extends $pb.GeneratedMessage {
+  factory LogPolicyPreparationReference({
+    CurrentSecurityChangeID? changeId,
+    $core.List<$core.int>? intentDigest,
+    $core.List<$core.int>? actorDigest,
+  }) {
+    final result = create();
+    if (changeId != null) result.changeId = changeId;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (actorDigest != null) result.actorDigest = actorDigest;
+    return result;
+  }
+
+  LogPolicyPreparationReference._();
+
+  factory LogPolicyPreparationReference.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory LogPolicyPreparationReference.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'LogPolicyPreparationReference',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentSecurityChangeID>(1, _omitFieldNames ? '' : 'changeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'actorDigest', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  LogPolicyPreparationReference clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  LogPolicyPreparationReference copyWith(
+          void Function(LogPolicyPreparationReference) updates) =>
+      super.copyWith(
+              (message) => updates(message as LogPolicyPreparationReference))
+          as LogPolicyPreparationReference;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static LogPolicyPreparationReference create() =>
+      LogPolicyPreparationReference._();
+  @$core.override
+  LogPolicyPreparationReference createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static LogPolicyPreparationReference getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<LogPolicyPreparationReference>(create);
+  static LogPolicyPreparationReference? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentSecurityChangeID get changeId => $_getN(0);
+  @$pb.TagNumber(1)
+  set changeId(CurrentSecurityChangeID value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasChangeId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearChangeId() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentSecurityChangeID ensureChangeId() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get intentDigest => $_getN(1);
+  @$pb.TagNumber(2)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasIntentDigest() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearIntentDigest() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get actorDigest => $_getN(2);
+  @$pb.TagNumber(3)
+  set actorDigest($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasActorDigest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearActorDigest() => $_clearField(3);
+}
+
+class GetLogSettingsResponse extends $pb.GeneratedMessage {
+  factory GetLogSettingsResponse({
+    $core.int? schemaVersion,
+    $core.int? member,
+    ManagedLogLevel? effectiveLevel,
+    LogSettingsSource? source,
+    ManagedLogPolicy? desired,
+    $fixnum.Int64? desiredGeneration,
+    $fixnum.Int64? appliedGeneration,
+    LogPolicyAdoptionState? adoption,
+    LogSettingsApplicationState? application,
+    LogSettingsError? error,
+    $core.bool? restartRequired,
+    SecurityVersion? version,
+    CurrentSemanticCut? appliedCut,
+    LogPolicyPreparationReference? preparation,
+  }) {
+    final result = create();
+    if (schemaVersion != null) result.schemaVersion = schemaVersion;
+    if (member != null) result.member = member;
+    if (effectiveLevel != null) result.effectiveLevel = effectiveLevel;
+    if (source != null) result.source = source;
+    if (desired != null) result.desired = desired;
+    if (desiredGeneration != null) result.desiredGeneration = desiredGeneration;
+    if (appliedGeneration != null) result.appliedGeneration = appliedGeneration;
+    if (adoption != null) result.adoption = adoption;
+    if (application != null) result.application = application;
+    if (error != null) result.error = error;
+    if (restartRequired != null) result.restartRequired = restartRequired;
+    if (version != null) result.version = version;
+    if (appliedCut != null) result.appliedCut = appliedCut;
+    if (preparation != null) result.preparation = preparation;
+    return result;
+  }
+
+  GetLogSettingsResponse._();
+
+  factory GetLogSettingsResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetLogSettingsResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetLogSettingsResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aI(1, _omitFieldNames ? '' : 'schemaVersion',
+        fieldType: $pb.PbFieldType.OU3)
+    ..aI(2, _omitFieldNames ? '' : 'member', fieldType: $pb.PbFieldType.OU3)
+    ..aE<ManagedLogLevel>(3, _omitFieldNames ? '' : 'effectiveLevel',
+        enumValues: ManagedLogLevel.values)
+    ..aE<LogSettingsSource>(4, _omitFieldNames ? '' : 'source',
+        enumValues: LogSettingsSource.values)
+    ..aOM<ManagedLogPolicy>(5, _omitFieldNames ? '' : 'desired',
+        subBuilder: ManagedLogPolicy.create)
+    ..a<$fixnum.Int64>(
+        6, _omitFieldNames ? '' : 'desiredGeneration', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        7, _omitFieldNames ? '' : 'appliedGeneration', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aE<LogPolicyAdoptionState>(8, _omitFieldNames ? '' : 'adoption',
+        enumValues: LogPolicyAdoptionState.values)
+    ..aE<LogSettingsApplicationState>(9, _omitFieldNames ? '' : 'application',
+        enumValues: LogSettingsApplicationState.values)
+    ..aE<LogSettingsError>(10, _omitFieldNames ? '' : 'error',
+        enumValues: LogSettingsError.values)
+    ..aOB(11, _omitFieldNames ? '' : 'restartRequired')
+    ..aOM<SecurityVersion>(12, _omitFieldNames ? '' : 'version',
+        subBuilder: SecurityVersion.create)
+    ..aOM<CurrentSemanticCut>(13, _omitFieldNames ? '' : 'appliedCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..aOM<LogPolicyPreparationReference>(
+        14, _omitFieldNames ? '' : 'preparation',
+        subBuilder: LogPolicyPreparationReference.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetLogSettingsResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetLogSettingsResponse copyWith(
+          void Function(GetLogSettingsResponse) updates) =>
+      super.copyWith((message) => updates(message as GetLogSettingsResponse))
+          as GetLogSettingsResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetLogSettingsResponse create() => GetLogSettingsResponse._();
+  @$core.override
+  GetLogSettingsResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetLogSettingsResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetLogSettingsResponse>(create);
+  static GetLogSettingsResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get schemaVersion => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set schemaVersion($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSchemaVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSchemaVersion() => $_clearField(1);
+
+  /// Fixed configured member identity, never a private endpoint or listener.
+  @$pb.TagNumber(2)
+  $core.int get member => $_getIZ(1);
+  @$pb.TagNumber(2)
+  set member($core.int value) => $_setUnsignedInt32(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasMember() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearMember() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  ManagedLogLevel get effectiveLevel => $_getN(2);
+  @$pb.TagNumber(3)
+  set effectiveLevel(ManagedLogLevel value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasEffectiveLevel() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearEffectiveLevel() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  LogSettingsSource get source => $_getN(3);
+  @$pb.TagNumber(4)
+  set source(LogSettingsSource value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasSource() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSource() => $_clearField(4);
+
+  /// Absent only in verified unadopted state; never an unavailable-state fallback.
+  @$pb.TagNumber(5)
+  ManagedLogPolicy get desired => $_getN(4);
+  @$pb.TagNumber(5)
+  set desired(ManagedLogPolicy value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDesired() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDesired() => $_clearField(5);
+  @$pb.TagNumber(5)
+  ManagedLogPolicy ensureDesired() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get desiredGeneration => $_getI64(5);
+  @$pb.TagNumber(6)
+  set desiredGeneration($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasDesiredGeneration() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearDesiredGeneration() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get appliedGeneration => $_getI64(6);
+  @$pb.TagNumber(7)
+  set appliedGeneration($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasAppliedGeneration() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearAppliedGeneration() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  LogPolicyAdoptionState get adoption => $_getN(7);
+  @$pb.TagNumber(8)
+  set adoption(LogPolicyAdoptionState value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasAdoption() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearAdoption() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  LogSettingsApplicationState get application => $_getN(8);
+  @$pb.TagNumber(9)
+  set application(LogSettingsApplicationState value) => $_setField(9, value);
+  @$pb.TagNumber(9)
+  $core.bool hasApplication() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearApplication() => $_clearField(9);
+
+  /// Closed content-free diagnostics; raw provider errors and paths are private.
+  @$pb.TagNumber(10)
+  LogSettingsError get error => $_getN(9);
+  @$pb.TagNumber(10)
+  set error(LogSettingsError value) => $_setField(10, value);
+  @$pb.TagNumber(10)
+  $core.bool hasError() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearError() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $core.bool get restartRequired => $_getBF(10);
+  @$pb.TagNumber(11)
+  set restartRequired($core.bool value) => $_setBool(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasRestartRequired() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearRestartRequired() => $_clearField(11);
+
+  @$pb.TagNumber(12)
+  SecurityVersion get version => $_getN(11);
+  @$pb.TagNumber(12)
+  set version(SecurityVersion value) => $_setField(12, value);
+  @$pb.TagNumber(12)
+  $core.bool hasVersion() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearVersion() => $_clearField(12);
+  @$pb.TagNumber(12)
+  SecurityVersion ensureVersion() => $_ensure(11);
+
+  /// The exact cut successfully installed by this node, not a peer acknowledgement.
+  @$pb.TagNumber(13)
+  CurrentSemanticCut get appliedCut => $_getN(12);
+  @$pb.TagNumber(13)
+  set appliedCut(CurrentSemanticCut value) => $_setField(13, value);
+  @$pb.TagNumber(13)
+  $core.bool hasAppliedCut() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearAppliedCut() => $_clearField(13);
+  @$pb.TagNumber(13)
+  CurrentSemanticCut ensureAppliedCut() => $_ensure(12);
+
+  /// Required for fenced-but-unadopted state; may remain after adoption.
+  @$pb.TagNumber(14)
+  LogPolicyPreparationReference get preparation => $_getN(13);
+  @$pb.TagNumber(14)
+  set preparation(LogPolicyPreparationReference value) => $_setField(14, value);
+  @$pb.TagNumber(14)
+  $core.bool hasPreparation() => $_has(13);
+  @$pb.TagNumber(14)
+  void clearPreparation() => $_clearField(14);
+  @$pb.TagNumber(14)
+  LogPolicyPreparationReference ensurePreparation() => $_ensure(13);
+}
+
 enum SecurityChange_Operation {
   putIssuer,
   disableIssuer,
@@ -4242,6 +4676,7 @@ enum SecurityChange_Operation {
   deleteAssignment,
   revokeUserSessions,
   putRegistrationPolicy,
+  putLogPolicy,
   notSet
 }
 
@@ -4258,6 +4693,7 @@ class SecurityChange extends $pb.GeneratedMessage {
     SecurityRoleAssignment? deleteAssignment,
     SecurityIdentity? revokeUserSessions,
     SecurityRegistrationPolicy? putRegistrationPolicy,
+    ManagedLogPolicy? putLogPolicy,
   }) {
     final result = create();
     if (putIssuer != null) result.putIssuer = putIssuer;
@@ -4273,6 +4709,7 @@ class SecurityChange extends $pb.GeneratedMessage {
       result.revokeUserSessions = revokeUserSessions;
     if (putRegistrationPolicy != null)
       result.putRegistrationPolicy = putRegistrationPolicy;
+    if (putLogPolicy != null) result.putLogPolicy = putLogPolicy;
     return result;
   }
 
@@ -4298,13 +4735,14 @@ class SecurityChange extends $pb.GeneratedMessage {
     9: SecurityChange_Operation.deleteAssignment,
     10: SecurityChange_Operation.revokeUserSessions,
     11: SecurityChange_Operation.putRegistrationPolicy,
+    12: SecurityChange_Operation.putLogPolicy,
     0: SecurityChange_Operation.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SecurityChange',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
     ..aOM<SecurityIssuer>(1, _omitFieldNames ? '' : 'putIssuer',
         subBuilder: SecurityIssuer.create)
     ..aOS(2, _omitFieldNames ? '' : 'disableIssuer')
@@ -4325,6 +4763,8 @@ class SecurityChange extends $pb.GeneratedMessage {
     ..aOM<SecurityRegistrationPolicy>(
         11, _omitFieldNames ? '' : 'putRegistrationPolicy',
         subBuilder: SecurityRegistrationPolicy.create)
+    ..aOM<ManagedLogPolicy>(12, _omitFieldNames ? '' : 'putLogPolicy',
+        subBuilder: ManagedLogPolicy.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4357,6 +4797,7 @@ class SecurityChange extends $pb.GeneratedMessage {
   @$pb.TagNumber(9)
   @$pb.TagNumber(10)
   @$pb.TagNumber(11)
+  @$pb.TagNumber(12)
   SecurityChange_Operation whichOperation() =>
       _SecurityChange_OperationByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
@@ -4370,6 +4811,7 @@ class SecurityChange extends $pb.GeneratedMessage {
   @$pb.TagNumber(9)
   @$pb.TagNumber(10)
   @$pb.TagNumber(11)
+  @$pb.TagNumber(12)
   void clearOperation() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -4487,6 +4929,17 @@ class SecurityChange extends $pb.GeneratedMessage {
   void clearPutRegistrationPolicy() => $_clearField(11);
   @$pb.TagNumber(11)
   SecurityRegistrationPolicy ensurePutRegistrationPolicy() => $_ensure(10);
+
+  @$pb.TagNumber(12)
+  ManagedLogPolicy get putLogPolicy => $_getN(11);
+  @$pb.TagNumber(12)
+  set putLogPolicy(ManagedLogPolicy value) => $_setField(12, value);
+  @$pb.TagNumber(12)
+  $core.bool hasPutLogPolicy() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearPutLogPolicy() => $_clearField(12);
+  @$pb.TagNumber(12)
+  ManagedLogPolicy ensurePutLogPolicy() => $_ensure(11);
 }
 
 class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
