@@ -331,8 +331,8 @@ func currentAdminBrowserTunnel(w http.ResponseWriter, req *http.Request, target 
 		_ = backend.Close()
 		return
 	}
-	defer client.Close()
-	defer backend.Close()
+	defer func(connection net.Conn) { _ = connection.Close() }(client)
+	defer func(connection net.Conn) { _ = connection.Close() }(backend)
 	_ = client.SetDeadline(time.Now().Add(90 * time.Second))
 	_ = backend.SetDeadline(time.Now().Add(90 * time.Second))
 	if _, err := buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil || buffered.Flush() != nil {
@@ -558,7 +558,7 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(bundleDir)
+	defer func(path string) { _ = os.RemoveAll(path) }(bundleDir)
 	bundle := filepath.Join(bundleDir, "managed-log-settings-native.mjs")
 	buildCtx, stopBuild := context.WithTimeout(ctx, 20*time.Second)
 	defer stopBuild()
@@ -604,7 +604,7 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stderrFile.Close()
+	defer func(file *os.File) { _ = file.Close() }(stderrFile)
 	stderr := &currentAdminBrowserBoundedLog{file: stderrFile, remaining: 64 << 10}
 	command.Stderr = stderr
 	if err := command.Start(); err != nil {
