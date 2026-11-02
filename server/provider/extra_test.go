@@ -341,6 +341,7 @@ func TestRateLimitInterceptor_ConfigurationValidation(t *testing.T) {
 	for _, policy := range []RateLimitConfig{
 		{RPS: math.NaN(), Burst: 1}, {RPS: math.Inf(1), Burst: 1},
 		{RPS: math.Inf(-1)}, {RPS: -1}, {Burst: 1}, {RPS: 1}, {RPS: 1, Burst: -1},
+		{RPS: math.Copysign(0, -1)},
 	} {
 		if err := r.Configure(policy.RPS, policy.Burst); err == nil {
 			t.Fatalf("invalid policy accepted: %+v", policy)
@@ -433,6 +434,78 @@ func TestRateLimitInterceptor_ConcurrentAtomicPair(t *testing.T) {
 		})
 	}
 	group.Wait()
+}
+
+func TestRateLimitInterceptor_ManagedGenerationAndCredit(t *testing.T) {
+	owner := NewRateLimitInterceptor(0.0001, 2)
+	owner.now = func() time.Time { return time.Unix(100, 0) }
+	for index, want := range []bool{true, true, false} {
+		if got := owner.Allow(); got != want {
+			t.Fatalf("bootstrap admission %d=%v; want %v", index, got, want)
+		}
+	}
+	policy := RateLimitConfig{RPS: 0.0002, Burst: 3}
+	if err := owner.applyManagedRate(policy, 3); err != nil {
+		t.Fatal(err)
+	}
+	for _, generation := range []uint64{3, 4} {
+		if err := owner.applyManagedRate(policy, generation); err != nil || owner.Allow() {
+			t.Fatal("managed replay or successor replenished enabled credit", err)
+		}
+		actual := owner.Snapshot()
+		if actual.Config != policy || actual.Generation != generation || actual.Error != nil {
+			t.Fatalf("atomic policy/generation observation = %+v", actual)
+		}
+	}
+	for _, candidate := range []struct {
+		policy     RateLimitConfig
+		generation uint64
+	}{
+		{policy, 0}, {policy, 2}, {RateLimitConfig{RPS: 1, Burst: 1}, 4},
+		{RateLimitConfig{RPS: math.NaN(), Burst: 1}, 5}, {RateLimitConfig{RPS: math.Copysign(0, -1)}, 5},
+	} {
+		if err := owner.applyManagedRate(candidate.policy, candidate.generation); err == nil {
+			t.Fatal("invalid or conflicting managed generation accepted", candidate.generation)
+		}
+	}
+	if err := owner.Configure(0, 0); err == nil || owner.Snapshot().Generation != 4 || owner.Allow() {
+		t.Fatal("ordinary configuration overrode adopted authority", err)
+	}
+	if err := owner.applyManagedRate(RateLimitConfig{}, 5); err != nil || !owner.Allow() {
+		t.Fatal("managed disable failed", err)
+	}
+	if err := owner.applyManagedRate(RateLimitConfig{RPS: 0.0001, Burst: 1}, 6); err != nil {
+		t.Fatal(err)
+	}
+	first, second := owner.Allow(), owner.Allow()
+	if !first || second {
+		t.Fatal("explicit disabled-to-enabled generation has incorrect initial burst")
+	}
+}
+
+func TestRateLimitInterceptor_ManagedConcurrentSnapshot(t *testing.T) {
+	owner := NewRateLimitInterceptor(0, 0)
+	var workers sync.WaitGroup
+	workers.Go(func() {
+		for generation := uint64(1); generation <= 100; generation++ {
+			policy := RateLimitConfig{RPS: float64(generation), Burst: int(generation) + 1}
+			if err := owner.applyManagedRate(policy, generation); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	for range 4 {
+		workers.Go(func() {
+			for range 100 {
+				actual := owner.Snapshot()
+				if actual.Error != nil || actual.Generation != 0 && (actual.Config.RPS != float64(actual.Generation) || actual.Config.Burst != int(actual.Generation)+1) {
+					t.Errorf("partially installed policy/generation: %+v", actual)
+				}
+				owner.Allow()
+			}
+		})
+	}
+	workers.Wait()
 }
 
 // TestValidationInterceptor_LoggerEmitsDebugOnReject asserts that

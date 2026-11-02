@@ -301,13 +301,15 @@ type RateLimitInterceptor struct {
 	lim        *rate.Limiter
 	policy     RateLimitConfig
 	policyErr  error
+	generation uint64
+	bootstrap  RateLimitConfig
 	rejectHook func()
 	now        func() time.Time
 	recovery   *rateRecoveryRuntime
 }
 
 func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {
-	r := &RateLimitInterceptor{now: time.Now}
+	r := &RateLimitInterceptor{now: time.Now, bootstrap: RateLimitConfig{RPS: rps, Burst: burst}}
 	if math.IsNaN(rps) || math.IsInf(rps, 0) {
 		r.policyErr = errRateLimitPolicy
 		return r
@@ -329,24 +331,64 @@ func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {
 }
 
 var errRateLimitPolicy = errors.New("rate policy requires finite nonnegative RPS, zero burst when disabled, and positive burst when enabled")
+var errRateLimitManaged = errors.New("rate policy is managed by committed authority")
+var errRateLimitGeneration = errors.New("rate policy generation conflicts")
+
+// RateLimitSnapshot is one atomic effective pair and application generation.
+// Invalid bootstrap input remains an error, never a fabricated default policy.
+type RateLimitSnapshot struct {
+	Config     RateLimitConfig
+	Generation uint64
+	Error      error
+}
+
+func validRateLimitPolicy(rps float64, burst int) bool {
+	return !math.IsNaN(rps) && !math.IsInf(rps, 0) && rps >= 0 && !math.Signbit(rps) &&
+		(rps == 0 && burst == 0 || rps > 0 && burst > 0)
+}
 
 // Configure atomically changes the per-process pair for future admissions.
 // An enabled bucket retains existing credit rather than receiving a fresh burst.
 // Enabling a previously disabled bucket intentionally grants its initial burst.
 func (r *RateLimitInterceptor) Configure(rps float64, burst int) error {
-	if r == nil || math.IsNaN(rps) || math.IsInf(rps, 0) || rps < 0 || (rps == 0 && burst != 0) || (rps > 0 && burst <= 0) {
+	if r == nil || !validRateLimitPolicy(rps, burst) {
 		return errRateLimitPolicy
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	policy := RateLimitConfig{RPS: rps, Burst: burst}
-	if r.policyErr == nil && r.policy == policy {
-		return nil
+	if r.generation != 0 {
+		return errRateLimitManaged
 	}
-	if rps == 0 {
+	r.configureLocked(RateLimitConfig{RPS: rps, Burst: burst})
+	return nil
+}
+
+// applyManagedRate is the trusted verified-policy seam. The generation and
+// actual pair publish under the same mutex as every admission and observation.
+func (r *RateLimitInterceptor) applyManagedRate(policy RateLimitConfig, generation uint64) error {
+	if r == nil || generation == 0 || !validRateLimitPolicy(policy.RPS, policy.Burst) {
+		return errRateLimitPolicy
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if generation < r.generation || generation == r.generation && (r.policyErr != nil || r.policy != policy) {
+		return errRateLimitGeneration
+	}
+	r.configureLocked(policy)
+	r.generation = generation
+	return nil
+}
+
+// Caller owns mu and has validated the canonical pair. This never touches the
+// independently owned recovery allowance.
+func (r *RateLimitInterceptor) configureLocked(policy RateLimitConfig) {
+	if r.policyErr == nil && r.policy == policy {
+		return
+	}
+	if policy.RPS == 0 {
 		r.lim = nil
 	} else if r.lim == nil {
-		r.lim = rate.NewLimiter(rate.Limit(rps), burst)
+		r.lim = rate.NewLimiter(rate.Limit(policy.RPS), policy.Burst)
 	} else {
 		// Every Allow holds this same owner mutex: neither half of the pair
 		// can become visible between the two limiter updates. Capture time
@@ -356,22 +398,26 @@ func (r *RateLimitInterceptor) Configure(rps float64, burst int) error {
 			now = r.now
 		}
 		at := now()
-		r.lim.SetLimitAt(at, rate.Limit(rps))
-		r.lim.SetBurstAt(at, burst)
+		r.lim.SetLimitAt(at, rate.Limit(policy.RPS))
+		r.lim.SetBurstAt(at, policy.Burst)
 	}
 	r.policy, r.policyErr = policy, nil
-	return nil
 }
 
 // Configuration returns the last installed pair or an invalid-bootstrap error.
 // Invalid constructor input is closed admission, never an implicit disable.
 func (r *RateLimitInterceptor) Configuration() (RateLimitConfig, error) {
+	actual := r.Snapshot()
+	return actual.Config, actual.Error
+}
+
+func (r *RateLimitInterceptor) Snapshot() RateLimitSnapshot {
 	if r == nil {
-		return RateLimitConfig{}, errRateLimitPolicy
+		return RateLimitSnapshot{Error: errRateLimitPolicy}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.policy, r.policyErr
+	return RateLimitSnapshot{Config: r.policy, Generation: r.generation, Error: r.policyErr}
 }
 
 func (r *RateLimitInterceptor) Allow() bool {
