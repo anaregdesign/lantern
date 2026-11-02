@@ -231,3 +231,15 @@ func TestManagedSlowRPCRuntimePreparedValuesDoNotApply(t *testing.T) {
 		t.Fatal("missing actual logger advertised support")
 	}
 }
+
+func TestManagedSlowRPCRuntimeRequiresCapturedSourcesBeforeBinding(t *testing.T) {
+	manager, authority := operationalRuntimeTestManager(t, operationalRuntimeTestManaged(t, 1, 1))
+	owner := NewSlowRPCInterceptor(999*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	before := owner.Snapshot()
+	if _, err := NewManagedSlowRPCRuntime(t.Context(), manager, owner, ObservabilityConfig{SlowRPCThreshold: 999 * time.Millisecond}); err == nil {
+		t.Fatal("uncaptured provenance was invented")
+	}
+	if owner.Snapshot() != before || authority.binds != 0 || manager.slowRPC != nil {
+		t.Fatal("missing provenance refusal applied or bound an owner")
+	}
+}

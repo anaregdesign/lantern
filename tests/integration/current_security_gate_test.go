@@ -126,8 +126,10 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
 	var servingLoggers []*slog.Logger
+	var slowOwners []*provider.SlowRPCInterceptor
 	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
 	var managedLogGeneration uint64
+	var managedSlowGeneration uint64
 	previousDefaultLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousDefaultLogger) })
 	var initializationCounts []decisiontrace.AcquisitionCounts
@@ -254,7 +256,25 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, data, svc, certified, logging)
+		startup, err := provider.NewConfig()
+		if err != nil {
+			t.Fatal("captured operational startup values", id, err)
+		}
+		operationalRuntime, err := provider.NewManagedOperationalRuntime(t.Context(), runtime, provider.NewOperationalBootstrapConfig(startup))
+		if err != nil {
+			t.Fatal("verified operational policy recovery", id, err)
+		}
+		slowOwner := provider.NewSlowRPCInterceptorProvider(startup.Observability, logger)
+		slowCertified, err := provider.NewManagedSlowRPCRuntime(t.Context(), operationalRuntime, slowOwner, startup.Observability)
+		if err != nil {
+			t.Fatal("actual slow RPC owner recovery", id, err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, slowCertified)
+		if err != nil {
+			t.Fatal("operational owner certification", id, err)
+		}
+		slowOwners = append(slowOwners, slowOwner)
+		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, data, svc, certified, logging, operationalCertified)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +288,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("selected native TLS listener unavailable", err)
 			}
 		}
-		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, nil, nil, nil, nil, provider.NewHealthChecker(), logger, public)
+		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, nil, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -743,6 +763,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				managedLogGeneration = 2
 			})
 		})
+		readerToken := f.token(t, "reader", func(claims map[string]any) {
+			claims["iat"] = time.Now().Add(-time.Minute).Unix()
+			delete(claims, "auth_time")
+		})
+		managedSlowGeneration = exerciseCurrentSlowRPCPolicy(t, ctx, controls, runtimes, slowOwners, ordinaryToken, readerToken)
 	})
 	runCase("full-cut and profile mismatch refuse before dispatch", func(t *testing.T) {
 		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
@@ -1212,10 +1237,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 			startupLogLevels[2] = startup.Observability.LogLevel
 		}
+		if managedSlowGeneration != 0 {
+			t.Setenv("LANTERN_SLOW_RPC_THRESHOLD_MS", "9999")
+		}
 		startNode(2, "resume")
 		last := len(runtimes) - 1
 		runtimes[1], stops[1], servers[1], controls[1] = runtimes[last], stops[last], servers[last], controls[last]
 		servingLoggers[1] = servingLoggers[last]
+		slowOwners[1] = slowOwners[last]
 		deadline = time.Now().Add(60 * time.Second)
 		for !runtimes[1].Ready(ctx) {
 			if time.Now().After(deadline) || ctx.Err() != nil {
@@ -1233,6 +1262,15 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				assertCurrentManagedLogSettings(t, state, 2, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN, managedLogGeneration, managedLogGeneration, pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN)
 				assertCurrentLogFilter(t, servingLoggers[1], slog.LevelWarn)
 				t.Logf("managed log restart recovery: member=%d desired_generation=%d applied_generation=%d effective_level=%s source=%s; conflicting startup DEBUG did not overwrite recovered policy", state.Member, state.DesiredGeneration, state.AppliedGeneration, state.EffectiveLevel, state.Source)
+			})
+		}
+		if managedSlowGeneration != 0 {
+			t.Run("managed slow RPC restart ignores conflicting environment", func(t *testing.T) {
+				_, state := awaitCurrentOperationalSlowSettings(t, ctx, controls[1], token, managedSlowGeneration)
+				actual := slowOwners[1].Snapshot()
+				if state.AppliedGeneration != managedSlowGeneration || state.Effective.GetSlowRpc().GetThresholdMs() != 0 || actual.Generation != managedSlowGeneration || actual.Threshold != 0 {
+					t.Fatal("restart replaced sys threshold with conflicting environment", state, actual)
+				}
 			})
 		}
 		f.server = servers[1]
@@ -1989,6 +2027,90 @@ func awaitCurrentLogSettings(t *testing.T, ctx context.Context, control graphv1c
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func awaitCurrentOperationalSlowSettings(t *testing.T, ctx context.Context, control graphv1connect.LanternSecurityServiceClient, token string, generation uint64) (*pb.GetOperationalSettingsResponse, *pb.OperationalGroupSettings) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		response, err := control.GetOperationalSettings(ctx, securityWireRequest(token, &pb.GetOperationalSettingsRequest{}))
+		if err == nil {
+			if response.Msg.SchemaVersion != 1 || len(response.Msg.Groups) != 8 {
+				t.Fatal("closed operational status schema", response.Msg)
+			}
+			for _, state := range response.Msg.Groups {
+				if state.Group != pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC {
+					continue
+				}
+				desired := state.GetDesired().GetGeneration()
+				if desired == generation {
+					return response.Msg, state
+				}
+				if desired > generation {
+					t.Fatal("Slow RPC policy passed expected generation", desired, generation)
+				}
+			}
+		} else if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatal("Slow RPC settings failed outside current renewal", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Slow RPC committed generation not observed", generation, err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// Reuses this gate's existing original fixed cohort and native time owner. It
+// adds bounded public happy/refusal/replay assertions, not another campaign.
+func exerciseCurrentSlowRPCPolicy(t *testing.T, ctx context.Context, controls []graphv1connect.LanternSecurityServiceClient, runtimes []*provider.SecurityRuntime, owners []*provider.SlowRPCInterceptor, token, reader string) uint64 {
+	t.Helper()
+	initial, state := awaitCurrentOperationalSlowSettings(t, ctx, controls[0], token, 0)
+	if state.Desired != nil || state.AppliedGeneration != 0 || state.Effective.GetSlowRpc().GetThresholdMs() != owners[0].Threshold().Milliseconds() || state.ChangeMode != pb.OperationalSettingsChangeMode_OPERATIONAL_SETTINGS_CHANGE_MODE_HOT {
+		t.Fatal("actual Slow RPC bootstrap ownership", state)
+	}
+	if _, err := controls[0].GetOperationalSettings(ctx, securityWireRequest(reader, &pb.GetOperationalSettingsRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("reader disclosed operational settings", err)
+	}
+	bad := &pb.OperationalPolicyChange{Version: 1, Values: &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_SlowRpc{SlowRpc: &pb.OperationalSlowRPCValues{ThresholdMs: -1}}}}
+	if _, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: initial.Version.CurrentProfile, ExpectedCut: initial.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutOperationalPolicy{PutOperationalPolicy: bad}}}}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal("negative Slow RPC policy prepared", err)
+	}
+	unchanged, afterRefusal := awaitCurrentOperationalSlowSettings(t, ctx, controls[0], token, 0)
+	if !proto.Equal(unchanged.Version.CurrentCut, initial.Version.CurrentCut) || afterRefusal.Preparation != nil {
+		t.Fatal("refusal changed native state")
+	}
+	for index, threshold := range []int64{1, 0} {
+		generation := uint64(index)
+		current, _ := awaitCurrentOperationalSlowSettings(t, ctx, controls[0], token, generation)
+		change := &pb.OperationalPolicyChange{Version: 1, ExpectedGeneration: generation, Values: &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_SlowRpc{SlowRpc: &pb.OperationalSlowRPCValues{ThresholdMs: threshold}}}}
+		review, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Version.CurrentProfile, ExpectedCut: current.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutOperationalPolicy{PutOperationalPolicy: change}}}}}))
+		if err != nil || review.Msg.CurrentReview == nil || review.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+			t.Fatal("ordinary Slow RPC review", err)
+		}
+		_, _ = controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: review.Msg.CurrentReview}))
+		original := awaitCurrentPublicOriginal(t, ctx, controls[0], token, review.Msg.CurrentReview)
+		if original.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+			t.Fatal("Slow RPC desired policy did not commit", original)
+		}
+		replay, err := controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: review.Msg.CurrentReview}))
+		if err != nil || !proto.Equal(replay.Msg.GetCurrentResult().GetOriginal(), original) {
+			t.Fatal("Slow RPC replay changed original", err)
+		}
+		for member, control := range controls {
+			_, _ = awaitCurrentOperationalSlowSettings(t, ctx, control, token, generation+1)
+			awaitCurrentLogOwnerReady(t, ctx, runtimes[member])
+			_, state := awaitCurrentOperationalSlowSettings(t, ctx, control, token, generation+1)
+			actual := owners[member].Snapshot()
+			if state.AppliedGeneration != generation+1 || state.AppliedCut == nil || state.Effective.GetSlowRpc().GetThresholdMs() != threshold || state.Desired.Values.GetSlowRpc().GetThresholdMs() != threshold || state.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED || state.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_NONE || state.RestartRequired || len(state.Provenance) != 1 || state.Provenance[0].Source != pb.OperationalSettingsSource_OPERATIONAL_SETTINGS_SOURCE_MANAGED || actual.Generation != generation+1 || actual.Threshold.Milliseconds() != threshold {
+				t.Fatal("committed Slow RPC did not match actual member owner", member+1, state, actual)
+			}
+		}
+	}
+	return 2
 }
 
 func awaitCurrentLogOwnerReady(t *testing.T, ctx context.Context, runtime *provider.SecurityRuntime) {

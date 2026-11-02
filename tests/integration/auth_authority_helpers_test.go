@@ -265,14 +265,31 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 			t.Fatal(err)
 		}
 	}
-	publicCertified, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, data, dataService, certified, logging)
+	startup, err := provider.NewConfig()
+	if err != nil {
+		t.Fatal("captured operational startup values", err)
+	}
+	operationalRuntime, err := provider.NewManagedOperationalRuntime(t.Context(), runtime, provider.NewOperationalBootstrapConfig(startup))
+	if err != nil {
+		t.Fatal("verified operational policy recovery", err)
+	}
+	slowOwner := provider.NewSlowRPCInterceptorProvider(startup.Observability, servingLogger)
+	slowCertified, err := provider.NewManagedSlowRPCRuntime(t.Context(), operationalRuntime, slowOwner, startup.Observability)
+	if err != nil {
+		t.Fatal("actual slow RPC owner recovery", err)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, slowCertified)
+	if err != nil {
+		t.Fatal("operational owner certification", err)
+	}
+	publicCertified, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, data, dataService, certified, logging, operationalCertified)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.server = httptest.NewUnstartedServer(nil)
 	listener, err := provider.NewPublicLanternListener(f.server.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{EnableReflection: true}, provider.CORSConfig{}, dataService, runtime,
 		provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}},
-		nil, nil, nil, nil, nil, provider.NewHealthChecker(), servingLogger, publicCertified)
+		nil, nil, nil, nil, slowOwner, provider.NewHealthChecker(), servingLogger, publicCertified)
 	if err != nil {
 		t.Fatal(err)
 	}
