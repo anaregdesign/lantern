@@ -15,6 +15,26 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
+func TestGCEdgeBudgetIncreaseCannotOverflowPartialSweep(t *testing.T) {
+	cache := NewGraphCache[string, string](time.Hour)
+	for _, tail := range []string{"a", "b", "c"} {
+		cache.AddEdgeWithExpiration(tail, "hub", 1, time.Now().Add(time.Hour))
+	}
+	cache.SetGCEdgeBudget(1)
+	cache.flush()
+	if stats := cache.LastGCSweepStats(); stats.ScannedTails != 1 || stats.BacklogTails != 2 {
+		t.Fatalf("partial sweep = %+v", stats)
+	}
+	cache.SetGCEdgeBudget(int(^uint(0) >> 1))
+	cache.flush()
+	if stats := cache.LastGCSweepStats(); stats.ScannedTails != 2 || stats.BacklogTails != 0 {
+		t.Fatalf("increased budget = %+v", stats)
+	}
+	if cache.EdgeCount() != 3 {
+		t.Fatal("budget change evicted live data")
+	}
+}
+
 func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(identityExtract)

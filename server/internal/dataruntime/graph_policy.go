@@ -49,10 +49,25 @@ type GraphPolicySnapshot struct {
 }
 
 var (
-	ErrGraphPolicyConflict = errors.New("graph policy: generation conflicts")
-	ErrGraphPolicyStopped  = errors.New("graph policy: GC owner has stopped")
-	ErrGraphPolicyRunning  = errors.New("graph policy: GC owner is already running")
+	ErrGraphPolicyUnavailable = errors.New("graph policy: owner is unavailable")
+	ErrGraphPolicyConflict    = errors.New("graph policy: generation conflicts")
+	ErrGraphPolicyStopped     = errors.New("graph policy: GC owner has stopped")
+	ErrGraphPolicyRunning     = errors.New("graph policy: GC owner is already running")
 )
+
+// AvailableGraphPolicy checks one real constructed resource without changing
+// policy or starting another watcher.
+func (o *GraphPolicyOwner) AvailableGraphPolicy() error {
+	if o == nil || o.current.Load() == nil || o.runtime == nil || o.primary == nil || !o.primary.SharesServingRuntime(o.runtime) || o.watch == nil {
+		return ErrGraphPolicyUnavailable
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stopped || o.runtime.closed.Load() {
+		return ErrGraphPolicyStopped
+	}
+	return nil
+}
 
 // GraphPolicyOwner serializes policy transitions and owns exactly one GC
 // watcher. The transition mutex is never acquired by graph readers or hooks.

@@ -172,10 +172,9 @@ func (c *GraphCache[S, T]) flushIncrementalLocked(
 		c.gcSweepPlan = c.edges.tailIDs()
 		c.gcSweepPos = 0
 	}
-	end := c.gcSweepPos + c.gcEdgeBudget
-	if end > len(c.gcSweepPlan) {
-		end = len(c.gcSweepPlan)
-	}
+	// A valid positive budget may be MaxInt after a mid-cycle policy change.
+	// Bound the increment before adding the current cursor to avoid overflow.
+	end := c.gcSweepPos + min(c.gcEdgeBudget, len(c.gcSweepPlan)-c.gcSweepPos)
 	batch := c.gcSweepPlan[c.gcSweepPos:end]
 	c.gcSweepPos = end
 	var stats GCSweepStats

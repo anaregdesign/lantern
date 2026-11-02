@@ -28,6 +28,11 @@ func newGraphPolicyTestRuntime(t *testing.T) (*ServingRuntime, *Executor) {
 }
 
 func TestGraphPolicyValidationOwnershipAndGenerations(t *testing.T) {
+	for _, owner := range []*GraphPolicyOwner{nil, {}} {
+		if !errors.Is(owner.AvailableGraphPolicy(), ErrGraphPolicyUnavailable) {
+			t.Fatal("absent owner advertised graph policy support")
+		}
+	}
 	valid := GraphPolicyConfig{GCInterval: time.Hour}
 	for _, config := range []GraphPolicyConfig{
 		{}, {GCInterval: -1}, {GCInterval: time.Second, GCEdgeBudget: -1},
@@ -48,6 +53,9 @@ func TestGraphPolicyValidationOwnershipAndGenerations(t *testing.T) {
 	}
 	owner, err := NewGraphPolicyOwner(runtime, primary, valid)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.AvailableGraphPolicy(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewGraphPolicyOwner(runtime, primary, valid); err == nil {
@@ -197,6 +205,9 @@ func TestGraphPolicyGCTransitionsJoinBeforePublicationCut(t *testing.T) {
 	}
 	if maximum.Load() != 1 || active.Load() != 0 {
 		t.Fatalf("watcher overlap/leak: max %d active %d", maximum.Load(), active.Load())
+	}
+	if !errors.Is(owner.AvailableGraphPolicy(), ErrGraphPolicyStopped) {
+		t.Fatal("stopped GC owner advertised support")
 	}
 	if err := owner.Apply(GraphPolicySnapshot{Generation: 3, Config: config}); !errors.Is(err, ErrGraphPolicyStopped) {
 		t.Fatalf("stopped owner apply = %v", err)
