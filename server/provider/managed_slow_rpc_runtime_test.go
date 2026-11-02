@@ -1,11 +1,19 @@
 package provider
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
@@ -62,6 +70,93 @@ func TestManagedSlowRPCRuntimeActualStateAndBootstrapSources(t *testing.T) {
 				t.Fatal("bootstrap setter overrode adoption")
 			}
 		})
+	}
+}
+
+type operationalSlowWireLog struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (w *operationalSlowWireLog) Write(raw []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buffer.Write(raw)
+}
+func (w *operationalSlowWireLog) records(t *testing.T) []map[string]any {
+	w.mu.Lock()
+	raw := append([]byte(nil), w.buffer.Bytes()...)
+	w.mu.Unlock()
+	return decodeRecords(t, bytes.NewBuffer(raw))
+}
+
+func TestManagedSlowRPCRealConnectResidentEnableDisableAndRefusal(t *testing.T) {
+	// Real HTTP/Connect exercises the resident production interceptor and
+	// actual owner. Native history/authentication use separate isolated
+	// authority tests; this local fixture changes only verified projections.
+	cfg, err := LoadConfig(envconfig.NewReader([]string{"LANTERN_SLOW_RPC_THRESHOLD_MS=0"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := operationalRuntimeTestProjection(1)
+	manager, authority := operationalRuntimeTestManager(t, p)
+	manager.bootstrap = NewOperationalBootstrapConfig(cfg)
+	logs := &operationalSlowWireLog{}
+	owner := NewSlowRPCInterceptor(0, slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	var ticks atomic.Int64
+	owner.now = func() time.Time { return time.Unix(0, ticks.Add(int64(2*time.Millisecond))) }
+	if _, err := NewManagedSlowRPCRuntime(t.Context(), manager, owner, cfg.Observability); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/graph.v1.LanternService/GetVertex"
+	handler := connect.NewUnaryHandler(path, func(_ context.Context, request *connect.Request[pb.GetVertexRequest]) (*connect.Response[pb.GetVertexResponse], error) {
+		if request.Msg.Key == "denied" {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("fixture denied"))
+		}
+		return connect.NewResponse(&pb.GetVertexResponse{Vertex: &pb.Vertex{Key: request.Msg.Key}}), nil
+	}, connect.WithInterceptors(owner.ConnectInterceptor()))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := connect.NewClient[pb.GetVertexRequest, pb.GetVertexResponse](server.Client(), server.URL+path)
+	call := func(key string) error {
+		_, err := client.CallUnary(t.Context(), connect.NewRequest(&pb.GetVertexRequest{Key: key}))
+		return err
+	}
+	if err := call("disabled"); err != nil || len(logs.records(t)) != 0 || ticks.Load() != 0 {
+		t.Fatal("disabled resident owner measured or logged", err)
+	}
+	enabled := operationalRuntimeTestManaged(t, 2, 1)
+	enabled.Policies.SlowRPC.Values.SlowRPC.ThresholdMS = 1
+	authority.setProjection(enabled)
+	pending, err := manager.Observe(enabled)
+	if err != nil || !pending[operationalpolicy.GroupSlowRPC].Pending || pending[operationalpolicy.GroupSlowRPC].AppliedGeneration != 0 {
+		t.Fatal("commit alone claimed application", err)
+	}
+	if err := manager.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := call("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := call("denied"); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("middleware changed RPC refusal", err)
+	}
+	records := logs.records(t)
+	if len(records) != 2 || records[0]["threshold_ms"] != float64(1) || records[0]["policy_generation"] != float64(1) || records[1]["code"] != "permission_denied" {
+		t.Fatal("actual captured tuple/refusal telemetry changed", records)
+	}
+	disabled := operationalRuntimeTestManaged(t, 3, 2)
+	disabled.Policies.SlowRPC.Values.SlowRPC.ThresholdMS = 0
+	authority.setProjection(disabled)
+	if err := manager.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	before := ticks.Load()
+	if err := call("disabled-again"); err != nil || len(logs.records(t)) != 2 || ticks.Load() != before {
+		t.Fatal("mounted owner did not disable without restart", err)
+	}
+	if owner.Snapshot().Generation != 2 {
+		t.Fatal("actual effective generation was not installed")
 	}
 }
 
