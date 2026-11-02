@@ -77,6 +77,14 @@ func (o *s2cParticipant) beginAt(candidate [32]byte, expected *s2cBeginTarget) (
 	if candidate != [32]byte{} && o.pending[candidate] == nil {
 		return nil, errS2CProtocol
 	}
+	if candidate != [32]byte{} {
+		if err := requireLogPolicyCandidate(o.trust, o.replayState, o.pending[candidate]); err != nil {
+			return nil, err
+		}
+		if err := o.requireLocalLogPolicyCandidate(o.pending[candidate]); err != nil {
+			return nil, err
+		}
+	}
 	if o.counter == math.MaxUint64 {
 		return nil, errS2CCapacity
 	}
@@ -251,6 +259,9 @@ func (o *s2cParticipant) receivePromise(m *s2cMessage) ([]s2cOutbox, error) {
 }
 
 func (o *s2cParticipant) receiveAccept(m *s2cMessage) ([]s2cOutbox, error) {
+	if err := o.requireLocalLogPolicyCandidate(m.h); err != nil {
+		return nil, err
+	}
 	if e := s2cVerifyP1(o.trust, m); e != nil {
 		return nil, e
 	}
@@ -356,6 +367,9 @@ func (o *s2cParticipant) learnChosen(m *s2cMessage) error {
 	if o.chosen != nil || m.slot != o.replayState.slot+1 || m.predecessor != o.replayState.prefix {
 		return errS2CProtocol
 	}
+	if err := o.requireLocalLogPolicyCandidate(m.h); err != nil {
+		return err
+	}
 	preview, e := s2cPreviewCandidate(o.trust, o.b.state, o.trust.genesis.roots, o.config.BScope, o.b.receipt, m.h, next.certificate.commit)
 	if e != nil {
 		return e
@@ -460,7 +474,7 @@ func (o *s2cParticipant) finishDrained(receipt s2LocalReceipt) {
 	if o.chosen.h != nil {
 		d := o.chosen.h.digest()
 		if h := o.pending[d]; h != nil {
-			o.pendingBytes -= uint64(len(h.raw))
+			o.pendingBytes -= uint64(len(historicalWire(h)))
 			delete(o.pending, d)
 		}
 	}

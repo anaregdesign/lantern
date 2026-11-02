@@ -91,12 +91,16 @@ type s2cParticipant struct {
 	receipts                             []s2LocalReceipt
 	// replayState and replayReceipt are detached authenticated P reconstruction,
 	// also used to validate the one possible CHOSEN tail before opening B.
-	replayState   *S1ApplyState
-	replayReceipt s2LocalReceipt
-	chosen        *s2cMessage
-	preview       *s2cPreview
-	bootstrapped  bool
-	hooks         *s2cParticipantHooks
+	replayState            *S1ApplyState
+	replayReceipt          s2LocalReceipt
+	chosen                 *s2cMessage
+	preview                *s2cPreview
+	logRuntime             LogPolicyRuntime
+	logPolicyFloor         s2cJournalFloor
+	logPolicyFloorOriginal string
+	logPolicyPreparation   LogPolicyPreparation
+	bootstrapped           bool
+	hooks                  *s2cParticipantHooks
 }
 
 func s2cCanonicalFamilies(p, b string) (string, string, error) {
@@ -399,7 +403,7 @@ func (o *s2cParticipant) persistSealedOriginLocked(raw []byte) ([32]byte, error)
 	if e != nil {
 		return [32]byte{}, e
 	}
-	if o.config.OwnedOrigin == 0 || h.originID != o.config.OwnedOrigin {
+	if h.candidate != "" || o.config.OwnedOrigin == 0 || h.originID != o.config.OwnedOrigin {
 		return [32]byte{}, errS2CProtocol
 	}
 	if !o.reservationMatches(h) {

@@ -16,6 +16,7 @@ type Change struct {
 	PreserveSecret        bool                `json:"preserve_secret,omitempty"`
 	PreserveNativeSecrets []string            `json:"preserve_native_secrets,omitempty"`
 	RegistrationPolicy    *RegistrationPolicy `json:"registration_policy,omitempty"`
+	LogPolicy             *LogPolicyChange    `json:"log_policy,omitempty"`
 }
 
 const (
@@ -30,10 +31,14 @@ const (
 	DeleteAssignment      = "assignment.delete"
 	RevokeSessions        = "session.revoke_user"
 	PutRegistrationPolicy = "registration_policy.put"
+	PutLogPolicy          = "log_policy.put"
 	MaxTransactionChanges = 100
 )
 
 func (c Change) validate() error {
+	if c.LogPolicy != nil && c.Kind != PutLogPolicy {
+		return ErrInvalidImage
+	}
 	if c.RegistrationPolicy != nil && c.Kind != PutRegistrationPolicy {
 		return ErrInvalidImage
 	}
@@ -51,6 +56,10 @@ func (c Change) validate() error {
 	}
 	issuer, role, identity := c.Issuer != nil, c.Role != nil, c.Identity != nil
 	switch c.Kind {
+	case PutLogPolicy:
+		if !c.LogPolicy.valid() || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" {
+			return ErrInvalidImage
+		}
 	case PutRegistrationPolicy:
 		if c.RegistrationPolicy == nil || !c.RegistrationPolicy.valid() || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" {
 			return ErrInvalidImage
@@ -126,6 +135,8 @@ func (c Change) ResolveIssuerSecrets(prior Issuer) Issuer {
 
 func (c Change) target() string {
 	switch c.Kind {
+	case PutLogPolicy:
+		return "log_policy"
 	case PutRegistrationPolicy:
 		return "registration_policy"
 	case PutIssuer:

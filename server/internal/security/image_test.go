@@ -236,3 +236,43 @@ func TestImageUIDBindingAndUniqueness(t *testing.T) {
 		}
 	})
 }
+
+func TestImageLogPolicyCanonicalRecovery(t *testing.T) {
+	image := testImage()
+	before, err := json.Marshal(image)
+	if err != nil || strings.Contains(string(before), "log_policy") {
+		t.Fatal("historical image acquired an absent policy", err)
+	}
+	snapshot, err := DecodeImage(before, DefaultPolicyLimits())
+	if err != nil || string(snapshot.image) != string(before) || snapshot.LogPolicy() != nil {
+		t.Fatal("historical canonical image changed", err)
+	}
+	image.LogPolicy = &LogPolicy{Version: LogPolicyVersion, Generation: 3, Level: LogLevelWarn}
+	encoded, _ := json.Marshal(image)
+	restored, err := DecodeImage(encoded, DefaultPolicyLimits())
+	if err != nil || *restored.LogPolicy() != *image.LogPolicy {
+		t.Fatal("managed policy did not survive canonical recovery", err)
+	}
+	for _, malformed := range []string{
+		strings.Replace(string(encoded), `"generation":3`, `"generation":0`, 1),
+		strings.Replace(string(encoded), `"generation":3`, `"generation":18446744073709551616`, 1),
+		strings.Replace(string(encoded), `"level":"warn"`, `"level":"WARN"`, 1),
+		strings.Replace(string(encoded), `"level":"warn"`, `"level":"warn","unknown":true`, 1),
+		strings.Replace(string(encoded), `"level":"warn"`, `"level":"warn","version":2`, 1),
+		strings.Replace(string(encoded), `"generation":3`, `"generation":3,"generation":3`, 1),
+	} {
+		if _, err := DecodeImage([]byte(malformed), DefaultPolicyLimits()); !errors.Is(err, ErrInvalidImage) {
+			t.Fatal("invalid nested policy admitted", err)
+		}
+	}
+	for _, policy := range []*LogPolicy{
+		{Version: LogPolicyVersion + 1, Generation: 1, Level: LogLevelInfo},
+		{Version: LogPolicyVersion, Level: LogLevelInfo},
+		{Version: LogPolicyVersion, Generation: 1, Level: "trace"},
+	} {
+		image.LogPolicy = policy
+		if _, err := CompileImage(image, DefaultPolicyLimits()); !errors.Is(err, ErrInvalidImage) {
+			t.Fatal("invalid materialized policy admitted", err)
+		}
+	}
+}

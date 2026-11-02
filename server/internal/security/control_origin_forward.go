@@ -35,11 +35,11 @@ func (o *authorityOriginOwner) lookupOriginal(ctx context.Context, id FullChange
 // Authentication is historical verification under the independently enrolled
 // original origin key; current disclosure remains a separate operation.
 func (o *s2cParticipant) forwardedHistorical(raw string) (*s2cHistoricalH, error) {
-	if _, kind := o.recordGrammar(); kind != s2cPForwardedH {
+	if _, kind := o.recordGrammar(); kind < s2cPForwardedH {
 		return nil, errS2CProtocol
 	}
 	h, err := verifyHistoricalH(o.trust, []byte(raw))
-	if err != nil || h.originID == o.config.OwnedOrigin {
+	if err != nil || h.candidate != "" || h.originID == o.config.OwnedOrigin {
 		return nil, errS2CProtocol
 	}
 	if _, duplicate := o.origins[h.digest()]; duplicate {
@@ -102,15 +102,26 @@ func (o *authorityOriginOwner) carryOriginal(ctx context.Context, raw []byte) (a
 		}
 		return authorityOriginResult{digest: original.handoff, outcome: original}, nil
 	}
+	candidate := h
+	if h.candidate != "" {
+		bare := *h
+		bare.candidate = ""
+		h = &bare
+	}
 	d := h.digest()
 	if old, known := k.origins[d]; known {
 		if old.raw != h.raw {
 			return authorityOriginResult{}, ErrChangeConflict
 		}
+		if candidate.candidate != "" {
+			if err := k.persistLogPolicyCandidateLocked(candidate); err != nil {
+				return authorityOriginResult{}, err
+			}
+		}
 		return authorityOriginResult{digest: d, raw: old.raw}, nil
 	}
 	if h.originID == k.config.OwnedOrigin {
-		if _, err := k.persistSealedOriginLocked(raw); err != nil {
+		if _, err := k.persistSealedOriginLocked([]byte(h.raw)); err != nil {
 			return authorityOriginResult{}, err
 		}
 	} else {
@@ -121,6 +132,11 @@ func (o *authorityOriginOwner) carryOriginal(ctx context.Context, raw []byte) (a
 			return authorityOriginResult{}, err
 		}
 		k.installForwardedH(h)
+	}
+	if candidate.candidate != "" {
+		if err := k.persistLogPolicyCandidateLocked(candidate); err != nil {
+			return authorityOriginResult{}, err
+		}
 	}
 	return authorityOriginResult{digest: d, raw: h.raw}, nil
 }

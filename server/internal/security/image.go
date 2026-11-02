@@ -40,6 +40,7 @@ type Image struct {
 	MachineCredentials      []MachineCredential `json:"machine_credentials,omitempty"`
 	Audit                   []AuditRecord       `json:"audit,omitempty"`
 	RegistrationPolicy      *RegistrationPolicy `json:"registration_policy,omitempty"`
+	LogPolicy               *LogPolicy          `json:"log_policy,omitempty"`
 }
 
 // CompileImage validates the complete image before any durable commit. A
@@ -63,7 +64,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	if err := validateAudit(image.Audit); err != nil {
 		return nil, err
 	}
-	if !image.RegistrationPolicy.valid() {
+	if !image.RegistrationPolicy.valid() || !image.LogPolicy.valid() {
 		return nil, ErrInvalidImage
 	}
 	// Validate coarse lengths before marshaling untrusted input.
@@ -86,7 +87,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 			return nil, err
 		}
 	}
-	snapshot := &Snapshot{configuredTrustDigest: image.ConfiguredTrustDigest, policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
+	snapshot := &Snapshot{configuredTrustDigest: image.ConfiguredTrustDigest, logPolicy: image.LogPolicy.clone(), policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
 		principals: make(map[Identity]principalAccess, len(image.Principals)), sessions: make(map[string]Session, len(image.Sessions))}
 	snapshot.accessSets = make(map[string]*Access)
 	snapshot.roleBytes = roleBytes

@@ -113,16 +113,46 @@ logger. That does not establish the serving policy. After authority loss, retain
 the last verified applied level while preserving existing security readiness
 failure; never fall back to another source.
 
-First adoption requires a supported, upgraded fixed cohort, including serving
-origins. Historical absent-policy images allow preparation before adoption.
-Unknown-field rejection by older binaries is necessary but does not alone prove
-that adoption is safe for availability. [Issue #1992](https://github.com/anaregdesign/lantern/issues/1992)
-owns a concrete enforceable adoption/rollout gate using existing membership and
-registration guarantees or an explicitly verified coordinated-upgrade protocol.
-This is an unresolved implementation proof requirement, not permission to accept
-an operator-provided readiness boolean. Do not add a generic negotiation framework.
-After adoption, an older binary that cannot understand the policy is not a valid
-rollback target and must fail closed.
+First adoption requires support from **every fixed voter and enrolled origin**,
+including nonproposing/read-only participants. Native genesis must remain
+unadopted: compiling a historical committed Image does not permit provisioning
+that Image as fresh genesis. No operator-provided readiness boolean is accepted.
+
+Prepare, read and review do not change durable state. Explicit Apply consumes and
+retains one original H through the existing native path. Authenticated private
+peers verify that exact intent, the reviewed cut, current management authority,
+required operation-purpose proof, and an actually installed logging owner. They
+preflight the bounded candidate and completion resources using ordinary capacity,
+persist a current-profile-only P journal minimum-reader-version marker, synchronize
+the WAL and chain tip, and only then sign. A separate candidate envelope carries
+the unchanged original H and all distinct voter/origin support signatures. Bare H
+cannot activate first adoption. Public graphs, exports and CDC never carry these
+private records or certificates.
+
+The preceding closed P grammar refuses the new marker. The existing native lease
+prevents a simultaneous old process on the same family, and complete-history
+resume never truncates an unknown application record into an older startup. P has
+no compaction today; any future compaction must retain the minimum-reader version.
+This does not create a new external rollback witness for replacing an entire
+native/custody family with an older valid copy. Existing independent floors retain
+that responsibility. An older binary is not a valid rollback target after the
+marker is written, even if the later policy commit cannot finish. First-adoption
+review must disclose this irreversible downgrade restriction before Apply.
+
+An offline enrolled participant blocks adoption. A partial preparation retains
+its local marker and a read-only reference to the original change ID, intent and
+actor digest; that reference does not claim commit. An incomplete original uses
+bounded ordinary resources and cannot block independently authorized security
+revocation. If a genuine security change advances the semantic cut, status-only
+recovery may commit the original's existing CAS refusal without a support
+certificate: the exact-cut check rejects it before any policy effect. It never
+remints an identity or consumes credentials again. Admin keeps logging recovery
+separate from urgent security management while retaining one application store.
+
+The protocol remains ineligible by default until the production composition root
+installs the actual resident logging owner. Merely decoding the model or reporting
+a version cannot supply that eligibility. The pilot adds no generic capability
+negotiation, independent consensus system or settings sidecar.
 
 ## Effective runtime and Admin
 

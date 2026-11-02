@@ -8,6 +8,18 @@ import "math"
 func applyManagementChanges(image *Image, changes []Change) error {
 	for _, change := range changes {
 		switch change.Kind {
+		case PutLogPolicy:
+			if !change.LogPolicy.valid() || !image.LogPolicy.valid() {
+				return ErrInvalidImage
+			}
+			generation := uint64(1)
+			if image.LogPolicy != nil {
+				if image.LogPolicy.Generation == math.MaxUint64 {
+					return ErrInvalidImage
+				}
+				generation = image.LogPolicy.Generation + 1
+			}
+			image.LogPolicy = &LogPolicy{Version: LogPolicyVersion, Generation: generation, Level: change.LogPolicy.Level}
 		case PutRegistrationPolicy:
 			image.RegistrationPolicy = change.RegistrationPolicy.clone()
 		case PutIssuer, DisableIssuer, DeleteIssuer:

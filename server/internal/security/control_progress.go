@@ -102,6 +102,11 @@ func (o *s3aOwner) decodeRange(raw []byte, from uint64) ([][]byte, error) {
 // order, and paces escalation. There is no chosen-value oracle or new H issuer.
 // Success proves a local installed slot, not current policy freshness/admission.
 func (o *s3aOwner) Drive(ctx context.Context, candidate [32]byte) (s2LocalReceipt, error) {
+	if candidate != [32]byte{} {
+		if err := o.ensureLogPolicyCandidate(ctx, candidate); err != nil {
+			return s2LocalReceipt{}, err
+		}
+	}
 	return o.driveAt(ctx, candidate, nil)
 }
 

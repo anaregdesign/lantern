@@ -384,7 +384,7 @@ func s2cSignMessage(t *s2cTrust, key ed25519.PrivateKey, m s2cMessage) (*s2cMess
 	}
 	var h string
 	if m.h != nil {
-		h = m.h.raw
+		h = historicalWire(m.h)
 	}
 	total := uint64(s2cMessageOverhead) + uint64(len(m.proof)) + uint64(len(h))
 	if uint64(len(m.proof)) > t.bounds.ProofBytes || len(m.proof) > s2cHardProofBytes || uint64(len(h)) > t.bounds.HistoricalBytes || len(h) > 8<<20 || total > t.bounds.PayloadBytes || total > s2cHardPayloadBytes || uint64(s2cMessageOverhead) > t.bounds.HeaderBytes {
@@ -460,7 +460,7 @@ func s2cSelectP1(t *s2cTrust, promises []*s2cMessage, candidate *s2cHistoricalH)
 		if candidate == nil {
 			return proof, nil, nil
 		}
-		h, err := verifyHistoricalH(t, []byte(candidate.raw))
+		h, err := verifyHistoricalH(t, []byte(historicalWire(candidate)))
 		if err != nil {
 			return "", nil, errS2CMessage
 		}
@@ -560,7 +560,7 @@ func s2cLogicalCommit(t *s2cTrust, slot uint64, value [32]byte) CommitRef {
 func s2cChosenBytesBound(t *s2cTrust, h *s2cHistoricalH) uint64 {
 	var n uint64
 	if h != nil {
-		n = uint64(len(h.raw))
+		n = uint64(len(historicalWire(h)))
 	}
 	return s2cChosenSizeBound(t, n)
 }

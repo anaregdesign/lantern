@@ -93,6 +93,7 @@ type s2cTrust struct {
 	members          []s2cMember
 	origins          []s2cOriginDescriptor
 	bounds           s2cBounds
+	logPolicyCache   *logPolicyCandidateCache
 	originDigests    map[uint32][32]byte
 }
 
@@ -139,7 +140,7 @@ func newS2CTrust(b s2cBootstrap) (*s2cTrust, error) {
 		return nil, errS2CTrust
 	}
 	g := b.Genesis.state
-	if g.slot != 0 || len(g.ledger) != 0 || g.membership != membership || g.projection.cut.Sequence != 1 || g.projection.cut.Previous != [32]byte{} {
+	if g.projection.snapshot.LogPolicy() != nil || g.slot != 0 || len(g.ledger) != 0 || g.membership != membership || g.projection.cut.Sequence != 1 || g.projection.cut.Previous != [32]byte{} {
 		return nil, errS2CTrust
 	}
 	// Recompute the initial prefix from the independently supplied exact state.
@@ -207,6 +208,7 @@ func newS2CTrust(b s2cBootstrap) (*s2cTrust, error) {
 		Origins       []s2cOriginDescriptor
 		Bounds        s2cBounds
 	}{s2cVersion, basic, s2LocalCapsuleDigest(encoded), g.configuration, membership, t.origins, b.Bounds})
+	t.logPolicyCache = &logPolicyCandidateCache{owner: t, context: logPolicyCandidateCacheContext(t)}
 	return t, nil
 }
 

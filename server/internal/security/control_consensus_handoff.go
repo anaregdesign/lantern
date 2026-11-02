@@ -79,10 +79,12 @@ type s2cHistoricalHeader struct {
 // bytes. Only verification of the complete exact immutable origin input creates
 // this capability; the only historical issuer lives in _test.go.
 type s2cHistoricalH struct {
-	scope    [32]byte
-	raw      string
-	handoff  *S1Handoff
-	originID uint32
+	scope          [32]byte
+	raw            string
+	handoff        *S1Handoff
+	originID       uint32
+	candidate      string
+	logCertificate *logPolicySupportCertificate
 }
 
 func (h *s2cHistoricalH) digest() [32]byte {
@@ -184,6 +186,9 @@ func s2cVerifyPurpose(h s2cHistoricalHeader, operation OperationIdentity) bool {
 // Parsing and signature validation never sample current time. Expiry governs
 // the original consume only, so an exact preexpiry H can finish after expiry.
 func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
+	if bytes.HasPrefix(encoded, []byte(logPolicyCandidateMagic)) {
+		return verifyLogPolicyCandidate(t, encoded)
+	}
 	if bytes.HasPrefix(encoded, []byte(configuredTrustMagic)) {
 		return verifyConfiguredTrustH(t, encoded)
 	}
@@ -243,7 +248,7 @@ func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
 	if !handoff.valid(t.genesis.state.projection.cut) || handoff.digest() != h.Value {
 		return nil, errS2CHistorical
 	}
-	return &s2cHistoricalH{t.scope, string(encoded), handoff, o.ID}, nil
+	return &s2cHistoricalH{scope: t.scope, raw: string(encoded), handoff: handoff, originID: o.ID}, nil
 }
 
 // Encodes only untrusted claim data. No signing key or issuer is present in

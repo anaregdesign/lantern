@@ -258,7 +258,7 @@ func (o *CurrentAuthority) Apply(ctx context.Context, review CurrentReview, prod
 				err = ErrChangeConflict
 			}
 			if err == nil {
-				retained, err = o.origin.carryOriginal(ctx, []byte(h.raw))
+				retained, err = o.origin.carryOriginal(ctx, []byte(historicalWire(h)))
 			}
 		} else {
 			err = preparedErr

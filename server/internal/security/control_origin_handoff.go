@@ -160,5 +160,5 @@ func verifyAuthorityHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, e
 	if !handoff.valid(t.genesis.state.projection.cut) || handoff.digest() != h.Value {
 		return nil, errS2CHistorical
 	}
-	return &s2cHistoricalH{t.scope, string(encoded), handoff, origin.ID}, nil
+	return &s2cHistoricalH{scope: t.scope, raw: string(encoded), handoff: handoff, originID: origin.ID}, nil
 }

@@ -19,6 +19,8 @@ const (
 	s2cPDrained
 	s2cPOriginReservation
 	s2cPForwardedH
+	s2cPLogPolicyFloor
+	s2cPLogPolicyCandidate
 )
 
 // Fixed-width record metadata keeps quota and completion calculations exact,
@@ -100,7 +102,7 @@ func (o *s2cParticipant) decodeRecord(raw []byte, index uint64) (s2cPRecord, err
 
 func (o *s2cParticipant) recordGrammar() (string, byte) {
 	if o.trust != nil && len(o.trust.origins) != 0 && o.trust.origins[0].Profile.Version == authorityAdmissionVersion {
-		return authorityPMagic, s2cPForwardedH
+		return authorityPMagic, s2cPLogPolicyCandidate
 	}
 	return s2cPMagic, s2cPDrained
 }

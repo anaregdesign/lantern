@@ -324,6 +324,9 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 	if !r.use.accepts(command) || r.use.kind != "" && (credential.claim.Verification != r.credential.claim.Verification || proof != [32]byte{}) {
 		return result, ErrPermissionDenied
 	}
+	if hasLogPolicyChange(&S1Handoff{operation: r.operation}) && (k.logRuntime == nil || k.logRuntime.PrepareLogPolicy() != nil) {
+		return result, ErrLogPolicyUnavailable
+	}
 	assessment, err := AssessS1(k.replayState.projection, r.operation)
 	if err != nil {
 		return result, err
