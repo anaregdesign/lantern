@@ -13,7 +13,11 @@ export function OperationalSettingField({
   change(value: string): void;
 }) {
   return (
-    <Field label={field.label} className={styles.field}>
+    <Field
+      label={field.label}
+      hint={field.max ? `Maximum ${field.max}` : undefined}
+      className={styles.field}
+    >
       {field.kind === "boolean" ? (
         <Select
           value={value}

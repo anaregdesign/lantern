@@ -9,6 +9,7 @@ export type OperationalField = {
   key: string;
   label: string;
   kind: "integer" | "decimal" | "boolean" | "search-mode";
+  max?: string;
 };
 export type OperationalGroupDefinition = {
   group: OperationalGroup;
@@ -149,9 +150,24 @@ export const operationalDefinitions: readonly OperationalGroupDefinition[] = [
       { key: "maxLimit", label: "Max limit", kind: "integer" },
       { key: "defaultMode", label: "Default mode", kind: "search-mode" },
       { key: "defaultMinShould", label: "Default min should", kind: "integer" },
-      { key: "timeoutMs", label: "Timeout (ms)", kind: "integer" },
-      { key: "maxQueryBytes", label: "Max query bytes", kind: "integer" },
-      { key: "maxQueryTerms", label: "Max query terms", kind: "integer" },
+      {
+        key: "timeoutMs",
+        max: "4294967295",
+        label: "Timeout (ms)",
+        kind: "integer",
+      },
+      {
+        key: "maxQueryBytes",
+        max: "4294967295",
+        label: "Max query bytes",
+        kind: "integer",
+      },
+      {
+        key: "maxQueryTerms",
+        max: "4294967295",
+        label: "Max query terms",
+        kind: "integer",
+      },
       {
         key: "maxDictionaryVisits",
         label: "Max dictionary visits",
@@ -220,13 +236,16 @@ export function operationalDraft(
     definition.fields.map((field) => [field.key, String(source[field.key])]),
   );
 }
-function integer(draft: OperationalDraft, key: string): bigint {
+function integer(draft: OperationalDraft, key: string, max?: bigint): bigint {
   const value = draft[key];
   if (!value || !/^(0|[1-9][0-9]{0,19})$/.test(value))
     throw new Error(
       "Enter a whole non-negative number for every integer setting.",
     );
-  return BigInt(value);
+  const parsed = BigInt(value);
+  if (max !== undefined && parsed > max)
+    throw new Error(`Enter a value at most ${max.toString()} for ${key}.`);
+  return parsed;
 }
 function decimal(draft: OperationalDraft, key: string): number {
   const value = draft[key];
@@ -361,9 +380,9 @@ export function operationalValues(
               integer(draft, "defaultMode"),
             ) as OperationalSearchMode,
             defaultMinShould: integer(draft, "defaultMinShould"),
-            timeoutMs: integer(draft, "timeoutMs"),
-            maxQueryBytes: integer(draft, "maxQueryBytes"),
-            maxQueryTerms: integer(draft, "maxQueryTerms"),
+            timeoutMs: integer(draft, "timeoutMs", 4294967295n),
+            maxQueryBytes: integer(draft, "maxQueryBytes", 4294967295n),
+            maxQueryTerms: integer(draft, "maxQueryTerms", 4294967295n),
             maxDictionaryVisits: integer(draft, "maxDictionaryVisits"),
             maxPostingVisits: integer(draft, "maxPostingVisits"),
             maxPositionVisits: integer(draft, "maxPositionVisits"),

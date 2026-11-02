@@ -87,3 +87,32 @@ test("operational rate draft roundtrips tiny and large finite scientific values"
     ).toThrow();
   }
 });
+
+test("operational Search fields show and enforce the existing capability uint32 maximum", () => {
+  const draft = {
+    defaultLimit: "100",
+    maxLimit: "1000",
+    defaultMode: "1",
+    defaultMinShould: "1",
+    timeoutMs: "4294967295",
+    maxQueryBytes: "4294967295",
+    maxQueryTerms: "4294967295",
+    maxDictionaryVisits: "100",
+    maxPostingVisits: "100",
+    maxPositionVisits: "100",
+    maxExpirationVisits: "100",
+  };
+  expect(() => operationalValues(OperationalGroup.SEARCH, draft)).not.toThrow();
+  const fields = operationalDefinitions.find(
+    (d) => d.group === OperationalGroup.SEARCH,
+  )!.fields;
+  for (const key of ["timeoutMs", "maxQueryBytes", "maxQueryTerms"]) {
+    expect(fields.find((f) => f.key === key)?.max).toBe("4294967295");
+    expect(() =>
+      operationalValues(OperationalGroup.SEARCH, {
+        ...draft,
+        [key]: "4294967296",
+      }),
+    ).toThrow("at most 4294967295");
+  }
+});

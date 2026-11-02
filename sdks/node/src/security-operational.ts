@@ -170,6 +170,9 @@ export function validateOperationalValues(
         ].includes(s.defaultMode) ||
         !integer(s.defaultMinShould, 1n, 0xffffffffn) ||
         !millis(s.timeoutMs, false) ||
+        ![s.timeoutMs, s.maxQueryBytes, s.maxQueryTerms].every((v) =>
+          integer(v, 1n, 0xffffffffn),
+        ) ||
         ![
           s.maxQueryBytes,
           s.maxQueryTerms,

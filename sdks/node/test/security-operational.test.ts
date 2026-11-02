@@ -270,3 +270,36 @@ test("same-sequence applied cuts require every current-cut digest to match", () 
   state.appliedCut!.projection[0]++;
   expect(() => validateOperationalSettings(r)).toThrow();
 });
+
+test("managed Search capability fields cannot wrap uint32 at the public boundary", () => {
+  const search = create(OperationalPolicyValuesSchema, {
+    group: {
+      case: "search",
+      value: {
+        defaultLimit: 100n,
+        maxLimit: 1000n,
+        defaultMode: 1,
+        defaultMinShould: 1n,
+        timeoutMs: 0xffffffffn,
+        maxQueryBytes: 0xffffffffn,
+        maxQueryTerms: 0xffffffffn,
+        maxDictionaryVisits: 100n,
+        maxPostingVisits: 100n,
+        maxPositionVisits: 100n,
+        maxExpirationVisits: 100n,
+      },
+    },
+  });
+  const change = create(OperationalPolicyChangeSchema, {
+    version: 1,
+    values: search,
+    compatibilityFingerprint: "a".repeat(64),
+  });
+  expect(() => validateOperationalChange(change)).not.toThrow();
+  for (const field of ["timeoutMs", "maxQueryBytes", "maxQueryTerms"] as const) {
+    const candidate = structuredClone(change);
+    if (candidate.values?.group.case !== "search") throw new Error();
+    candidate.values.group.value[field] = 0x100000000n;
+    expect(() => validateOperationalChange(candidate)).toThrow();
+  }
+});

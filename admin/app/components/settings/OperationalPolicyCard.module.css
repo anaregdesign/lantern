@@ -41,7 +41,7 @@
   text-align: left;
   vertical-align: top;
   border-bottom: 1px solid var(--colorNeutralStroke2);
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
 }
 .tableWrap caption {
   text-align: left;

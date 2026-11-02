@@ -355,3 +355,9 @@ identity, idempotency, CAS, role, end-user, CSRF and output-guard rules remain.
 Current settings reads never settle an uncertain original. Reload requires a
 fresh status of that exact retained original before another operational change.
 The operational lane cannot consume the urgent security reserve.
+
+The managed Search `timeout_ms`, `max_query_bytes` and `max_query_terms` values
+are positive and capped at `4294967295`, matching the existing public capability
+fields' uint32 representation. The typed domain, query resolver, SDK and Admin
+refuse a value above that bound instead of wrapping the advertised capability.
+This managed-policy bound does not change the environment bootstrap contract.

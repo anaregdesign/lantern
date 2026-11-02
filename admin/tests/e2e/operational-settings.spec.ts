@@ -139,7 +139,7 @@ async function reviewSlow(page: Page) {
     exact: true,
   });
   await card
-    .getByRole("button", { name: "Edit slow RPC diagnostics", exact: true })
+    .getByRole("button", { name: "Edit slow rpc diagnostics", exact: true })
     .click();
   await card
     .getByRole("button", {
@@ -150,7 +150,7 @@ async function reviewSlow(page: Page) {
   await card.getByLabel("Threshold (ms)", { exact: true }).fill("125");
   await card
     .getByRole("button", {
-      name: "Review slow RPC diagnostics change",
+      name: "Review slow rpc diagnostics change",
       exact: true,
     })
     .click();
@@ -241,7 +241,7 @@ test("operational response loss reload recovers exact original without another A
   });
   await expect(
     card.getByRole("button", {
-      name: "Edit slow RPC diagnostics",
+      name: "Edit slow rpc diagnostics",
       exact: true,
     }),
   ).toBeDisabled();
