@@ -94,6 +94,10 @@ func TestRetentionPreviewOwnedValidCatalogAndNoMutation(t *testing.T) {
 }
 
 func TestRetentionPreviewBoundsAndFailures(t *testing.T) {
+	empty, err := New(&fakeService{}, Config{}, nil, nil).PreviewRetention(t.Context(), 0)
+	if err != nil || !empty.Complete || len(empty.Fingerprint) != 64 || empty.ValidBackups != 0 {
+		t.Fatalf("known empty catalog = %+v, %v", empty, err)
+	}
 	b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("bounded")}}, testConfig(t.TempDir()), nil, nil)
 	for range 2 {
 		if _, err := b.BackupNow(t.Context()); err != nil {

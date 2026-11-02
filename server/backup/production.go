@@ -22,9 +22,24 @@ type ProductionSnapshot struct {
 }
 
 var (
-	ErrProductionConflict = errors.New("backup: production generation conflicts")
-	ErrProductionStopped  = errors.New("backup: production owner has stopped")
+	ErrProductionUnavailable = errors.New("backup: production owner is unavailable")
+	ErrProductionConflict    = errors.New("backup: production generation conflicts")
+	ErrProductionStopped     = errors.New("backup: production owner has stopped")
 )
+
+// AvailableProduction checks actual resource ownership without producing a
+// backup or changing policy. Disabled production remains available for adoption.
+func (b *Backupper) AvailableProduction() error {
+	if b == nil || b.attempt == nil || (b.svc == nil && b.receiptSource == nil) {
+		return ErrProductionUnavailable
+	}
+	b.productionMu.Lock()
+	defer b.productionMu.Unlock()
+	if b.productionStopped {
+		return ErrProductionStopped
+	}
+	return nil
+}
 
 type productionTimer interface {
 	Reset(time.Duration)
@@ -57,8 +72,9 @@ func (b *Backupper) Production() ProductionSnapshot {
 	return b.production
 }
 
-// ValidateProduction checks the immutable local prerequisites without applying
-// a policy or inspecting/deleting backup files.
+// ValidateProduction checks typed values and immutable local prerequisites
+// without filesystem IO. Installation does not promise future backup writes
+// will succeed; explicit preview and production report their own IO failures.
 func (b *Backupper) ValidateProduction(config ProductionConfig) error {
 	if err := config.Validate(); err != nil {
 		return err

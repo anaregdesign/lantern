@@ -83,6 +83,7 @@ func (b *Backupper) retentionCatalog(ctx context.Context, retain int, maxBytes i
 	}
 	if strings.TrimSpace(b.cfg.Dir) == "" {
 		preview.Complete = true
+		preview.Fingerprint = fmt.Sprintf("%x", sha256.Sum256(nil))
 		return preview, nil, nil
 	}
 	remaining := maxBytes

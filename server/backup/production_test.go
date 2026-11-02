@@ -14,6 +14,11 @@ import (
 )
 
 func TestProductionValidationAndGenerations(t *testing.T) {
+	for _, owner := range []*Backupper{nil, {}} {
+		if !errors.Is(owner.AvailableProduction(), ErrProductionUnavailable) {
+			t.Fatal("absent owner advertised production support")
+		}
+	}
 	base := ProductionConfig{Enabled: true, Interval: time.Second + 7, Retain: 3}
 	for _, config := range []ProductionConfig{
 		{Interval: 0}, {Interval: -1}, {Interval: time.Second, Retain: -1},
@@ -26,6 +31,9 @@ func TestProductionValidationAndGenerations(t *testing.T) {
 		t.Fatalf("large safe retention rejected: %v", err)
 	}
 	b := New(&fakeService{}, testConfig(t.TempDir()), nil, nil)
+	if err := b.AvailableProduction(); err != nil {
+		t.Fatal(err)
+	}
 	if err := b.ApplyProduction(ProductionSnapshot{Generation: 1, Config: base}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +57,9 @@ func TestProductionValidationAndGenerations(t *testing.T) {
 		t.Fatalf("regression result = %v", err)
 	}
 	b.stopProduction()
+	if !errors.Is(b.AvailableProduction(), ErrProductionStopped) {
+		t.Fatal("stopped production owner advertised support")
+	}
 	if err := b.ApplyProduction(ProductionSnapshot{Generation: 5, Config: base}); !errors.Is(err, ErrProductionStopped) {
 		t.Fatalf("stopped result = %v", err)
 	}
