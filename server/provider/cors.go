@@ -41,8 +41,8 @@ func NewCORSConfig(c *Config) CORSConfig { return c.CORS }
 //   - if "*" appears with any other token, ignore the wildcard and keep
 //     only the explicit origins (safer default than silently expanding to
 //     any origin)
-func loadCORSConfig() CORSConfig {
-	raw := envconfig.String("LANTERN_CORS_ALLOWED_ORIGINS", "")
+func loadCORSConfig(reader *envconfig.Reader) CORSConfig {
+	raw := reader.String("LANTERN_CORS_ALLOWED_ORIGINS", "")
 	if raw == "" {
 		return CORSConfig{}
 	}

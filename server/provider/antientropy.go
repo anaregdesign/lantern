@@ -34,11 +34,11 @@ func NewAntiEntropyConfig(c *Config) AntiEntropyConfig { return c.AntiEntropy }
 
 // loadAntiEntropyConfig reads AntiEntropyConfig from the environment.
 // Called from NewConfig so all env reads remain colocated.
-func loadAntiEntropyConfig() AntiEntropyConfig {
+func loadAntiEntropyConfig(reader *envconfig.Reader) AntiEntropyConfig {
 	return AntiEntropyConfig{
-		Interval:         time.Duration(envconfig.Int("LANTERN_ANTI_ENTROPY_INTERVAL_MS", 30_000)) * time.Millisecond,
-		SubscribeTimeout: time.Duration(envconfig.Int("LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS", 30_000)) * time.Millisecond,
-		GapWarnThreshold: uint64(envconfig.Int("LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD", 1024)),
+		Interval:         time.Duration(reader.Int("LANTERN_ANTI_ENTROPY_INTERVAL_MS", 30_000)) * time.Millisecond,
+		SubscribeTimeout: time.Duration(reader.Int("LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS", 30_000)) * time.Millisecond,
+		GapWarnThreshold: uint64(reader.Int("LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD", 1024)),
 	}
 }
 

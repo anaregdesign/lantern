@@ -40,7 +40,7 @@ func TestLoadCORSConfig(t *testing.T) {
 					t.Fatalf("unsetenv: %v", err)
 				}
 			}
-			got := loadCORSConfig().AllowedOrigins
+			got := loadCORSConfig(testEnvironmentReader()).AllowedOrigins
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got %#v want %#v", got, tc.want)
 			}

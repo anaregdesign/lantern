@@ -86,52 +86,52 @@ type ValidationLimits struct {
 	IlluminateMaxK    int
 }
 
-func loadCache() CacheConfig {
+func loadCache(reader *envconfig.Reader) CacheConfig {
 	return CacheConfig{
-		TTL:                    time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
-		GCInterval:             time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
-		GCEdgeBudget:           envconfig.Int("LANTERN_GC_EDGE_BUDGET", 0),
-		MaxVertices:            envconfig.Int("LANTERN_MAX_VERTICES", 0),
-		MaxEdges:               envconfig.Int("LANTERN_MAX_EDGES", 0),
-		MaxVertexCausalEntries: envconfig.Int("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", 0),
-		MaxEdgeCausalEntries:   envconfig.Int("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", 0),
+		TTL:                    time.Duration(reader.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
+		GCInterval:             time.Duration(reader.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+		GCEdgeBudget:           reader.Int("LANTERN_GC_EDGE_BUDGET", 0),
+		MaxVertices:            reader.Int("LANTERN_MAX_VERTICES", 0),
+		MaxEdges:               reader.Int("LANTERN_MAX_EDGES", 0),
+		MaxVertexCausalEntries: reader.Int("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", 0),
+		MaxEdgeCausalEntries:   reader.Int("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", 0),
 	}
 }
 
-func loadValidation() ValidationLimits {
+func loadValidation(reader *envconfig.Reader) ValidationLimits {
 	return ValidationLimits{
-		MaxKeyLen:         envconfig.Int("LANTERN_MAX_KEY_LEN", 1024),
-		MaxBatchSize:      envconfig.Int("LANTERN_MAX_BATCH_SIZE", 10000),
-		IlluminateMaxStep: envconfig.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
-		IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
+		MaxKeyLen:         reader.Int("LANTERN_MAX_KEY_LEN", 1024),
+		MaxBatchSize:      reader.Int("LANTERN_MAX_BATCH_SIZE", 10000),
+		IlluminateMaxStep: reader.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
+		IlluminateMaxK:    reader.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
 	}
 }
 
-func loadScan() ScanConfig {
+func loadScan(reader *envconfig.Reader) ScanConfig {
 	return ScanConfig{
-		ScanDefaultLimit:           envconfig.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
-		ScanMaxLimit:               envconfig.Uint32("LANTERN_SCAN_MAX_LIMIT", 10000),
-		DeleteByPrefixDefaultLimit: envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000),
-		DeleteByPrefixMaxLimit:     envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000),
+		ScanDefaultLimit:           reader.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
+		ScanMaxLimit:               reader.Uint32("LANTERN_SCAN_MAX_LIMIT", 10000),
+		DeleteByPrefixDefaultLimit: reader.Uint32("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000),
+		DeleteByPrefixMaxLimit:     reader.Uint32("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000),
 	}
 }
 
-func loadTraversal() TraversalConfig {
+func loadTraversal(reader *envconfig.Reader) TraversalConfig {
 	const (
 		defaultTimeoutMS      = 5_000
 		defaultMaxPushes      = 1_000_000
 		defaultMaxTouchedEdge = 10_000_000
 		defaultMaxResults     = 1_024
 	)
-	timeoutMS := envconfig.Int("LANTERN_TRAVERSAL_TIMEOUT_MS", defaultTimeoutMS)
+	timeoutMS := reader.Int("LANTERN_TRAVERSAL_TIMEOUT_MS", defaultTimeoutMS)
 	if timeoutMS < 0 {
-		envconfig.Malformed("LANTERN_TRAVERSAL_TIMEOUT_MS", fmt.Sprint(timeoutMS), "must be zero or a positive millisecond duration")
+		reader.Malformed("LANTERN_TRAVERSAL_TIMEOUT_MS", fmt.Sprint(timeoutMS), "must be zero or a positive millisecond duration")
 		timeoutMS = defaultTimeoutMS
 	}
 	positive := func(key string, def int) int {
-		v := envconfig.Int(key, def)
+		v := reader.Int(key, def)
 		if v <= 0 {
-			envconfig.Malformed(key, fmt.Sprint(v), "must be positive")
+			reader.Malformed(key, fmt.Sprint(v), "must be positive")
 			return def
 		}
 		return v

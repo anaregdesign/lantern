@@ -243,7 +243,7 @@ func TestRenewSecurityPreservesSeparateStateCustodyAndRejectsOverlap(t *testing.
 		t.Run(name, func(t *testing.T) {
 			options, previous, material, stateRoot := renewalFixture(t, 1)
 			path := securityMaterialPath(material, "node-1")
-			document, _, err := readSecurityMaterial(path)
+			document, _, err := readSecurityMaterial(testEnvironmentReader(), path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -269,7 +269,7 @@ func TestRenewSecurityPreservesSeparateStateCustodyAndRejectsOverlap(t *testing.
 			renewalSetMaterialStatePaths(t, path, options.OperatorDirectory, paths)
 			// These are genuine, fully signed immutable inputs. Overlap refusal
 			// must happen in renewal before it creates any candidate output.
-			if _, _, err := readSecurityMaterial(path); err != nil {
+			if _, _, err := readSecurityMaterial(testEnvironmentReader(), path); err != nil {
 				t.Fatal("separate location fixture is invalid", err)
 			}
 			if err := os.WriteFile(filepath.Join(custody, "retained-floor-sentinel"), []byte("synthetic-custody"), 0600); err != nil {
@@ -566,7 +566,7 @@ func TestRenewSecurityGeneratedPublisherMaintenanceLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i := 1; i <= count; i++ {
-				if _, _, err := readSecurityMaterial(filepath.Join(provisioned, "nodes", fmt.Sprintf("node-%d", i), "identity.json")); err != nil {
+				if _, _, err := readSecurityMaterial(testEnvironmentReader(), filepath.Join(provisioned, "nodes", fmt.Sprintf("node-%d", i), "identity.json")); err != nil {
 					t.Fatal("renewed serving document cannot load", err)
 				}
 			}

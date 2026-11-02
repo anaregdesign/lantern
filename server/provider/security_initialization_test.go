@@ -30,7 +30,7 @@ func TestInitializeSecurityStorageCreatesOnlyFreshPrivateSpool(t *testing.T) {
 	}
 	state := filepath.Join(parent, "node-1")
 	spool := provisionedSnapshotSpool(state)
-	config := SecurityConfig{Mode: "oidc", MaterialFile: filepath.Join(parent, "security.json"), StateDirectory: state, CustodyDirectory: state, TargetPlatform: runtime.GOOS, ProvisionedSnapshotSpool: &spool}
+	config := SecurityConfig{Mode: "oidc", environment: testEnvironmentReader(), MaterialFile: filepath.Join(parent, "security.json"), StateDirectory: state, CustodyDirectory: state, TargetPlatform: runtime.GOOS, ProvisionedSnapshotSpool: &spool}
 	if err := initializeSecurityStorage(config); err != nil {
 		t.Fatal("explicit setup did not create private storage", err)
 	}
@@ -49,7 +49,7 @@ func TestInitializeSecurityStorageCreatesOnlyFreshPrivateSpool(t *testing.T) {
 	if err := os.Remove(spool.Directory); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadGraphSnapshotSpoolForSecurity(config); err != nil {
+	if _, err := loadGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config); err != nil {
 		t.Fatal("static read unexpectedly changed after storage removal", err)
 	}
 	if err := spool.Validate(); err == nil {
@@ -72,7 +72,7 @@ func TestInitializeSecurityStorageKeepsCustodySeparateAndSpoolInactiveForReceipt
 	}
 	state, custody := filepath.Join(root, "journal-node"), filepath.Join(root, "custody-node")
 	spool := provisionedSnapshotSpool(state)
-	config := SecurityConfig{Mode: "oidc", MaterialFile: filepath.Join(root, "identity.json"), StateDirectory: state, CustodyDirectory: custody, TargetPlatform: runtime.GOOS, ProvisionedSnapshotSpool: &spool}
+	config := SecurityConfig{Mode: "oidc", environment: testEnvironmentReader(), MaterialFile: filepath.Join(root, "identity.json"), StateDirectory: state, CustodyDirectory: custody, TargetPlatform: runtime.GOOS, ProvisionedSnapshotSpool: &spool}
 	if err := initializeSecurityStorage(config); err != nil {
 		t.Fatal(err)
 	}

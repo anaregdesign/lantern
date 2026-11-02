@@ -38,12 +38,12 @@ import (
 //     newest graph dump or canonical receipt backup set before serving.
 //   - LANTERN_BACKUP_RESTORE_REQUIRED (default false) fail boot when a
 //     restore errors instead of warning and continuing.
-func loadBackupConfig() backup.Config {
-	enabled := envconfig.Bool("LANTERN_BACKUP_ENABLED", false)
-	dir := strings.TrimSpace(envconfig.String("LANTERN_BACKUP_DIR", ""))
+func loadBackupConfig(reader *envconfig.Reader) backup.Config {
+	enabled := reader.Bool("LANTERN_BACKUP_ENABLED", false)
+	dir := strings.TrimSpace(reader.String("LANTERN_BACKUP_DIR", ""))
 	active := enabled && dir != ""
 
-	instance := strings.TrimSpace(envconfig.String("LANTERN_BACKUP_INSTANCE_ID", ""))
+	instance := strings.TrimSpace(reader.String("LANTERN_BACKUP_INSTANCE_ID", ""))
 	if instance == "" {
 		if h, err := os.Hostname(); err == nil && strings.TrimSpace(h) != "" {
 			instance = strings.TrimSpace(h)
@@ -56,16 +56,16 @@ func loadBackupConfig() backup.Config {
 	// variable always lands in the envconfig registry — the generated env
 	// reference and the unknown-variable sweep depend on every loader
 	// registering its keys on every boot (#847).
-	restoreOnStart := envconfig.Bool("LANTERN_BACKUP_RESTORE_ON_START", true)
+	restoreOnStart := reader.Bool("LANTERN_BACKUP_RESTORE_ON_START", true)
 
 	return backup.Config{
 		Enabled:         active,
 		Dir:             dir,
-		Interval:        envconfig.Duration("LANTERN_BACKUP_INTERVAL", 5*time.Minute),
-		Retain:          envconfig.Int("LANTERN_BACKUP_RETAIN", 3),
+		Interval:        reader.Duration("LANTERN_BACKUP_INTERVAL", 5*time.Minute),
+		Retain:          reader.Int("LANTERN_BACKUP_RETAIN", 3),
 		InstanceID:      sanitizeInstanceID(instance),
 		RestoreOnStart:  active && restoreOnStart,
-		RestoreRequired: envconfig.Bool("LANTERN_BACKUP_RESTORE_REQUIRED", false),
+		RestoreRequired: reader.Bool("LANTERN_BACKUP_RESTORE_REQUIRED", false),
 		NamespaceFormat: keyspace.Version,
 	}
 }

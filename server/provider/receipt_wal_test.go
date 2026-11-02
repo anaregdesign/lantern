@@ -15,7 +15,6 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
-	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -152,8 +151,7 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 }
 
 func TestLoadReceiptWALConfig(t *testing.T) {
-	envconfig.ResetForTesting()
-	t.Cleanup(envconfig.ResetForTesting)
+
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
 	t.Setenv("LANTERN_RECEIPT_WAL_PATH", path)
@@ -181,13 +179,11 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 		t.Fatalf("loaded receipt WAL config = %+v", config.ReceiptWAL)
 	}
 
-	envconfig.ResetForTesting()
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "not-hex")
 	if _, err := NewConfig(); err == nil || !strings.Contains(err.Error(), "LANTERN_RECEIPT_EPOCH") {
 		t.Fatalf("malformed epoch NewConfig error = %v", err)
 	}
 
-	envconfig.ResetForTesting()
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
 	t.Setenv("LANTERN_RECEIPT_WAL_PATH", "")
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "")

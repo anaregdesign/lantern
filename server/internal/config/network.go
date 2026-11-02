@@ -27,18 +27,18 @@ type RateLimitConfig struct {
 	Burst int
 }
 
-func loadNetwork() NetConfig {
+func loadNetwork(reader *envconfig.Reader) NetConfig {
 	return NetConfig{
-		Port:                 envconfig.Int("LANTERN_PORT", 6380),
-		MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
-		MaxSendMsgBytes:      envconfig.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
-		MaxConcurrentStreams: envconfig.Uint32("LANTERN_MAX_CONCURRENT_STREAMS", 1024),
+		Port:                 reader.Int("LANTERN_PORT", 6380),
+		MaxRecvMsgBytes:      reader.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
+		MaxSendMsgBytes:      reader.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
+		MaxConcurrentStreams: reader.Uint32("LANTERN_MAX_CONCURRENT_STREAMS", 1024),
 	}
 }
 
-func loadRateLimit() RateLimitConfig {
-	rps := envconfig.Float("LANTERN_RATE_LIMIT_RPS", 0)
-	burst := envconfig.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
+func loadRateLimit(reader *envconfig.Reader) RateLimitConfig {
+	rps := reader.Float("LANTERN_RATE_LIMIT_RPS", 0)
+	burst := reader.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
 	if burst <= 0 && rps > 0 {
 		burst = int(2 * rps)
 	}

@@ -20,10 +20,10 @@ var foreignEnvPrefixes = []string{"LANTERN_MCP_", "LANTERN_TOKEN"}
 // every loader has registered its variables, so the envconfig registry is
 // the complete env contract at this point. It reports through the bootstrap
 // logger supplied by the composition root and fails only under LANTERN_STRICT_CONFIG.
-func CheckEnvironment(environ []string, log *slog.Logger) error {
-	strict := envconfig.Bool("LANTERN_STRICT_CONFIG", false)
+func CheckEnvironment(reader *envconfig.Reader, log *slog.Logger) error {
+	strict := reader.Bool("LANTERN_STRICT_CONFIG", false)
 
-	findings := envconfig.Findings()
+	findings := reader.Findings()
 	for _, f := range findings {
 		log.Warn("config: malformed value, using default",
 			slog.String("key", f.Key),
@@ -31,7 +31,7 @@ func CheckEnvironment(environ []string, log *slog.Logger) error {
 			slog.String("reason", f.Reason))
 	}
 
-	unknown := envconfig.UnknownLanternVars(environ, foreignEnvPrefixes...)
+	unknown := reader.UnknownLanternVars(foreignEnvPrefixes...)
 	for _, u := range unknown {
 		if u.Suggestion != "" {
 			log.Warn("config: unknown LANTERN_* variable (typo?)",
@@ -46,7 +46,7 @@ func CheckEnvironment(environ []string, log *slog.Logger) error {
 	// One summary line naming which knobs are set (keys only — values are
 	// deliberately withheld so a future secret-bearing variable can never
 	// leak into the boot log).
-	if set := envconfig.SetKeys(); len(set) > 0 {
+	if set := reader.SetKeys(); len(set) > 0 {
 		log.Info("config: environment overrides active", slog.Any("keys", set))
 	}
 

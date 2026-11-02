@@ -38,7 +38,7 @@ in the root module instead of under `server/`.
   marker), not the aggregate `*Config`. Keep that SRP invariant when
   adding providers; only `App`/`main` may hold `*Config` because they observe multiple
   slices. Ordinary operational values, defaults and semantic validation live in
-  `internal/config/`; primitive env parsing and process-wide registration live
+  `internal/config/`; primitive parsing, immutable input snapshots and per-load diagnostics live
   in `internal/envconfig/`. `provider.NewConfig` completes all loaders before the
   unknown-key/strict sweep. Runtime material and private ownership certification
   remain provider/security concerns, including the cache namespace selection.

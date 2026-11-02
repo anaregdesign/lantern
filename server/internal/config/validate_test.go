@@ -2,14 +2,18 @@ package config
 
 import (
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 func TestValidateOperationalValues(t *testing.T) {
 	cleanEnvironment(t)
-	base := Load(":9090")
+	reader := envconfig.NewReader(os.Environ())
+	base := Load(reader, ":9090")
 	if err := base.Validate(); err != nil {
 		t.Fatalf("defaults: %v", err)
 	}

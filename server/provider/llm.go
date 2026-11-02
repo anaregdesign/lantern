@@ -71,18 +71,18 @@ type LLMConfig struct {
 	GoogleCredentialsFile string
 }
 
-func loadLLMConfig() LLMConfig {
+func loadLLMConfig(reader *envconfig.Reader) LLMConfig {
 	return LLMConfig{
-		Provider:              envconfig.String("LANTERN_LLM_PROVIDER", LLMDisabled),
-		Model:                 envconfig.String("LANTERN_LLM_MODEL", ""),
-		APIKey:                envconfig.String("LANTERN_LLM_API_KEY", ""),
-		BaseURL:               envconfig.String("LANTERN_LLM_BASE_URL", ""),
-		MaxTokens:             envconfig.Int("LANTERN_LLM_MAX_TOKENS", 0),
-		Auth:                  envconfig.String("LANTERN_LLM_AUTH", LLMAuthAPIKey),
-		AzureTenantID:         envconfig.String("LANTERN_LLM_AZURE_TENANT_ID", ""),
-		AzureClientID:         envconfig.String("LANTERN_LLM_AZURE_CLIENT_ID", ""),
-		AzureClientSecret:     envconfig.String("LANTERN_LLM_AZURE_CLIENT_SECRET", ""),
-		GoogleCredentialsFile: envconfig.String("LANTERN_LLM_GOOGLE_CREDENTIALS_FILE", ""),
+		Provider:              reader.String("LANTERN_LLM_PROVIDER", LLMDisabled),
+		Model:                 reader.String("LANTERN_LLM_MODEL", ""),
+		APIKey:                reader.String("LANTERN_LLM_API_KEY", ""),
+		BaseURL:               reader.String("LANTERN_LLM_BASE_URL", ""),
+		MaxTokens:             reader.Int("LANTERN_LLM_MAX_TOKENS", 0),
+		Auth:                  reader.String("LANTERN_LLM_AUTH", LLMAuthAPIKey),
+		AzureTenantID:         reader.String("LANTERN_LLM_AZURE_TENANT_ID", ""),
+		AzureClientID:         reader.String("LANTERN_LLM_AZURE_CLIENT_ID", ""),
+		AzureClientSecret:     reader.String("LANTERN_LLM_AZURE_CLIENT_SECRET", ""),
+		GoogleCredentialsFile: reader.String("LANTERN_LLM_GOOGLE_CREDENTIALS_FILE", ""),
 	}
 }
 

@@ -15,14 +15,11 @@ import (
 // without documenting it (or removing one and leaving its row) fails here
 // and in `go generate` (#847).
 func TestRenderCoversFullRegistry(t *testing.T) {
-	envconfig.ResetForTesting()
-	// Strict mode aborts NewConfig on any pre-existing junk in the test
-	// host's environment; force it off so this test only checks coverage.
-	t.Setenv("LANTERN_STRICT_CONFIG", "false")
-	if _, err := provider.NewConfig(); err != nil {
-		t.Fatalf("NewConfig: %v", err)
+	reader := envconfig.NewReader(nil)
+	if _, err := provider.LoadConfig(reader); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
 	}
-	doc, err := Render(envconfig.Known())
+	doc, err := Render(reader.Known())
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}

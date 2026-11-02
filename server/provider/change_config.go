@@ -5,11 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
+
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
-	"os"
-	"strings"
 )
 
 // ChangeConfig is public CDC configuration; it never enables private Subscribe.
@@ -18,16 +18,16 @@ type ChangeConfig struct {
 	Options dataruntime.ChangeServiceOptions
 }
 
-func loadChangeConfig(auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, error) {
+func loadChangeConfig(reader *envconfig.Reader, auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, error) {
 	if len(auth.AuthorityJSON) != 0 {
-		return loadJSONChangeConfig(auth.CDC)
+		return loadJSONChangeConfig(reader, auth.CDC)
 	}
-	enabledText := envconfig.String("LANTERN_CDC_ENABLED", "true")
-	file := envconfig.String("LANTERN_CDC_CURSOR_KEY_RING_FILE", "")
+	enabledText := reader.String("LANTERN_CDC_ENABLED", "true")
+	file := reader.String("LANTERN_CDC_CURSOR_KEY_RING_FILE", "")
 	if enabledText != "true" && enabledText != "false" {
 		return ChangeConfig{}, errors.New("CDC enabled must be exactly true or false")
 	}
-	for _, setting := range os.Environ() {
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_CDC_") && name != "LANTERN_CDC_ENABLED" && name != "LANTERN_CDC_CURSOR_KEY_RING_FILE" {
 			return ChangeConfig{}, errors.New("unknown CDC configuration setting")
@@ -95,8 +95,8 @@ func changeConfigFromKeyRing(raw []byte) (ChangeConfig, error) {
 
 // CDC is explicit opt-in for environment JSON. Its keys share the secret
 // injection boundary; no independent file setting or precedence is accepted.
-func loadJSONChangeConfig(raw json.RawMessage) (ChangeConfig, error) {
-	for _, setting := range os.Environ() {
+func loadJSONChangeConfig(reader *envconfig.Reader, raw json.RawMessage) (ChangeConfig, error) {
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_CDC_") {
 			return ChangeConfig{}, errors.New("security JSON cannot be combined with CDC environment settings")

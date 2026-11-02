@@ -13,7 +13,7 @@ func TestGraphSnapshotSpoolConfigUsesOnlyImmutableProfile(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "node-1")
 	spool := provisionedSnapshotSpool(state)
 	config := SecurityConfig{Mode: "oidc", MaterialFile: filepath.Join(t.TempDir(), "security.json"), StateDirectory: state, ProvisionedSnapshotSpool: &spool}
-	loaded, err := loadGraphSnapshotSpoolForSecurity(config)
+	loaded, err := loadGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config)
 	if err != nil || loaded != spool || loaded.MaxDiskBytes != 128<<20 || loaded.MaxFrameBytes != 32<<20 {
 		t.Fatal("generated setup did not preserve its finite Snapshot bounds", err)
 	}
@@ -27,14 +27,14 @@ func TestGraphSnapshotSpoolConfigUsesOnlyImmutableProfile(t *testing.T) {
 		for _, value := range []string{"", "0", "unrelated"} {
 			t.Run(key+"/"+value, func(t *testing.T) {
 				t.Setenv(key, value)
-				if _, err := loadGraphSnapshotSpoolForSecurity(config); err == nil {
+				if _, err := loadGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config); err == nil {
 					t.Fatal("separate Snapshot input was ignored or overrode provisioned bounds")
 				}
 			})
 		}
 	}
 	config.ProvisionedSnapshotSpool = nil
-	if _, err := loadGraphSnapshotSpoolForSecurity(config); err == nil {
+	if _, err := loadGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config); err == nil {
 		t.Fatal("missing provisioned spool silently acquired defaults")
 	}
 }
@@ -45,7 +45,7 @@ func TestGraphSnapshotSpoolSelectionPreservesSignedProfileAcrossRepresentations(
 	spool := provisionedSnapshotSpool(state)
 	config := SecurityConfig{Mode: "oidc", StateDirectory: state, ProvisionedSnapshotSpool: &spool}
 	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
-		active, err := selectGraphSnapshotSpoolForSecurity(config, mode)
+		active, err := selectGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config, mode)
 		if err != nil || mode == ReceiptWALModeGraphOnly && active != spool || mode != ReceiptWALModeGraphOnly && active != (GraphSnapshotSpoolConfig{}) {
 			t.Fatal("incorrect active spool for serving representation", mode, err)
 		}
@@ -60,7 +60,7 @@ func TestGraphSnapshotSpoolSelectionPreservesSignedProfileAcrossRepresentations(
 	bad.MaxDiskBytes = 0
 	config.ProvisionedSnapshotSpool = &bad
 	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
-		if _, err := selectGraphSnapshotSpoolForSecurity(config, mode); err == nil {
+		if _, err := selectGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config, mode); err == nil {
 			t.Fatal("inactive representation bypassed invalid immutable spool profile", mode)
 		}
 	}
@@ -88,7 +88,7 @@ func TestGraphSnapshotSpoolConfigRequiresExplicitHAStorage(t *testing.T) {
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "")
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "0")
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES", "0")
-	config, err := loadGraphSnapshotSpoolConfig()
+	config, err := loadGraphSnapshotSpoolConfig(testEnvironmentReader())
 	if err != nil || config != (GraphSnapshotSpoolConfig{}) {
 		t.Fatalf("unset graph spool did not remain disabled: %+v, %v", config, err)
 	}
@@ -111,7 +111,7 @@ func TestGraphSnapshotSpoolConfigRequiresExplicitHAStorage(t *testing.T) {
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", directory)
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", strconv.Itoa(128<<20))
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES", strconv.Itoa(32<<20))
-	config, err = loadGraphSnapshotSpoolConfig()
+	config, err = loadGraphSnapshotSpoolConfig(testEnvironmentReader())
 	if err != nil || config.Directory != directory || config.MaxDiskBytes != 128<<20 || config.MaxFrameBytes != 32<<20 {
 		t.Fatalf("explicit capacity was not parsed exactly: %+v, %v", config, err)
 	}
@@ -154,7 +154,7 @@ func TestGraphSnapshotSpoolConfigRejectsPartialMalformedOrUnsafeStorage(t *testi
 			t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "134217728")
 			t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES", "33554432")
 			t.Setenv(test.key, test.value)
-			config, err := loadGraphSnapshotSpoolConfig()
+			config, err := loadGraphSnapshotSpoolConfig(testEnvironmentReader())
 			if err == nil {
 				err = validateGraphSnapshotSpoolConfig(config, ReceiptWALModeGraphOnly, PeerPlaneConfig{})
 			}

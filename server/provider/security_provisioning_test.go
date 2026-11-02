@@ -23,7 +23,7 @@ func TestProvisionSecurityCreateOnlyCompleteRenewableBundle(t *testing.T) {
 	}
 	node := filepath.Join(provisioningTestMaterialRoot(t), "nodes", "node-1")
 	path := filepath.Join(node, "identity.json")
-	config, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
+	config, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
 	if err != nil {
 		t.Fatal("load current configuration with generated identity material", err)
 	}
@@ -125,7 +125,7 @@ func TestProvisionSecurityCreateOnlyCompleteRenewableBundle(t *testing.T) {
 	if err := publisher.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err != nil {
+	if _, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err != nil {
 		t.Fatal("renewal invalidated serving completion", err)
 	}
 }
@@ -144,7 +144,7 @@ func TestProvisionSecurityInterruptedCreationCannotLoadOrInitialize(t *testing.T
 			if err == nil {
 				t.Fatal("interruption not surfaced")
 			}
-			if _, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
+			if _, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
 				t.Fatal("partial output accepted before completion")
 			}
 			if err := ProvisionSecurity(t.Context(), options); err == nil {
@@ -254,7 +254,7 @@ func TestProvisionSecurityTamperingAndMissingInputsFailClosed(t *testing.T) {
 			case "missing manifest":
 				os.Remove(filepath.Join(node, "membership", "control.json"))
 			}
-			if _, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
+			if _, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
 				t.Fatal("tampered/missing input accepted")
 			}
 		})

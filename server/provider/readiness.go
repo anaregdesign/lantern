@@ -24,9 +24,9 @@ func NewReadinessConfig(c *Config) ReadinessConfig { return c.Readiness }
 
 // loadReadinessConfig reads ReadinessConfig from the environment. Called
 // from NewConfig so all env reads remain colocated.
-func loadReadinessConfig() ReadinessConfig {
+func loadReadinessConfig(reader *envconfig.Reader) ReadinessConfig {
 	return ReadinessConfig{
-		MaxLag: uint64(envconfig.Int("LANTERN_MAX_REPLICATION_LAG", 10_000)),
+		MaxLag: uint64(reader.Int("LANTERN_MAX_REPLICATION_LAG", 10_000)),
 	}
 }
 

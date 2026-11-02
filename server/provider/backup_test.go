@@ -20,7 +20,7 @@ import (
 // runtime construction boundary rather than suppressing restore here.
 func TestLoadBackupConfig(t *testing.T) {
 	t.Run("DisabledByDefault", func(t *testing.T) {
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if cfg.Enabled {
 			t.Errorf("Enabled = true, want false with no LANTERN_BACKUP_ENABLED")
 		}
@@ -32,7 +32,7 @@ func TestLoadBackupConfig(t *testing.T) {
 	t.Run("EnabledRequiresDir", func(t *testing.T) {
 		t.Setenv("LANTERN_BACKUP_ENABLED", "true")
 		// No LANTERN_BACKUP_DIR ⇒ not active ⇒ restore off.
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if cfg.Enabled {
 			t.Errorf("Enabled = true, want false without LANTERN_BACKUP_DIR")
 		}
@@ -44,7 +44,7 @@ func TestLoadBackupConfig(t *testing.T) {
 	t.Run("ActiveRestoresByDefault", func(t *testing.T) {
 		t.Setenv("LANTERN_BACKUP_ENABLED", "true")
 		t.Setenv("LANTERN_BACKUP_DIR", t.TempDir())
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if !cfg.Enabled {
 			t.Fatalf("Enabled = false, want true")
 		}
@@ -60,7 +60,7 @@ func TestLoadBackupConfig(t *testing.T) {
 		t.Setenv("LANTERN_BACKUP_ENABLED", "true")
 		t.Setenv("LANTERN_BACKUP_DIR", t.TempDir())
 		t.Setenv("LANTERN_BACKUP_RESTORE_ON_START", "false")
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if cfg.RestoreOnStart {
 			t.Errorf("RestoreOnStart = true, want false when opted out")
 		}
@@ -76,7 +76,7 @@ func TestLoadBackupConfig(t *testing.T) {
 		t.Setenv("LANTERN_PEERS", "peer-a:6380,peer-b:6380")
 		t.Setenv("LANTERN_PEER_DISCOVERY", "dns")
 		t.Setenv("LANTERN_PEER_DNS_NAME", "lantern")
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if !cfg.RestoreOnStart {
 			t.Errorf("RestoreOnStart = false, want true regardless of peer config")
 		}
@@ -85,7 +85,7 @@ func TestLoadBackupConfig(t *testing.T) {
 	t.Run("InstanceIDDefaultsToHostname", func(t *testing.T) {
 		t.Setenv("LANTERN_BACKUP_ENABLED", "true")
 		t.Setenv("LANTERN_BACKUP_DIR", t.TempDir())
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if cfg.InstanceID == "" {
 			t.Errorf("InstanceID empty, want a hostname fallback")
 		}
@@ -97,7 +97,7 @@ func TestLoadBackupConfig(t *testing.T) {
 		t.Setenv("LANTERN_BACKUP_INTERVAL", "90s")
 		t.Setenv("LANTERN_BACKUP_RETAIN", "7")
 		t.Setenv("LANTERN_BACKUP_INSTANCE_ID", "node-x")
-		cfg := loadBackupConfig()
+		cfg := loadBackupConfig(testEnvironmentReader())
 		if cfg.Interval != 90*time.Second {
 			t.Errorf("Interval = %v, want 90s", cfg.Interval)
 		}

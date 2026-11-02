@@ -18,7 +18,6 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -96,8 +95,6 @@ func productionReceiptOperationID(t *testing.T, epoch mutationreceipt.Epoch, see
 
 func setDurableRuntimeEnv(t *testing.T, mode, path string, port int) {
 	t.Helper()
-	envconfig.ResetForTesting()
-	t.Cleanup(envconfig.ResetForTesting)
 	t.Setenv("LANTERN_PORT", strconv.Itoa(port))
 	t.Setenv("LANTERN_NODE_ID", "31313131313131313131313131313131")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", mode)
@@ -217,7 +214,6 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	t.Setenv("LANTERN_BACKUP_DIR", backupDir)
 	t.Setenv("LANTERN_BACKUP_INSTANCE_ID", "production-receipt")
 	t.Setenv("LANTERN_BACKUP_RESTORE_ON_START", "false")
-	envconfig.ResetForTesting()
 
 	app, cleanup, err := initializeApp()
 	if err != nil {
@@ -272,7 +268,6 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 	t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "2")
-	envconfig.ResetForTesting()
 
 	app, cleanup, err := initializeApp()
 	if err != nil {
@@ -398,7 +393,6 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	}
 	setDurableRuntimeEnv(t, "restart", path, port)
 	t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "2")
-	envconfig.ResetForTesting()
 	restarted, cleanupRestart, err := initializeApp()
 	if err != nil {
 		t.Fatal(err)
@@ -527,7 +521,6 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
 	t.Setenv("LANTERN_PORT", strconv.Itoa(address.Port))
-	envconfig.ResetForTesting()
 	// Keep both reservations held: restart must adopt its existing socket,
 	// rather than close a probe and race to bind the same port again.
 	func() {
@@ -595,7 +588,6 @@ func TestInitializeAppRejectsImplicitDurableNodeIDBeforeFilesOrListener(t *testi
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 	t.Setenv("LANTERN_NODE_ID", "")
-	envconfig.ResetForTesting()
 
 	app, cleanup, err := initializeApp()
 	if app != nil || cleanup != nil || err == nil || !strings.Contains(err.Error(), "LANTERN_NODE_ID") {
@@ -621,8 +613,6 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 	if err := probe.Close(); err != nil {
 		t.Fatal(err)
 	}
-	envconfig.ResetForTesting()
-	t.Cleanup(envconfig.ResetForTesting)
 	t.Setenv("LANTERN_PORT", strconv.Itoa(port))
 	t.Setenv("LANTERN_NODE_ID", "31313131313131313131313131313131")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")

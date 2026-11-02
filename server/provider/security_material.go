@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
@@ -71,7 +72,7 @@ func securityMaterialPath(root, node string) string {
 
 // readSecurityMaterial validates all original inputs without a current provider
 // configuration, native state creation, trusted-time acquisition or listeners.
-func readSecurityMaterial(path string) (securityMaterialDocument, []byte, error) {
+func readSecurityMaterial(reader *envconfig.Reader, path string) (securityMaterialDocument, []byte, error) {
 	var d securityMaterialDocument
 	if !cleanAbsolutePath(path) || filepath.Base(path) != "identity.json" {
 		return d, nil, errSecurityProvisioning
@@ -126,7 +127,7 @@ func readSecurityMaterial(path string) (securityMaterialDocument, []byte, error)
 	if err != nil {
 		return securityMaterialDocument{}, nil, errSecurityProvisioning
 	}
-	if _, err := loadJSONChangeConfig(d.CDC); err != nil {
+	if _, err := loadJSONChangeConfig(reader, d.CDC); err != nil {
 		return securityMaterialDocument{}, nil, errSecurityProvisioning
 	}
 	d.historicalImage, d.controlManifest, d.peerIdentity = image, slices.Clone(manifest), identity
@@ -176,7 +177,7 @@ func historicalSeedIdentity(image security.Image, admin securityInitialAdminJSON
 }
 
 func attachSecurityMaterial(config SecurityConfig) (SecurityConfig, error) {
-	d, _, err := readSecurityMaterial(config.MaterialFile)
+	d, _, err := readSecurityMaterial(config.environment, config.MaterialFile)
 	if err != nil {
 		return SecurityConfig{}, err
 	}

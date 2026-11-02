@@ -1,7 +1,7 @@
 // Package envdoc renders the generated operator-facing reference of every
 // LANTERN_* environment variable the server reads (docs/env.md). The variable
 // set itself comes from the envconfig registry — populated as a side effect of
-// provider.NewConfig() — so the reference cannot silently drift from the code:
+// provider.LoadConfig(reader) — so the reference cannot silently drift from the code:
 // a variable added without a description here, or a description left behind
 // after a variable is removed, fails Render (and with it `go generate` and the
 // generated-code CI check). See #847.
