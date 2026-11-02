@@ -88,13 +88,14 @@ type s2cBootstrap struct {
 // All accessors return value copies; the private genesis never escapes the
 // composite participant's package boundary.
 type s2cTrust struct {
-	scope, memberSet [32]byte
-	genesis          *s2TrustedGenesis
-	members          []s2cMember
-	origins          []s2cOriginDescriptor
-	bounds           s2cBounds
-	logPolicyCache   *logPolicyCandidateCache
-	originDigests    map[uint32][32]byte
+	scope, memberSet       [32]byte
+	genesis                *s2TrustedGenesis
+	members                []s2cMember
+	origins                []s2cOriginDescriptor
+	bounds                 s2cBounds
+	logPolicyCache         *logPolicyCandidateCache
+	operationalPolicyCache *operationalPolicyCandidateCache
+	originDigests          map[uint32][32]byte
 }
 
 type s2cBasicScope struct {
@@ -140,7 +141,7 @@ func newS2CTrust(b s2cBootstrap) (*s2cTrust, error) {
 		return nil, errS2CTrust
 	}
 	g := b.Genesis.state
-	if g.projection.snapshot.LogPolicy() != nil || g.slot != 0 || len(g.ledger) != 0 || g.membership != membership || g.projection.cut.Sequence != 1 || g.projection.cut.Previous != [32]byte{} {
+	if g.projection.snapshot.LogPolicy() != nil || g.projection.snapshot.Image().OperationalPolicies != nil || g.slot != 0 || len(g.ledger) != 0 || g.membership != membership || g.projection.cut.Sequence != 1 || g.projection.cut.Previous != [32]byte{} {
 		return nil, errS2CTrust
 	}
 	// Recompute the initial prefix from the independently supplied exact state.
@@ -209,6 +210,7 @@ func newS2CTrust(b s2cBootstrap) (*s2cTrust, error) {
 		Bounds        s2cBounds
 	}{s2cVersion, basic, s2LocalCapsuleDigest(encoded), g.configuration, membership, t.origins, b.Bounds})
 	t.logPolicyCache = &logPolicyCandidateCache{owner: t, context: logPolicyCandidateCacheContext(t)}
+	t.operationalPolicyCache = &operationalPolicyCandidateCache{owner: t, context: operationalPolicyCandidateCacheContext(t)}
 	return t, nil
 }
 

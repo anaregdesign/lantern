@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 )
 
 var (
@@ -99,6 +101,8 @@ type s2cParticipant struct {
 	logPolicyFloor         s2cJournalFloor
 	logPolicyFloorOriginal string
 	logPolicyPreparation   LogPolicyPreparation
+	operationalRuntimes    map[operationalpolicy.Group]OperationalPolicyRuntime
+	operationalFloors      map[operationalpolicy.Group]*operationalPolicyFloorState
 	bootstrapped           bool
 	hooks                  *s2cParticipantHooks
 }
@@ -195,6 +199,8 @@ func s2cNewParticipant(c s2cParticipantConfig) (*s2cParticipant, error) {
 	o := &s2cParticipant{config: c, manifest: manifest, binding: binding, trust: t, origins: map[[32]byte]*s2cHistoricalH{}, serials: map[uint64][32]byte{}, pending: map[[32]byte]*s2cHistoricalH{}, promises: map[uint32]*s2cMessage{}, votes: map[uint32]*s2cMessage{}, replayState: state}
 	o.originReservations = make(map[uint64]authorityOriginReservation)
 	o.originIDs = make(map[FullChangeID]uint64)
+	o.operationalRuntimes = make(map[operationalpolicy.Group]OperationalPolicyRuntime)
+	o.operationalFloors = make(map[operationalpolicy.Group]*operationalPolicyFloorState)
 	o.replayReceipt = s2LocalReceipt{ScopeDigest: c.BScope.digest(), LocalIndex: 1, CapsuleDigest: s2LocalCapsuleDigest(capsule), ControlPrefix: state.prefix}
 	return o, nil
 }

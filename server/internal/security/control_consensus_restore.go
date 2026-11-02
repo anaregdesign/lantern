@@ -82,6 +82,9 @@ func resumeS2CParticipant(c s2cParticipantConfig, requiredP s2cJournalFloor, req
 	if err = o.restoreLogPolicyFloor(); err != nil {
 		return nil, err
 	}
+	if err = o.restoreOperationalPolicyFloors(); err != nil {
+		return nil, err
+	}
 	if o.replayState.projection.snapshot.LogPolicy() != nil && o.logPolicyFloor.Index == 0 {
 		return nil, errS2CProtocol
 	}
@@ -262,6 +265,12 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 	if r.kind == s2cPLogPolicyCandidate {
 		return o.installLogPolicyCandidateLocked([]byte(r.raw))
 	}
+	if r.kind == s2cPOperationalPolicyFloor {
+		return o.replayOperationalPolicyFloor(r)
+	}
+	if r.kind == s2cPOperationalPolicyCandidate {
+		return o.installOperationalPolicyCandidateLocked([]byte(r.raw))
+	}
 	if r.kind == s2cPOriginReservation {
 		return o.replayReservation(r.raw)
 	}
@@ -404,6 +413,9 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 	return nil
 }
 func (o *s2cParticipant) replayPreview(m *s2cMessage) (*s2cPreview, error) {
+	if err := o.requireLocalOperationalPolicyCandidate(m.h); err != nil {
+		return nil, err
+	}
 	if err := o.requireLocalLogPolicyCandidate(m.h); err != nil {
 		return nil, err
 	}

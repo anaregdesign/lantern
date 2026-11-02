@@ -100,7 +100,7 @@ func (k *s2cParticipant) restoreLogPolicyFloor() error {
 	}
 	k.logPolicyFloor.Chain = cut.ChainSHA256
 	check := func(h *s2cHistoricalH) error {
-		if h == nil || h.candidate == "" {
+		if h == nil || h.candidate == "" || !hasLogPolicyChange(h.handoff) {
 			return nil
 		}
 		cert, err := logPolicyCandidateCertificate(k.trust, h)

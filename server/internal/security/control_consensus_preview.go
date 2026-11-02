@@ -57,6 +57,9 @@ func s2cPreviewCandidate(trust *s2cTrust, state *S1ApplyState, roots s2CapsuleRo
 	if err := requireLogPolicyCandidate(trust, state, historical); err != nil {
 		return nil, err
 	}
+	if err := requireOperationalPolicyCandidate(trust, state, historical); err != nil {
+		return nil, err
+	}
 	var h *S1Handoff
 	if historical != nil {
 		if historical.handoff == nil || historical.raw == "" || historical.scope != trust.scope {

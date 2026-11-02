@@ -160,6 +160,17 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var response []byte
 	switch r.URL.Path {
+	case operationalPolicySupportPath:
+		raw, err := s3aReadBody(r.Body, o.kernel.trust.bounds.HistoricalBytes)
+		if err != nil || r.ContentLength > int64(o.kernel.trust.bounds.HistoricalBytes) || check() != nil {
+			fail(http.StatusBadRequest)
+			return
+		}
+		response, err = o.operationalPolicySupportResponse(r.Context(), raw, check)
+		if err != nil {
+			fail(http.StatusServiceUnavailable)
+			return
+		}
 	case logPolicySupportPath:
 		raw, err := s3aReadBody(r.Body, o.kernel.trust.bounds.HistoricalBytes)
 		if err != nil || r.ContentLength > int64(o.kernel.trust.bounds.HistoricalBytes) || check() != nil {

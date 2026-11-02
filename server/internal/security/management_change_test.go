@@ -1,6 +1,10 @@
 package security
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
+)
 
 func TestManagementChangeRejectsAmbiguousAndDirectGrantShapes(t *testing.T) {
 	identity := testIdentity()
@@ -60,5 +64,23 @@ func TestManagementLogPolicyChangeClosedShape(t *testing.T) {
 	var decoded Change
 	if s2StrictJSON([]byte(`{"kind":"log_policy.put","log_policy":{"version":1,"level":"info","generation":7}}`), &decoded, DefaultPolicyLimits()) == nil {
 		t.Fatal("caller-owned generation admitted")
+	}
+}
+
+func TestManagementOperationalClosedShapeAndSingleProof(t *testing.T) {
+	state := s1Fixture(t, s1Image())
+	base := operationalPolicyRuntimeCommand(operationalpolicy.GroupSlowRPC).Changes[0]
+	if base.validate() != nil || base.target() != "operational_policy:slow_rpc" {
+		t.Fatal("valid closed operation refused")
+	}
+	for _, changes := range [][]Change{
+		{base, operationalPolicyRuntimeCommand(operationalpolicy.GroupRate).Changes[0]},
+		{base, {Kind: PutLogPolicy, LogPolicy: &LogPolicyChange{Version: LogPolicyVersion, Level: LogLevelInfo}}},
+		{{Kind: PutRole, Role: &Role{ID: "ordinary"}, OperationalPolicy: base.OperationalPolicy}},
+		{{Kind: PutOperationalPolicy}},
+	} {
+		if _, err := NewS1Operation(testIdentity(), state.projection.Cut(), s1Changes(changes...), DefaultPolicyLimits()); err == nil {
+			t.Fatal("ambiguous/unsupported operation reached original construction")
+		}
 	}
 }

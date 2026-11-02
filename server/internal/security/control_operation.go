@@ -145,6 +145,7 @@ func validateS1Command(c S1Command, limits PolicyLimits) error {
 		}
 		roles := make([]Role, 0, len(c.Changes))
 		seen := make(map[string]bool, len(c.Changes))
+		operations, logging := 0, false
 		for _, change := range c.Changes {
 			if err := change.validate(); err != nil {
 				return err
@@ -157,6 +158,16 @@ func validateS1Command(c S1Command, limits PolicyLimits) error {
 				return ErrS1Contract
 			}
 			seen[target] = true
+			if change.Kind == PutOperationalPolicy {
+				operations++
+			}
+			logging = logging || change.Kind == PutLogPolicy
+		}
+		// A single original carries one bounded support envelope. Retain the
+		// logging v1 certificate and reject ambiguous/multiple policy proofs
+		// before review, origin reservation or credential consumption.
+		if operations > 1 || operations != 0 && logging {
+			return ErrS1Contract
 		}
 		return validateRoleBounds(roles, limits)
 	case S1IssueSession:
@@ -177,8 +188,9 @@ func validateS1Command(c S1Command, limits PolicyLimits) error {
 }
 
 func s1Digest(label string, value any) [32]byte {
-	// Only validated bounded typed structures enter this helper; no maps or
-	// floats occur in canonical material. Struct field order is versioned.
+	// Only validated bounded typed structures enter this helper. Operational RPS
+	// admits canonical finite nonnegative floats; NaN/Inf and negative zero are
+	// rejected by its domain validator. Struct field order is versioned.
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return [32]byte{}
