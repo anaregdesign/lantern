@@ -1,3 +1,7 @@
+import { OperationalSettings } from "~/components/settings/OperationalSettings";
+import { useOperationalSettingsClient } from "~/lib/client/infrastructure/api/use-operational-settings-client";
+import { useOperationalSettingsManagement } from "~/lib/client/usecase/settings/use-operational-settings-management";
+import { operationalPolicyRecoveryOwner } from "~/lib/client/usecase/security/security-change-recovery";
 import { SettingsPage } from "~/components/settings/SettingsPage";
 import { useLogSettingsClient } from "~/lib/client/infrastructure/api/use-log-settings-client";
 import { useAuth } from "~/lib/client/usecase/auth/use-auth";
@@ -12,6 +16,7 @@ export function meta() {
 export default function SettingsRoute() {
   const auth = useAuth();
   const port = useLogSettingsClient();
+  const operationalPort = useOperationalSettingsClient();
   const { connection } = useConnection();
   const ready = auth.state.kind === "ready" ? auth.state : undefined;
   const owner = ready
@@ -22,6 +27,15 @@ export default function SettingsRoute() {
     ready?.signal,
     auth.recovery,
     owner,
+    ready?.canMutate ?? false,
+  );
+  const operational = useOperationalSettingsManagement(
+    operationalPort,
+    ready?.signal,
+    auth.recovery,
+    ready
+      ? operationalPolicyRecoveryOwner(connection.baseUrl, ready.principal)
+      : "",
     ready?.canMutate ?? false,
   );
   return (
@@ -51,6 +65,12 @@ export default function SettingsRoute() {
       checkAuthorization={() => {
         void controller?.change.checkAuthorization();
       }}
-    />
+    >
+      <OperationalSettings
+        controller={operational.controller}
+        state={operational.state}
+        blocked={operational.blocked}
+      />
+    </SettingsPage>
   );
 }

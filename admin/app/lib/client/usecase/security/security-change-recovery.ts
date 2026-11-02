@@ -12,6 +12,7 @@ import {
   parseCurrentSecurityChangeResult,
   SecurityPrincipalKind,
   ManagedLogLevel,
+  validateOperationalChange,
   type CurrentSecurityReview,
   type CurrentSecurityChangeResult,
   type GetCurrentPrincipalResponse,
@@ -79,6 +80,17 @@ export function logPolicyRecoveryOwner(
   return JSON.stringify([...fields, "log-policy"]);
 }
 
+/** All eight operational groups share one bounded non-security lane. */
+export function operationalPolicyRecoveryOwner(
+  baseUrl: string,
+  principal: Pick<GetCurrentPrincipalResponse, "identity" | "version">,
+): string {
+  const fields: string[] = JSON.parse(
+    securityRecoveryOwner(baseUrl, principal),
+  );
+  return JSON.stringify([...fields, "operational-policy"]);
+}
+
 function logPolicyOnly(review: CurrentSecurityReview): boolean {
   return (
     review.changes.length === 1 &&
@@ -103,7 +115,14 @@ function validateOwner(owner: string, review: CurrentSecurityReview) {
     invalid();
   if (fields.length === 5) {
     const operation = review.changes[0]?.operation;
-    if (
+    if (fields[4] === "operational-policy") {
+      if (
+        review.changes.length !== 1 ||
+        operation?.case !== "putOperationalPolicy"
+      )
+        invalid();
+      validateOperationalChange(operation.value);
+    } else if (
       fields[4] !== "log-policy" ||
       !logPolicyOnly(review) ||
       operation?.case !== "putLogPolicy" ||
@@ -144,19 +163,23 @@ function validated(record: PendingSecurityChange): PendingSecurityChange {
   return result ? { review, result } : { review };
 }
 
-// A logging row without its matching security row accounts for that future
-// row now. Logging must not occupy the last slot needed by its own actor's
-// urgent security workflow. Existing status records remain readable/updatable.
+// Policy lanes without their matching security row account for that future
+// row once per actor/deployment, even when both lanes exist. They must not
+// occupy the last slot needed by urgent security work. Existing status records
+// remain readable/updatable.
 function historySlots(
   records: ReadonlyMap<string, PendingSecurityChange>,
 ): number {
-  let slots = records.size;
+  const reservedSecurityOwners = new Set<string>();
   for (const owner of records.keys()) {
     const fields: string[] = JSON.parse(owner);
-    if (fields.length === 5 && !records.has(JSON.stringify(fields.slice(0, 4))))
-      slots++;
+    if (fields.length === 5) {
+      const securityOwner = JSON.stringify(fields.slice(0, 4));
+      if (!records.has(securityOwner))
+        reservedSecurityOwners.add(securityOwner);
+    }
   }
-  return slots;
+  return records.size + reservedSecurityOwners.size;
 }
 
 /** One tab-local writer. Saved bytes are historical metadata, never authority. */
@@ -282,11 +305,13 @@ export class SecurityChangeRecovery {
     const fields = validateOwner(owner, record.review);
     if (
       fields.length === 4 &&
-      record.review.changes.some(
-        (change) => change.operation.case === "putLogPolicy",
+      record.review.changes.some((change) =>
+        ["putLogPolicy", "putOperationalPolicy"].includes(
+          change.operation.case ?? "",
+        ),
       )
     ) {
-      throw new Error("Log policy changes require their own recovery lane.");
+      throw new Error("Policy changes require their own recovery lane.");
     }
     const prior = this.records.get(owner);
     if (

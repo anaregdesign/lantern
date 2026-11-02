@@ -3950,11 +3950,263 @@ pub struct GetLogSettingsResponse {
     #[prost(message, optional, tag = "14")]
     pub preparation: ::core::option::Option<LogPolicyPreparationReference>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalSlowRpcValues {
+    #[prost(int64, tag = "1")]
+    pub threshold_ms: i64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct OperationalRateValues {
+    #[prost(double, tag = "1")]
+    pub rps: f64,
+    #[prost(int64, tag = "2")]
+    pub burst: i64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalRequestValues {
+    #[prost(int64, tag = "1")]
+    pub delete_by_prefix_default_limit: i64,
+    #[prost(int64, tag = "2")]
+    pub delete_by_prefix_max_limit: i64,
+    #[prost(int64, tag = "3")]
+    pub illuminate_max_k: i64,
+    #[prost(int64, tag = "4")]
+    pub illuminate_max_step: i64,
+    #[prost(int64, tag = "5")]
+    pub max_batch_size: i64,
+    #[prost(int64, tag = "6")]
+    pub max_key_len: i64,
+    #[prost(int64, tag = "7")]
+    pub scan_default_limit: i64,
+    #[prost(int64, tag = "8")]
+    pub scan_max_limit: i64,
+    #[prost(int64, tag = "9")]
+    pub traversal_max_pushes: i64,
+    #[prost(int64, tag = "10")]
+    pub traversal_max_results: i64,
+    #[prost(int64, tag = "11")]
+    pub traversal_max_touched_edges: i64,
+    #[prost(int64, tag = "12")]
+    pub traversal_timeout_ms: i64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalBackupValues {
+    #[prost(bool, tag = "1")]
+    pub enabled: bool,
+    #[prost(int64, tag = "2")]
+    pub interval_nanos: i64,
+    #[prost(int64, tag = "3")]
+    pub retain: i64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalCapacityValues {
+    #[prost(int64, tag = "1")]
+    pub gc_edge_budget: i64,
+    #[prost(int64, tag = "2")]
+    pub gc_interval_seconds: i64,
+    #[prost(int64, tag = "3")]
+    pub max_edges: i64,
+    #[prost(int64, tag = "4")]
+    pub max_edge_causal_entries: i64,
+    #[prost(int64, tag = "5")]
+    pub max_vertex_causal_entries: i64,
+    #[prost(int64, tag = "6")]
+    pub max_vertices: i64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalLifecycleValues {
+    #[prost(int64, tag = "1")]
+    pub drain_delay_seconds: i64,
+    #[prost(uint64, tag = "2")]
+    pub max_replication_lag: u64,
+    #[prost(int64, tag = "3")]
+    pub shutdown_timeout_seconds: i64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalSearchValues {
+    #[prost(int64, tag = "1")]
+    pub default_limit: i64,
+    #[prost(int64, tag = "2")]
+    pub max_limit: i64,
+    #[prost(enumeration = "OperationalSearchMode", tag = "3")]
+    pub default_mode: i32,
+    #[prost(int64, tag = "4")]
+    pub default_min_should: i64,
+    #[prost(int64, tag = "5")]
+    pub timeout_ms: i64,
+    #[prost(int64, tag = "6")]
+    pub max_query_bytes: i64,
+    #[prost(int64, tag = "7")]
+    pub max_query_terms: i64,
+    #[prost(int64, tag = "8")]
+    pub max_dictionary_visits: i64,
+    #[prost(int64, tag = "9")]
+    pub max_posting_visits: i64,
+    #[prost(int64, tag = "10")]
+    pub max_position_visits: i64,
+    #[prost(int64, tag = "11")]
+    pub max_expiration_visits: i64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalReplicationValues {
+    #[prost(int64, tag = "1")]
+    pub anti_entropy_gap_warn_threshold: i64,
+    #[prost(int64, tag = "2")]
+    pub anti_entropy_interval_ms: i64,
+    #[prost(int64, tag = "3")]
+    pub anti_entropy_subscribe_timeout_ms: i64,
+    #[prost(int64, tag = "4")]
+    pub pump_backoff_max_ms: i64,
+    #[prost(int64, tag = "5")]
+    pub pump_backoff_min_ms: i64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct OperationalPolicyValues {
+    #[prost(oneof = "operational_policy_values::Group", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    pub group: ::core::option::Option<operational_policy_values::Group>,
+}
+/// Nested message and enum types in `OperationalPolicyValues`.
+pub mod operational_policy_values {
+    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
+    pub enum Group {
+        #[prost(message, tag = "1")]
+        SlowRpc(super::OperationalSlowRpcValues),
+        #[prost(message, tag = "2")]
+        Rate(super::OperationalRateValues),
+        #[prost(message, tag = "3")]
+        Request(super::OperationalRequestValues),
+        #[prost(message, tag = "4")]
+        Backup(super::OperationalBackupValues),
+        #[prost(message, tag = "5")]
+        Capacity(super::OperationalCapacityValues),
+        #[prost(message, tag = "6")]
+        Lifecycle(super::OperationalLifecycleValues),
+        #[prost(message, tag = "7")]
+        Search(super::OperationalSearchValues),
+        #[prost(message, tag = "8")]
+        Replication(super::OperationalReplicationValues),
+    }
+}
+/// The authority allocates generation; zero expected_generation means adoption.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OperationalPolicyChange {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub expected_generation: u64,
+    #[prost(message, optional, tag = "3")]
+    pub values: ::core::option::Option<OperationalPolicyValues>,
+    /// Search engine compatibility metadata, resolved by Preview, never editable.
+    #[prost(string, tag = "4")]
+    pub compatibility_fingerprint: ::prost::alloc::string::String,
+    /// Explicit acknowledgement, sealed in the exact immutable reviewed intent.
+    #[prost(bool, tag = "5")]
+    pub retention_reduction_acknowledged: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ManagedOperationalPolicy {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    #[prost(message, optional, tag = "3")]
+    pub values: ::core::option::Option<OperationalPolicyValues>,
+    #[prost(string, tag = "4")]
+    pub compatibility_fingerprint: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalSettingProvenance {
+    #[prost(enumeration = "OperationalSetting", tag = "1")]
+    pub setting: i32,
+    #[prost(enumeration = "OperationalSettingsSource", tag = "2")]
+    pub source: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OperationalGroupSettings {
+    #[prost(enumeration = "OperationalGroup", tag = "1")]
+    pub group: i32,
+    #[prost(message, optional, tag = "2")]
+    pub desired: ::core::option::Option<ManagedOperationalPolicy>,
+    /// Absent for an unavailable owner or explicitly invalid bootstrap values.
+    /// Invalid bootstrap keeps installed change mode and provenance, with ERROR.
+    #[prost(message, optional, tag = "3")]
+    pub effective: ::core::option::Option<OperationalPolicyValues>,
+    #[prost(message, repeated, tag = "4")]
+    pub provenance: ::prost::alloc::vec::Vec<OperationalSettingProvenance>,
+    #[prost(uint64, tag = "5")]
+    pub applied_generation: u64,
+    #[prost(message, optional, tag = "6")]
+    pub applied_cut: ::core::option::Option<CurrentSemanticCut>,
+    #[prost(enumeration = "OperationalSettingsChangeMode", tag = "7")]
+    pub change_mode: i32,
+    #[prost(enumeration = "LogPolicyAdoptionState", tag = "8")]
+    pub adoption: i32,
+    #[prost(enumeration = "OperationalSettingsApplicationState", tag = "9")]
+    pub application: i32,
+    #[prost(enumeration = "OperationalSettingsError", tag = "10")]
+    pub error: i32,
+    #[prost(bool, tag = "11")]
+    pub restart_required: bool,
+    #[prost(message, optional, tag = "12")]
+    pub preparation: ::core::option::Option<LogPolicyPreparationReference>,
+    /// Actual local Search engine fingerprint, including the excluded baseline.
+    #[prost(string, tag = "13")]
+    pub effective_compatibility_fingerprint: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetOperationalSettingsRequest {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetOperationalSettingsResponse {
+    #[prost(uint32, tag = "1")]
+    pub schema_version: u32,
+    #[prost(uint32, tag = "2")]
+    pub member: u32,
+    /// Exactly eight groups in the stable OperationalGroup ordering.
+    #[prost(message, repeated, tag = "3")]
+    pub groups: ::prost::alloc::vec::Vec<OperationalGroupSettings>,
+    #[prost(message, optional, tag = "4")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+/// Connected-node sample only; this does not predict cluster-wide deletions or
+/// freeze the catalog for future scheduled backup production.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalBackupRetentionPreview {
+    #[prost(uint64, tag = "1")]
+    pub valid_backups: u64,
+    #[prost(uint64, tag = "2")]
+    pub valid_bytes: u64,
+    #[prost(uint64, tag = "3")]
+    pub prune_backups: u64,
+    #[prost(uint64, tag = "4")]
+    pub prune_bytes: u64,
+    #[prost(bool, tag = "5")]
+    pub complete: bool,
+    #[prost(string, tag = "6")]
+    pub fingerprint: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct PreviewOperationalPolicyRequest {
+    #[prost(message, optional, tag = "1")]
+    pub values: ::core::option::Option<OperationalPolicyValues>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PreviewOperationalPolicyResponse {
+    #[prost(uint32, tag = "1")]
+    pub schema_version: u32,
+    #[prost(enumeration = "OperationalGroup", tag = "2")]
+    pub group: i32,
+    #[prost(string, tag = "3")]
+    pub compatibility_fingerprint: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "4")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(message, optional, tag = "5")]
+    pub backup_retention: ::core::option::Option<OperationalBackupRetentionPreview>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityChange {
     #[prost(
         oneof = "security_change::Operation",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub operation: ::core::option::Option<security_change::Operation>,
 }
@@ -3986,6 +4238,8 @@ pub mod security_change {
         PutRegistrationPolicy(super::SecurityRegistrationPolicy),
         #[prost(message, tag = "12")]
         PutLogPolicy(super::ManagedLogPolicy),
+        #[prost(message, tag = "13")]
+        PutOperationalPolicy(super::OperationalPolicyChange),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -4712,6 +4966,522 @@ impl LogSettingsError {
         }
     }
 }
+/// Closed business values only. No arbitrary configuration keys or secret values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalGroup {
+    Unspecified = 0,
+    SlowRpc = 1,
+    Rate = 2,
+    Request = 3,
+    Backup = 4,
+    Capacity = 5,
+    Lifecycle = 6,
+    Search = 7,
+    Replication = 8,
+}
+impl OperationalGroup {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_GROUP_UNSPECIFIED",
+            Self::SlowRpc => "OPERATIONAL_GROUP_SLOW_RPC",
+            Self::Rate => "OPERATIONAL_GROUP_RATE",
+            Self::Request => "OPERATIONAL_GROUP_REQUEST",
+            Self::Backup => "OPERATIONAL_GROUP_BACKUP",
+            Self::Capacity => "OPERATIONAL_GROUP_CAPACITY",
+            Self::Lifecycle => "OPERATIONAL_GROUP_LIFECYCLE",
+            Self::Search => "OPERATIONAL_GROUP_SEARCH",
+            Self::Replication => "OPERATIONAL_GROUP_REPLICATION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_GROUP_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPERATIONAL_GROUP_SLOW_RPC" => Some(Self::SlowRpc),
+            "OPERATIONAL_GROUP_RATE" => Some(Self::Rate),
+            "OPERATIONAL_GROUP_REQUEST" => Some(Self::Request),
+            "OPERATIONAL_GROUP_BACKUP" => Some(Self::Backup),
+            "OPERATIONAL_GROUP_CAPACITY" => Some(Self::Capacity),
+            "OPERATIONAL_GROUP_LIFECYCLE" => Some(Self::Lifecycle),
+            "OPERATIONAL_GROUP_SEARCH" => Some(Self::Search),
+            "OPERATIONAL_GROUP_REPLICATION" => Some(Self::Replication),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalSearchMode {
+    Unspecified = 0,
+    Any = 1,
+    All = 2,
+    MinShould = 3,
+}
+impl OperationalSearchMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_SEARCH_MODE_UNSPECIFIED",
+            Self::Any => "OPERATIONAL_SEARCH_MODE_ANY",
+            Self::All => "OPERATIONAL_SEARCH_MODE_ALL",
+            Self::MinShould => "OPERATIONAL_SEARCH_MODE_MIN_SHOULD",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_SEARCH_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPERATIONAL_SEARCH_MODE_ANY" => Some(Self::Any),
+            "OPERATIONAL_SEARCH_MODE_ALL" => Some(Self::All),
+            "OPERATIONAL_SEARCH_MODE_MIN_SHOULD" => Some(Self::MinShould),
+            _ => None,
+        }
+    }
+}
+/// Field identity is closed and carries provenance only, never arbitrary values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalSetting {
+    Unspecified = 0,
+    SlowRpcThresholdMs = 1,
+    RateRps = 2,
+    RateBurst = 3,
+    RequestDeleteByPrefixDefaultLimit = 4,
+    RequestDeleteByPrefixMaxLimit = 5,
+    RequestIlluminateMaxK = 6,
+    RequestIlluminateMaxStep = 7,
+    RequestMaxBatchSize = 8,
+    RequestMaxKeyLen = 9,
+    RequestScanDefaultLimit = 10,
+    RequestScanMaxLimit = 11,
+    RequestTraversalMaxPushes = 12,
+    RequestTraversalMaxResults = 13,
+    RequestTraversalMaxTouchedEdges = 14,
+    RequestTraversalTimeoutMs = 15,
+    BackupEnabled = 16,
+    BackupIntervalNanos = 17,
+    BackupRetain = 18,
+    CapacityGcEdgeBudget = 19,
+    CapacityGcIntervalSeconds = 20,
+    CapacityMaxEdges = 21,
+    CapacityMaxEdgeCausalEntries = 22,
+    CapacityMaxVertexCausalEntries = 23,
+    CapacityMaxVertices = 24,
+    LifecycleDrainDelaySeconds = 25,
+    LifecycleMaxReplicationLag = 26,
+    LifecycleShutdownTimeoutSeconds = 27,
+    SearchDefaultLimit = 28,
+    SearchMaxLimit = 29,
+    SearchDefaultMode = 30,
+    SearchDefaultMinShould = 31,
+    SearchTimeoutMs = 32,
+    SearchMaxQueryBytes = 33,
+    SearchMaxQueryTerms = 34,
+    SearchMaxDictionaryVisits = 35,
+    SearchMaxPostingVisits = 36,
+    SearchMaxPositionVisits = 37,
+    SearchMaxExpirationVisits = 38,
+    ReplicationAntiEntropyGapWarnThreshold = 39,
+    ReplicationAntiEntropyIntervalMs = 40,
+    ReplicationAntiEntropySubscribeTimeoutMs = 41,
+    ReplicationPumpBackoffMaxMs = 42,
+    ReplicationPumpBackoffMinMs = 43,
+}
+impl OperationalSetting {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_SETTING_UNSPECIFIED",
+            Self::SlowRpcThresholdMs => "OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS",
+            Self::RateRps => "OPERATIONAL_SETTING_RATE_RPS",
+            Self::RateBurst => "OPERATIONAL_SETTING_RATE_BURST",
+            Self::RequestDeleteByPrefixDefaultLimit => {
+                "OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT"
+            }
+            Self::RequestDeleteByPrefixMaxLimit => {
+                "OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT"
+            }
+            Self::RequestIlluminateMaxK => "OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K",
+            Self::RequestIlluminateMaxStep => {
+                "OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP"
+            }
+            Self::RequestMaxBatchSize => "OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE",
+            Self::RequestMaxKeyLen => "OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN",
+            Self::RequestScanDefaultLimit => {
+                "OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT"
+            }
+            Self::RequestScanMaxLimit => "OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT",
+            Self::RequestTraversalMaxPushes => {
+                "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES"
+            }
+            Self::RequestTraversalMaxResults => {
+                "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS"
+            }
+            Self::RequestTraversalMaxTouchedEdges => {
+                "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES"
+            }
+            Self::RequestTraversalTimeoutMs => {
+                "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS"
+            }
+            Self::BackupEnabled => "OPERATIONAL_SETTING_BACKUP_ENABLED",
+            Self::BackupIntervalNanos => "OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS",
+            Self::BackupRetain => "OPERATIONAL_SETTING_BACKUP_RETAIN",
+            Self::CapacityGcEdgeBudget => "OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET",
+            Self::CapacityGcIntervalSeconds => {
+                "OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS"
+            }
+            Self::CapacityMaxEdges => "OPERATIONAL_SETTING_CAPACITY_MAX_EDGES",
+            Self::CapacityMaxEdgeCausalEntries => {
+                "OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES"
+            }
+            Self::CapacityMaxVertexCausalEntries => {
+                "OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES"
+            }
+            Self::CapacityMaxVertices => "OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES",
+            Self::LifecycleDrainDelaySeconds => {
+                "OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS"
+            }
+            Self::LifecycleMaxReplicationLag => {
+                "OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG"
+            }
+            Self::LifecycleShutdownTimeoutSeconds => {
+                "OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS"
+            }
+            Self::SearchDefaultLimit => "OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT",
+            Self::SearchMaxLimit => "OPERATIONAL_SETTING_SEARCH_MAX_LIMIT",
+            Self::SearchDefaultMode => "OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE",
+            Self::SearchDefaultMinShould => {
+                "OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD"
+            }
+            Self::SearchTimeoutMs => "OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS",
+            Self::SearchMaxQueryBytes => "OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES",
+            Self::SearchMaxQueryTerms => "OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS",
+            Self::SearchMaxDictionaryVisits => {
+                "OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS"
+            }
+            Self::SearchMaxPostingVisits => {
+                "OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS"
+            }
+            Self::SearchMaxPositionVisits => {
+                "OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS"
+            }
+            Self::SearchMaxExpirationVisits => {
+                "OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS"
+            }
+            Self::ReplicationAntiEntropyGapWarnThreshold => {
+                "OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD"
+            }
+            Self::ReplicationAntiEntropyIntervalMs => {
+                "OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS"
+            }
+            Self::ReplicationAntiEntropySubscribeTimeoutMs => {
+                "OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS"
+            }
+            Self::ReplicationPumpBackoffMaxMs => {
+                "OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS"
+            }
+            Self::ReplicationPumpBackoffMinMs => {
+                "OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_SETTING_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS" => Some(Self::SlowRpcThresholdMs),
+            "OPERATIONAL_SETTING_RATE_RPS" => Some(Self::RateRps),
+            "OPERATIONAL_SETTING_RATE_BURST" => Some(Self::RateBurst),
+            "OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT" => {
+                Some(Self::RequestDeleteByPrefixDefaultLimit)
+            }
+            "OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT" => {
+                Some(Self::RequestDeleteByPrefixMaxLimit)
+            }
+            "OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K" => {
+                Some(Self::RequestIlluminateMaxK)
+            }
+            "OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP" => {
+                Some(Self::RequestIlluminateMaxStep)
+            }
+            "OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE" => {
+                Some(Self::RequestMaxBatchSize)
+            }
+            "OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN" => Some(Self::RequestMaxKeyLen),
+            "OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT" => {
+                Some(Self::RequestScanDefaultLimit)
+            }
+            "OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT" => {
+                Some(Self::RequestScanMaxLimit)
+            }
+            "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES" => {
+                Some(Self::RequestTraversalMaxPushes)
+            }
+            "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS" => {
+                Some(Self::RequestTraversalMaxResults)
+            }
+            "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES" => {
+                Some(Self::RequestTraversalMaxTouchedEdges)
+            }
+            "OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS" => {
+                Some(Self::RequestTraversalTimeoutMs)
+            }
+            "OPERATIONAL_SETTING_BACKUP_ENABLED" => Some(Self::BackupEnabled),
+            "OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS" => {
+                Some(Self::BackupIntervalNanos)
+            }
+            "OPERATIONAL_SETTING_BACKUP_RETAIN" => Some(Self::BackupRetain),
+            "OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET" => {
+                Some(Self::CapacityGcEdgeBudget)
+            }
+            "OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS" => {
+                Some(Self::CapacityGcIntervalSeconds)
+            }
+            "OPERATIONAL_SETTING_CAPACITY_MAX_EDGES" => Some(Self::CapacityMaxEdges),
+            "OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES" => {
+                Some(Self::CapacityMaxEdgeCausalEntries)
+            }
+            "OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES" => {
+                Some(Self::CapacityMaxVertexCausalEntries)
+            }
+            "OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES" => {
+                Some(Self::CapacityMaxVertices)
+            }
+            "OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS" => {
+                Some(Self::LifecycleDrainDelaySeconds)
+            }
+            "OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG" => {
+                Some(Self::LifecycleMaxReplicationLag)
+            }
+            "OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS" => {
+                Some(Self::LifecycleShutdownTimeoutSeconds)
+            }
+            "OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT" => Some(Self::SearchDefaultLimit),
+            "OPERATIONAL_SETTING_SEARCH_MAX_LIMIT" => Some(Self::SearchMaxLimit),
+            "OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE" => Some(Self::SearchDefaultMode),
+            "OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD" => {
+                Some(Self::SearchDefaultMinShould)
+            }
+            "OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS" => Some(Self::SearchTimeoutMs),
+            "OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES" => {
+                Some(Self::SearchMaxQueryBytes)
+            }
+            "OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS" => {
+                Some(Self::SearchMaxQueryTerms)
+            }
+            "OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS" => {
+                Some(Self::SearchMaxDictionaryVisits)
+            }
+            "OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS" => {
+                Some(Self::SearchMaxPostingVisits)
+            }
+            "OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS" => {
+                Some(Self::SearchMaxPositionVisits)
+            }
+            "OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS" => {
+                Some(Self::SearchMaxExpirationVisits)
+            }
+            "OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD" => {
+                Some(Self::ReplicationAntiEntropyGapWarnThreshold)
+            }
+            "OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS" => {
+                Some(Self::ReplicationAntiEntropyIntervalMs)
+            }
+            "OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS" => {
+                Some(Self::ReplicationAntiEntropySubscribeTimeoutMs)
+            }
+            "OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS" => {
+                Some(Self::ReplicationPumpBackoffMaxMs)
+            }
+            "OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS" => {
+                Some(Self::ReplicationPumpBackoffMinMs)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalSettingsSource {
+    Unspecified = 0,
+    Default = 1,
+    Environment = 2,
+    Derived = 3,
+    Managed = 4,
+}
+impl OperationalSettingsSource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED",
+            Self::Default => "OPERATIONAL_SETTINGS_SOURCE_DEFAULT",
+            Self::Environment => "OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT",
+            Self::Derived => "OPERATIONAL_SETTINGS_SOURCE_DERIVED",
+            Self::Managed => "OPERATIONAL_SETTINGS_SOURCE_MANAGED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPERATIONAL_SETTINGS_SOURCE_DEFAULT" => Some(Self::Default),
+            "OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT" => Some(Self::Environment),
+            "OPERATIONAL_SETTINGS_SOURCE_DERIVED" => Some(Self::Derived),
+            "OPERATIONAL_SETTINGS_SOURCE_MANAGED" => Some(Self::Managed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalSettingsChangeMode {
+    Unspecified = 0,
+    Unavailable = 1,
+    Hot = 2,
+    WorkerRestart = 3,
+    ProcessRestart = 4,
+    CoordinatedRestart = 5,
+}
+impl OperationalSettingsChangeMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED",
+            Self::Unavailable => "OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE",
+            Self::Hot => "OPERATIONAL_SETTINGS_CHANGE_MODE_HOT",
+            Self::WorkerRestart => "OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART",
+            Self::ProcessRestart => "OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART",
+            Self::CoordinatedRestart => {
+                "OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE" => Some(Self::Unavailable),
+            "OPERATIONAL_SETTINGS_CHANGE_MODE_HOT" => Some(Self::Hot),
+            "OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART" => {
+                Some(Self::WorkerRestart)
+            }
+            "OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART" => {
+                Some(Self::ProcessRestart)
+            }
+            "OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART" => {
+                Some(Self::CoordinatedRestart)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalSettingsApplicationState {
+    Unspecified = 0,
+    Unavailable = 1,
+    Applied = 2,
+    Pending = 3,
+    Error = 4,
+}
+impl OperationalSettingsApplicationState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED",
+            Self::Unavailable => "OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE",
+            Self::Applied => "OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED",
+            Self::Pending => "OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING",
+            Self::Error => "OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE" => {
+                Some(Self::Unavailable)
+            }
+            "OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED" => Some(Self::Applied),
+            "OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING" => Some(Self::Pending),
+            "OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OperationalSettingsError {
+    Unspecified = 0,
+    None = 1,
+    InvalidPolicy = 2,
+    OwnerUnavailable = 3,
+    ApplyFailed = 4,
+    DependencyUnavailable = 5,
+    CompatibilityMismatch = 6,
+}
+impl OperationalSettingsError {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED",
+            Self::None => "OPERATIONAL_SETTINGS_ERROR_NONE",
+            Self::InvalidPolicy => "OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY",
+            Self::OwnerUnavailable => "OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE",
+            Self::ApplyFailed => "OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED",
+            Self::DependencyUnavailable => {
+                "OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE"
+            }
+            Self::CompatibilityMismatch => {
+                "OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPERATIONAL_SETTINGS_ERROR_NONE" => Some(Self::None),
+            "OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY" => Some(Self::InvalidPolicy),
+            "OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE" => {
+                Some(Self::OwnerUnavailable)
+            }
+            "OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED" => Some(Self::ApplyFailed),
+            "OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE" => {
+                Some(Self::DependencyUnavailable)
+            }
+            "OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH" => {
+                Some(Self::CompatibilityMismatch)
+            }
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SecurityEnforcementState {
@@ -5349,6 +6119,66 @@ pub mod lantern_security_service_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("graph.v1.LanternSecurityService", "GetLogSettings"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Verified desired state and actual application of the eight closed groups.
+        pub async fn get_operational_settings(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetOperationalSettingsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetOperationalSettingsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetOperationalSettings",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetOperationalSettings",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Read-only dependency resolution before the existing authoritative review.
+        pub async fn preview_operational_policy(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PreviewOperationalPolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PreviewOperationalPolicyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/PreviewOperationalPolicy",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "PreviewOperationalPolicy",
+                    ),
                 );
             self.inner.unary(req, path, codec).await
         }

@@ -227,6 +227,239 @@ final $typed_data.Uint8List logSettingsErrorDescriptor = $convert.base64Decode(
     'SURfUE9MSUNZEAISKAokTE9HX1NFVFRJTkdTX0VSUk9SX09XTkVSX1VOQVZBSUxBQkxFEAMSIw'
     'ofTE9HX1NFVFRJTkdTX0VSUk9SX0FQUExZX0ZBSUxFRBAE');
 
+@$core.Deprecated('Use operationalGroupDescriptor instead')
+const OperationalGroup$json = {
+  '1': 'OperationalGroup',
+  '2': [
+    {'1': 'OPERATIONAL_GROUP_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_GROUP_SLOW_RPC', '2': 1},
+    {'1': 'OPERATIONAL_GROUP_RATE', '2': 2},
+    {'1': 'OPERATIONAL_GROUP_REQUEST', '2': 3},
+    {'1': 'OPERATIONAL_GROUP_BACKUP', '2': 4},
+    {'1': 'OPERATIONAL_GROUP_CAPACITY', '2': 5},
+    {'1': 'OPERATIONAL_GROUP_LIFECYCLE', '2': 6},
+    {'1': 'OPERATIONAL_GROUP_SEARCH', '2': 7},
+    {'1': 'OPERATIONAL_GROUP_REPLICATION', '2': 8},
+  ],
+};
+
+/// Descriptor for `OperationalGroup`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalGroupDescriptor = $convert.base64Decode(
+    'ChBPcGVyYXRpb25hbEdyb3VwEiEKHU9QRVJBVElPTkFMX0dST1VQX1VOU1BFQ0lGSUVEEAASHg'
+    'oaT1BFUkFUSU9OQUxfR1JPVVBfU0xPV19SUEMQARIaChZPUEVSQVRJT05BTF9HUk9VUF9SQVRF'
+    'EAISHQoZT1BFUkFUSU9OQUxfR1JPVVBfUkVRVUVTVBADEhwKGE9QRVJBVElPTkFMX0dST1VQX0'
+    'JBQ0tVUBAEEh4KGk9QRVJBVElPTkFMX0dST1VQX0NBUEFDSVRZEAUSHwobT1BFUkFUSU9OQUxf'
+    'R1JPVVBfTElGRUNZQ0xFEAYSHAoYT1BFUkFUSU9OQUxfR1JPVVBfU0VBUkNIEAcSIQodT1BFUk'
+    'FUSU9OQUxfR1JPVVBfUkVQTElDQVRJT04QCA==');
+
+@$core.Deprecated('Use operationalSearchModeDescriptor instead')
+const OperationalSearchMode$json = {
+  '1': 'OperationalSearchMode',
+  '2': [
+    {'1': 'OPERATIONAL_SEARCH_MODE_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_SEARCH_MODE_ANY', '2': 1},
+    {'1': 'OPERATIONAL_SEARCH_MODE_ALL', '2': 2},
+    {'1': 'OPERATIONAL_SEARCH_MODE_MIN_SHOULD', '2': 3},
+  ],
+};
+
+/// Descriptor for `OperationalSearchMode`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalSearchModeDescriptor = $convert.base64Decode(
+    'ChVPcGVyYXRpb25hbFNlYXJjaE1vZGUSJwojT1BFUkFUSU9OQUxfU0VBUkNIX01PREVfVU5TUE'
+    'VDSUZJRUQQABIfChtPUEVSQVRJT05BTF9TRUFSQ0hfTU9ERV9BTlkQARIfChtPUEVSQVRJT05B'
+    'TF9TRUFSQ0hfTU9ERV9BTEwQAhImCiJPUEVSQVRJT05BTF9TRUFSQ0hfTU9ERV9NSU5fU0hPVU'
+    'xEEAM=');
+
+@$core.Deprecated('Use operationalSettingDescriptor instead')
+const OperationalSetting$json = {
+  '1': 'OperationalSetting',
+  '2': [
+    {'1': 'OPERATIONAL_SETTING_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS', '2': 1},
+    {'1': 'OPERATIONAL_SETTING_RATE_RPS', '2': 2},
+    {'1': 'OPERATIONAL_SETTING_RATE_BURST', '2': 3},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT', '2': 4},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT', '2': 5},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K', '2': 6},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP', '2': 7},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE', '2': 8},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN', '2': 9},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT', '2': 10},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT', '2': 11},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES', '2': 12},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS', '2': 13},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES', '2': 14},
+    {'1': 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS', '2': 15},
+    {'1': 'OPERATIONAL_SETTING_BACKUP_ENABLED', '2': 16},
+    {'1': 'OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS', '2': 17},
+    {'1': 'OPERATIONAL_SETTING_BACKUP_RETAIN', '2': 18},
+    {'1': 'OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET', '2': 19},
+    {'1': 'OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS', '2': 20},
+    {'1': 'OPERATIONAL_SETTING_CAPACITY_MAX_EDGES', '2': 21},
+    {'1': 'OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES', '2': 22},
+    {'1': 'OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES', '2': 23},
+    {'1': 'OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES', '2': 24},
+    {'1': 'OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS', '2': 25},
+    {'1': 'OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG', '2': 26},
+    {'1': 'OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS', '2': 27},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT', '2': 28},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_LIMIT', '2': 29},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE', '2': 30},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD', '2': 31},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS', '2': 32},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES', '2': 33},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS', '2': 34},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS', '2': 35},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS', '2': 36},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS', '2': 37},
+    {'1': 'OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS', '2': 38},
+    {
+      '1': 'OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD',
+      '2': 39
+    },
+    {'1': 'OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS', '2': 40},
+    {
+      '1': 'OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS',
+      '2': 41
+    },
+    {'1': 'OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS', '2': 42},
+    {'1': 'OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS', '2': 43},
+  ],
+};
+
+/// Descriptor for `OperationalSetting`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalSettingDescriptor = $convert.base64Decode(
+    'ChJPcGVyYXRpb25hbFNldHRpbmcSIwofT1BFUkFUSU9OQUxfU0VUVElOR19VTlNQRUNJRklFRB'
+    'AAEi0KKU9QRVJBVElPTkFMX1NFVFRJTkdfU0xPV19SUENfVEhSRVNIT0xEX01TEAESIAocT1BF'
+    'UkFUSU9OQUxfU0VUVElOR19SQVRFX1JQUxACEiIKHk9QRVJBVElPTkFMX1NFVFRJTkdfUkFURV'
+    '9CVVJTVBADEj4KOk9QRVJBVElPTkFMX1NFVFRJTkdfUkVRVUVTVF9ERUxFVEVfQllfUFJFRklY'
+    'X0RFRkFVTFRfTElNSVQQBBI6CjZPUEVSQVRJT05BTF9TRVRUSU5HX1JFUVVFU1RfREVMRVRFX0'
+    'JZX1BSRUZJWF9NQVhfTElNSVQQBRIwCixPUEVSQVRJT05BTF9TRVRUSU5HX1JFUVVFU1RfSUxM'
+    'VU1JTkFURV9NQVhfSxAGEjMKL09QRVJBVElPTkFMX1NFVFRJTkdfUkVRVUVTVF9JTExVTUlOQV'
+    'RFX01BWF9TVEVQEAcSLgoqT1BFUkFUSU9OQUxfU0VUVElOR19SRVFVRVNUX01BWF9CQVRDSF9T'
+    'SVpFEAgSKwonT1BFUkFUSU9OQUxfU0VUVElOR19SRVFVRVNUX01BWF9LRVlfTEVOEAkSMgouT1'
+    'BFUkFUSU9OQUxfU0VUVElOR19SRVFVRVNUX1NDQU5fREVGQVVMVF9MSU1JVBAKEi4KKk9QRVJB'
+    'VElPTkFMX1NFVFRJTkdfUkVRVUVTVF9TQ0FOX01BWF9MSU1JVBALEjQKME9QRVJBVElPTkFMX1'
+    'NFVFRJTkdfUkVRVUVTVF9UUkFWRVJTQUxfTUFYX1BVU0hFUxAMEjUKMU9QRVJBVElPTkFMX1NF'
+    'VFRJTkdfUkVRVUVTVF9UUkFWRVJTQUxfTUFYX1JFU1VMVFMQDRI7CjdPUEVSQVRJT05BTF9TRV'
+    'RUSU5HX1JFUVVFU1RfVFJBVkVSU0FMX01BWF9UT1VDSEVEX0VER0VTEA4SNAowT1BFUkFUSU9O'
+    'QUxfU0VUVElOR19SRVFVRVNUX1RSQVZFUlNBTF9USU1FT1VUX01TEA8SJgoiT1BFUkFUSU9OQU'
+    'xfU0VUVElOR19CQUNLVVBfRU5BQkxFRBAQEi0KKU9QRVJBVElPTkFMX1NFVFRJTkdfQkFDS1VQ'
+    'X0lOVEVSVkFMX05BTk9TEBESJQohT1BFUkFUSU9OQUxfU0VUVElOR19CQUNLVVBfUkVUQUlOEB'
+    'ISLworT1BFUkFUSU9OQUxfU0VUVElOR19DQVBBQ0lUWV9HQ19FREdFX0JVREdFVBATEjQKME9Q'
+    'RVJBVElPTkFMX1NFVFRJTkdfQ0FQQUNJVFlfR0NfSU5URVJWQUxfU0VDT05EUxAUEioKJk9QRV'
+    'JBVElPTkFMX1NFVFRJTkdfQ0FQQUNJVFlfTUFYX0VER0VTEBUSOAo0T1BFUkFUSU9OQUxfU0VU'
+    'VElOR19DQVBBQ0lUWV9NQVhfRURHRV9DQVVTQUxfRU5UUklFUxAWEjoKNk9QRVJBVElPTkFMX1'
+    'NFVFRJTkdfQ0FQQUNJVFlfTUFYX1ZFUlRFWF9DQVVTQUxfRU5UUklFUxAXEi0KKU9QRVJBVElP'
+    'TkFMX1NFVFRJTkdfQ0FQQUNJVFlfTUFYX1ZFUlRJQ0VTEBgSNQoxT1BFUkFUSU9OQUxfU0VUVE'
+    'lOR19MSUZFQ1lDTEVfRFJBSU5fREVMQVlfU0VDT05EUxAZEjUKMU9QRVJBVElPTkFMX1NFVFRJ'
+    'TkdfTElGRUNZQ0xFX01BWF9SRVBMSUNBVElPTl9MQUcQGhI6CjZPUEVSQVRJT05BTF9TRVRUSU'
+    '5HX0xJRkVDWUNMRV9TSFVURE9XTl9USU1FT1VUX1NFQ09ORFMQGxIsCihPUEVSQVRJT05BTF9T'
+    'RVRUSU5HX1NFQVJDSF9ERUZBVUxUX0xJTUlUEBwSKAokT1BFUkFUSU9OQUxfU0VUVElOR19TRU'
+    'FSQ0hfTUFYX0xJTUlUEB0SKwonT1BFUkFUSU9OQUxfU0VUVElOR19TRUFSQ0hfREVGQVVMVF9N'
+    'T0RFEB4SMQotT1BFUkFUSU9OQUxfU0VUVElOR19TRUFSQ0hfREVGQVVMVF9NSU5fU0hPVUxEEB'
+    '8SKQolT1BFUkFUSU9OQUxfU0VUVElOR19TRUFSQ0hfVElNRU9VVF9NUxAgEi4KKk9QRVJBVElP'
+    'TkFMX1NFVFRJTkdfU0VBUkNIX01BWF9RVUVSWV9CWVRFUxAhEi4KKk9QRVJBVElPTkFMX1NFVF'
+    'RJTkdfU0VBUkNIX01BWF9RVUVSWV9URVJNUxAiEjQKME9QRVJBVElPTkFMX1NFVFRJTkdfU0VB'
+    'UkNIX01BWF9ESUNUSU9OQVJZX1ZJU0lUUxAjEjEKLU9QRVJBVElPTkFMX1NFVFRJTkdfU0VBUk'
+    'NIX01BWF9QT1NUSU5HX1ZJU0lUUxAkEjIKLk9QRVJBVElPTkFMX1NFVFRJTkdfU0VBUkNIX01B'
+    'WF9QT1NJVElPTl9WSVNJVFMQJRI0CjBPUEVSQVRJT05BTF9TRVRUSU5HX1NFQVJDSF9NQVhfRV'
+    'hQSVJBVElPTl9WSVNJVFMQJhJDCj9PUEVSQVRJT05BTF9TRVRUSU5HX1JFUExJQ0FUSU9OX0FO'
+    'VElfRU5UUk9QWV9HQVBfV0FSTl9USFJFU0hPTEQQJxI8CjhPUEVSQVRJT05BTF9TRVRUSU5HX1'
+    'JFUExJQ0FUSU9OX0FOVElfRU5UUk9QWV9JTlRFUlZBTF9NUxAoEkUKQU9QRVJBVElPTkFMX1NF'
+    'VFRJTkdfUkVQTElDQVRJT05fQU5USV9FTlRST1BZX1NVQlNDUklCRV9USU1FT1VUX01TECkSNw'
+    'ozT1BFUkFUSU9OQUxfU0VUVElOR19SRVBMSUNBVElPTl9QVU1QX0JBQ0tPRkZfTUFYX01TECoS'
+    'NwozT1BFUkFUSU9OQUxfU0VUVElOR19SRVBMSUNBVElPTl9QVU1QX0JBQ0tPRkZfTUlOX01TEC'
+    's=');
+
+@$core.Deprecated('Use operationalSettingsSourceDescriptor instead')
+const OperationalSettingsSource$json = {
+  '1': 'OperationalSettingsSource',
+  '2': [
+    {'1': 'OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_SETTINGS_SOURCE_DEFAULT', '2': 1},
+    {'1': 'OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT', '2': 2},
+    {'1': 'OPERATIONAL_SETTINGS_SOURCE_DERIVED', '2': 3},
+    {'1': 'OPERATIONAL_SETTINGS_SOURCE_MANAGED', '2': 4},
+  ],
+};
+
+/// Descriptor for `OperationalSettingsSource`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalSettingsSourceDescriptor = $convert.base64Decode(
+    'ChlPcGVyYXRpb25hbFNldHRpbmdzU291cmNlEisKJ09QRVJBVElPTkFMX1NFVFRJTkdTX1NPVV'
+    'JDRV9VTlNQRUNJRklFRBAAEicKI09QRVJBVElPTkFMX1NFVFRJTkdTX1NPVVJDRV9ERUZBVUxU'
+    'EAESKwonT1BFUkFUSU9OQUxfU0VUVElOR1NfU09VUkNFX0VOVklST05NRU5UEAISJwojT1BFUk'
+    'FUSU9OQUxfU0VUVElOR1NfU09VUkNFX0RFUklWRUQQAxInCiNPUEVSQVRJT05BTF9TRVRUSU5H'
+    'U19TT1VSQ0VfTUFOQUdFRBAE');
+
+@$core.Deprecated('Use operationalSettingsChangeModeDescriptor instead')
+const OperationalSettingsChangeMode$json = {
+  '1': 'OperationalSettingsChangeMode',
+  '2': [
+    {'1': 'OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE', '2': 1},
+    {'1': 'OPERATIONAL_SETTINGS_CHANGE_MODE_HOT', '2': 2},
+    {'1': 'OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART', '2': 3},
+    {'1': 'OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART', '2': 4},
+    {'1': 'OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART', '2': 5},
+  ],
+};
+
+/// Descriptor for `OperationalSettingsChangeMode`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalSettingsChangeModeDescriptor = $convert.base64Decode(
+    'Ch1PcGVyYXRpb25hbFNldHRpbmdzQ2hhbmdlTW9kZRIwCixPUEVSQVRJT05BTF9TRVRUSU5HU1'
+    '9DSEFOR0VfTU9ERV9VTlNQRUNJRklFRBAAEjAKLE9QRVJBVElPTkFMX1NFVFRJTkdTX0NIQU5H'
+    'RV9NT0RFX1VOQVZBSUxBQkxFEAESKAokT1BFUkFUSU9OQUxfU0VUVElOR1NfQ0hBTkdFX01PRE'
+    'VfSE9UEAISMwovT1BFUkFUSU9OQUxfU0VUVElOR1NfQ0hBTkdFX01PREVfV09SS0VSX1JFU1RB'
+    'UlQQAxI0CjBPUEVSQVRJT05BTF9TRVRUSU5HU19DSEFOR0VfTU9ERV9QUk9DRVNTX1JFU1RBUl'
+    'QQBBI4CjRPUEVSQVRJT05BTF9TRVRUSU5HU19DSEFOR0VfTU9ERV9DT09SRElOQVRFRF9SRVNU'
+    'QVJUEAU=');
+
+@$core.Deprecated('Use operationalSettingsApplicationStateDescriptor instead')
+const OperationalSettingsApplicationState$json = {
+  '1': 'OperationalSettingsApplicationState',
+  '2': [
+    {'1': 'OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE', '2': 1},
+    {'1': 'OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED', '2': 2},
+    {'1': 'OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING', '2': 3},
+    {'1': 'OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR', '2': 4},
+  ],
+};
+
+/// Descriptor for `OperationalSettingsApplicationState`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalSettingsApplicationStateDescriptor = $convert.base64Decode(
+    'CiNPcGVyYXRpb25hbFNldHRpbmdzQXBwbGljYXRpb25TdGF0ZRI2CjJPUEVSQVRJT05BTF9TRV'
+    'RUSU5HU19BUFBMSUNBVElPTl9TVEFURV9VTlNQRUNJRklFRBAAEjYKMk9QRVJBVElPTkFMX1NF'
+    'VFRJTkdTX0FQUExJQ0FUSU9OX1NUQVRFX1VOQVZBSUxBQkxFEAESMgouT1BFUkFUSU9OQUxfU0'
+    'VUVElOR1NfQVBQTElDQVRJT05fU1RBVEVfQVBQTElFRBACEjIKLk9QRVJBVElPTkFMX1NFVFRJ'
+    'TkdTX0FQUExJQ0FUSU9OX1NUQVRFX1BFTkRJTkcQAxIwCixPUEVSQVRJT05BTF9TRVRUSU5HU1'
+    '9BUFBMSUNBVElPTl9TVEFURV9FUlJPUhAE');
+
+@$core.Deprecated('Use operationalSettingsErrorDescriptor instead')
+const OperationalSettingsError$json = {
+  '1': 'OperationalSettingsError',
+  '2': [
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED', '2': 0},
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_NONE', '2': 1},
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY', '2': 2},
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE', '2': 3},
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED', '2': 4},
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE', '2': 5},
+    {'1': 'OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH', '2': 6},
+  ],
+};
+
+/// Descriptor for `OperationalSettingsError`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List operationalSettingsErrorDescriptor = $convert.base64Decode(
+    'ChhPcGVyYXRpb25hbFNldHRpbmdzRXJyb3ISKgomT1BFUkFUSU9OQUxfU0VUVElOR1NfRVJST1'
+    'JfVU5TUEVDSUZJRUQQABIjCh9PUEVSQVRJT05BTF9TRVRUSU5HU19FUlJPUl9OT05FEAESLQop'
+    'T1BFUkFUSU9OQUxfU0VUVElOR1NfRVJST1JfSU5WQUxJRF9QT0xJQ1kQAhIwCixPUEVSQVRJT0'
+    '5BTF9TRVRUSU5HU19FUlJPUl9PV05FUl9VTkFWQUlMQUJMRRADEisKJ09QRVJBVElPTkFMX1NF'
+    'VFRJTkdTX0VSUk9SX0FQUExZX0ZBSUxFRBAEEjUKMU9QRVJBVElPTkFMX1NFVFRJTkdTX0VSUk'
+    '9SX0RFUEVOREVOQ1lfVU5BVkFJTEFCTEUQBRI1CjFPUEVSQVRJT05BTF9TRVRUSU5HU19FUlJP'
+    'Ul9DT01QQVRJQklMSVRZX01JU01BVENIEAY=');
+
 @$core.Deprecated('Use securityEnforcementStateDescriptor instead')
 const SecurityEnforcementState$json = {
   '1': 'SecurityEnforcementState',
@@ -1960,6 +2193,781 @@ final $typed_data.Uint8List getLogSettingsResponseDescriptor = $convert.base64De
     'LnYxLkN1cnJlbnRTZW1hbnRpY0N1dFIKYXBwbGllZEN1dBJJCgtwcmVwYXJhdGlvbhgOIAEoCz'
     'InLmdyYXBoLnYxLkxvZ1BvbGljeVByZXBhcmF0aW9uUmVmZXJlbmNlUgtwcmVwYXJhdGlvbg==');
 
+@$core.Deprecated('Use operationalSlowRPCValuesDescriptor instead')
+const OperationalSlowRPCValues$json = {
+  '1': 'OperationalSlowRPCValues',
+  '2': [
+    {'1': 'threshold_ms', '3': 1, '4': 1, '5': 3, '10': 'thresholdMs'},
+  ],
+};
+
+/// Descriptor for `OperationalSlowRPCValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalSlowRPCValuesDescriptor =
+    $convert.base64Decode(
+        'ChhPcGVyYXRpb25hbFNsb3dSUENWYWx1ZXMSIQoMdGhyZXNob2xkX21zGAEgASgDUgt0aHJlc2'
+        'hvbGRNcw==');
+
+@$core.Deprecated('Use operationalRateValuesDescriptor instead')
+const OperationalRateValues$json = {
+  '1': 'OperationalRateValues',
+  '2': [
+    {'1': 'rps', '3': 1, '4': 1, '5': 1, '10': 'rps'},
+    {'1': 'burst', '3': 2, '4': 1, '5': 3, '10': 'burst'},
+  ],
+};
+
+/// Descriptor for `OperationalRateValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalRateValuesDescriptor = $convert.base64Decode(
+    'ChVPcGVyYXRpb25hbFJhdGVWYWx1ZXMSEAoDcnBzGAEgASgBUgNycHMSFAoFYnVyc3QYAiABKA'
+    'NSBWJ1cnN0');
+
+@$core.Deprecated('Use operationalRequestValuesDescriptor instead')
+const OperationalRequestValues$json = {
+  '1': 'OperationalRequestValues',
+  '2': [
+    {
+      '1': 'delete_by_prefix_default_limit',
+      '3': 1,
+      '4': 1,
+      '5': 3,
+      '10': 'deleteByPrefixDefaultLimit'
+    },
+    {
+      '1': 'delete_by_prefix_max_limit',
+      '3': 2,
+      '4': 1,
+      '5': 3,
+      '10': 'deleteByPrefixMaxLimit'
+    },
+    {'1': 'illuminate_max_k', '3': 3, '4': 1, '5': 3, '10': 'illuminateMaxK'},
+    {
+      '1': 'illuminate_max_step',
+      '3': 4,
+      '4': 1,
+      '5': 3,
+      '10': 'illuminateMaxStep'
+    },
+    {'1': 'max_batch_size', '3': 5, '4': 1, '5': 3, '10': 'maxBatchSize'},
+    {'1': 'max_key_len', '3': 6, '4': 1, '5': 3, '10': 'maxKeyLen'},
+    {
+      '1': 'scan_default_limit',
+      '3': 7,
+      '4': 1,
+      '5': 3,
+      '10': 'scanDefaultLimit'
+    },
+    {'1': 'scan_max_limit', '3': 8, '4': 1, '5': 3, '10': 'scanMaxLimit'},
+    {
+      '1': 'traversal_max_pushes',
+      '3': 9,
+      '4': 1,
+      '5': 3,
+      '10': 'traversalMaxPushes'
+    },
+    {
+      '1': 'traversal_max_results',
+      '3': 10,
+      '4': 1,
+      '5': 3,
+      '10': 'traversalMaxResults'
+    },
+    {
+      '1': 'traversal_max_touched_edges',
+      '3': 11,
+      '4': 1,
+      '5': 3,
+      '10': 'traversalMaxTouchedEdges'
+    },
+    {
+      '1': 'traversal_timeout_ms',
+      '3': 12,
+      '4': 1,
+      '5': 3,
+      '10': 'traversalTimeoutMs'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalRequestValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalRequestValuesDescriptor = $convert.base64Decode(
+    'ChhPcGVyYXRpb25hbFJlcXVlc3RWYWx1ZXMSQgoeZGVsZXRlX2J5X3ByZWZpeF9kZWZhdWx0X2'
+    'xpbWl0GAEgASgDUhpkZWxldGVCeVByZWZpeERlZmF1bHRMaW1pdBI6ChpkZWxldGVfYnlfcHJl'
+    'Zml4X21heF9saW1pdBgCIAEoA1IWZGVsZXRlQnlQcmVmaXhNYXhMaW1pdBIoChBpbGx1bWluYX'
+    'RlX21heF9rGAMgASgDUg5pbGx1bWluYXRlTWF4SxIuChNpbGx1bWluYXRlX21heF9zdGVwGAQg'
+    'ASgDUhFpbGx1bWluYXRlTWF4U3RlcBIkCg5tYXhfYmF0Y2hfc2l6ZRgFIAEoA1IMbWF4QmF0Y2'
+    'hTaXplEh4KC21heF9rZXlfbGVuGAYgASgDUgltYXhLZXlMZW4SLAoSc2Nhbl9kZWZhdWx0X2xp'
+    'bWl0GAcgASgDUhBzY2FuRGVmYXVsdExpbWl0EiQKDnNjYW5fbWF4X2xpbWl0GAggASgDUgxzY2'
+    'FuTWF4TGltaXQSMAoUdHJhdmVyc2FsX21heF9wdXNoZXMYCSABKANSEnRyYXZlcnNhbE1heFB1'
+    'c2hlcxIyChV0cmF2ZXJzYWxfbWF4X3Jlc3VsdHMYCiABKANSE3RyYXZlcnNhbE1heFJlc3VsdH'
+    'MSPQobdHJhdmVyc2FsX21heF90b3VjaGVkX2VkZ2VzGAsgASgDUhh0cmF2ZXJzYWxNYXhUb3Vj'
+    'aGVkRWRnZXMSMAoUdHJhdmVyc2FsX3RpbWVvdXRfbXMYDCABKANSEnRyYXZlcnNhbFRpbWVvdX'
+    'RNcw==');
+
+@$core.Deprecated('Use operationalBackupValuesDescriptor instead')
+const OperationalBackupValues$json = {
+  '1': 'OperationalBackupValues',
+  '2': [
+    {'1': 'enabled', '3': 1, '4': 1, '5': 8, '10': 'enabled'},
+    {'1': 'interval_nanos', '3': 2, '4': 1, '5': 3, '10': 'intervalNanos'},
+    {'1': 'retain', '3': 3, '4': 1, '5': 3, '10': 'retain'},
+  ],
+};
+
+/// Descriptor for `OperationalBackupValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalBackupValuesDescriptor = $convert.base64Decode(
+    'ChdPcGVyYXRpb25hbEJhY2t1cFZhbHVlcxIYCgdlbmFibGVkGAEgASgIUgdlbmFibGVkEiUKDm'
+    'ludGVydmFsX25hbm9zGAIgASgDUg1pbnRlcnZhbE5hbm9zEhYKBnJldGFpbhgDIAEoA1IGcmV0'
+    'YWlu');
+
+@$core.Deprecated('Use operationalCapacityValuesDescriptor instead')
+const OperationalCapacityValues$json = {
+  '1': 'OperationalCapacityValues',
+  '2': [
+    {'1': 'gc_edge_budget', '3': 1, '4': 1, '5': 3, '10': 'gcEdgeBudget'},
+    {
+      '1': 'gc_interval_seconds',
+      '3': 2,
+      '4': 1,
+      '5': 3,
+      '10': 'gcIntervalSeconds'
+    },
+    {'1': 'max_edges', '3': 3, '4': 1, '5': 3, '10': 'maxEdges'},
+    {
+      '1': 'max_edge_causal_entries',
+      '3': 4,
+      '4': 1,
+      '5': 3,
+      '10': 'maxEdgeCausalEntries'
+    },
+    {
+      '1': 'max_vertex_causal_entries',
+      '3': 5,
+      '4': 1,
+      '5': 3,
+      '10': 'maxVertexCausalEntries'
+    },
+    {'1': 'max_vertices', '3': 6, '4': 1, '5': 3, '10': 'maxVertices'},
+  ],
+};
+
+/// Descriptor for `OperationalCapacityValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalCapacityValuesDescriptor = $convert.base64Decode(
+    'ChlPcGVyYXRpb25hbENhcGFjaXR5VmFsdWVzEiQKDmdjX2VkZ2VfYnVkZ2V0GAEgASgDUgxnY0'
+    'VkZ2VCdWRnZXQSLgoTZ2NfaW50ZXJ2YWxfc2Vjb25kcxgCIAEoA1IRZ2NJbnRlcnZhbFNlY29u'
+    'ZHMSGwoJbWF4X2VkZ2VzGAMgASgDUghtYXhFZGdlcxI1ChdtYXhfZWRnZV9jYXVzYWxfZW50cm'
+    'llcxgEIAEoA1IUbWF4RWRnZUNhdXNhbEVudHJpZXMSOQoZbWF4X3ZlcnRleF9jYXVzYWxfZW50'
+    'cmllcxgFIAEoA1IWbWF4VmVydGV4Q2F1c2FsRW50cmllcxIhCgxtYXhfdmVydGljZXMYBiABKA'
+    'NSC21heFZlcnRpY2Vz');
+
+@$core.Deprecated('Use operationalLifecycleValuesDescriptor instead')
+const OperationalLifecycleValues$json = {
+  '1': 'OperationalLifecycleValues',
+  '2': [
+    {
+      '1': 'drain_delay_seconds',
+      '3': 1,
+      '4': 1,
+      '5': 3,
+      '10': 'drainDelaySeconds'
+    },
+    {
+      '1': 'max_replication_lag',
+      '3': 2,
+      '4': 1,
+      '5': 4,
+      '10': 'maxReplicationLag'
+    },
+    {
+      '1': 'shutdown_timeout_seconds',
+      '3': 3,
+      '4': 1,
+      '5': 3,
+      '10': 'shutdownTimeoutSeconds'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalLifecycleValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalLifecycleValuesDescriptor = $convert.base64Decode(
+    'ChpPcGVyYXRpb25hbExpZmVjeWNsZVZhbHVlcxIuChNkcmFpbl9kZWxheV9zZWNvbmRzGAEgAS'
+    'gDUhFkcmFpbkRlbGF5U2Vjb25kcxIuChNtYXhfcmVwbGljYXRpb25fbGFnGAIgASgEUhFtYXhS'
+    'ZXBsaWNhdGlvbkxhZxI4ChhzaHV0ZG93bl90aW1lb3V0X3NlY29uZHMYAyABKANSFnNodXRkb3'
+    'duVGltZW91dFNlY29uZHM=');
+
+@$core.Deprecated('Use operationalSearchValuesDescriptor instead')
+const OperationalSearchValues$json = {
+  '1': 'OperationalSearchValues',
+  '2': [
+    {'1': 'default_limit', '3': 1, '4': 1, '5': 3, '10': 'defaultLimit'},
+    {'1': 'max_limit', '3': 2, '4': 1, '5': 3, '10': 'maxLimit'},
+    {
+      '1': 'default_mode',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalSearchMode',
+      '10': 'defaultMode'
+    },
+    {
+      '1': 'default_min_should',
+      '3': 4,
+      '4': 1,
+      '5': 3,
+      '10': 'defaultMinShould'
+    },
+    {'1': 'timeout_ms', '3': 5, '4': 1, '5': 3, '10': 'timeoutMs'},
+    {'1': 'max_query_bytes', '3': 6, '4': 1, '5': 3, '10': 'maxQueryBytes'},
+    {'1': 'max_query_terms', '3': 7, '4': 1, '5': 3, '10': 'maxQueryTerms'},
+    {
+      '1': 'max_dictionary_visits',
+      '3': 8,
+      '4': 1,
+      '5': 3,
+      '10': 'maxDictionaryVisits'
+    },
+    {
+      '1': 'max_posting_visits',
+      '3': 9,
+      '4': 1,
+      '5': 3,
+      '10': 'maxPostingVisits'
+    },
+    {
+      '1': 'max_position_visits',
+      '3': 10,
+      '4': 1,
+      '5': 3,
+      '10': 'maxPositionVisits'
+    },
+    {
+      '1': 'max_expiration_visits',
+      '3': 11,
+      '4': 1,
+      '5': 3,
+      '10': 'maxExpirationVisits'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalSearchValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalSearchValuesDescriptor = $convert.base64Decode(
+    'ChdPcGVyYXRpb25hbFNlYXJjaFZhbHVlcxIjCg1kZWZhdWx0X2xpbWl0GAEgASgDUgxkZWZhdW'
+    'x0TGltaXQSGwoJbWF4X2xpbWl0GAIgASgDUghtYXhMaW1pdBJCCgxkZWZhdWx0X21vZGUYAyAB'
+    'KA4yHy5ncmFwaC52MS5PcGVyYXRpb25hbFNlYXJjaE1vZGVSC2RlZmF1bHRNb2RlEiwKEmRlZm'
+    'F1bHRfbWluX3Nob3VsZBgEIAEoA1IQZGVmYXVsdE1pblNob3VsZBIdCgp0aW1lb3V0X21zGAUg'
+    'ASgDUgl0aW1lb3V0TXMSJgoPbWF4X3F1ZXJ5X2J5dGVzGAYgASgDUg1tYXhRdWVyeUJ5dGVzEi'
+    'YKD21heF9xdWVyeV90ZXJtcxgHIAEoA1INbWF4UXVlcnlUZXJtcxIyChVtYXhfZGljdGlvbmFy'
+    'eV92aXNpdHMYCCABKANSE21heERpY3Rpb25hcnlWaXNpdHMSLAoSbWF4X3Bvc3RpbmdfdmlzaX'
+    'RzGAkgASgDUhBtYXhQb3N0aW5nVmlzaXRzEi4KE21heF9wb3NpdGlvbl92aXNpdHMYCiABKANS'
+    'EW1heFBvc2l0aW9uVmlzaXRzEjIKFW1heF9leHBpcmF0aW9uX3Zpc2l0cxgLIAEoA1ITbWF4RX'
+    'hwaXJhdGlvblZpc2l0cw==');
+
+@$core.Deprecated('Use operationalReplicationValuesDescriptor instead')
+const OperationalReplicationValues$json = {
+  '1': 'OperationalReplicationValues',
+  '2': [
+    {
+      '1': 'anti_entropy_gap_warn_threshold',
+      '3': 1,
+      '4': 1,
+      '5': 3,
+      '10': 'antiEntropyGapWarnThreshold'
+    },
+    {
+      '1': 'anti_entropy_interval_ms',
+      '3': 2,
+      '4': 1,
+      '5': 3,
+      '10': 'antiEntropyIntervalMs'
+    },
+    {
+      '1': 'anti_entropy_subscribe_timeout_ms',
+      '3': 3,
+      '4': 1,
+      '5': 3,
+      '10': 'antiEntropySubscribeTimeoutMs'
+    },
+    {
+      '1': 'pump_backoff_max_ms',
+      '3': 4,
+      '4': 1,
+      '5': 3,
+      '10': 'pumpBackoffMaxMs'
+    },
+    {
+      '1': 'pump_backoff_min_ms',
+      '3': 5,
+      '4': 1,
+      '5': 3,
+      '10': 'pumpBackoffMinMs'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalReplicationValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalReplicationValuesDescriptor = $convert.base64Decode(
+    'ChxPcGVyYXRpb25hbFJlcGxpY2F0aW9uVmFsdWVzEkQKH2FudGlfZW50cm9weV9nYXBfd2Fybl'
+    '90aHJlc2hvbGQYASABKANSG2FudGlFbnRyb3B5R2FwV2FyblRocmVzaG9sZBI3ChhhbnRpX2Vu'
+    'dHJvcHlfaW50ZXJ2YWxfbXMYAiABKANSFWFudGlFbnRyb3B5SW50ZXJ2YWxNcxJICiFhbnRpX2'
+    'VudHJvcHlfc3Vic2NyaWJlX3RpbWVvdXRfbXMYAyABKANSHWFudGlFbnRyb3B5U3Vic2NyaWJl'
+    'VGltZW91dE1zEi0KE3B1bXBfYmFja29mZl9tYXhfbXMYBCABKANSEHB1bXBCYWNrb2ZmTWF4TX'
+    'MSLQoTcHVtcF9iYWNrb2ZmX21pbl9tcxgFIAEoA1IQcHVtcEJhY2tvZmZNaW5Ncw==');
+
+@$core.Deprecated('Use operationalPolicyValuesDescriptor instead')
+const OperationalPolicyValues$json = {
+  '1': 'OperationalPolicyValues',
+  '2': [
+    {
+      '1': 'slow_rpc',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalSlowRPCValues',
+      '9': 0,
+      '10': 'slowRpc'
+    },
+    {
+      '1': 'rate',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalRateValues',
+      '9': 0,
+      '10': 'rate'
+    },
+    {
+      '1': 'request',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalRequestValues',
+      '9': 0,
+      '10': 'request'
+    },
+    {
+      '1': 'backup',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalBackupValues',
+      '9': 0,
+      '10': 'backup'
+    },
+    {
+      '1': 'capacity',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalCapacityValues',
+      '9': 0,
+      '10': 'capacity'
+    },
+    {
+      '1': 'lifecycle',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalLifecycleValues',
+      '9': 0,
+      '10': 'lifecycle'
+    },
+    {
+      '1': 'search',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalSearchValues',
+      '9': 0,
+      '10': 'search'
+    },
+    {
+      '1': 'replication',
+      '3': 8,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalReplicationValues',
+      '9': 0,
+      '10': 'replication'
+    },
+  ],
+  '8': [
+    {'1': 'group'},
+  ],
+};
+
+/// Descriptor for `OperationalPolicyValues`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalPolicyValuesDescriptor = $convert.base64Decode(
+    'ChdPcGVyYXRpb25hbFBvbGljeVZhbHVlcxI/CghzbG93X3JwYxgBIAEoCzIiLmdyYXBoLnYxLk'
+    '9wZXJhdGlvbmFsU2xvd1JQQ1ZhbHVlc0gAUgdzbG93UnBjEjUKBHJhdGUYAiABKAsyHy5ncmFw'
+    'aC52MS5PcGVyYXRpb25hbFJhdGVWYWx1ZXNIAFIEcmF0ZRI+CgdyZXF1ZXN0GAMgASgLMiIuZ3'
+    'JhcGgudjEuT3BlcmF0aW9uYWxSZXF1ZXN0VmFsdWVzSABSB3JlcXVlc3QSOwoGYmFja3VwGAQg'
+    'ASgLMiEuZ3JhcGgudjEuT3BlcmF0aW9uYWxCYWNrdXBWYWx1ZXNIAFIGYmFja3VwEkEKCGNhcG'
+    'FjaXR5GAUgASgLMiMuZ3JhcGgudjEuT3BlcmF0aW9uYWxDYXBhY2l0eVZhbHVlc0gAUghjYXBh'
+    'Y2l0eRJECglsaWZlY3ljbGUYBiABKAsyJC5ncmFwaC52MS5PcGVyYXRpb25hbExpZmVjeWNsZV'
+    'ZhbHVlc0gAUglsaWZlY3ljbGUSOwoGc2VhcmNoGAcgASgLMiEuZ3JhcGgudjEuT3BlcmF0aW9u'
+    'YWxTZWFyY2hWYWx1ZXNIAFIGc2VhcmNoEkoKC3JlcGxpY2F0aW9uGAggASgLMiYuZ3JhcGgudj'
+    'EuT3BlcmF0aW9uYWxSZXBsaWNhdGlvblZhbHVlc0gAUgtyZXBsaWNhdGlvbkIHCgVncm91cA==');
+
+@$core.Deprecated('Use operationalPolicyChangeDescriptor instead')
+const OperationalPolicyChange$json = {
+  '1': 'OperationalPolicyChange',
+  '2': [
+    {'1': 'version', '3': 1, '4': 1, '5': 13, '10': 'version'},
+    {
+      '1': 'expected_generation',
+      '3': 2,
+      '4': 1,
+      '5': 4,
+      '10': 'expectedGeneration'
+    },
+    {
+      '1': 'values',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalPolicyValues',
+      '10': 'values'
+    },
+    {
+      '1': 'compatibility_fingerprint',
+      '3': 4,
+      '4': 1,
+      '5': 9,
+      '10': 'compatibilityFingerprint'
+    },
+    {
+      '1': 'retention_reduction_acknowledged',
+      '3': 5,
+      '4': 1,
+      '5': 8,
+      '10': 'retentionReductionAcknowledged'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalPolicyChange`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalPolicyChangeDescriptor = $convert.base64Decode(
+    'ChdPcGVyYXRpb25hbFBvbGljeUNoYW5nZRIYCgd2ZXJzaW9uGAEgASgNUgd2ZXJzaW9uEi8KE2'
+    'V4cGVjdGVkX2dlbmVyYXRpb24YAiABKARSEmV4cGVjdGVkR2VuZXJhdGlvbhI5CgZ2YWx1ZXMY'
+    'AyABKAsyIS5ncmFwaC52MS5PcGVyYXRpb25hbFBvbGljeVZhbHVlc1IGdmFsdWVzEjsKGWNvbX'
+    'BhdGliaWxpdHlfZmluZ2VycHJpbnQYBCABKAlSGGNvbXBhdGliaWxpdHlGaW5nZXJwcmludBJI'
+    'CiByZXRlbnRpb25fcmVkdWN0aW9uX2Fja25vd2xlZGdlZBgFIAEoCFIecmV0ZW50aW9uUmVkdW'
+    'N0aW9uQWNrbm93bGVkZ2Vk');
+
+@$core.Deprecated('Use managedOperationalPolicyDescriptor instead')
+const ManagedOperationalPolicy$json = {
+  '1': 'ManagedOperationalPolicy',
+  '2': [
+    {'1': 'version', '3': 1, '4': 1, '5': 13, '10': 'version'},
+    {'1': 'generation', '3': 2, '4': 1, '5': 4, '10': 'generation'},
+    {
+      '1': 'values',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalPolicyValues',
+      '10': 'values'
+    },
+    {
+      '1': 'compatibility_fingerprint',
+      '3': 4,
+      '4': 1,
+      '5': 9,
+      '10': 'compatibilityFingerprint'
+    },
+  ],
+};
+
+/// Descriptor for `ManagedOperationalPolicy`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List managedOperationalPolicyDescriptor = $convert.base64Decode(
+    'ChhNYW5hZ2VkT3BlcmF0aW9uYWxQb2xpY3kSGAoHdmVyc2lvbhgBIAEoDVIHdmVyc2lvbhIeCg'
+    'pnZW5lcmF0aW9uGAIgASgEUgpnZW5lcmF0aW9uEjkKBnZhbHVlcxgDIAEoCzIhLmdyYXBoLnYx'
+    'Lk9wZXJhdGlvbmFsUG9saWN5VmFsdWVzUgZ2YWx1ZXMSOwoZY29tcGF0aWJpbGl0eV9maW5nZX'
+    'JwcmludBgEIAEoCVIYY29tcGF0aWJpbGl0eUZpbmdlcnByaW50');
+
+@$core.Deprecated('Use operationalSettingProvenanceDescriptor instead')
+const OperationalSettingProvenance$json = {
+  '1': 'OperationalSettingProvenance',
+  '2': [
+    {
+      '1': 'setting',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalSetting',
+      '10': 'setting'
+    },
+    {
+      '1': 'source',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalSettingsSource',
+      '10': 'source'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalSettingProvenance`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalSettingProvenanceDescriptor =
+    $convert.base64Decode(
+        'ChxPcGVyYXRpb25hbFNldHRpbmdQcm92ZW5hbmNlEjYKB3NldHRpbmcYASABKA4yHC5ncmFwaC'
+        '52MS5PcGVyYXRpb25hbFNldHRpbmdSB3NldHRpbmcSOwoGc291cmNlGAIgASgOMiMuZ3JhcGgu'
+        'djEuT3BlcmF0aW9uYWxTZXR0aW5nc1NvdXJjZVIGc291cmNl');
+
+@$core.Deprecated('Use operationalGroupSettingsDescriptor instead')
+const OperationalGroupSettings$json = {
+  '1': 'OperationalGroupSettings',
+  '2': [
+    {
+      '1': 'group',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalGroup',
+      '10': 'group'
+    },
+    {
+      '1': 'desired',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ManagedOperationalPolicy',
+      '10': 'desired'
+    },
+    {
+      '1': 'effective',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalPolicyValues',
+      '10': 'effective'
+    },
+    {
+      '1': 'provenance',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.OperationalSettingProvenance',
+      '10': 'provenance'
+    },
+    {
+      '1': 'applied_generation',
+      '3': 5,
+      '4': 1,
+      '5': 4,
+      '10': 'appliedGeneration'
+    },
+    {
+      '1': 'applied_cut',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSemanticCut',
+      '10': 'appliedCut'
+    },
+    {
+      '1': 'change_mode',
+      '3': 7,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalSettingsChangeMode',
+      '10': 'changeMode'
+    },
+    {
+      '1': 'adoption',
+      '3': 8,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.LogPolicyAdoptionState',
+      '10': 'adoption'
+    },
+    {
+      '1': 'application',
+      '3': 9,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalSettingsApplicationState',
+      '10': 'application'
+    },
+    {
+      '1': 'error',
+      '3': 10,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalSettingsError',
+      '10': 'error'
+    },
+    {'1': 'restart_required', '3': 11, '4': 1, '5': 8, '10': 'restartRequired'},
+    {
+      '1': 'preparation',
+      '3': 12,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.LogPolicyPreparationReference',
+      '10': 'preparation'
+    },
+    {
+      '1': 'effective_compatibility_fingerprint',
+      '3': 13,
+      '4': 1,
+      '5': 9,
+      '10': 'effectiveCompatibilityFingerprint'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalGroupSettings`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalGroupSettingsDescriptor = $convert.base64Decode(
+    'ChhPcGVyYXRpb25hbEdyb3VwU2V0dGluZ3MSMAoFZ3JvdXAYASABKA4yGi5ncmFwaC52MS5PcG'
+    'VyYXRpb25hbEdyb3VwUgVncm91cBI8CgdkZXNpcmVkGAIgASgLMiIuZ3JhcGgudjEuTWFuYWdl'
+    'ZE9wZXJhdGlvbmFsUG9saWN5UgdkZXNpcmVkEj8KCWVmZmVjdGl2ZRgDIAEoCzIhLmdyYXBoLn'
+    'YxLk9wZXJhdGlvbmFsUG9saWN5VmFsdWVzUgllZmZlY3RpdmUSRgoKcHJvdmVuYW5jZRgEIAMo'
+    'CzImLmdyYXBoLnYxLk9wZXJhdGlvbmFsU2V0dGluZ1Byb3ZlbmFuY2VSCnByb3ZlbmFuY2USLQ'
+    'oSYXBwbGllZF9nZW5lcmF0aW9uGAUgASgEUhFhcHBsaWVkR2VuZXJhdGlvbhI9CgthcHBsaWVk'
+    'X2N1dBgGIAEoCzIcLmdyYXBoLnYxLkN1cnJlbnRTZW1hbnRpY0N1dFIKYXBwbGllZEN1dBJICg'
+    'tjaGFuZ2VfbW9kZRgHIAEoDjInLmdyYXBoLnYxLk9wZXJhdGlvbmFsU2V0dGluZ3NDaGFuZ2VN'
+    'b2RlUgpjaGFuZ2VNb2RlEjwKCGFkb3B0aW9uGAggASgOMiAuZ3JhcGgudjEuTG9nUG9saWN5QW'
+    'RvcHRpb25TdGF0ZVIIYWRvcHRpb24STwoLYXBwbGljYXRpb24YCSABKA4yLS5ncmFwaC52MS5P'
+    'cGVyYXRpb25hbFNldHRpbmdzQXBwbGljYXRpb25TdGF0ZVILYXBwbGljYXRpb24SOAoFZXJyb3'
+    'IYCiABKA4yIi5ncmFwaC52MS5PcGVyYXRpb25hbFNldHRpbmdzRXJyb3JSBWVycm9yEikKEHJl'
+    'c3RhcnRfcmVxdWlyZWQYCyABKAhSD3Jlc3RhcnRSZXF1aXJlZBJJCgtwcmVwYXJhdGlvbhgMIA'
+    'EoCzInLmdyYXBoLnYxLkxvZ1BvbGljeVByZXBhcmF0aW9uUmVmZXJlbmNlUgtwcmVwYXJhdGlv'
+    'bhJOCiNlZmZlY3RpdmVfY29tcGF0aWJpbGl0eV9maW5nZXJwcmludBgNIAEoCVIhZWZmZWN0aX'
+    'ZlQ29tcGF0aWJpbGl0eUZpbmdlcnByaW50');
+
+@$core.Deprecated('Use getOperationalSettingsRequestDescriptor instead')
+const GetOperationalSettingsRequest$json = {
+  '1': 'GetOperationalSettingsRequest',
+};
+
+/// Descriptor for `GetOperationalSettingsRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getOperationalSettingsRequestDescriptor =
+    $convert.base64Decode('Ch1HZXRPcGVyYXRpb25hbFNldHRpbmdzUmVxdWVzdA==');
+
+@$core.Deprecated('Use getOperationalSettingsResponseDescriptor instead')
+const GetOperationalSettingsResponse$json = {
+  '1': 'GetOperationalSettingsResponse',
+  '2': [
+    {'1': 'schema_version', '3': 1, '4': 1, '5': 13, '10': 'schemaVersion'},
+    {'1': 'member', '3': 2, '4': 1, '5': 13, '10': 'member'},
+    {
+      '1': 'groups',
+      '3': 3,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.OperationalGroupSettings',
+      '10': 'groups'
+    },
+    {
+      '1': 'version',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'version'
+    },
+  ],
+};
+
+/// Descriptor for `GetOperationalSettingsResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getOperationalSettingsResponseDescriptor =
+    $convert.base64Decode(
+        'Ch5HZXRPcGVyYXRpb25hbFNldHRpbmdzUmVzcG9uc2USJQoOc2NoZW1hX3ZlcnNpb24YASABKA'
+        '1SDXNjaGVtYVZlcnNpb24SFgoGbWVtYmVyGAIgASgNUgZtZW1iZXISOgoGZ3JvdXBzGAMgAygL'
+        'MiIuZ3JhcGgudjEuT3BlcmF0aW9uYWxHcm91cFNldHRpbmdzUgZncm91cHMSMwoHdmVyc2lvbh'
+        'gEIAEoCzIZLmdyYXBoLnYxLlNlY3VyaXR5VmVyc2lvblIHdmVyc2lvbg==');
+
+@$core.Deprecated('Use operationalBackupRetentionPreviewDescriptor instead')
+const OperationalBackupRetentionPreview$json = {
+  '1': 'OperationalBackupRetentionPreview',
+  '2': [
+    {'1': 'valid_backups', '3': 1, '4': 1, '5': 4, '10': 'validBackups'},
+    {'1': 'valid_bytes', '3': 2, '4': 1, '5': 4, '10': 'validBytes'},
+    {'1': 'prune_backups', '3': 3, '4': 1, '5': 4, '10': 'pruneBackups'},
+    {'1': 'prune_bytes', '3': 4, '4': 1, '5': 4, '10': 'pruneBytes'},
+    {'1': 'complete', '3': 5, '4': 1, '5': 8, '10': 'complete'},
+    {'1': 'fingerprint', '3': 6, '4': 1, '5': 9, '10': 'fingerprint'},
+  ],
+};
+
+/// Descriptor for `OperationalBackupRetentionPreview`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalBackupRetentionPreviewDescriptor = $convert.base64Decode(
+    'CiFPcGVyYXRpb25hbEJhY2t1cFJldGVudGlvblByZXZpZXcSIwoNdmFsaWRfYmFja3VwcxgBIA'
+    'EoBFIMdmFsaWRCYWNrdXBzEh8KC3ZhbGlkX2J5dGVzGAIgASgEUgp2YWxpZEJ5dGVzEiMKDXBy'
+    'dW5lX2JhY2t1cHMYAyABKARSDHBydW5lQmFja3VwcxIfCgtwcnVuZV9ieXRlcxgEIAEoBFIKcH'
+    'J1bmVCeXRlcxIaCghjb21wbGV0ZRgFIAEoCFIIY29tcGxldGUSIAoLZmluZ2VycHJpbnQYBiAB'
+    'KAlSC2ZpbmdlcnByaW50');
+
+@$core.Deprecated('Use previewOperationalPolicyRequestDescriptor instead')
+const PreviewOperationalPolicyRequest$json = {
+  '1': 'PreviewOperationalPolicyRequest',
+  '2': [
+    {
+      '1': 'values',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalPolicyValues',
+      '10': 'values'
+    },
+  ],
+};
+
+/// Descriptor for `PreviewOperationalPolicyRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List previewOperationalPolicyRequestDescriptor =
+    $convert.base64Decode(
+        'Ch9QcmV2aWV3T3BlcmF0aW9uYWxQb2xpY3lSZXF1ZXN0EjkKBnZhbHVlcxgBIAEoCzIhLmdyYX'
+        'BoLnYxLk9wZXJhdGlvbmFsUG9saWN5VmFsdWVzUgZ2YWx1ZXM=');
+
+@$core.Deprecated('Use previewOperationalPolicyResponseDescriptor instead')
+const PreviewOperationalPolicyResponse$json = {
+  '1': 'PreviewOperationalPolicyResponse',
+  '2': [
+    {'1': 'schema_version', '3': 1, '4': 1, '5': 13, '10': 'schemaVersion'},
+    {
+      '1': 'group',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.OperationalGroup',
+      '10': 'group'
+    },
+    {
+      '1': 'compatibility_fingerprint',
+      '3': 3,
+      '4': 1,
+      '5': 9,
+      '10': 'compatibilityFingerprint'
+    },
+    {
+      '1': 'version',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'version'
+    },
+    {
+      '1': 'backup_retention',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalBackupRetentionPreview',
+      '10': 'backupRetention'
+    },
+  ],
+};
+
+/// Descriptor for `PreviewOperationalPolicyResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List previewOperationalPolicyResponseDescriptor = $convert.base64Decode(
+    'CiBQcmV2aWV3T3BlcmF0aW9uYWxQb2xpY3lSZXNwb25zZRIlCg5zY2hlbWFfdmVyc2lvbhgBIA'
+    'EoDVINc2NoZW1hVmVyc2lvbhIwCgVncm91cBgCIAEoDjIaLmdyYXBoLnYxLk9wZXJhdGlvbmFs'
+    'R3JvdXBSBWdyb3VwEjsKGWNvbXBhdGliaWxpdHlfZmluZ2VycHJpbnQYAyABKAlSGGNvbXBhdG'
+    'liaWxpdHlGaW5nZXJwcmludBIzCgd2ZXJzaW9uGAQgASgLMhkuZ3JhcGgudjEuU2VjdXJpdHlW'
+    'ZXJzaW9uUgd2ZXJzaW9uElYKEGJhY2t1cF9yZXRlbnRpb24YBSABKAsyKy5ncmFwaC52MS5PcG'
+    'VyYXRpb25hbEJhY2t1cFJldGVudGlvblByZXZpZXdSD2JhY2t1cFJldGVudGlvbg==');
+
 @$core.Deprecated('Use securityChangeDescriptor instead')
 const SecurityChange$json = {
   '1': 'SecurityChange',
@@ -2062,6 +3070,15 @@ const SecurityChange$json = {
       '9': 0,
       '10': 'putLogPolicy'
     },
+    {
+      '1': 'put_operational_policy',
+      '3': 13,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalPolicyChange',
+      '9': 0,
+      '10': 'putOperationalPolicy'
+    },
   ],
   '8': [
     {'1': 'operation'},
@@ -2083,8 +3100,9 @@ final $typed_data.Uint8List securityChangeDescriptor = $convert.base64Decode(
     'CzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHlIAFIScmV2b2tlVXNlclNlc3Npb25zEl4KF3'
     'B1dF9yZWdpc3RyYXRpb25fcG9saWN5GAsgASgLMiQuZ3JhcGgudjEuU2VjdXJpdHlSZWdpc3Ry'
     'YXRpb25Qb2xpY3lIAFIVcHV0UmVnaXN0cmF0aW9uUG9saWN5EkIKDnB1dF9sb2dfcG9saWN5GA'
-    'wgASgLMhouZ3JhcGgudjEuTWFuYWdlZExvZ1BvbGljeUgAUgxwdXRMb2dQb2xpY3lCCwoJb3Bl'
-    'cmF0aW9u');
+    'wgASgLMhouZ3JhcGgudjEuTWFuYWdlZExvZ1BvbGljeUgAUgxwdXRMb2dQb2xpY3kSWQoWcHV0'
+    'X29wZXJhdGlvbmFsX3BvbGljeRgNIAEoCzIhLmdyYXBoLnYxLk9wZXJhdGlvbmFsUG9saWN5Q2'
+    'hhbmdlSABSFHB1dE9wZXJhdGlvbmFsUG9saWN5QgsKCW9wZXJhdGlvbg==');
 
 @$core.Deprecated('Use applySecurityChangesRequestDescriptor instead')
 const ApplySecurityChangesRequest$json = {
@@ -3073,6 +4091,16 @@ const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
       '3': '.graph.v1.GetLogSettingsResponse'
     },
     {
+      '1': 'GetOperationalSettings',
+      '2': '.graph.v1.GetOperationalSettingsRequest',
+      '3': '.graph.v1.GetOperationalSettingsResponse'
+    },
+    {
+      '1': 'PreviewOperationalPolicy',
+      '2': '.graph.v1.PreviewOperationalPolicyRequest',
+      '3': '.graph.v1.PreviewOperationalPolicyResponse'
+    },
+    {
       '1': 'ListRoleAssignments',
       '2': '.graph.v1.ListRoleAssignmentsRequest',
       '3': '.graph.v1.ListRoleAssignmentsResponse'
@@ -3172,6 +4200,27 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.ManagedLogPolicy': ManagedLogPolicy$json,
   '.graph.v1.LogPolicyPreparationReference': LogPolicyPreparationReference$json,
   '.graph.v1.CurrentSecurityChangeID': CurrentSecurityChangeID$json,
+  '.graph.v1.GetOperationalSettingsRequest': GetOperationalSettingsRequest$json,
+  '.graph.v1.GetOperationalSettingsResponse':
+      GetOperationalSettingsResponse$json,
+  '.graph.v1.OperationalGroupSettings': OperationalGroupSettings$json,
+  '.graph.v1.ManagedOperationalPolicy': ManagedOperationalPolicy$json,
+  '.graph.v1.OperationalPolicyValues': OperationalPolicyValues$json,
+  '.graph.v1.OperationalSlowRPCValues': OperationalSlowRPCValues$json,
+  '.graph.v1.OperationalRateValues': OperationalRateValues$json,
+  '.graph.v1.OperationalRequestValues': OperationalRequestValues$json,
+  '.graph.v1.OperationalBackupValues': OperationalBackupValues$json,
+  '.graph.v1.OperationalCapacityValues': OperationalCapacityValues$json,
+  '.graph.v1.OperationalLifecycleValues': OperationalLifecycleValues$json,
+  '.graph.v1.OperationalSearchValues': OperationalSearchValues$json,
+  '.graph.v1.OperationalReplicationValues': OperationalReplicationValues$json,
+  '.graph.v1.OperationalSettingProvenance': OperationalSettingProvenance$json,
+  '.graph.v1.PreviewOperationalPolicyRequest':
+      PreviewOperationalPolicyRequest$json,
+  '.graph.v1.PreviewOperationalPolicyResponse':
+      PreviewOperationalPolicyResponse$json,
+  '.graph.v1.OperationalBackupRetentionPreview':
+      OperationalBackupRetentionPreview$json,
   '.graph.v1.ListRoleAssignmentsRequest': ListRoleAssignmentsRequest$json,
   '.graph.v1.ListRoleAssignmentsResponse': ListRoleAssignmentsResponse$json,
   '.graph.v1.ListSecurityAuditRequest': ListSecurityAuditRequest$json,
@@ -3195,6 +4244,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SecurityChangeReview': SecurityChangeReview$json,
   '.graph.v1.SecurityChange': SecurityChange$json,
   '.graph.v1.SecurityUserStateChange': SecurityUserStateChange$json,
+  '.graph.v1.OperationalPolicyChange': OperationalPolicyChange$json,
   '.graph.v1.CurrentSecurityReview': CurrentSecurityReview$json,
   '.graph.v1.PrepareSecurityChangesResponse':
       PrepareSecurityChangesResponse$json,
@@ -3232,25 +4282,29 @@ final $typed_data.Uint8List lanternSecurityServiceDescriptor = $convert.base64De
     'QaGS5ncmFwaC52MS5HZXRVc2VyUmVzcG9uc2USaAoVR2V0UmVnaXN0cmF0aW9uUG9saWN5EiYu'
     'Z3JhcGgudjEuR2V0UmVnaXN0cmF0aW9uUG9saWN5UmVxdWVzdBonLmdyYXBoLnYxLkdldFJlZ2'
     'lzdHJhdGlvblBvbGljeVJlc3BvbnNlElMKDkdldExvZ1NldHRpbmdzEh8uZ3JhcGgudjEuR2V0'
-    'TG9nU2V0dGluZ3NSZXF1ZXN0GiAuZ3JhcGgudjEuR2V0TG9nU2V0dGluZ3NSZXNwb25zZRJiCh'
-    'NMaXN0Um9sZUFzc2lnbm1lbnRzEiQuZ3JhcGgudjEuTGlzdFJvbGVBc3NpZ25tZW50c1JlcXVl'
-    'c3QaJS5ncmFwaC52MS5MaXN0Um9sZUFzc2lnbm1lbnRzUmVzcG9uc2USXAoRTGlzdFNlY3VyaX'
-    'R5QXVkaXQSIi5ncmFwaC52MS5MaXN0U2VjdXJpdHlBdWRpdFJlcXVlc3QaIy5ncmFwaC52MS5M'
-    'aXN0U2VjdXJpdHlBdWRpdFJlc3BvbnNlElkKEEdldFJvbGVUZW1wbGF0ZXMSIS5ncmFwaC52MS'
-    '5HZXRSb2xlVGVtcGxhdGVzUmVxdWVzdBoiLmdyYXBoLnYxLkdldFJvbGVUZW1wbGF0ZXNSZXNw'
-    'b25zZRJQCg1FeHBsYWluQWNjZXNzEh4uZ3JhcGgudjEuRXhwbGFpbkFjY2Vzc1JlcXVlc3QaHy'
-    '5ncmFwaC52MS5FeHBsYWluQWNjZXNzUmVzcG9uc2USUwoOVmFsaWRhdGVJc3N1ZXISHy5ncmFw'
-    'aC52MS5WYWxpZGF0ZUlzc3VlclJlcXVlc3QaIC5ncmFwaC52MS5WYWxpZGF0ZUlzc3VlclJlc3'
-    'BvbnNlEmsKFlByZXBhcmVTZWN1cml0eUNoYW5nZXMSJy5ncmFwaC52MS5QcmVwYXJlU2VjdXJp'
-    'dHlDaGFuZ2VzUmVxdWVzdBooLmdyYXBoLnYxLlByZXBhcmVTZWN1cml0eUNoYW5nZXNSZXNwb2'
-    '5zZRKJAQogQmVnaW5TZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb24SMS5ncmFwaC52MS5CZWdp'
-    'blNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlcXVlc3QaMi5ncmFwaC52MS5CZWdpblNlY3'
-    'VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlc3BvbnNlEoMBCh5HZXRTZWN1cml0eUNoYW5nZUF1'
-    'dGhvcml6YXRpb24SLy5ncmFwaC52MS5HZXRTZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25SZX'
-    'F1ZXN0GjAuZ3JhcGgudjEuR2V0U2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVzcG9uc2US'
-    'ZQoUQXBwbHlTZWN1cml0eUNoYW5nZXMSJS5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hhbmdlc1'
-    'JlcXVlc3QaJi5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hhbmdlc1Jlc3BvbnNlEmIKE0FwcGx5'
-    'U2VjdXJpdHlDaGFuZ2USJC5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hhbmdlUmVxdWVzdBolLm'
-    'dyYXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VSZXNwb25zZRJuChdHZXRTZWN1cml0eUNoYW5n'
-    'ZVN0YXR1cxIoLmdyYXBoLnYxLkdldFNlY3VyaXR5Q2hhbmdlU3RhdHVzUmVxdWVzdBopLmdyYX'
-    'BoLnYxLkdldFNlY3VyaXR5Q2hhbmdlU3RhdHVzUmVzcG9uc2U=');
+    'TG9nU2V0dGluZ3NSZXF1ZXN0GiAuZ3JhcGgudjEuR2V0TG9nU2V0dGluZ3NSZXNwb25zZRJrCh'
+    'ZHZXRPcGVyYXRpb25hbFNldHRpbmdzEicuZ3JhcGgudjEuR2V0T3BlcmF0aW9uYWxTZXR0aW5n'
+    'c1JlcXVlc3QaKC5ncmFwaC52MS5HZXRPcGVyYXRpb25hbFNldHRpbmdzUmVzcG9uc2UScQoYUH'
+    'Jldmlld09wZXJhdGlvbmFsUG9saWN5EikuZ3JhcGgudjEuUHJldmlld09wZXJhdGlvbmFsUG9s'
+    'aWN5UmVxdWVzdBoqLmdyYXBoLnYxLlByZXZpZXdPcGVyYXRpb25hbFBvbGljeVJlc3BvbnNlEm'
+    'IKE0xpc3RSb2xlQXNzaWdubWVudHMSJC5ncmFwaC52MS5MaXN0Um9sZUFzc2lnbm1lbnRzUmVx'
+    'dWVzdBolLmdyYXBoLnYxLkxpc3RSb2xlQXNzaWdubWVudHNSZXNwb25zZRJcChFMaXN0U2VjdX'
+    'JpdHlBdWRpdBIiLmdyYXBoLnYxLkxpc3RTZWN1cml0eUF1ZGl0UmVxdWVzdBojLmdyYXBoLnYx'
+    'Lkxpc3RTZWN1cml0eUF1ZGl0UmVzcG9uc2USWQoQR2V0Um9sZVRlbXBsYXRlcxIhLmdyYXBoLn'
+    'YxLkdldFJvbGVUZW1wbGF0ZXNSZXF1ZXN0GiIuZ3JhcGgudjEuR2V0Um9sZVRlbXBsYXRlc1Jl'
+    'c3BvbnNlElAKDUV4cGxhaW5BY2Nlc3MSHi5ncmFwaC52MS5FeHBsYWluQWNjZXNzUmVxdWVzdB'
+    'ofLmdyYXBoLnYxLkV4cGxhaW5BY2Nlc3NSZXNwb25zZRJTCg5WYWxpZGF0ZUlzc3VlchIfLmdy'
+    'YXBoLnYxLlZhbGlkYXRlSXNzdWVyUmVxdWVzdBogLmdyYXBoLnYxLlZhbGlkYXRlSXNzdWVyUm'
+    'VzcG9uc2USawoWUHJlcGFyZVNlY3VyaXR5Q2hhbmdlcxInLmdyYXBoLnYxLlByZXBhcmVTZWN1'
+    'cml0eUNoYW5nZXNSZXF1ZXN0GiguZ3JhcGgudjEuUHJlcGFyZVNlY3VyaXR5Q2hhbmdlc1Jlc3'
+    'BvbnNlEokBCiBCZWdpblNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvbhIxLmdyYXBoLnYxLkJl'
+    'Z2luU2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVxdWVzdBoyLmdyYXBoLnYxLkJlZ2luU2'
+    'VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVzcG9uc2USgwEKHkdldFNlY3VyaXR5Q2hhbmdl'
+    'QXV0aG9yaXphdGlvbhIvLmdyYXBoLnYxLkdldFNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvbl'
+    'JlcXVlc3QaMC5ncmFwaC52MS5HZXRTZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25SZXNwb25z'
+    'ZRJlChRBcHBseVNlY3VyaXR5Q2hhbmdlcxIlLmdyYXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2'
+    'VzUmVxdWVzdBomLmdyYXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VzUmVzcG9uc2USYgoTQXBw'
+    'bHlTZWN1cml0eUNoYW5nZRIkLmdyYXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VSZXF1ZXN0Gi'
+    'UuZ3JhcGgudjEuQXBwbHlTZWN1cml0eUNoYW5nZVJlc3BvbnNlEm4KF0dldFNlY3VyaXR5Q2hh'
+    'bmdlU3RhdHVzEiguZ3JhcGgudjEuR2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXNSZXF1ZXN0GikuZ3'
+    'JhcGgudjEuR2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXNSZXNwb25zZQ==');

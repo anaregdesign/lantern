@@ -310,3 +310,48 @@ rules and preserve failed verdicts. No threshold weakening, control bypass,
 unrelated performance campaign, release or deployment is part of this initiative.
 Track merged source/CI, final exact-source acceptance, publication and human/device
 evidence separately on the Epic.
+
+### Operational API and Admin extension (#2008)
+
+`GetOperationalSettings` returns the eight closed groups in stable order, with
+verified desired policy, actual connected-node effective values, per-field
+provenance, desired/applied generations, historical applied cut, current security
+version, reader-floor preparation reference, application/error state and change
+mode. Invalid bootstrap values (including non-finite Rate input) have no effective
+payload either, but retain the actual installed mode and bounded captured field
+provenance with an explicit error. Admin offers an empty valid-candidate form
+for explicit repair; it never substitutes or serializes a fabricated effective
+value. An unavailable owner has no effective payload. It does not become
+unadopted, and its committed desired policy remains visible. Startup sources can
+be mixed or derived within an atomic group; presence of an environment key alone
+is not source evidence. An Apply callback returning nil does not prove application.
+
+Search reports both actual and desired compatibility fingerprints as derived
+metadata. Its read-only `PreviewOperationalPolicy` resolves the fingerprint
+before the existing authoritative review seals the exact command. Every enrolled
+participant independently rechecks it on every Search update. A committed Search
+policy can remain pending until the supported coordinated restart has installed
+it; the API does not promise that a mixed-fingerprint rolling restart is safe.
+
+The same read-only preview can return bounded backup counts and bytes for the
+**connected node only**. Its informational fingerprint identifies that sampled
+catalog; it does not freeze a future deletion catalog or predict all-node
+removals. Admin requires a complete preview and explicit acknowledgement for
+first finite retention adoption, keep-all to finite retention, or a reduction.
+The acknowledgement confirms the retention policy consequence and is sealed with
+the exact expected policy generation and new group values in the existing H. It
+is not a data-snapshot deletion proof. Dataset changes before future successful
+backup production are expected. Review and Apply do not delete backups; only
+future successful production can perform separately validated bounded retention.
+Keep-all (`retain = 0`) adoption remains available when optional preview cannot
+complete. Public errors never contain provider paths or catalog names.
+
+Admin keeps one operational current-change lane shared by all eight groups,
+beside the existing log and urgent security lanes in one recovery store. Every
+operational review contains exactly one typed group command. Both policy lanes
+reserve the same single base security row for that actor/deployment; they do not
+double-reserve it. The global 20-record/1 MiB limits and preserved original
+identity, idempotency, CAS, role, end-user, CSRF and output-guard rules remain.
+Current settings reads never settle an uncertain original. Reload requires a
+fresh status of that exact retained original before another operational change.
+The operational lane cannot consume the urgent security reserve.

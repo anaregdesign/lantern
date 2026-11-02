@@ -181,6 +181,42 @@ extension type LanternSecurityServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// Verified desired state and actual application of the eight closed groups.
+  Future<graphv1security.GetOperationalSettingsResponse> getOperationalSettings(
+    graphv1security.GetOperationalSettingsRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.getOperationalSettings,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  /// Read-only dependency resolution before the existing authoritative review.
+  Future<graphv1security.PreviewOperationalPolicyResponse> previewOperationalPolicy(
+    graphv1security.PreviewOperationalPolicyRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.previewOperationalPolicy,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   Future<graphv1security.ListRoleAssignmentsResponse> listRoleAssignments(
     graphv1security.ListRoleAssignmentsRequest input, {
     connect.Headers? headers,

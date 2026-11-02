@@ -18,6 +18,10 @@ service LanternSecurityService {
   rpc GetRegistrationPolicy(GetRegistrationPolicyRequest) returns (GetRegistrationPolicyResponse);
   // Contacted-node application state; a committed policy is not all-node application.
   rpc GetLogSettings(GetLogSettingsRequest) returns (GetLogSettingsResponse);
+  // Verified desired state and actual application of the eight closed groups.
+  rpc GetOperationalSettings(GetOperationalSettingsRequest) returns (GetOperationalSettingsResponse);
+  // Read-only dependency resolution before the existing authoritative review.
+  rpc PreviewOperationalPolicy(PreviewOperationalPolicyRequest) returns (PreviewOperationalPolicyResponse);
   rpc ListRoleAssignments(ListRoleAssignmentsRequest) returns (ListRoleAssignmentsResponse);
   rpc ListSecurityAudit(ListSecurityAuditRequest) returns (ListSecurityAuditResponse);
   rpc GetRoleTemplates(GetRoleTemplatesRequest) returns (GetRoleTemplatesResponse);
@@ -461,6 +465,240 @@ message GetLogSettingsResponse {
   // Required for fenced-but-unadopted state; may remain after adoption.
   LogPolicyPreparationReference preparation = 14;
 }
+// Closed business values only. No arbitrary configuration keys or secret values.
+enum OperationalGroup {
+  OPERATIONAL_GROUP_UNSPECIFIED = 0;
+  OPERATIONAL_GROUP_SLOW_RPC = 1;
+  OPERATIONAL_GROUP_RATE = 2;
+  OPERATIONAL_GROUP_REQUEST = 3;
+  OPERATIONAL_GROUP_BACKUP = 4;
+  OPERATIONAL_GROUP_CAPACITY = 5;
+  OPERATIONAL_GROUP_LIFECYCLE = 6;
+  OPERATIONAL_GROUP_SEARCH = 7;
+  OPERATIONAL_GROUP_REPLICATION = 8;
+}
+enum OperationalSearchMode {
+  OPERATIONAL_SEARCH_MODE_UNSPECIFIED = 0;
+  OPERATIONAL_SEARCH_MODE_ANY = 1;
+  OPERATIONAL_SEARCH_MODE_ALL = 2;
+  OPERATIONAL_SEARCH_MODE_MIN_SHOULD = 3;
+}
+message OperationalSlowRPCValues {
+  int64 threshold_ms = 1;
+}
+message OperationalRateValues {
+  double rps = 1;
+  int64 burst = 2;
+}
+message OperationalRequestValues {
+  int64 delete_by_prefix_default_limit = 1;
+  int64 delete_by_prefix_max_limit = 2;
+  int64 illuminate_max_k = 3;
+  int64 illuminate_max_step = 4;
+  int64 max_batch_size = 5;
+  int64 max_key_len = 6;
+  int64 scan_default_limit = 7;
+  int64 scan_max_limit = 8;
+  int64 traversal_max_pushes = 9;
+  int64 traversal_max_results = 10;
+  int64 traversal_max_touched_edges = 11;
+  int64 traversal_timeout_ms = 12;
+}
+message OperationalBackupValues {
+  bool enabled = 1;
+  int64 interval_nanos = 2;
+  int64 retain = 3;
+}
+message OperationalCapacityValues {
+  int64 gc_edge_budget = 1;
+  int64 gc_interval_seconds = 2;
+  int64 max_edges = 3;
+  int64 max_edge_causal_entries = 4;
+  int64 max_vertex_causal_entries = 5;
+  int64 max_vertices = 6;
+}
+message OperationalLifecycleValues {
+  int64 drain_delay_seconds = 1;
+  uint64 max_replication_lag = 2;
+  int64 shutdown_timeout_seconds = 3;
+}
+message OperationalSearchValues {
+  int64 default_limit = 1;
+  int64 max_limit = 2;
+  OperationalSearchMode default_mode = 3;
+  int64 default_min_should = 4;
+  int64 timeout_ms = 5;
+  int64 max_query_bytes = 6;
+  int64 max_query_terms = 7;
+  int64 max_dictionary_visits = 8;
+  int64 max_posting_visits = 9;
+  int64 max_position_visits = 10;
+  int64 max_expiration_visits = 11;
+}
+message OperationalReplicationValues {
+  int64 anti_entropy_gap_warn_threshold = 1;
+  int64 anti_entropy_interval_ms = 2;
+  int64 anti_entropy_subscribe_timeout_ms = 3;
+  int64 pump_backoff_max_ms = 4;
+  int64 pump_backoff_min_ms = 5;
+}
+message OperationalPolicyValues {
+  oneof group {
+    OperationalSlowRPCValues slow_rpc = 1;
+    OperationalRateValues rate = 2;
+    OperationalRequestValues request = 3;
+    OperationalBackupValues backup = 4;
+    OperationalCapacityValues capacity = 5;
+    OperationalLifecycleValues lifecycle = 6;
+    OperationalSearchValues search = 7;
+    OperationalReplicationValues replication = 8;
+  }
+}
+// The authority allocates generation; zero expected_generation means adoption.
+message OperationalPolicyChange {
+  uint32 version = 1;
+  uint64 expected_generation = 2;
+  OperationalPolicyValues values = 3;
+  // Search engine compatibility metadata, resolved by Preview, never editable.
+  string compatibility_fingerprint = 4;
+  // Explicit acknowledgement, sealed in the exact immutable reviewed intent.
+  bool retention_reduction_acknowledged = 5;
+}
+message ManagedOperationalPolicy {
+  uint32 version = 1;
+  uint64 generation = 2;
+  OperationalPolicyValues values = 3;
+  string compatibility_fingerprint = 4;
+}
+// Field identity is closed and carries provenance only, never arbitrary values.
+enum OperationalSetting {
+  OPERATIONAL_SETTING_UNSPECIFIED = 0;
+  OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS = 1;
+  OPERATIONAL_SETTING_RATE_RPS = 2;
+  OPERATIONAL_SETTING_RATE_BURST = 3;
+  OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT = 4;
+  OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT = 5;
+  OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K = 6;
+  OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP = 7;
+  OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE = 8;
+  OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN = 9;
+  OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT = 10;
+  OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT = 11;
+  OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES = 12;
+  OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS = 13;
+  OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES = 14;
+  OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS = 15;
+  OPERATIONAL_SETTING_BACKUP_ENABLED = 16;
+  OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS = 17;
+  OPERATIONAL_SETTING_BACKUP_RETAIN = 18;
+  OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET = 19;
+  OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS = 20;
+  OPERATIONAL_SETTING_CAPACITY_MAX_EDGES = 21;
+  OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES = 22;
+  OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES = 23;
+  OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES = 24;
+  OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS = 25;
+  OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG = 26;
+  OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS = 27;
+  OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT = 28;
+  OPERATIONAL_SETTING_SEARCH_MAX_LIMIT = 29;
+  OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE = 30;
+  OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD = 31;
+  OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS = 32;
+  OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES = 33;
+  OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS = 34;
+  OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS = 35;
+  OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS = 36;
+  OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS = 37;
+  OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS = 38;
+  OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD = 39;
+  OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS = 40;
+  OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS = 41;
+  OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS = 42;
+  OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS = 43;
+}
+enum OperationalSettingsSource {
+  OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED = 0;
+  OPERATIONAL_SETTINGS_SOURCE_DEFAULT = 1;
+  OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT = 2;
+  OPERATIONAL_SETTINGS_SOURCE_DERIVED = 3;
+  OPERATIONAL_SETTINGS_SOURCE_MANAGED = 4;
+}
+enum OperationalSettingsChangeMode {
+  OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED = 0;
+  OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE = 1;
+  OPERATIONAL_SETTINGS_CHANGE_MODE_HOT = 2;
+  OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART = 3;
+  OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART = 4;
+  OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART = 5;
+}
+enum OperationalSettingsApplicationState {
+  OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED = 0;
+  OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE = 1;
+  OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED = 2;
+  OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING = 3;
+  OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR = 4;
+}
+enum OperationalSettingsError {
+  OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED = 0;
+  OPERATIONAL_SETTINGS_ERROR_NONE = 1;
+  OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY = 2;
+  OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE = 3;
+  OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED = 4;
+  OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE = 5;
+  OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH = 6;
+}
+message OperationalSettingProvenance {
+  OperationalSetting setting = 1;
+  OperationalSettingsSource source = 2;
+}
+message OperationalGroupSettings {
+  OperationalGroup group = 1;
+  ManagedOperationalPolicy desired = 2;
+  // Absent for an unavailable owner or explicitly invalid bootstrap values.
+  // Invalid bootstrap keeps installed change mode and provenance, with ERROR.
+  OperationalPolicyValues effective = 3;
+  repeated OperationalSettingProvenance provenance = 4;
+  uint64 applied_generation = 5;
+  CurrentSemanticCut applied_cut = 6;
+  OperationalSettingsChangeMode change_mode = 7;
+  LogPolicyAdoptionState adoption = 8;
+  OperationalSettingsApplicationState application = 9;
+  OperationalSettingsError error = 10;
+  bool restart_required = 11;
+  LogPolicyPreparationReference preparation = 12;
+  // Actual local Search engine fingerprint, including the excluded baseline.
+  string effective_compatibility_fingerprint = 13;
+}
+message GetOperationalSettingsRequest {}
+message GetOperationalSettingsResponse {
+  uint32 schema_version = 1;
+  uint32 member = 2;
+  // Exactly eight groups in the stable OperationalGroup ordering.
+  repeated OperationalGroupSettings groups = 3;
+  SecurityVersion version = 4;
+}
+// Connected-node sample only; this does not predict cluster-wide deletions or
+// freeze the catalog for future scheduled backup production.
+message OperationalBackupRetentionPreview {
+  uint64 valid_backups = 1;
+  uint64 valid_bytes = 2;
+  uint64 prune_backups = 3;
+  uint64 prune_bytes = 4;
+  bool complete = 5;
+  string fingerprint = 6;
+}
+message PreviewOperationalPolicyRequest {
+  OperationalPolicyValues values = 1;
+}
+message PreviewOperationalPolicyResponse {
+  uint32 schema_version = 1;
+  OperationalGroup group = 2;
+  string compatibility_fingerprint = 3;
+  SecurityVersion version = 4;
+  OperationalBackupRetentionPreview backup_retention = 5;
+}
+
 message SecurityChange {
   oneof operation {
     SecurityIssuer put_issuer = 1;
@@ -475,6 +713,7 @@ message SecurityChange {
     SecurityIdentity revoke_user_sessions = 10;
     SecurityRegistrationPolicy put_registration_policy = 11;
     ManagedLogPolicy put_log_policy = 12;
+    OperationalPolicyChange put_operational_policy = 13;
   }
 }
 enum SecurityEnforcementState {

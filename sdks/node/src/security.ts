@@ -1,3 +1,4 @@
+import { validateOperationalSettings, validateOperationalPreview } from "./security-operational.js";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { currentUserId, validateLogSettings } from "./security-types.js";
 import {
@@ -31,6 +32,8 @@ import {
   GetCurrentPrincipalRequestSchema,
   GetRegistrationPolicyRequestSchema,
   GetLogSettingsRequestSchema,
+  GetOperationalSettingsRequestSchema,
+  PreviewOperationalPolicyRequestSchema,
   GetIssuerRequestSchema,
   GetRoleRequestSchema,
   GetRoleTemplatesRequestSchema,
@@ -205,6 +208,24 @@ export class SecurityClient {
   ) {
     const response = await this.invoke(() => this.client.getLogSettings(request, options));
     validateLogSettings(response);
+    return response;
+  }
+  async getOperationalSettings(
+    request: MessageInitShape<typeof GetOperationalSettingsRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    const response = await this.invoke(() => this.client.getOperationalSettings(request, options));
+    validateOperationalSettings(response);
+    return response;
+  }
+  async previewOperationalPolicy(
+    request: MessageInitShape<typeof PreviewOperationalPolicyRequestSchema>,
+    options?: CallOptions,
+  ) {
+    const input = create(PreviewOperationalPolicyRequestSchema, request);
+    const response = await this.invoke(() => this.client.previewOperationalPolicy(input, options));
+    if (!input.values) throw new Error("Operational values are required.");
+    validateOperationalPreview(response, input.values);
     return response;
   }
   listIssuers(

@@ -4848,6 +4848,2111 @@ class GetLogSettingsResponse extends $pb.GeneratedMessage {
   LogPolicyPreparationReference ensurePreparation() => $_ensure(13);
 }
 
+class OperationalSlowRPCValues extends $pb.GeneratedMessage {
+  factory OperationalSlowRPCValues({
+    $fixnum.Int64? thresholdMs,
+  }) {
+    final result = create();
+    if (thresholdMs != null) result.thresholdMs = thresholdMs;
+    return result;
+  }
+
+  OperationalSlowRPCValues._();
+
+  factory OperationalSlowRPCValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalSlowRPCValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalSlowRPCValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aInt64(1, _omitFieldNames ? '' : 'thresholdMs')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalSlowRPCValues clone() =>
+      OperationalSlowRPCValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalSlowRPCValues copyWith(
+          void Function(OperationalSlowRPCValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalSlowRPCValues))
+          as OperationalSlowRPCValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalSlowRPCValues create() => OperationalSlowRPCValues._();
+  @$core.override
+  OperationalSlowRPCValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalSlowRPCValues> createRepeated() =>
+      $pb.PbList<OperationalSlowRPCValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalSlowRPCValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalSlowRPCValues>(create);
+  static OperationalSlowRPCValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get thresholdMs => $_getI64(0);
+  @$pb.TagNumber(1)
+  set thresholdMs($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasThresholdMs() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearThresholdMs() => $_clearField(1);
+}
+
+class OperationalRateValues extends $pb.GeneratedMessage {
+  factory OperationalRateValues({
+    $core.double? rps,
+    $fixnum.Int64? burst,
+  }) {
+    final result = create();
+    if (rps != null) result.rps = rps;
+    if (burst != null) result.burst = burst;
+    return result;
+  }
+
+  OperationalRateValues._();
+
+  factory OperationalRateValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalRateValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalRateValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.double>(1, _omitFieldNames ? '' : 'rps', $pb.PbFieldType.OD)
+    ..aInt64(2, _omitFieldNames ? '' : 'burst')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalRateValues clone() =>
+      OperationalRateValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalRateValues copyWith(
+          void Function(OperationalRateValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalRateValues))
+          as OperationalRateValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalRateValues create() => OperationalRateValues._();
+  @$core.override
+  OperationalRateValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalRateValues> createRepeated() =>
+      $pb.PbList<OperationalRateValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalRateValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalRateValues>(create);
+  static OperationalRateValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.double get rps => $_getN(0);
+  @$pb.TagNumber(1)
+  set rps($core.double value) => $_setDouble(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRps() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRps() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get burst => $_getI64(1);
+  @$pb.TagNumber(2)
+  set burst($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasBurst() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearBurst() => $_clearField(2);
+}
+
+class OperationalRequestValues extends $pb.GeneratedMessage {
+  factory OperationalRequestValues({
+    $fixnum.Int64? deleteByPrefixDefaultLimit,
+    $fixnum.Int64? deleteByPrefixMaxLimit,
+    $fixnum.Int64? illuminateMaxK,
+    $fixnum.Int64? illuminateMaxStep,
+    $fixnum.Int64? maxBatchSize,
+    $fixnum.Int64? maxKeyLen,
+    $fixnum.Int64? scanDefaultLimit,
+    $fixnum.Int64? scanMaxLimit,
+    $fixnum.Int64? traversalMaxPushes,
+    $fixnum.Int64? traversalMaxResults,
+    $fixnum.Int64? traversalMaxTouchedEdges,
+    $fixnum.Int64? traversalTimeoutMs,
+  }) {
+    final result = create();
+    if (deleteByPrefixDefaultLimit != null)
+      result.deleteByPrefixDefaultLimit = deleteByPrefixDefaultLimit;
+    if (deleteByPrefixMaxLimit != null)
+      result.deleteByPrefixMaxLimit = deleteByPrefixMaxLimit;
+    if (illuminateMaxK != null) result.illuminateMaxK = illuminateMaxK;
+    if (illuminateMaxStep != null) result.illuminateMaxStep = illuminateMaxStep;
+    if (maxBatchSize != null) result.maxBatchSize = maxBatchSize;
+    if (maxKeyLen != null) result.maxKeyLen = maxKeyLen;
+    if (scanDefaultLimit != null) result.scanDefaultLimit = scanDefaultLimit;
+    if (scanMaxLimit != null) result.scanMaxLimit = scanMaxLimit;
+    if (traversalMaxPushes != null)
+      result.traversalMaxPushes = traversalMaxPushes;
+    if (traversalMaxResults != null)
+      result.traversalMaxResults = traversalMaxResults;
+    if (traversalMaxTouchedEdges != null)
+      result.traversalMaxTouchedEdges = traversalMaxTouchedEdges;
+    if (traversalTimeoutMs != null)
+      result.traversalTimeoutMs = traversalTimeoutMs;
+    return result;
+  }
+
+  OperationalRequestValues._();
+
+  factory OperationalRequestValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalRequestValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalRequestValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aInt64(1, _omitFieldNames ? '' : 'deleteByPrefixDefaultLimit')
+    ..aInt64(2, _omitFieldNames ? '' : 'deleteByPrefixMaxLimit')
+    ..aInt64(3, _omitFieldNames ? '' : 'illuminateMaxK')
+    ..aInt64(4, _omitFieldNames ? '' : 'illuminateMaxStep')
+    ..aInt64(5, _omitFieldNames ? '' : 'maxBatchSize')
+    ..aInt64(6, _omitFieldNames ? '' : 'maxKeyLen')
+    ..aInt64(7, _omitFieldNames ? '' : 'scanDefaultLimit')
+    ..aInt64(8, _omitFieldNames ? '' : 'scanMaxLimit')
+    ..aInt64(9, _omitFieldNames ? '' : 'traversalMaxPushes')
+    ..aInt64(10, _omitFieldNames ? '' : 'traversalMaxResults')
+    ..aInt64(11, _omitFieldNames ? '' : 'traversalMaxTouchedEdges')
+    ..aInt64(12, _omitFieldNames ? '' : 'traversalTimeoutMs')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalRequestValues clone() =>
+      OperationalRequestValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalRequestValues copyWith(
+          void Function(OperationalRequestValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalRequestValues))
+          as OperationalRequestValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalRequestValues create() => OperationalRequestValues._();
+  @$core.override
+  OperationalRequestValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalRequestValues> createRepeated() =>
+      $pb.PbList<OperationalRequestValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalRequestValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalRequestValues>(create);
+  static OperationalRequestValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get deleteByPrefixDefaultLimit => $_getI64(0);
+  @$pb.TagNumber(1)
+  set deleteByPrefixDefaultLimit($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeleteByPrefixDefaultLimit() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeleteByPrefixDefaultLimit() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get deleteByPrefixMaxLimit => $_getI64(1);
+  @$pb.TagNumber(2)
+  set deleteByPrefixMaxLimit($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDeleteByPrefixMaxLimit() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDeleteByPrefixMaxLimit() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get illuminateMaxK => $_getI64(2);
+  @$pb.TagNumber(3)
+  set illuminateMaxK($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIlluminateMaxK() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIlluminateMaxK() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get illuminateMaxStep => $_getI64(3);
+  @$pb.TagNumber(4)
+  set illuminateMaxStep($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasIlluminateMaxStep() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearIlluminateMaxStep() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get maxBatchSize => $_getI64(4);
+  @$pb.TagNumber(5)
+  set maxBatchSize($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasMaxBatchSize() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearMaxBatchSize() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get maxKeyLen => $_getI64(5);
+  @$pb.TagNumber(6)
+  set maxKeyLen($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasMaxKeyLen() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearMaxKeyLen() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get scanDefaultLimit => $_getI64(6);
+  @$pb.TagNumber(7)
+  set scanDefaultLimit($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasScanDefaultLimit() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearScanDefaultLimit() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $fixnum.Int64 get scanMaxLimit => $_getI64(7);
+  @$pb.TagNumber(8)
+  set scanMaxLimit($fixnum.Int64 value) => $_setInt64(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasScanMaxLimit() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearScanMaxLimit() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $fixnum.Int64 get traversalMaxPushes => $_getI64(8);
+  @$pb.TagNumber(9)
+  set traversalMaxPushes($fixnum.Int64 value) => $_setInt64(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasTraversalMaxPushes() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearTraversalMaxPushes() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $fixnum.Int64 get traversalMaxResults => $_getI64(9);
+  @$pb.TagNumber(10)
+  set traversalMaxResults($fixnum.Int64 value) => $_setInt64(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasTraversalMaxResults() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearTraversalMaxResults() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $fixnum.Int64 get traversalMaxTouchedEdges => $_getI64(10);
+  @$pb.TagNumber(11)
+  set traversalMaxTouchedEdges($fixnum.Int64 value) => $_setInt64(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasTraversalMaxTouchedEdges() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearTraversalMaxTouchedEdges() => $_clearField(11);
+
+  @$pb.TagNumber(12)
+  $fixnum.Int64 get traversalTimeoutMs => $_getI64(11);
+  @$pb.TagNumber(12)
+  set traversalTimeoutMs($fixnum.Int64 value) => $_setInt64(11, value);
+  @$pb.TagNumber(12)
+  $core.bool hasTraversalTimeoutMs() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearTraversalTimeoutMs() => $_clearField(12);
+}
+
+class OperationalBackupValues extends $pb.GeneratedMessage {
+  factory OperationalBackupValues({
+    $core.bool? enabled,
+    $fixnum.Int64? intervalNanos,
+    $fixnum.Int64? retain,
+  }) {
+    final result = create();
+    if (enabled != null) result.enabled = enabled;
+    if (intervalNanos != null) result.intervalNanos = intervalNanos;
+    if (retain != null) result.retain = retain;
+    return result;
+  }
+
+  OperationalBackupValues._();
+
+  factory OperationalBackupValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalBackupValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalBackupValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'enabled')
+    ..aInt64(2, _omitFieldNames ? '' : 'intervalNanos')
+    ..aInt64(3, _omitFieldNames ? '' : 'retain')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalBackupValues clone() =>
+      OperationalBackupValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalBackupValues copyWith(
+          void Function(OperationalBackupValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalBackupValues))
+          as OperationalBackupValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalBackupValues create() => OperationalBackupValues._();
+  @$core.override
+  OperationalBackupValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalBackupValues> createRepeated() =>
+      $pb.PbList<OperationalBackupValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalBackupValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalBackupValues>(create);
+  static OperationalBackupValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get enabled => $_getBF(0);
+  @$pb.TagNumber(1)
+  set enabled($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasEnabled() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearEnabled() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get intervalNanos => $_getI64(1);
+  @$pb.TagNumber(2)
+  set intervalNanos($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasIntervalNanos() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearIntervalNanos() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get retain => $_getI64(2);
+  @$pb.TagNumber(3)
+  set retain($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasRetain() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearRetain() => $_clearField(3);
+}
+
+class OperationalCapacityValues extends $pb.GeneratedMessage {
+  factory OperationalCapacityValues({
+    $fixnum.Int64? gcEdgeBudget,
+    $fixnum.Int64? gcIntervalSeconds,
+    $fixnum.Int64? maxEdges,
+    $fixnum.Int64? maxEdgeCausalEntries,
+    $fixnum.Int64? maxVertexCausalEntries,
+    $fixnum.Int64? maxVertices,
+  }) {
+    final result = create();
+    if (gcEdgeBudget != null) result.gcEdgeBudget = gcEdgeBudget;
+    if (gcIntervalSeconds != null) result.gcIntervalSeconds = gcIntervalSeconds;
+    if (maxEdges != null) result.maxEdges = maxEdges;
+    if (maxEdgeCausalEntries != null)
+      result.maxEdgeCausalEntries = maxEdgeCausalEntries;
+    if (maxVertexCausalEntries != null)
+      result.maxVertexCausalEntries = maxVertexCausalEntries;
+    if (maxVertices != null) result.maxVertices = maxVertices;
+    return result;
+  }
+
+  OperationalCapacityValues._();
+
+  factory OperationalCapacityValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalCapacityValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalCapacityValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aInt64(1, _omitFieldNames ? '' : 'gcEdgeBudget')
+    ..aInt64(2, _omitFieldNames ? '' : 'gcIntervalSeconds')
+    ..aInt64(3, _omitFieldNames ? '' : 'maxEdges')
+    ..aInt64(4, _omitFieldNames ? '' : 'maxEdgeCausalEntries')
+    ..aInt64(5, _omitFieldNames ? '' : 'maxVertexCausalEntries')
+    ..aInt64(6, _omitFieldNames ? '' : 'maxVertices')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalCapacityValues clone() =>
+      OperationalCapacityValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalCapacityValues copyWith(
+          void Function(OperationalCapacityValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalCapacityValues))
+          as OperationalCapacityValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalCapacityValues create() => OperationalCapacityValues._();
+  @$core.override
+  OperationalCapacityValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalCapacityValues> createRepeated() =>
+      $pb.PbList<OperationalCapacityValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalCapacityValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalCapacityValues>(create);
+  static OperationalCapacityValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get gcEdgeBudget => $_getI64(0);
+  @$pb.TagNumber(1)
+  set gcEdgeBudget($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasGcEdgeBudget() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearGcEdgeBudget() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get gcIntervalSeconds => $_getI64(1);
+  @$pb.TagNumber(2)
+  set gcIntervalSeconds($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasGcIntervalSeconds() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearGcIntervalSeconds() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get maxEdges => $_getI64(2);
+  @$pb.TagNumber(3)
+  set maxEdges($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasMaxEdges() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearMaxEdges() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get maxEdgeCausalEntries => $_getI64(3);
+  @$pb.TagNumber(4)
+  set maxEdgeCausalEntries($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasMaxEdgeCausalEntries() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearMaxEdgeCausalEntries() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get maxVertexCausalEntries => $_getI64(4);
+  @$pb.TagNumber(5)
+  set maxVertexCausalEntries($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasMaxVertexCausalEntries() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearMaxVertexCausalEntries() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get maxVertices => $_getI64(5);
+  @$pb.TagNumber(6)
+  set maxVertices($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasMaxVertices() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearMaxVertices() => $_clearField(6);
+}
+
+class OperationalLifecycleValues extends $pb.GeneratedMessage {
+  factory OperationalLifecycleValues({
+    $fixnum.Int64? drainDelaySeconds,
+    $fixnum.Int64? maxReplicationLag,
+    $fixnum.Int64? shutdownTimeoutSeconds,
+  }) {
+    final result = create();
+    if (drainDelaySeconds != null) result.drainDelaySeconds = drainDelaySeconds;
+    if (maxReplicationLag != null) result.maxReplicationLag = maxReplicationLag;
+    if (shutdownTimeoutSeconds != null)
+      result.shutdownTimeoutSeconds = shutdownTimeoutSeconds;
+    return result;
+  }
+
+  OperationalLifecycleValues._();
+
+  factory OperationalLifecycleValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalLifecycleValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalLifecycleValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aInt64(1, _omitFieldNames ? '' : 'drainDelaySeconds')
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'maxReplicationLag', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aInt64(3, _omitFieldNames ? '' : 'shutdownTimeoutSeconds')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalLifecycleValues clone() =>
+      OperationalLifecycleValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalLifecycleValues copyWith(
+          void Function(OperationalLifecycleValues) updates) =>
+      super.copyWith(
+              (message) => updates(message as OperationalLifecycleValues))
+          as OperationalLifecycleValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalLifecycleValues create() => OperationalLifecycleValues._();
+  @$core.override
+  OperationalLifecycleValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalLifecycleValues> createRepeated() =>
+      $pb.PbList<OperationalLifecycleValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalLifecycleValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalLifecycleValues>(create);
+  static OperationalLifecycleValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get drainDelaySeconds => $_getI64(0);
+  @$pb.TagNumber(1)
+  set drainDelaySeconds($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDrainDelaySeconds() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDrainDelaySeconds() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get maxReplicationLag => $_getI64(1);
+  @$pb.TagNumber(2)
+  set maxReplicationLag($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasMaxReplicationLag() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearMaxReplicationLag() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get shutdownTimeoutSeconds => $_getI64(2);
+  @$pb.TagNumber(3)
+  set shutdownTimeoutSeconds($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasShutdownTimeoutSeconds() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearShutdownTimeoutSeconds() => $_clearField(3);
+}
+
+class OperationalSearchValues extends $pb.GeneratedMessage {
+  factory OperationalSearchValues({
+    $fixnum.Int64? defaultLimit,
+    $fixnum.Int64? maxLimit,
+    OperationalSearchMode? defaultMode,
+    $fixnum.Int64? defaultMinShould,
+    $fixnum.Int64? timeoutMs,
+    $fixnum.Int64? maxQueryBytes,
+    $fixnum.Int64? maxQueryTerms,
+    $fixnum.Int64? maxDictionaryVisits,
+    $fixnum.Int64? maxPostingVisits,
+    $fixnum.Int64? maxPositionVisits,
+    $fixnum.Int64? maxExpirationVisits,
+  }) {
+    final result = create();
+    if (defaultLimit != null) result.defaultLimit = defaultLimit;
+    if (maxLimit != null) result.maxLimit = maxLimit;
+    if (defaultMode != null) result.defaultMode = defaultMode;
+    if (defaultMinShould != null) result.defaultMinShould = defaultMinShould;
+    if (timeoutMs != null) result.timeoutMs = timeoutMs;
+    if (maxQueryBytes != null) result.maxQueryBytes = maxQueryBytes;
+    if (maxQueryTerms != null) result.maxQueryTerms = maxQueryTerms;
+    if (maxDictionaryVisits != null)
+      result.maxDictionaryVisits = maxDictionaryVisits;
+    if (maxPostingVisits != null) result.maxPostingVisits = maxPostingVisits;
+    if (maxPositionVisits != null) result.maxPositionVisits = maxPositionVisits;
+    if (maxExpirationVisits != null)
+      result.maxExpirationVisits = maxExpirationVisits;
+    return result;
+  }
+
+  OperationalSearchValues._();
+
+  factory OperationalSearchValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalSearchValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalSearchValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aInt64(1, _omitFieldNames ? '' : 'defaultLimit')
+    ..aInt64(2, _omitFieldNames ? '' : 'maxLimit')
+    ..e<OperationalSearchMode>(
+        3, _omitFieldNames ? '' : 'defaultMode', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            OperationalSearchMode.OPERATIONAL_SEARCH_MODE_UNSPECIFIED,
+        valueOf: OperationalSearchMode.valueOf,
+        enumValues: OperationalSearchMode.values)
+    ..aInt64(4, _omitFieldNames ? '' : 'defaultMinShould')
+    ..aInt64(5, _omitFieldNames ? '' : 'timeoutMs')
+    ..aInt64(6, _omitFieldNames ? '' : 'maxQueryBytes')
+    ..aInt64(7, _omitFieldNames ? '' : 'maxQueryTerms')
+    ..aInt64(8, _omitFieldNames ? '' : 'maxDictionaryVisits')
+    ..aInt64(9, _omitFieldNames ? '' : 'maxPostingVisits')
+    ..aInt64(10, _omitFieldNames ? '' : 'maxPositionVisits')
+    ..aInt64(11, _omitFieldNames ? '' : 'maxExpirationVisits')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalSearchValues clone() =>
+      OperationalSearchValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalSearchValues copyWith(
+          void Function(OperationalSearchValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalSearchValues))
+          as OperationalSearchValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalSearchValues create() => OperationalSearchValues._();
+  @$core.override
+  OperationalSearchValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalSearchValues> createRepeated() =>
+      $pb.PbList<OperationalSearchValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalSearchValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalSearchValues>(create);
+  static OperationalSearchValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get defaultLimit => $_getI64(0);
+  @$pb.TagNumber(1)
+  set defaultLimit($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDefaultLimit() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDefaultLimit() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get maxLimit => $_getI64(1);
+  @$pb.TagNumber(2)
+  set maxLimit($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasMaxLimit() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearMaxLimit() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  OperationalSearchMode get defaultMode => $_getN(2);
+  @$pb.TagNumber(3)
+  set defaultMode(OperationalSearchMode value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasDefaultMode() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearDefaultMode() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get defaultMinShould => $_getI64(3);
+  @$pb.TagNumber(4)
+  set defaultMinShould($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasDefaultMinShould() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearDefaultMinShould() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get timeoutMs => $_getI64(4);
+  @$pb.TagNumber(5)
+  set timeoutMs($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasTimeoutMs() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearTimeoutMs() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get maxQueryBytes => $_getI64(5);
+  @$pb.TagNumber(6)
+  set maxQueryBytes($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasMaxQueryBytes() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearMaxQueryBytes() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get maxQueryTerms => $_getI64(6);
+  @$pb.TagNumber(7)
+  set maxQueryTerms($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasMaxQueryTerms() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearMaxQueryTerms() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $fixnum.Int64 get maxDictionaryVisits => $_getI64(7);
+  @$pb.TagNumber(8)
+  set maxDictionaryVisits($fixnum.Int64 value) => $_setInt64(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasMaxDictionaryVisits() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearMaxDictionaryVisits() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $fixnum.Int64 get maxPostingVisits => $_getI64(8);
+  @$pb.TagNumber(9)
+  set maxPostingVisits($fixnum.Int64 value) => $_setInt64(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasMaxPostingVisits() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearMaxPostingVisits() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $fixnum.Int64 get maxPositionVisits => $_getI64(9);
+  @$pb.TagNumber(10)
+  set maxPositionVisits($fixnum.Int64 value) => $_setInt64(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasMaxPositionVisits() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearMaxPositionVisits() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $fixnum.Int64 get maxExpirationVisits => $_getI64(10);
+  @$pb.TagNumber(11)
+  set maxExpirationVisits($fixnum.Int64 value) => $_setInt64(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasMaxExpirationVisits() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearMaxExpirationVisits() => $_clearField(11);
+}
+
+class OperationalReplicationValues extends $pb.GeneratedMessage {
+  factory OperationalReplicationValues({
+    $fixnum.Int64? antiEntropyGapWarnThreshold,
+    $fixnum.Int64? antiEntropyIntervalMs,
+    $fixnum.Int64? antiEntropySubscribeTimeoutMs,
+    $fixnum.Int64? pumpBackoffMaxMs,
+    $fixnum.Int64? pumpBackoffMinMs,
+  }) {
+    final result = create();
+    if (antiEntropyGapWarnThreshold != null)
+      result.antiEntropyGapWarnThreshold = antiEntropyGapWarnThreshold;
+    if (antiEntropyIntervalMs != null)
+      result.antiEntropyIntervalMs = antiEntropyIntervalMs;
+    if (antiEntropySubscribeTimeoutMs != null)
+      result.antiEntropySubscribeTimeoutMs = antiEntropySubscribeTimeoutMs;
+    if (pumpBackoffMaxMs != null) result.pumpBackoffMaxMs = pumpBackoffMaxMs;
+    if (pumpBackoffMinMs != null) result.pumpBackoffMinMs = pumpBackoffMinMs;
+    return result;
+  }
+
+  OperationalReplicationValues._();
+
+  factory OperationalReplicationValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalReplicationValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalReplicationValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aInt64(1, _omitFieldNames ? '' : 'antiEntropyGapWarnThreshold')
+    ..aInt64(2, _omitFieldNames ? '' : 'antiEntropyIntervalMs')
+    ..aInt64(3, _omitFieldNames ? '' : 'antiEntropySubscribeTimeoutMs')
+    ..aInt64(4, _omitFieldNames ? '' : 'pumpBackoffMaxMs')
+    ..aInt64(5, _omitFieldNames ? '' : 'pumpBackoffMinMs')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalReplicationValues clone() =>
+      OperationalReplicationValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalReplicationValues copyWith(
+          void Function(OperationalReplicationValues) updates) =>
+      super.copyWith(
+              (message) => updates(message as OperationalReplicationValues))
+          as OperationalReplicationValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalReplicationValues create() =>
+      OperationalReplicationValues._();
+  @$core.override
+  OperationalReplicationValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalReplicationValues> createRepeated() =>
+      $pb.PbList<OperationalReplicationValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalReplicationValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalReplicationValues>(create);
+  static OperationalReplicationValues? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get antiEntropyGapWarnThreshold => $_getI64(0);
+  @$pb.TagNumber(1)
+  set antiEntropyGapWarnThreshold($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasAntiEntropyGapWarnThreshold() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearAntiEntropyGapWarnThreshold() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get antiEntropyIntervalMs => $_getI64(1);
+  @$pb.TagNumber(2)
+  set antiEntropyIntervalMs($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAntiEntropyIntervalMs() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAntiEntropyIntervalMs() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get antiEntropySubscribeTimeoutMs => $_getI64(2);
+  @$pb.TagNumber(3)
+  set antiEntropySubscribeTimeoutMs($fixnum.Int64 value) =>
+      $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAntiEntropySubscribeTimeoutMs() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAntiEntropySubscribeTimeoutMs() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get pumpBackoffMaxMs => $_getI64(3);
+  @$pb.TagNumber(4)
+  set pumpBackoffMaxMs($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasPumpBackoffMaxMs() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearPumpBackoffMaxMs() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get pumpBackoffMinMs => $_getI64(4);
+  @$pb.TagNumber(5)
+  set pumpBackoffMinMs($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasPumpBackoffMinMs() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearPumpBackoffMinMs() => $_clearField(5);
+}
+
+enum OperationalPolicyValues_Group {
+  slowRpc,
+  rate,
+  request,
+  backup,
+  capacity,
+  lifecycle,
+  search,
+  replication,
+  notSet
+}
+
+class OperationalPolicyValues extends $pb.GeneratedMessage {
+  factory OperationalPolicyValues({
+    OperationalSlowRPCValues? slowRpc,
+    OperationalRateValues? rate,
+    OperationalRequestValues? request,
+    OperationalBackupValues? backup,
+    OperationalCapacityValues? capacity,
+    OperationalLifecycleValues? lifecycle,
+    OperationalSearchValues? search,
+    OperationalReplicationValues? replication,
+  }) {
+    final result = create();
+    if (slowRpc != null) result.slowRpc = slowRpc;
+    if (rate != null) result.rate = rate;
+    if (request != null) result.request = request;
+    if (backup != null) result.backup = backup;
+    if (capacity != null) result.capacity = capacity;
+    if (lifecycle != null) result.lifecycle = lifecycle;
+    if (search != null) result.search = search;
+    if (replication != null) result.replication = replication;
+    return result;
+  }
+
+  OperationalPolicyValues._();
+
+  factory OperationalPolicyValues.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalPolicyValues.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, OperationalPolicyValues_Group>
+      _OperationalPolicyValues_GroupByTag = {
+    1: OperationalPolicyValues_Group.slowRpc,
+    2: OperationalPolicyValues_Group.rate,
+    3: OperationalPolicyValues_Group.request,
+    4: OperationalPolicyValues_Group.backup,
+    5: OperationalPolicyValues_Group.capacity,
+    6: OperationalPolicyValues_Group.lifecycle,
+    7: OperationalPolicyValues_Group.search,
+    8: OperationalPolicyValues_Group.replication,
+    0: OperationalPolicyValues_Group.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalPolicyValues',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8])
+    ..aOM<OperationalSlowRPCValues>(1, _omitFieldNames ? '' : 'slowRpc',
+        subBuilder: OperationalSlowRPCValues.create)
+    ..aOM<OperationalRateValues>(2, _omitFieldNames ? '' : 'rate',
+        subBuilder: OperationalRateValues.create)
+    ..aOM<OperationalRequestValues>(3, _omitFieldNames ? '' : 'request',
+        subBuilder: OperationalRequestValues.create)
+    ..aOM<OperationalBackupValues>(4, _omitFieldNames ? '' : 'backup',
+        subBuilder: OperationalBackupValues.create)
+    ..aOM<OperationalCapacityValues>(5, _omitFieldNames ? '' : 'capacity',
+        subBuilder: OperationalCapacityValues.create)
+    ..aOM<OperationalLifecycleValues>(6, _omitFieldNames ? '' : 'lifecycle',
+        subBuilder: OperationalLifecycleValues.create)
+    ..aOM<OperationalSearchValues>(7, _omitFieldNames ? '' : 'search',
+        subBuilder: OperationalSearchValues.create)
+    ..aOM<OperationalReplicationValues>(8, _omitFieldNames ? '' : 'replication',
+        subBuilder: OperationalReplicationValues.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalPolicyValues clone() =>
+      OperationalPolicyValues()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalPolicyValues copyWith(
+          void Function(OperationalPolicyValues) updates) =>
+      super.copyWith((message) => updates(message as OperationalPolicyValues))
+          as OperationalPolicyValues;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalPolicyValues create() => OperationalPolicyValues._();
+  @$core.override
+  OperationalPolicyValues createEmptyInstance() => create();
+  static $pb.PbList<OperationalPolicyValues> createRepeated() =>
+      $pb.PbList<OperationalPolicyValues>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalPolicyValues getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalPolicyValues>(create);
+  static OperationalPolicyValues? _defaultInstance;
+
+  OperationalPolicyValues_Group whichGroup() =>
+      _OperationalPolicyValues_GroupByTag[$_whichOneof(0)]!;
+  void clearGroup() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  OperationalSlowRPCValues get slowRpc => $_getN(0);
+  @$pb.TagNumber(1)
+  set slowRpc(OperationalSlowRPCValues value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSlowRpc() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSlowRpc() => $_clearField(1);
+  @$pb.TagNumber(1)
+  OperationalSlowRPCValues ensureSlowRpc() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  OperationalRateValues get rate => $_getN(1);
+  @$pb.TagNumber(2)
+  set rate(OperationalRateValues value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasRate() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearRate() => $_clearField(2);
+  @$pb.TagNumber(2)
+  OperationalRateValues ensureRate() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  OperationalRequestValues get request => $_getN(2);
+  @$pb.TagNumber(3)
+  set request(OperationalRequestValues value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasRequest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearRequest() => $_clearField(3);
+  @$pb.TagNumber(3)
+  OperationalRequestValues ensureRequest() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  OperationalBackupValues get backup => $_getN(3);
+  @$pb.TagNumber(4)
+  set backup(OperationalBackupValues value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasBackup() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearBackup() => $_clearField(4);
+  @$pb.TagNumber(4)
+  OperationalBackupValues ensureBackup() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  OperationalCapacityValues get capacity => $_getN(4);
+  @$pb.TagNumber(5)
+  set capacity(OperationalCapacityValues value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCapacity() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCapacity() => $_clearField(5);
+  @$pb.TagNumber(5)
+  OperationalCapacityValues ensureCapacity() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  OperationalLifecycleValues get lifecycle => $_getN(5);
+  @$pb.TagNumber(6)
+  set lifecycle(OperationalLifecycleValues value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasLifecycle() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearLifecycle() => $_clearField(6);
+  @$pb.TagNumber(6)
+  OperationalLifecycleValues ensureLifecycle() => $_ensure(5);
+
+  @$pb.TagNumber(7)
+  OperationalSearchValues get search => $_getN(6);
+  @$pb.TagNumber(7)
+  set search(OperationalSearchValues value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasSearch() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearSearch() => $_clearField(7);
+  @$pb.TagNumber(7)
+  OperationalSearchValues ensureSearch() => $_ensure(6);
+
+  @$pb.TagNumber(8)
+  OperationalReplicationValues get replication => $_getN(7);
+  @$pb.TagNumber(8)
+  set replication(OperationalReplicationValues value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasReplication() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearReplication() => $_clearField(8);
+  @$pb.TagNumber(8)
+  OperationalReplicationValues ensureReplication() => $_ensure(7);
+}
+
+/// The authority allocates generation; zero expected_generation means adoption.
+class OperationalPolicyChange extends $pb.GeneratedMessage {
+  factory OperationalPolicyChange({
+    $core.int? version,
+    $fixnum.Int64? expectedGeneration,
+    OperationalPolicyValues? values,
+    $core.String? compatibilityFingerprint,
+    $core.bool? retentionReductionAcknowledged,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (expectedGeneration != null)
+      result.expectedGeneration = expectedGeneration;
+    if (values != null) result.values = values;
+    if (compatibilityFingerprint != null)
+      result.compatibilityFingerprint = compatibilityFingerprint;
+    if (retentionReductionAcknowledged != null)
+      result.retentionReductionAcknowledged = retentionReductionAcknowledged;
+    return result;
+  }
+
+  OperationalPolicyChange._();
+
+  factory OperationalPolicyChange.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalPolicyChange.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalPolicyChange',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'expectedGeneration', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<OperationalPolicyValues>(3, _omitFieldNames ? '' : 'values',
+        subBuilder: OperationalPolicyValues.create)
+    ..aOS(4, _omitFieldNames ? '' : 'compatibilityFingerprint')
+    ..aOB(5, _omitFieldNames ? '' : 'retentionReductionAcknowledged')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalPolicyChange clone() =>
+      OperationalPolicyChange()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalPolicyChange copyWith(
+          void Function(OperationalPolicyChange) updates) =>
+      super.copyWith((message) => updates(message as OperationalPolicyChange))
+          as OperationalPolicyChange;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalPolicyChange create() => OperationalPolicyChange._();
+  @$core.override
+  OperationalPolicyChange createEmptyInstance() => create();
+  static $pb.PbList<OperationalPolicyChange> createRepeated() =>
+      $pb.PbList<OperationalPolicyChange>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalPolicyChange getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalPolicyChange>(create);
+  static OperationalPolicyChange? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get expectedGeneration => $_getI64(1);
+  @$pb.TagNumber(2)
+  set expectedGeneration($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedGeneration() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedGeneration() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  OperationalPolicyValues get values => $_getN(2);
+  @$pb.TagNumber(3)
+  set values(OperationalPolicyValues value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasValues() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearValues() => $_clearField(3);
+  @$pb.TagNumber(3)
+  OperationalPolicyValues ensureValues() => $_ensure(2);
+
+  /// Search engine compatibility metadata, resolved by Preview, never editable.
+  @$pb.TagNumber(4)
+  $core.String get compatibilityFingerprint => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set compatibilityFingerprint($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCompatibilityFingerprint() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCompatibilityFingerprint() => $_clearField(4);
+
+  /// Explicit acknowledgement, sealed in the exact immutable reviewed intent.
+  @$pb.TagNumber(5)
+  $core.bool get retentionReductionAcknowledged => $_getBF(4);
+  @$pb.TagNumber(5)
+  set retentionReductionAcknowledged($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasRetentionReductionAcknowledged() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearRetentionReductionAcknowledged() => $_clearField(5);
+}
+
+class ManagedOperationalPolicy extends $pb.GeneratedMessage {
+  factory ManagedOperationalPolicy({
+    $core.int? version,
+    $fixnum.Int64? generation,
+    OperationalPolicyValues? values,
+    $core.String? compatibilityFingerprint,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (generation != null) result.generation = generation;
+    if (values != null) result.values = values;
+    if (compatibilityFingerprint != null)
+      result.compatibilityFingerprint = compatibilityFingerprint;
+    return result;
+  }
+
+  ManagedOperationalPolicy._();
+
+  factory ManagedOperationalPolicy.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ManagedOperationalPolicy.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ManagedOperationalPolicy',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'generation', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<OperationalPolicyValues>(3, _omitFieldNames ? '' : 'values',
+        subBuilder: OperationalPolicyValues.create)
+    ..aOS(4, _omitFieldNames ? '' : 'compatibilityFingerprint')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ManagedOperationalPolicy clone() =>
+      ManagedOperationalPolicy()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ManagedOperationalPolicy copyWith(
+          void Function(ManagedOperationalPolicy) updates) =>
+      super.copyWith((message) => updates(message as ManagedOperationalPolicy))
+          as ManagedOperationalPolicy;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ManagedOperationalPolicy create() => ManagedOperationalPolicy._();
+  @$core.override
+  ManagedOperationalPolicy createEmptyInstance() => create();
+  static $pb.PbList<ManagedOperationalPolicy> createRepeated() =>
+      $pb.PbList<ManagedOperationalPolicy>();
+  @$core.pragma('dart2js:noInline')
+  static ManagedOperationalPolicy getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ManagedOperationalPolicy>(create);
+  static ManagedOperationalPolicy? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get generation => $_getI64(1);
+  @$pb.TagNumber(2)
+  set generation($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasGeneration() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearGeneration() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  OperationalPolicyValues get values => $_getN(2);
+  @$pb.TagNumber(3)
+  set values(OperationalPolicyValues value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasValues() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearValues() => $_clearField(3);
+  @$pb.TagNumber(3)
+  OperationalPolicyValues ensureValues() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $core.String get compatibilityFingerprint => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set compatibilityFingerprint($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCompatibilityFingerprint() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCompatibilityFingerprint() => $_clearField(4);
+}
+
+class OperationalSettingProvenance extends $pb.GeneratedMessage {
+  factory OperationalSettingProvenance({
+    OperationalSetting? setting,
+    OperationalSettingsSource? source,
+  }) {
+    final result = create();
+    if (setting != null) result.setting = setting;
+    if (source != null) result.source = source;
+    return result;
+  }
+
+  OperationalSettingProvenance._();
+
+  factory OperationalSettingProvenance.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalSettingProvenance.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalSettingProvenance',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..e<OperationalSetting>(
+        1, _omitFieldNames ? '' : 'setting', $pb.PbFieldType.OE,
+        defaultOrMaker: OperationalSetting.OPERATIONAL_SETTING_UNSPECIFIED,
+        valueOf: OperationalSetting.valueOf,
+        enumValues: OperationalSetting.values)
+    ..e<OperationalSettingsSource>(
+        2, _omitFieldNames ? '' : 'source', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            OperationalSettingsSource.OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED,
+        valueOf: OperationalSettingsSource.valueOf,
+        enumValues: OperationalSettingsSource.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalSettingProvenance clone() =>
+      OperationalSettingProvenance()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalSettingProvenance copyWith(
+          void Function(OperationalSettingProvenance) updates) =>
+      super.copyWith(
+              (message) => updates(message as OperationalSettingProvenance))
+          as OperationalSettingProvenance;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalSettingProvenance create() =>
+      OperationalSettingProvenance._();
+  @$core.override
+  OperationalSettingProvenance createEmptyInstance() => create();
+  static $pb.PbList<OperationalSettingProvenance> createRepeated() =>
+      $pb.PbList<OperationalSettingProvenance>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalSettingProvenance getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalSettingProvenance>(create);
+  static OperationalSettingProvenance? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  OperationalSetting get setting => $_getN(0);
+  @$pb.TagNumber(1)
+  set setting(OperationalSetting value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSetting() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSetting() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  OperationalSettingsSource get source => $_getN(1);
+  @$pb.TagNumber(2)
+  set source(OperationalSettingsSource value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasSource() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearSource() => $_clearField(2);
+}
+
+class OperationalGroupSettings extends $pb.GeneratedMessage {
+  factory OperationalGroupSettings({
+    OperationalGroup? group,
+    ManagedOperationalPolicy? desired,
+    OperationalPolicyValues? effective,
+    $core.Iterable<OperationalSettingProvenance>? provenance,
+    $fixnum.Int64? appliedGeneration,
+    CurrentSemanticCut? appliedCut,
+    OperationalSettingsChangeMode? changeMode,
+    LogPolicyAdoptionState? adoption,
+    OperationalSettingsApplicationState? application,
+    OperationalSettingsError? error,
+    $core.bool? restartRequired,
+    LogPolicyPreparationReference? preparation,
+    $core.String? effectiveCompatibilityFingerprint,
+  }) {
+    final result = create();
+    if (group != null) result.group = group;
+    if (desired != null) result.desired = desired;
+    if (effective != null) result.effective = effective;
+    if (provenance != null) result.provenance.addAll(provenance);
+    if (appliedGeneration != null) result.appliedGeneration = appliedGeneration;
+    if (appliedCut != null) result.appliedCut = appliedCut;
+    if (changeMode != null) result.changeMode = changeMode;
+    if (adoption != null) result.adoption = adoption;
+    if (application != null) result.application = application;
+    if (error != null) result.error = error;
+    if (restartRequired != null) result.restartRequired = restartRequired;
+    if (preparation != null) result.preparation = preparation;
+    if (effectiveCompatibilityFingerprint != null)
+      result.effectiveCompatibilityFingerprint =
+          effectiveCompatibilityFingerprint;
+    return result;
+  }
+
+  OperationalGroupSettings._();
+
+  factory OperationalGroupSettings.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalGroupSettings.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalGroupSettings',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..e<OperationalGroup>(1, _omitFieldNames ? '' : 'group', $pb.PbFieldType.OE,
+        defaultOrMaker: OperationalGroup.OPERATIONAL_GROUP_UNSPECIFIED,
+        valueOf: OperationalGroup.valueOf,
+        enumValues: OperationalGroup.values)
+    ..aOM<ManagedOperationalPolicy>(2, _omitFieldNames ? '' : 'desired',
+        subBuilder: ManagedOperationalPolicy.create)
+    ..aOM<OperationalPolicyValues>(3, _omitFieldNames ? '' : 'effective',
+        subBuilder: OperationalPolicyValues.create)
+    ..pc<OperationalSettingProvenance>(
+        4, _omitFieldNames ? '' : 'provenance', $pb.PbFieldType.PM,
+        subBuilder: OperationalSettingProvenance.create)
+    ..a<$fixnum.Int64>(
+        5, _omitFieldNames ? '' : 'appliedGeneration', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<CurrentSemanticCut>(6, _omitFieldNames ? '' : 'appliedCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..e<OperationalSettingsChangeMode>(
+        7, _omitFieldNames ? '' : 'changeMode', $pb.PbFieldType.OE,
+        defaultOrMaker: OperationalSettingsChangeMode
+            .OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED,
+        valueOf: OperationalSettingsChangeMode.valueOf,
+        enumValues: OperationalSettingsChangeMode.values)
+    ..e<LogPolicyAdoptionState>(
+        8, _omitFieldNames ? '' : 'adoption', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            LogPolicyAdoptionState.LOG_POLICY_ADOPTION_STATE_UNSPECIFIED,
+        valueOf: LogPolicyAdoptionState.valueOf,
+        enumValues: LogPolicyAdoptionState.values)
+    ..e<OperationalSettingsApplicationState>(
+        9, _omitFieldNames ? '' : 'application', $pb.PbFieldType.OE,
+        defaultOrMaker: OperationalSettingsApplicationState
+            .OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED,
+        valueOf: OperationalSettingsApplicationState.valueOf,
+        enumValues: OperationalSettingsApplicationState.values)
+    ..e<OperationalSettingsError>(
+        10, _omitFieldNames ? '' : 'error', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            OperationalSettingsError.OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED,
+        valueOf: OperationalSettingsError.valueOf,
+        enumValues: OperationalSettingsError.values)
+    ..aOB(11, _omitFieldNames ? '' : 'restartRequired')
+    ..aOM<LogPolicyPreparationReference>(
+        12, _omitFieldNames ? '' : 'preparation',
+        subBuilder: LogPolicyPreparationReference.create)
+    ..aOS(13, _omitFieldNames ? '' : 'effectiveCompatibilityFingerprint')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalGroupSettings clone() =>
+      OperationalGroupSettings()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalGroupSettings copyWith(
+          void Function(OperationalGroupSettings) updates) =>
+      super.copyWith((message) => updates(message as OperationalGroupSettings))
+          as OperationalGroupSettings;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalGroupSettings create() => OperationalGroupSettings._();
+  @$core.override
+  OperationalGroupSettings createEmptyInstance() => create();
+  static $pb.PbList<OperationalGroupSettings> createRepeated() =>
+      $pb.PbList<OperationalGroupSettings>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalGroupSettings getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalGroupSettings>(create);
+  static OperationalGroupSettings? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  OperationalGroup get group => $_getN(0);
+  @$pb.TagNumber(1)
+  set group(OperationalGroup value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasGroup() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearGroup() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  ManagedOperationalPolicy get desired => $_getN(1);
+  @$pb.TagNumber(2)
+  set desired(ManagedOperationalPolicy value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDesired() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDesired() => $_clearField(2);
+  @$pb.TagNumber(2)
+  ManagedOperationalPolicy ensureDesired() => $_ensure(1);
+
+  /// Absent for an unavailable owner or explicitly invalid bootstrap values.
+  /// Invalid bootstrap keeps installed change mode and provenance, with ERROR.
+  @$pb.TagNumber(3)
+  OperationalPolicyValues get effective => $_getN(2);
+  @$pb.TagNumber(3)
+  set effective(OperationalPolicyValues value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasEffective() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearEffective() => $_clearField(3);
+  @$pb.TagNumber(3)
+  OperationalPolicyValues ensureEffective() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<OperationalSettingProvenance> get provenance => $_getList(3);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get appliedGeneration => $_getI64(4);
+  @$pb.TagNumber(5)
+  set appliedGeneration($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasAppliedGeneration() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearAppliedGeneration() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  CurrentSemanticCut get appliedCut => $_getN(5);
+  @$pb.TagNumber(6)
+  set appliedCut(CurrentSemanticCut value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasAppliedCut() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearAppliedCut() => $_clearField(6);
+  @$pb.TagNumber(6)
+  CurrentSemanticCut ensureAppliedCut() => $_ensure(5);
+
+  @$pb.TagNumber(7)
+  OperationalSettingsChangeMode get changeMode => $_getN(6);
+  @$pb.TagNumber(7)
+  set changeMode(OperationalSettingsChangeMode value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasChangeMode() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearChangeMode() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  LogPolicyAdoptionState get adoption => $_getN(7);
+  @$pb.TagNumber(8)
+  set adoption(LogPolicyAdoptionState value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasAdoption() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearAdoption() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  OperationalSettingsApplicationState get application => $_getN(8);
+  @$pb.TagNumber(9)
+  set application(OperationalSettingsApplicationState value) =>
+      $_setField(9, value);
+  @$pb.TagNumber(9)
+  $core.bool hasApplication() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearApplication() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  OperationalSettingsError get error => $_getN(9);
+  @$pb.TagNumber(10)
+  set error(OperationalSettingsError value) => $_setField(10, value);
+  @$pb.TagNumber(10)
+  $core.bool hasError() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearError() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $core.bool get restartRequired => $_getBF(10);
+  @$pb.TagNumber(11)
+  set restartRequired($core.bool value) => $_setBool(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasRestartRequired() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearRestartRequired() => $_clearField(11);
+
+  @$pb.TagNumber(12)
+  LogPolicyPreparationReference get preparation => $_getN(11);
+  @$pb.TagNumber(12)
+  set preparation(LogPolicyPreparationReference value) => $_setField(12, value);
+  @$pb.TagNumber(12)
+  $core.bool hasPreparation() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearPreparation() => $_clearField(12);
+  @$pb.TagNumber(12)
+  LogPolicyPreparationReference ensurePreparation() => $_ensure(11);
+
+  /// Actual local Search engine fingerprint, including the excluded baseline.
+  @$pb.TagNumber(13)
+  $core.String get effectiveCompatibilityFingerprint => $_getSZ(12);
+  @$pb.TagNumber(13)
+  set effectiveCompatibilityFingerprint($core.String value) =>
+      $_setString(12, value);
+  @$pb.TagNumber(13)
+  $core.bool hasEffectiveCompatibilityFingerprint() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearEffectiveCompatibilityFingerprint() => $_clearField(13);
+}
+
+class GetOperationalSettingsRequest extends $pb.GeneratedMessage {
+  factory GetOperationalSettingsRequest() => create();
+
+  GetOperationalSettingsRequest._();
+
+  factory GetOperationalSettingsRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetOperationalSettingsRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetOperationalSettingsRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetOperationalSettingsRequest clone() =>
+      GetOperationalSettingsRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetOperationalSettingsRequest copyWith(
+          void Function(GetOperationalSettingsRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetOperationalSettingsRequest))
+          as GetOperationalSettingsRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetOperationalSettingsRequest create() =>
+      GetOperationalSettingsRequest._();
+  @$core.override
+  GetOperationalSettingsRequest createEmptyInstance() => create();
+  static $pb.PbList<GetOperationalSettingsRequest> createRepeated() =>
+      $pb.PbList<GetOperationalSettingsRequest>();
+  @$core.pragma('dart2js:noInline')
+  static GetOperationalSettingsRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetOperationalSettingsRequest>(create);
+  static GetOperationalSettingsRequest? _defaultInstance;
+}
+
+class GetOperationalSettingsResponse extends $pb.GeneratedMessage {
+  factory GetOperationalSettingsResponse({
+    $core.int? schemaVersion,
+    $core.int? member,
+    $core.Iterable<OperationalGroupSettings>? groups,
+    SecurityVersion? version,
+  }) {
+    final result = create();
+    if (schemaVersion != null) result.schemaVersion = schemaVersion;
+    if (member != null) result.member = member;
+    if (groups != null) result.groups.addAll(groups);
+    if (version != null) result.version = version;
+    return result;
+  }
+
+  GetOperationalSettingsResponse._();
+
+  factory GetOperationalSettingsResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetOperationalSettingsResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetOperationalSettingsResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(
+        1, _omitFieldNames ? '' : 'schemaVersion', $pb.PbFieldType.OU3)
+    ..a<$core.int>(2, _omitFieldNames ? '' : 'member', $pb.PbFieldType.OU3)
+    ..pc<OperationalGroupSettings>(
+        3, _omitFieldNames ? '' : 'groups', $pb.PbFieldType.PM,
+        subBuilder: OperationalGroupSettings.create)
+    ..aOM<SecurityVersion>(4, _omitFieldNames ? '' : 'version',
+        subBuilder: SecurityVersion.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetOperationalSettingsResponse clone() =>
+      GetOperationalSettingsResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetOperationalSettingsResponse copyWith(
+          void Function(GetOperationalSettingsResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetOperationalSettingsResponse))
+          as GetOperationalSettingsResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetOperationalSettingsResponse create() =>
+      GetOperationalSettingsResponse._();
+  @$core.override
+  GetOperationalSettingsResponse createEmptyInstance() => create();
+  static $pb.PbList<GetOperationalSettingsResponse> createRepeated() =>
+      $pb.PbList<GetOperationalSettingsResponse>();
+  @$core.pragma('dart2js:noInline')
+  static GetOperationalSettingsResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetOperationalSettingsResponse>(create);
+  static GetOperationalSettingsResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get schemaVersion => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set schemaVersion($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSchemaVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSchemaVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.int get member => $_getIZ(1);
+  @$pb.TagNumber(2)
+  set member($core.int value) => $_setUnsignedInt32(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasMember() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearMember() => $_clearField(2);
+
+  /// Exactly eight groups in the stable OperationalGroup ordering.
+  @$pb.TagNumber(3)
+  $pb.PbList<OperationalGroupSettings> get groups => $_getList(2);
+
+  @$pb.TagNumber(4)
+  SecurityVersion get version => $_getN(3);
+  @$pb.TagNumber(4)
+  set version(SecurityVersion value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasVersion() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearVersion() => $_clearField(4);
+  @$pb.TagNumber(4)
+  SecurityVersion ensureVersion() => $_ensure(3);
+}
+
+/// Connected-node sample only; this does not predict cluster-wide deletions or
+/// freeze the catalog for future scheduled backup production.
+class OperationalBackupRetentionPreview extends $pb.GeneratedMessage {
+  factory OperationalBackupRetentionPreview({
+    $fixnum.Int64? validBackups,
+    $fixnum.Int64? validBytes,
+    $fixnum.Int64? pruneBackups,
+    $fixnum.Int64? pruneBytes,
+    $core.bool? complete,
+    $core.String? fingerprint,
+  }) {
+    final result = create();
+    if (validBackups != null) result.validBackups = validBackups;
+    if (validBytes != null) result.validBytes = validBytes;
+    if (pruneBackups != null) result.pruneBackups = pruneBackups;
+    if (pruneBytes != null) result.pruneBytes = pruneBytes;
+    if (complete != null) result.complete = complete;
+    if (fingerprint != null) result.fingerprint = fingerprint;
+    return result;
+  }
+
+  OperationalBackupRetentionPreview._();
+
+  factory OperationalBackupRetentionPreview.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalBackupRetentionPreview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalBackupRetentionPreview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'validBackups', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'validBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'pruneBackups', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'pruneBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOB(5, _omitFieldNames ? '' : 'complete')
+    ..aOS(6, _omitFieldNames ? '' : 'fingerprint')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalBackupRetentionPreview clone() =>
+      OperationalBackupRetentionPreview()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalBackupRetentionPreview copyWith(
+          void Function(OperationalBackupRetentionPreview) updates) =>
+      super.copyWith((message) =>
+              updates(message as OperationalBackupRetentionPreview))
+          as OperationalBackupRetentionPreview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalBackupRetentionPreview create() =>
+      OperationalBackupRetentionPreview._();
+  @$core.override
+  OperationalBackupRetentionPreview createEmptyInstance() => create();
+  static $pb.PbList<OperationalBackupRetentionPreview> createRepeated() =>
+      $pb.PbList<OperationalBackupRetentionPreview>();
+  @$core.pragma('dart2js:noInline')
+  static OperationalBackupRetentionPreview getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalBackupRetentionPreview>(
+          create);
+  static OperationalBackupRetentionPreview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get validBackups => $_getI64(0);
+  @$pb.TagNumber(1)
+  set validBackups($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasValidBackups() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearValidBackups() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get validBytes => $_getI64(1);
+  @$pb.TagNumber(2)
+  set validBytes($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasValidBytes() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearValidBytes() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get pruneBackups => $_getI64(2);
+  @$pb.TagNumber(3)
+  set pruneBackups($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasPruneBackups() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearPruneBackups() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get pruneBytes => $_getI64(3);
+  @$pb.TagNumber(4)
+  set pruneBytes($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasPruneBytes() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearPruneBytes() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.bool get complete => $_getBF(4);
+  @$pb.TagNumber(5)
+  set complete($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasComplete() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearComplete() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get fingerprint => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set fingerprint($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasFingerprint() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearFingerprint() => $_clearField(6);
+}
+
+class PreviewOperationalPolicyRequest extends $pb.GeneratedMessage {
+  factory PreviewOperationalPolicyRequest({
+    OperationalPolicyValues? values,
+  }) {
+    final result = create();
+    if (values != null) result.values = values;
+    return result;
+  }
+
+  PreviewOperationalPolicyRequest._();
+
+  factory PreviewOperationalPolicyRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PreviewOperationalPolicyRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PreviewOperationalPolicyRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<OperationalPolicyValues>(1, _omitFieldNames ? '' : 'values',
+        subBuilder: OperationalPolicyValues.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PreviewOperationalPolicyRequest clone() =>
+      PreviewOperationalPolicyRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PreviewOperationalPolicyRequest copyWith(
+          void Function(PreviewOperationalPolicyRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as PreviewOperationalPolicyRequest))
+          as PreviewOperationalPolicyRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PreviewOperationalPolicyRequest create() =>
+      PreviewOperationalPolicyRequest._();
+  @$core.override
+  PreviewOperationalPolicyRequest createEmptyInstance() => create();
+  static $pb.PbList<PreviewOperationalPolicyRequest> createRepeated() =>
+      $pb.PbList<PreviewOperationalPolicyRequest>();
+  @$core.pragma('dart2js:noInline')
+  static PreviewOperationalPolicyRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PreviewOperationalPolicyRequest>(
+          create);
+  static PreviewOperationalPolicyRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  OperationalPolicyValues get values => $_getN(0);
+  @$pb.TagNumber(1)
+  set values(OperationalPolicyValues value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasValues() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearValues() => $_clearField(1);
+  @$pb.TagNumber(1)
+  OperationalPolicyValues ensureValues() => $_ensure(0);
+}
+
+class PreviewOperationalPolicyResponse extends $pb.GeneratedMessage {
+  factory PreviewOperationalPolicyResponse({
+    $core.int? schemaVersion,
+    OperationalGroup? group,
+    $core.String? compatibilityFingerprint,
+    SecurityVersion? version,
+    OperationalBackupRetentionPreview? backupRetention,
+  }) {
+    final result = create();
+    if (schemaVersion != null) result.schemaVersion = schemaVersion;
+    if (group != null) result.group = group;
+    if (compatibilityFingerprint != null)
+      result.compatibilityFingerprint = compatibilityFingerprint;
+    if (version != null) result.version = version;
+    if (backupRetention != null) result.backupRetention = backupRetention;
+    return result;
+  }
+
+  PreviewOperationalPolicyResponse._();
+
+  factory PreviewOperationalPolicyResponse.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PreviewOperationalPolicyResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PreviewOperationalPolicyResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(
+        1, _omitFieldNames ? '' : 'schemaVersion', $pb.PbFieldType.OU3)
+    ..e<OperationalGroup>(2, _omitFieldNames ? '' : 'group', $pb.PbFieldType.OE,
+        defaultOrMaker: OperationalGroup.OPERATIONAL_GROUP_UNSPECIFIED,
+        valueOf: OperationalGroup.valueOf,
+        enumValues: OperationalGroup.values)
+    ..aOS(3, _omitFieldNames ? '' : 'compatibilityFingerprint')
+    ..aOM<SecurityVersion>(4, _omitFieldNames ? '' : 'version',
+        subBuilder: SecurityVersion.create)
+    ..aOM<OperationalBackupRetentionPreview>(
+        5, _omitFieldNames ? '' : 'backupRetention',
+        subBuilder: OperationalBackupRetentionPreview.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PreviewOperationalPolicyResponse clone() =>
+      PreviewOperationalPolicyResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PreviewOperationalPolicyResponse copyWith(
+          void Function(PreviewOperationalPolicyResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as PreviewOperationalPolicyResponse))
+          as PreviewOperationalPolicyResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PreviewOperationalPolicyResponse create() =>
+      PreviewOperationalPolicyResponse._();
+  @$core.override
+  PreviewOperationalPolicyResponse createEmptyInstance() => create();
+  static $pb.PbList<PreviewOperationalPolicyResponse> createRepeated() =>
+      $pb.PbList<PreviewOperationalPolicyResponse>();
+  @$core.pragma('dart2js:noInline')
+  static PreviewOperationalPolicyResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PreviewOperationalPolicyResponse>(
+          create);
+  static PreviewOperationalPolicyResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get schemaVersion => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set schemaVersion($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSchemaVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSchemaVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  OperationalGroup get group => $_getN(1);
+  @$pb.TagNumber(2)
+  set group(OperationalGroup value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasGroup() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearGroup() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get compatibilityFingerprint => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set compatibilityFingerprint($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCompatibilityFingerprint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCompatibilityFingerprint() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  SecurityVersion get version => $_getN(3);
+  @$pb.TagNumber(4)
+  set version(SecurityVersion value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasVersion() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearVersion() => $_clearField(4);
+  @$pb.TagNumber(4)
+  SecurityVersion ensureVersion() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  OperationalBackupRetentionPreview get backupRetention => $_getN(4);
+  @$pb.TagNumber(5)
+  set backupRetention(OperationalBackupRetentionPreview value) =>
+      $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasBackupRetention() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearBackupRetention() => $_clearField(5);
+  @$pb.TagNumber(5)
+  OperationalBackupRetentionPreview ensureBackupRetention() => $_ensure(4);
+}
+
 enum SecurityChange_Operation {
   putIssuer,
   disableIssuer,
@@ -4861,6 +6966,7 @@ enum SecurityChange_Operation {
   revokeUserSessions,
   putRegistrationPolicy,
   putLogPolicy,
+  putOperationalPolicy,
   notSet
 }
 
@@ -4878,6 +6984,7 @@ class SecurityChange extends $pb.GeneratedMessage {
     SecurityIdentity? revokeUserSessions,
     SecurityRegistrationPolicy? putRegistrationPolicy,
     ManagedLogPolicy? putLogPolicy,
+    OperationalPolicyChange? putOperationalPolicy,
   }) {
     final result = create();
     if (putIssuer != null) result.putIssuer = putIssuer;
@@ -4894,6 +7001,8 @@ class SecurityChange extends $pb.GeneratedMessage {
     if (putRegistrationPolicy != null)
       result.putRegistrationPolicy = putRegistrationPolicy;
     if (putLogPolicy != null) result.putLogPolicy = putLogPolicy;
+    if (putOperationalPolicy != null)
+      result.putOperationalPolicy = putOperationalPolicy;
     return result;
   }
 
@@ -4920,13 +7029,14 @@ class SecurityChange extends $pb.GeneratedMessage {
     10: SecurityChange_Operation.revokeUserSessions,
     11: SecurityChange_Operation.putRegistrationPolicy,
     12: SecurityChange_Operation.putLogPolicy,
+    13: SecurityChange_Operation.putOperationalPolicy,
     0: SecurityChange_Operation.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SecurityChange',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     ..aOM<SecurityIssuer>(1, _omitFieldNames ? '' : 'putIssuer',
         subBuilder: SecurityIssuer.create)
     ..aOS(2, _omitFieldNames ? '' : 'disableIssuer')
@@ -4949,6 +7059,9 @@ class SecurityChange extends $pb.GeneratedMessage {
         subBuilder: SecurityRegistrationPolicy.create)
     ..aOM<ManagedLogPolicy>(12, _omitFieldNames ? '' : 'putLogPolicy',
         subBuilder: ManagedLogPolicy.create)
+    ..aOM<OperationalPolicyChange>(
+        13, _omitFieldNames ? '' : 'putOperationalPolicy',
+        subBuilder: OperationalPolicyChange.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5102,6 +7215,18 @@ class SecurityChange extends $pb.GeneratedMessage {
   void clearPutLogPolicy() => $_clearField(12);
   @$pb.TagNumber(12)
   ManagedLogPolicy ensurePutLogPolicy() => $_ensure(11);
+
+  @$pb.TagNumber(13)
+  OperationalPolicyChange get putOperationalPolicy => $_getN(12);
+  @$pb.TagNumber(13)
+  set putOperationalPolicy(OperationalPolicyChange value) =>
+      $_setField(13, value);
+  @$pb.TagNumber(13)
+  $core.bool hasPutOperationalPolicy() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearPutOperationalPolicy() => $_clearField(13);
+  @$pb.TagNumber(13)
+  OperationalPolicyChange ensurePutOperationalPolicy() => $_ensure(12);
 }
 
 class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
@@ -8040,6 +10165,26 @@ class LanternSecurityServiceApi {
           $pb.ClientContext? ctx, GetLogSettingsRequest request) =>
       _client.invoke<GetLogSettingsResponse>(ctx, 'LanternSecurityService',
           'GetLogSettings', request, GetLogSettingsResponse());
+
+  /// Verified desired state and actual application of the eight closed groups.
+  $async.Future<GetOperationalSettingsResponse> getOperationalSettings(
+          $pb.ClientContext? ctx, GetOperationalSettingsRequest request) =>
+      _client.invoke<GetOperationalSettingsResponse>(
+          ctx,
+          'LanternSecurityService',
+          'GetOperationalSettings',
+          request,
+          GetOperationalSettingsResponse());
+
+  /// Read-only dependency resolution before the existing authoritative review.
+  $async.Future<PreviewOperationalPolicyResponse> previewOperationalPolicy(
+          $pb.ClientContext? ctx, PreviewOperationalPolicyRequest request) =>
+      _client.invoke<PreviewOperationalPolicyResponse>(
+          ctx,
+          'LanternSecurityService',
+          'PreviewOperationalPolicy',
+          request,
+          PreviewOperationalPolicyResponse());
   $async.Future<ListRoleAssignmentsResponse> listRoleAssignments(
           $pb.ClientContext? ctx, ListRoleAssignmentsRequest request) =>
       _client.invoke<ListRoleAssignmentsResponse>(ctx, 'LanternSecurityService',

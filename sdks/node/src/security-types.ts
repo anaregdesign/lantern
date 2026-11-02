@@ -1,3 +1,4 @@
+import { validateOperationalChanges } from "./security-operational.js";
 import { create, fromJsonString, toJsonString, type MessageInitShape } from "@bufbuild/protobuf";
 import { reflect, isReflectMessage, type ReflectMessage } from "@bufbuild/protobuf/reflect";
 import {
@@ -212,7 +213,12 @@ export function encodeCurrentLogoutRequest(
 // Generated JSON codecs preserve byte strings and full uint64 values. Reject
 // unsupported nested enums/operations before using a locally retained contract.
 function knownRecoveryMessage(message: ReflectMessage): void {
-  if (message.desc.typeName === "graph.v1.SecurityChange" && !message.oneofCase(message.oneofs[0]!))
+  if (
+    ["graph.v1.SecurityChange", "graph.v1.OperationalPolicyValues"].includes(
+      message.desc.typeName,
+    ) &&
+    !message.oneofCase(message.oneofs[0]!)
+  )
     throw new Error("Invalid retained security operation.");
   for (const field of message.fields) {
     if (!message.isSet(field)) continue;
@@ -238,9 +244,11 @@ function knownRecoveryMessage(message: ReflectMessage): void {
 export function parseCurrentSecurityReview(json: string): CurrentSecurityReview {
   const review = fromJsonString(CurrentSecurityReviewSchema, json);
   knownRecoveryMessage(reflect(CurrentSecurityReviewSchema, review));
+  validateOperationalChanges(review.changes);
   return review;
 }
 export function encodeCurrentSecurityReview(review: CurrentSecurityReview): string {
+  validateOperationalChanges(review.changes);
   knownRecoveryMessage(reflect(CurrentSecurityReviewSchema, review));
   return toJsonString(CurrentSecurityReviewSchema, review);
 }
@@ -255,3 +263,5 @@ export function encodeCurrentSecurityChangeResult(result: CurrentSecurityChangeR
 }
 
 export * from "./security-current.js";
+
+export * from "./security-operational.js";

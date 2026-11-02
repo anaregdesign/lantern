@@ -63,6 +63,12 @@ const (
 	// LanternSecurityServiceGetLogSettingsProcedure is the fully-qualified name of the
 	// LanternSecurityService's GetLogSettings RPC.
 	LanternSecurityServiceGetLogSettingsProcedure = "/graph.v1.LanternSecurityService/GetLogSettings"
+	// LanternSecurityServiceGetOperationalSettingsProcedure is the fully-qualified name of the
+	// LanternSecurityService's GetOperationalSettings RPC.
+	LanternSecurityServiceGetOperationalSettingsProcedure = "/graph.v1.LanternSecurityService/GetOperationalSettings"
+	// LanternSecurityServicePreviewOperationalPolicyProcedure is the fully-qualified name of the
+	// LanternSecurityService's PreviewOperationalPolicy RPC.
+	LanternSecurityServicePreviewOperationalPolicyProcedure = "/graph.v1.LanternSecurityService/PreviewOperationalPolicy"
 	// LanternSecurityServiceListRoleAssignmentsProcedure is the fully-qualified name of the
 	// LanternSecurityService's ListRoleAssignments RPC.
 	LanternSecurityServiceListRoleAssignmentsProcedure = "/graph.v1.LanternSecurityService/ListRoleAssignments"
@@ -111,6 +117,10 @@ type LanternSecurityServiceClient interface {
 	GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error)
 	// Contacted-node application state; a committed policy is not all-node application.
 	GetLogSettings(context.Context, *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error)
+	// Verified desired state and actual application of the eight closed groups.
+	GetOperationalSettings(context.Context, *connect.Request[v1.GetOperationalSettingsRequest]) (*connect.Response[v1.GetOperationalSettingsResponse], error)
+	// Read-only dependency resolution before the existing authoritative review.
+	PreviewOperationalPolicy(context.Context, *connect.Request[v1.PreviewOperationalPolicyRequest]) (*connect.Response[v1.PreviewOperationalPolicyResponse], error)
 	ListRoleAssignments(context.Context, *connect.Request[v1.ListRoleAssignmentsRequest]) (*connect.Response[v1.ListRoleAssignmentsResponse], error)
 	ListSecurityAudit(context.Context, *connect.Request[v1.ListSecurityAuditRequest]) (*connect.Response[v1.ListSecurityAuditResponse], error)
 	GetRoleTemplates(context.Context, *connect.Request[v1.GetRoleTemplatesRequest]) (*connect.Response[v1.GetRoleTemplatesResponse], error)
@@ -198,6 +208,18 @@ func NewLanternSecurityServiceClient(httpClient connect.HTTPClient, baseURL stri
 			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetLogSettings")),
 			connect.WithClientOptions(opts...),
 		),
+		getOperationalSettings: connect.NewClient[v1.GetOperationalSettingsRequest, v1.GetOperationalSettingsResponse](
+			httpClient,
+			baseURL+LanternSecurityServiceGetOperationalSettingsProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetOperationalSettings")),
+			connect.WithClientOptions(opts...),
+		),
+		previewOperationalPolicy: connect.NewClient[v1.PreviewOperationalPolicyRequest, v1.PreviewOperationalPolicyResponse](
+			httpClient,
+			baseURL+LanternSecurityServicePreviewOperationalPolicyProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("PreviewOperationalPolicy")),
+			connect.WithClientOptions(opts...),
+		),
 		listRoleAssignments: connect.NewClient[v1.ListRoleAssignmentsRequest, v1.ListRoleAssignmentsResponse](
 			httpClient,
 			baseURL+LanternSecurityServiceListRoleAssignmentsProcedure,
@@ -279,6 +301,8 @@ type lanternSecurityServiceClient struct {
 	getUser                          *connect.Client[v1.GetUserRequest, v1.GetUserResponse]
 	getRegistrationPolicy            *connect.Client[v1.GetRegistrationPolicyRequest, v1.GetRegistrationPolicyResponse]
 	getLogSettings                   *connect.Client[v1.GetLogSettingsRequest, v1.GetLogSettingsResponse]
+	getOperationalSettings           *connect.Client[v1.GetOperationalSettingsRequest, v1.GetOperationalSettingsResponse]
+	previewOperationalPolicy         *connect.Client[v1.PreviewOperationalPolicyRequest, v1.PreviewOperationalPolicyResponse]
 	listRoleAssignments              *connect.Client[v1.ListRoleAssignmentsRequest, v1.ListRoleAssignmentsResponse]
 	listSecurityAudit                *connect.Client[v1.ListSecurityAuditRequest, v1.ListSecurityAuditResponse]
 	getRoleTemplates                 *connect.Client[v1.GetRoleTemplatesRequest, v1.GetRoleTemplatesResponse]
@@ -340,6 +364,16 @@ func (c *lanternSecurityServiceClient) GetRegistrationPolicy(ctx context.Context
 // GetLogSettings calls graph.v1.LanternSecurityService.GetLogSettings.
 func (c *lanternSecurityServiceClient) GetLogSettings(ctx context.Context, req *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error) {
 	return c.getLogSettings.CallUnary(ctx, req)
+}
+
+// GetOperationalSettings calls graph.v1.LanternSecurityService.GetOperationalSettings.
+func (c *lanternSecurityServiceClient) GetOperationalSettings(ctx context.Context, req *connect.Request[v1.GetOperationalSettingsRequest]) (*connect.Response[v1.GetOperationalSettingsResponse], error) {
+	return c.getOperationalSettings.CallUnary(ctx, req)
+}
+
+// PreviewOperationalPolicy calls graph.v1.LanternSecurityService.PreviewOperationalPolicy.
+func (c *lanternSecurityServiceClient) PreviewOperationalPolicy(ctx context.Context, req *connect.Request[v1.PreviewOperationalPolicyRequest]) (*connect.Response[v1.PreviewOperationalPolicyResponse], error) {
+	return c.previewOperationalPolicy.CallUnary(ctx, req)
 }
 
 // ListRoleAssignments calls graph.v1.LanternSecurityService.ListRoleAssignments.
@@ -413,6 +447,10 @@ type LanternSecurityServiceHandler interface {
 	GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error)
 	// Contacted-node application state; a committed policy is not all-node application.
 	GetLogSettings(context.Context, *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error)
+	// Verified desired state and actual application of the eight closed groups.
+	GetOperationalSettings(context.Context, *connect.Request[v1.GetOperationalSettingsRequest]) (*connect.Response[v1.GetOperationalSettingsResponse], error)
+	// Read-only dependency resolution before the existing authoritative review.
+	PreviewOperationalPolicy(context.Context, *connect.Request[v1.PreviewOperationalPolicyRequest]) (*connect.Response[v1.PreviewOperationalPolicyResponse], error)
 	ListRoleAssignments(context.Context, *connect.Request[v1.ListRoleAssignmentsRequest]) (*connect.Response[v1.ListRoleAssignmentsResponse], error)
 	ListSecurityAudit(context.Context, *connect.Request[v1.ListSecurityAuditRequest]) (*connect.Response[v1.ListSecurityAuditResponse], error)
 	GetRoleTemplates(context.Context, *connect.Request[v1.GetRoleTemplatesRequest]) (*connect.Response[v1.GetRoleTemplatesResponse], error)
@@ -494,6 +532,18 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 		LanternSecurityServiceGetLogSettingsProcedure,
 		svc.GetLogSettings,
 		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetLogSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternSecurityServiceGetOperationalSettingsHandler := connect.NewUnaryHandler(
+		LanternSecurityServiceGetOperationalSettingsProcedure,
+		svc.GetOperationalSettings,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetOperationalSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternSecurityServicePreviewOperationalPolicyHandler := connect.NewUnaryHandler(
+		LanternSecurityServicePreviewOperationalPolicyProcedure,
+		svc.PreviewOperationalPolicy,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("PreviewOperationalPolicy")),
 		connect.WithHandlerOptions(opts...),
 	)
 	lanternSecurityServiceListRoleAssignmentsHandler := connect.NewUnaryHandler(
@@ -584,6 +634,10 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 			lanternSecurityServiceGetRegistrationPolicyHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceGetLogSettingsProcedure:
 			lanternSecurityServiceGetLogSettingsHandler.ServeHTTP(w, r)
+		case LanternSecurityServiceGetOperationalSettingsProcedure:
+			lanternSecurityServiceGetOperationalSettingsHandler.ServeHTTP(w, r)
+		case LanternSecurityServicePreviewOperationalPolicyProcedure:
+			lanternSecurityServicePreviewOperationalPolicyHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceListRoleAssignmentsProcedure:
 			lanternSecurityServiceListRoleAssignmentsHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceListSecurityAuditProcedure:
@@ -653,6 +707,14 @@ func (UnimplementedLanternSecurityServiceHandler) GetRegistrationPolicy(context.
 
 func (UnimplementedLanternSecurityServiceHandler) GetLogSettings(context.Context, *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetLogSettings is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) GetOperationalSettings(context.Context, *connect.Request[v1.GetOperationalSettingsRequest]) (*connect.Response[v1.GetOperationalSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetOperationalSettings is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) PreviewOperationalPolicy(context.Context, *connect.Request[v1.PreviewOperationalPolicyRequest]) (*connect.Response[v1.PreviewOperationalPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.PreviewOperationalPolicy is not implemented"))
 }
 
 func (UnimplementedLanternSecurityServiceHandler) ListRoleAssignments(context.Context, *connect.Request[v1.ListRoleAssignmentsRequest]) (*connect.Response[v1.ListRoleAssignmentsResponse], error) {
