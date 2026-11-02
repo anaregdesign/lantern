@@ -19,7 +19,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 type receiptSnapshotTestStream struct {
@@ -274,7 +274,7 @@ func receiptSnapshotCollectorFixtureWithTwoActive(
 	retiredConfig := mutationreceipt.RetiredCatalogConfig{
 		ActiveEpoch: policy.Epoch, MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
 	}
-	capture, err := service.DecodeReceiptSnapshotFrames(frames, policy, retiredConfig)
+	capture, err := dataruntime.DecodeReceiptSnapshotFrames(frames, policy, retiredConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func receiptSnapshotCollectorFixtureWithTwoActive(
 	}
 	capture.Policy.ClockHighWater = capture.Receipts.ClockHighWater()
 	capture.Retired.ClockHighWaterMillis = capture.Receipts.ClockHighWaterMillis
-	frames, err = service.PrepareReceiptSnapshotFrames(capture, policy)
+	frames, err = dataruntime.PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func receiptSnapshotCollectorFixtureWithRetired(
 	retiredConfig := mutationreceipt.RetiredCatalogConfig{
 		ActiveEpoch: policy.Epoch, MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
 	}
-	capture, err := service.DecodeReceiptSnapshotFrames(frames, policy, retiredConfig)
+	capture, err := dataruntime.DecodeReceiptSnapshotFrames(frames, policy, retiredConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func receiptSnapshotCollectorFixtureWithRetired(
 			State: state,
 		})
 	}
-	frames, err = service.PrepareReceiptSnapshotFrames(capture, policy)
+	frames, err = dataruntime.PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
 		t.Fatal(err)
 	}

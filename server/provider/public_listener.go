@@ -6,8 +6,8 @@ import (
 	"connectrpc.com/grpcreflect"
 	"errors"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/service"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"log/slog"
 	"net"
@@ -16,7 +16,7 @@ import (
 
 // NewPublicLanternListener is the production public composition. Complete peer
 // replication and private policy renewal are never registered on this mux.
-func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConfig, obs ObservabilityConfig, cors CORSConfig, svc *service.LanternService, runtime *SecurityRuntime, changes ChangeConfig, val *ValidationInterceptor, rl *RateLimitInterceptor, logInt *LoggingInterceptor, met *PrometheusInterceptor, slow *SlowRPCInterceptor, hc *HealthChecker, logger *slog.Logger, certified publicSecurityCertified) (*LanternListener, error) {
+func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConfig, obs ObservabilityConfig, cors CORSConfig, svc *dataruntime.Executor, runtime *SecurityRuntime, changes ChangeConfig, val *ValidationInterceptor, rl *RateLimitInterceptor, logInt *LoggingInterceptor, met *PrometheusInterceptor, slow *SlowRPCInterceptor, hc *HealthChecker, logger *slog.Logger, certified publicSecurityCertified) (*LanternListener, error) {
 	if runtime == nil || certified.runtime != runtime || certified.primary != svc {
 		return nil, errors.New("public listener requires security certification")
 	}

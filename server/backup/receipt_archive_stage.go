@@ -10,8 +10,8 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 // receiptWholeStateStage is detached from every serving component. In
@@ -23,7 +23,7 @@ type receiptWholeStateStage struct {
 	graph          *graphcache.GraphCache[string, *pb.Vertex]
 	receipts       *mutationreceipt.Store
 	policy         mutationreceipt.Config
-	origins        []service.OriginState
+	origins        []dataruntime.OriginState
 	cutoffLocalSeq uint64
 	cutoffHLC      hlc.Timestamp
 }
@@ -119,7 +119,7 @@ func stageReceiptWholeStateArchive(
 	}
 	return &receiptWholeStateStage{
 		graph: graph, receipts: store, policy: archive.Policy,
-		origins:        append([]service.OriginState(nil), archive.Origins...),
+		origins:        append([]dataruntime.OriginState(nil), archive.Origins...),
 		cutoffLocalSeq: archive.Graph[0].GetHeader().GetCutoffLocalSeq(), cutoffHLC: cutoff,
 	}, nil
 }

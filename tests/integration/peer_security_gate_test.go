@@ -424,7 +424,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 						receiveGraph = runtime.GraphCache()
 						return
 					}
-					peer, err := runtime.NewLanternReplicationService(f.primary[i])
+					peer, err := runtime.NewReplication(f.primary[i])
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -898,9 +898,9 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = data.Close() })
-		primary := data.NewLanternService(nil).WithDataNamespace()
+		primary := data.NewExecutor(nil).WithDataNamespace()
 		f.primary[i] = primary
-		peer, err := data.NewLanternReplicationService(primary)
+		peer, err := data.NewReplication(primary)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1086,7 +1086,7 @@ func TestPeerSecurityEdgeOnlyHistorySubscribeSnapshotAndTombstoneRealConnect(t *
 		graphs[index].RetainDanglingEdgeHistory()
 		f.primary[index].WithTombstoneTTL(time.Hour)
 		if index == 0 {
-			peer, err := runtime.NewLanternReplicationService(f.primary[index])
+			peer, err := runtime.NewReplication(f.primary[index])
 			if err != nil {
 				t.Fatal(err)
 			}

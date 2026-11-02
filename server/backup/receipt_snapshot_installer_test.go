@@ -13,15 +13,15 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/replication"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 func newReceiptSnapshotInstallerFixture(
 	t *testing.T,
 	frames []*pb.SnapshotResponse,
 	limits ReceiptSnapshotCollectorLimits,
-) (*ReceiptSnapshotInstaller, *service.ServingRuntime) {
+) (*ReceiptSnapshotInstaller, *dataruntime.ServingRuntime) {
 	t.Helper()
 	policy := receiptSnapshotPolicyFromHeader(t, frames[0].GetHeader())
 	dir := t.TempDir()
@@ -29,7 +29,7 @@ func newReceiptSnapshotInstallerFixture(
 		graph.EnablePrefixIndex(func(key string) string { return key })
 		return nil
 	}
-	config := service.DurableReceiptWALRuntimeConfig{
+	config := dataruntime.DurableReceiptWALRuntimeConfig{
 		Path:           filepath.Join(dir, "receipts.wal"),
 		Receipt:        policy,
 		Log:            mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
@@ -39,13 +39,13 @@ func newReceiptSnapshotInstallerFixture(
 		Now:            policy.ClockHighWater,
 		BaselineCodec:  ReceiptBaselineCodec{},
 	}
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := dataruntime.CreateDurableReceiptWALServingRuntime(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	replicationService, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	replicationService, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestReceiptSnapshotInstallerPreservesTargetRetiredEvidence(t *testing.T) {
 		frames,
 		receiptSnapshotCollectorLimits(),
 	)
-	capture, err := service.DecodeReceiptSnapshotFrames(
+	capture, err := dataruntime.DecodeReceiptSnapshotFrames(
 		frames,
 		policy,
 		receiptSnapshotRetiredConfig(policy),

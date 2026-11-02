@@ -750,8 +750,8 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup()
 	})
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-	replicationService, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(2 * time.Hour)
+	replicationService, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2270,7 +2270,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			restorePrimary := restarted.NewLanternService(nil).
+			restorePrimary := restarted.NewExecutor(nil).
 				WithTombstoneTTL(2 * time.Hour)
 			if err := restarted.CompleteStartupRestore(ctx, restorePrimary); err != nil {
 				_ = restarted.Close()
@@ -2324,7 +2324,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			restorePrimary := fresh.NewLanternService(nil).
+			restorePrimary := fresh.NewExecutor(nil).
 				WithTombstoneTTL(2 * time.Hour)
 			if err := fresh.CompleteStartupRestore(ctx, restorePrimary); err != nil {
 				_ = fresh.Close()
@@ -2564,8 +2564,8 @@ func mountPublicReceiptWireRuntime(
 	tokens ...string,
 ) publicReceiptWireServer {
 	t.Helper()
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(tombstoneTTL)
-	replicationService, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(tombstoneTTL)
+	replicationService, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4309,8 +4309,8 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = runtime.Close() })
-		primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-		replicationService, err := runtime.NewLanternReplicationService(primary)
+		primary := runtime.NewExecutor(nil).WithTombstoneTTL(2 * time.Hour)
+		replicationService, err := runtime.NewReplication(primary)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6205,8 +6205,8 @@ func mountDurableReceiptWireRuntime(
 	runtime *service.ServingRuntime,
 ) (*connectTestServer, *client.Lantern) {
 	t.Helper()
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-	replication, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(2 * time.Hour)
+	replication, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6945,8 +6945,8 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = runtime.Close() })
-			primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-			replica, err := runtime.NewLanternReplicationService(primary)
+			primary := runtime.NewExecutor(nil).WithTombstoneTTL(2 * time.Hour)
+			replica, err := runtime.NewReplication(primary)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7236,8 +7236,8 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 		t.Fatal("reopen follower FileWAL", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-	restartedReplica, err := restarted.NewLanternReplicationService(restartedPrimary)
+	restartedPrimary := restarted.NewExecutor(nil).WithTombstoneTTL(2 * time.Hour)
+	restartedReplica, err := restarted.NewReplication(restartedPrimary)
 	if err != nil {
 		t.Fatal(err)
 	}

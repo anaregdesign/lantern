@@ -807,7 +807,7 @@ def _validate_normal_policy(root, scenario, expected, report):
          and observer["observer_go_version"] == baseline["observer_go_version"] == version.decode().split()[2]
          and observer["buildinfo_sha256"] == build_sha, "prebuilt goroutine observer evidence differs")
     source_names = ("server/internal/security/control_renewal_network_test.go",
-                    "server/service/replication_delivery_test.go", "server/replication/pump_test.go")
+                    "server/internal/dataruntime/replication_delivery_test.go", "server/replication/pump_test.go")
     need(isinstance(data["owner_evidence"], list) and len(data["owner_evidence"]) == 3,
          "source-lifecycle reference scope missing")
     for ref, suffix in zip(data["owner_evidence"], source_names):

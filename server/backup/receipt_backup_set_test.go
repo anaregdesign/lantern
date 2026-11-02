@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func completedReceiptBackupSet(
 	t *testing.T,
-) (*Backupper, wholeStateArchive, service.ReceiptWholeStateBackupCapture, *receiptBackupSetSource, loadedReceiptBackupSet) {
+) (*Backupper, wholeStateArchive, dataruntime.ReceiptWholeStateBackupCapture, *receiptBackupSetSource, loadedReceiptBackupSet) {
 	t.Helper()
 	archive := wholeStateArchiveFixture(t)
 	capture := producerBackupCapture(archive)

@@ -5,8 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sync"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,50 +14,39 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
-
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// newConnectTestClient starts an h2c httptest server in front of the
-// supplied adapters and returns a Connect client wired to it. The cleanup
-// closes the listener.
-//
-// Why h2c (rather than TLS): NewConnectServer in production mounts h2c on
-// the additive listener, so the test exercises the exact same handler
-// stack. h2c also lets server-streaming RPCs work over HTTP/2 without
-// the test having to juggle self-signed certificates.
-func newConnectTestClient(
+// These tests exercise the actual transport against the executor's public
+// entry point. Private publication and WAL fault injection remain with the
+// dataruntime owner, where no transport or test-only state export is needed.
+func newConnectTestClients(
 	t *testing.T,
 	svc *LanternService,
 	rep *LanternReplicationService,
-) graphv1connect.LanternServiceClient {
+	options ...connect.ClientOption,
+) (graphv1connect.LanternServiceClient, graphv1connect.LanternReplicationServiceClient) {
 	t.Helper()
-
 	mux := http.NewServeMux()
-	mux.Handle(graphv1connect.NewLanternServiceHandler(
-		NewLanternServiceConnectHandler(svc),
-	))
-	if rep != nil {
-		mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(
-			NewLanternReplicationServiceConnectHandler(rep),
-		))
-	}
+	mux.Handle(graphv1connect.NewLanternServiceHandler(NewLanternServiceConnectHandler(svc)))
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(NewLanternReplicationServiceConnectHandler(rep)))
 	srv := httptest.NewUnstartedServer(mux)
-	serverProtocols := new(http.Protocols)
-	serverProtocols.SetHTTP1(true)
-	serverProtocols.SetUnencryptedHTTP2(true)
-	srv.Config.Protocols = serverProtocols
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protocols
 	srv.Start()
 	t.Cleanup(srv.Close)
 
 	clientProtocols := new(http.Protocols)
 	clientProtocols.SetUnencryptedHTTP2(true)
-	httpClient := &http.Client{
-		Transport: &http.Transport{Protocols: clientProtocols},
-	}
-	return graphv1connect.NewLanternServiceClient(httpClient, srv.URL)
+	client := &http.Client{Transport: &http.Transport{Protocols: clientProtocols}}
+	t.Cleanup(client.CloseIdleConnections)
+	return graphv1connect.NewLanternServiceClient(client, srv.URL, options...),
+		graphv1connect.NewLanternReplicationServiceClient(client, srv.URL, options...)
 }
 
 func TestBinaryProtobufContentType(t *testing.T) {
@@ -77,517 +65,191 @@ func TestBinaryProtobufContentType(t *testing.T) {
 	} {
 		t.Run(tc.contentType, func(t *testing.T) {
 			if got := binaryProtobufContentType(tc.contentType); got != tc.binary {
-				t.Fatalf("binaryProtobufContentType(%q) = %t, want %t",
-					tc.contentType, got, tc.binary)
+				t.Fatalf("binaryProtobufContentType(%q) = %t, want %t", tc.contentType, got, tc.binary)
 			}
 		})
 	}
 }
 
-// TestConnectAdapter_PutAndGetVertexRoundTrip is the smoke test for the
-// entire additive Connect path (#337): a real PutVertex / GetVertex pair
-// travels through the Connect-Go client, over h2c, into the adapter, into
-// the underlying *LanternService, back out, and is verified at the client.
-// If any of the 22 unary adapter forwarders are wired wrong this test
-// fails — the round trip explicitly exercises Put and Get.
-func TestConnectAdapter_PutAndGetVertexRoundTrip(t *testing.T) {
-	svc := NewLanternService(newFakeBackend())
-	client := newConnectTestClient(t, svc, nil)
-	ctx := context.Background()
-
-	const key = "users/42"
-	const value = "hello-connect"
-
-	if _, err := client.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{
-		Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: value}},
-	})); err != nil {
-		t.Fatalf("PutVertex: %v", err)
-	}
-
-	getResp, err := client.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: key}))
-	if err != nil {
-		t.Fatalf("GetVertex: %v", err)
-	}
-	got := getResp.Msg.GetVertex()
-	if got == nil {
-		t.Fatal("GetVertex: nil vertex")
-	}
-	if got.Key != key {
-		t.Errorf("key = %q, want %q", got.Key, key)
-	}
-	if s := got.GetString_(); s != value {
-		t.Errorf("value = %q, want %q", s, value)
+func TestConnectAdapter_PublicOperationsH2C(t *testing.T) {
+	for _, namespaced := range []bool{false, true} {
+		name := "unmapped"
+		if namespaced {
+			name = "namespaced"
+		}
+		t.Run(name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			cache.EnablePrefixIndex(func(key string) string { return key })
+			svc := NewLanternService(cache).WithStatusInfo(StatusInfo{Version: "transport-test"})
+			if namespaced {
+				svc.WithDataNamespace()
+			}
+			client, _ := newConnectTestClients(t, svc, nil)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			request := &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+				{Key: "users:42", Value: &pb.Vertex_String_{String_: "first"}},
+				{Key: "users:43", Value: &pb.Vertex_String_{String_: "second"}},
+			}}
+			original := proto.Clone(request)
+			put, err := client.PutVertices(ctx, connect.NewRequest(request))
+			if err != nil || len(put.Msg.GetOutcomes()) != 2 ||
+				put.Msg.GetOutcomes()[0] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
+				put.Msg.GetOutcomes()[1] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+				t.Fatalf("PutVertices = %+v, %v", put, err)
+			}
+			if !proto.Equal(request, original) {
+				t.Fatal("transport changed caller-owned request")
+			}
+			physical := "users:42"
+			if namespaced {
+				physical = "data:" + physical
+			}
+			if stored, ok := cache.GetVertex(physical); !ok || stored.GetKey() != physical {
+				t.Fatalf("physical owner state = %+v, %t", stored, ok)
+			}
+			got, err := client.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "users:42"}))
+			if err != nil || got.Msg.GetVertex().GetKey() != "users:42" || got.Msg.GetVertex().GetString_() != "first" {
+				t.Fatalf("GetVertex = %+v, %v", got, err)
+			}
+			if _, err := client.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "missing"})); connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatalf("missing GetVertex = %v, want NotFound", err)
+			}
+			if _, err := client.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "users:invalid", Expiration: &timestamppb.Timestamp{Nanos: -1}}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("invalid PutVertex expiration = %v, want InvalidArgument", err)
+			}
+			if _, err := client.MutateGraph(ctx, connect.NewRequest(&pb.MutateGraphRequest{Items: make([]*pb.GraphMutationItem, 65)})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("oversized MutateGraph = %v, want InvalidArgument", err)
+			}
+			status, err := client.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+			if err != nil || status.Msg.GetVersion() != "transport-test" {
+				t.Fatalf("GetServerStatus = %+v, %v", status, err)
+			}
+			stream, err := client.BackupSnapshot(ctx, connect.NewRequest(&pb.BackupSnapshotRequest{VertexPrefix: "users:"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			vertices := make(map[string]string)
+			for stream.Receive() {
+				vertex := stream.Msg().GetVertex()
+				if vertex == nil {
+					t.Fatalf("unexpected backup frame = %+v", stream.Msg())
+				}
+				vertices[vertex.GetKey()] = vertex.GetString_()
+			}
+			if err := stream.Err(); err != nil || len(vertices) != 2 || vertices["users:42"] != "first" || vertices["users:43"] != "second" {
+				t.Fatalf("BackupSnapshot logical frames = %+v, %v", vertices, err)
+			}
+		})
 	}
 }
 
-// TestConnectAdapter_GetServerStatus exercises a second unary path so a
-// copy-paste typo in any one of the 22 wrappers (e.g. GetServerStatus
-// accidentally forwarding to GetReplicationStatus) does not slip past
-// the GetVertex test alone.
-func TestConnectAdapter_GetServerStatus(t *testing.T) {
-	svc := NewLanternService(newFakeBackend())
-	client := newConnectTestClient(t, svc, nil)
-	ctx := context.Background()
-
-	resp, err := client.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
-	if err != nil {
-		t.Fatalf("GetServerStatus: %v", err)
-	}
-	if resp == nil || resp.Msg == nil {
-		t.Fatal("GetServerStatus: nil response")
-	}
-}
-
-func TestConnectAdapter_FaultedReceiptRuntimeFailsClosed(t *testing.T) {
-	runtime, svc, replication := newActivatedReceiptService(t, 8)
-	client := newConnectTestClient(t, svc, replication)
-	ctx := context.Background()
-
-	capability, err := client.GetReceiptCapability(
-		ctx,
-		connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
-	)
-	if err != nil || !capability.Msg.GetEnabled() {
-		t.Fatalf("initial capability = %+v, %v", capability, err)
-	}
-	operationID, err := mutationreceipt.NewID(
-		runtime.receipt.epoch,
-		time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second),
-		[24]byte{0x5a},
-	)
+func TestConnectAdapter_ReceiptForwardingH2C(t *testing.T) {
+	now := time.Now()
+	runtime, err := CreateDurableReceiptWALServingRuntime(DurableReceiptWALRuntimeConfig{
+		Path: filepath.Join(t.TempDir(), "receipt.wal"),
+		Receipt: mutationreceipt.Config{Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,
+			MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: now},
+		Log: mutationlog.Options{Capacity: 16, SubscriberBuffer: 2}, DefaultTTL: time.Hour,
+		ConfigureGraph: func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil },
+		NodeID:         hlc.NodeID{0x31}, Now: now,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptContext := &pb.MutationReceiptContext{
-		OperationIds:  [][]byte{operationID.Bytes()},
-		LogicalCallId: []byte{0x6b, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-		Endpoint:      capability.Msg.GetEndpoint(),
-	}
-	if _, err := client.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{
-		Edge: &pb.Edge{
-			Tail:       "faulted",
-			Head:       "protected",
-			Weight:     1,
-			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
-		},
-	})); err != nil {
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewReplication(svc)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	svc.replicationCutMu.Lock()
-	svc.markReceiptCommitFaultLocked()
-	svc.replicationCutMu.Unlock()
-
-	capability, err = client.GetReceiptCapability(
-		ctx,
-		connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
-	)
-	if err != nil || capability.Msg.GetEnabled() || capability.Msg.GetPolicy() != nil ||
-		capability.Msg.GetEndpoint() != nil {
-		t.Fatalf("faulted capability = %+v, %v", capability, err)
+	if err := runtime.CertifyInstallation(svc, replication); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := client.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{
-		OperationId: operationID.Bytes(),
-	})); connect.CodeOf(err) != connect.CodeInternal {
-		t.Fatalf("faulted status = %v, want Internal", err)
+	if err := runtime.CertifyReceiptBackup(svc, replication); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := client.DeleteEdge(ctx, connect.NewRequest(&pb.DeleteEdgeRequest{
-		Tail: "faulted", Head: "protected", ReceiptContext: receiptContext,
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("faulted receipt mutation = %v, want FailedPrecondition", err)
+	if err := runtime.ActivatePublicReceipts(svc, replication); err != nil {
+		t.Fatal(err)
 	}
-	if _, _, ok := runtime.GraphCache().GetEdgeDetail("faulted", "protected"); !ok {
-		t.Fatal("faulted receipt mutation changed the graph")
-	}
-}
-
-func TestConnectAdapter_ReceiptAddPostSyncWALFaultRecoversAtomically(t *testing.T) {
-	runtime, svc, replication := newActivatedReceiptService(t, 8)
-	client := newConnectTestClient(t, svc, replication)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	client, _ := newConnectTestClients(t, svc, replication)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-
 	capability, err := client.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
 	if err != nil || !capability.Msg.GetEnabled() {
-		t.Fatalf("initial capability = %+v, %v", capability, err)
+		t.Fatalf("GetReceiptCapability = %+v, %v", capability, err)
 	}
-	issued := time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second)
-	ids := make([][]byte, 2)
-	for i := range ids {
-		id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, [24]byte{0x71, byte(i + 1)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids[i] = id.Bytes()
+	var epoch mutationreceipt.Epoch
+	if len(capability.Msg.GetPolicy().GetDeploymentEpoch()) != len(epoch) {
+		t.Fatal("capability omitted active epoch")
 	}
-	request := &pb.AddEdgesRequest{
-		Edges: []*pb.Edge{
-			{Tail: "tip-fault", Head: "first", Weight: 2, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
-			{Tail: "tip-fault", Head: "second", Weight: 3, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
-		},
-		ContribIds: [][]byte{
-			bytes.Repeat([]byte{0x71}, len(graphcache.ContribID{})),
-			bytes.Repeat([]byte{0x72}, len(graphcache.ContribID{})),
-		},
-		ReceiptContext: &pb.MutationReceiptContext{
-			OperationIds:  ids,
-			LogicalCallId: bytes.Repeat([]byte{0x71}, 16),
-			Endpoint:      capability.Msg.GetEndpoint(),
-		},
-	}
-	walPath := runtime.receipt.owner.lease.Path()
-	before, err := os.Stat(walPath)
+	copy(epoch[:], capability.Msg.GetPolicy().GetDeploymentEpoch())
+	id, err := mutationreceipt.NewID(epoch, time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second), [24]byte{0x73})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.receipt.owner.tip.Close(); err != nil {
-		t.Fatalf("close tip journal before WAL append: %v", err)
+	request := &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "receipt:key", Value: &pb.Vertex_String_{String_: "once"}}, IfAbsent: true,
+		ReceiptContext: &pb.MutationReceiptContext{OperationIds: [][]byte{id.Bytes()},
+			LogicalCallId: bytes.Repeat([]byte{0x74}, 16), Endpoint: capability.Msg.GetEndpoint()},
 	}
-	if _, err := client.AddEdges(ctx, connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeUnavailable {
-		t.Fatalf("post-Sync tip failure = %v, want Unavailable", err)
-	}
-	after, err := os.Stat(walPath)
-	if err != nil || after.Size() <= before.Size() {
-		t.Fatalf("post-Sync fault did not leave a complete WAL frame: before=%d after=%v error=%v",
-			before.Size(), after, err)
-	}
-	if runtime.ReceiptStats().Entries != 0 || svc.LocalSeq(runtime.clock.NodeID()) != 0 {
-		t.Fatalf("fault published Store or origin: stats=%+v seq=%d",
-			runtime.ReceiptStats(), svc.LocalSeq(runtime.clock.NodeID()))
-	}
-	if length, _, _ := runtime.MutationLogStats(); length != 0 {
-		t.Fatalf("fault published in-memory log length %d, want 0", length)
-	}
-	for _, edge := range request.GetEdges() {
-		if weight, live := runtime.graph.GetWeight(edge.GetTail(), edge.GetHead()); live {
-			t.Fatalf("fault published graph edge (%q, %q) weight %v", edge.GetTail(), edge.GetHead(), weight)
+	for attempt := range 2 {
+		put, err := client.PutVertex(ctx, connect.NewRequest(request))
+		if err != nil || put.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+			t.Fatalf("receipt PutVertex attempt %d = %+v, %v", attempt, put, err)
 		}
 	}
-	if _, err := client.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
-		Tail: "tip-fault", Head: "first",
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("faulted graph read = %v, want fail-closed", err)
+	status, err := client.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{OperationId: id.Bytes()}))
+	if err != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+		status.Msg.GetStatus().GetReceipt().GetOriginalResult().GetPutVertexOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("GetReceiptStatus = %+v, %v", status, err)
 	}
-	if _, err := client.GetReceiptStatuses(ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
-		OperationIds: ids,
-	})); connect.CodeOf(err) != connect.CodeInternal {
-		t.Fatalf("faulted receipt status = %v, want fail-closed", err)
-	}
-	if _, err := client.AddEdges(ctx, connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("same-endpoint retry during fault = %v, want FailedPrecondition", err)
-	}
-	disabled, err := client.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
-	if err != nil || disabled.Msg.GetEnabled() {
-		t.Fatalf("faulted capability = %+v, %v, want disabled", disabled, err)
-	}
-
-	config := durableRuntimeTestConfig(walPath)
-	config.Receipt.MaxEntries = 8
-	if err := runtime.Close(); err != nil {
-		t.Fatalf("close faulted runtime: %v", err)
-	}
-	reopened, err := OpenDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatalf("restart from synced frame and stale tip: %v", err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	recovered := reopened.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	recoveredReplication, err := reopened.NewLanternReplicationService(recovered)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.CertifyInstallation(recovered, recoveredReplication); err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.CertifyReceiptBackup(recovered, recoveredReplication); err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.ActivatePublicReceipts(recovered, recoveredReplication); err != nil {
-		t.Fatal(err)
-	}
-	recoveredClient := newConnectTestClient(t, recovered, recoveredReplication)
-	recoveredCapability, err := recoveredClient.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
-	if err != nil || !recoveredCapability.Msg.GetEnabled() ||
-		!bytes.Equal(recoveredCapability.Msg.GetEndpoint().GetNodeId(), capability.Msg.GetEndpoint().GetNodeId()) ||
-		!bytes.Equal(recoveredCapability.Msg.GetEndpoint().GetGeneration(), capability.Msg.GetEndpoint().GetGeneration()) {
-		t.Fatalf("recovered endpoint = %+v, %v, want original enabled endpoint", recoveredCapability, err)
-	}
-	statuses, err := recoveredClient.GetReceiptStatuses(ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
-		OperationIds: ids,
-	}))
-	if err != nil || len(statuses.Msg.GetStatuses()) != 2 {
-		t.Fatalf("recovered receipt statuses = %+v, %v", statuses, err)
-	}
-	for i, want := range []float32{2, 3} {
-		status := statuses.Msg.GetStatuses()[i]
-		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
-			!bytes.Equal(status.GetOperationId(), ids[i]) ||
-			status.GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != want {
-			t.Fatalf("recovered receipt[%d] = %+v, want confirmed weight %v", i, status, want)
-		}
-		edge := request.GetEdges()[i]
-		got, err := recoveredClient.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
-			Tail: edge.GetTail(), Head: edge.GetHead(),
-		}))
-		if err != nil || got.Msg.GetEdge().GetWeight() != want {
-			t.Fatalf("recovered edge[%d] = %+v, %v, want weight %v", i, got, err, want)
-		}
-	}
-	replay, err := recoveredClient.AddEdges(ctx, connect.NewRequest(request))
-	if err != nil || replay.Msg.GetWritten() != 2 ||
-		len(replay.Msg.GetEffectiveWeights()) != 2 ||
-		replay.Msg.GetEffectiveWeights()[0] != 2 || replay.Msg.GetEffectiveWeights()[1] != 3 {
-		t.Fatalf("replay after attested recovery = %+v, %v, want original [2 3]", replay, err)
-	}
-	if recovered.LocalSeq(reopened.clock.NodeID()) != 1 {
-		t.Fatalf("duplicate Add appended origin seq %d, want 1", recovered.LocalSeq(reopened.clock.NodeID()))
+	if runtime.ReceiptStats().Entries != 1 || svc.LocalSeq(hlc.NodeID{0x31}) != 1 {
+		t.Fatal("wire replay published a second receipt or origin event")
 	}
 }
 
-// TestConnectAdapter_ReplicationDisabled verifies the
-// nil-LanternReplicationService guard: the adapter is wired but no
-// replication is available, so every replication RPC must return
-// Unavailable rather than panicking.
-func TestConnectAdapter_ReplicationDisabled(t *testing.T) {
-	h := NewLanternReplicationServiceConnectHandler(nil)
-	_, err := h.PeerStatus(context.Background(), connect.NewRequest(&pb.PeerStatusRequest{}))
+func TestConnectAdapter_ReplicationDisabledH2C(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	_, client := newConnectTestClients(t, NewLanternService(cache), nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := client.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{})); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("PeerStatus with replication disabled = %v, want Unavailable", err)
+	}
+	stream, err := client.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err == nil {
-		t.Fatal("PeerStatus on nil replication: want error, got nil")
+		for stream.Receive() {
+			t.Fatal("disabled replication emitted Snapshot frame")
+		}
+		err = stream.Err()
+		_ = stream.Close()
 	}
-	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-		t.Errorf("PeerStatus code = %v, want Unavailable", got)
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("Snapshot with replication disabled = %v, want Unavailable", err)
 	}
 }
 
-type postCaptureWriteMetrics struct {
-	noopHotPathMetrics
-	once  sync.Once
-	write func()
-}
-
-func (m *postCaptureWriteMetrics) OnGetVertices(int, int) { m.once.Do(m.write) }
-
-func TestConnectAdapter_PostCaptureWriteKeepsDetachedRead(t *testing.T) {
+func TestConnectAdapter_FullSubscribeRejectsJSONH2C(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{})
-	defer func() { _ = log.Close() }()
-	ctx := context.Background()
-	svc := NewLanternService(newFakeBackend()).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
-	before := &pb.Vertex{Key: "k", Value: &pb.Vertex_String_{String_: "before"}}
-	if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: before}); err != nil {
-		t.Fatal(err)
-	}
-	var writeErr error
-	svc.WithHotPathMetrics(&postCaptureWriteMetrics{write: func() {
-		_, writeErr = svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
-			Key: "k", Value: &pb.Vertex_String_{String_: "after"},
-		}})
-	}})
-	handler := NewLanternServiceConnectHandler(svc)
-	read, err := handler.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"k"}}))
-	if writeErr != nil || err != nil {
-		t.Fatalf("write after detached capture = %v, GetVertices = %v", writeErr, err)
-	}
-	if len(read.Msg.GetVertices()) != 1 || read.Msg.GetVertices()[0].GetString_() != "before" {
-		t.Fatalf("post-capture publication altered detached read: %+v", read.Msg)
-	}
-	got, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "k"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.GetVertex().GetString_() != "after" {
-		t.Fatalf("latest committed value = %+v, want after", got.GetVertex())
-	}
-}
-
-type blockingVertexReadBackend struct {
-	Backend
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (b *blockingVertexReadBackend) GetVertex(key string) (*pb.Vertex, bool) {
-	select {
-	case <-b.entered:
-	default:
-		close(b.entered)
-		<-b.release
-	}
-	return b.Backend.GetVertex(key)
-}
-
-func TestConnectAdapter_GetVerticesBatchRetriesWithoutBlockingPublication(t *testing.T) {
-	log := mutationlog.New(mutationlog.Options{})
-	defer func() { _ = log.Close() }()
-	backend := &blockingVertexReadBackend{
-		Backend: newFakeBackend(), entered: make(chan struct{}), release: make(chan struct{}),
-	}
-	defer func() {
-		select {
-		case <-backend.release:
-		default:
-			close(backend.release)
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x32}, hlc.Options{})
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+	replication := NewLanternReplicationService(log, cache, clock)
+	_, client := newConnectTestClients(t, svc, replication, connect.WithProtoJSON())
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	stream, err := client.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+	if err == nil {
+		for stream.Receive() {
+			t.Fatal("JSON full Subscribe emitted mutation frame")
 		}
-	}()
-	svc := NewLanternService(backend).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
-	handler := NewLanternServiceConnectHandler(svc)
-	type readResult struct {
-		response *connect.Response[pb.GetVerticesResponse]
-		err      error
+		err = stream.Err()
+		_ = stream.Close()
 	}
-	readDone := make(chan readResult, 1)
-	go func() {
-		response, err := handler.GetVertices(context.Background(), connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"a", "b"}}))
-		readDone <- readResult{response, err}
-	}()
-	<-backend.entered
-	writerDone := make(chan struct{})
-	go func() {
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
-		close(writerDone)
-	}()
-	select {
-	case <-writerDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("plural read blocked publication")
-	}
-	close(backend.release)
-	select {
-	case result := <-readDone:
-		if result.err != nil || result.response == nil ||
-			len(result.response.Msg.GetVertices()) != 0 ||
-			len(result.response.Msg.GetMissing()) != 2 ||
-			result.response.Msg.GetMissing()[0] != "a" || result.response.Msg.GetMissing()[1] != "b" {
-			t.Fatalf("retried batch read = %+v, %v; want each missing key once", result.response, result.err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("plural read did not finish")
-	}
-}
-
-type blockingPrefixCountBackend struct {
-	Backend
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (b *blockingPrefixCountBackend) CountByPrefixContext(ctx context.Context, prefix string) int {
-	select {
-	case <-b.entered:
-	default:
-		close(b.entered)
-		<-b.release
-	}
-	return b.Backend.CountByPrefixContext(ctx, prefix)
-}
-
-func TestConnectAdapter_PrefixCountRetriesWithoutBlockingPublication(t *testing.T) {
-	cases := []struct {
-		name string
-		read func(graphv1connect.LanternServiceHandler) error
-	}{
-		{"CountVerticesByPrefix", func(h graphv1connect.LanternServiceHandler) error {
-			_, err := h.CountVerticesByPrefix(context.Background(), connect.NewRequest(&pb.CountVerticesByPrefixRequest{Prefix: "a"}))
-			return err
-		}},
-		{"DeleteVerticesByPrefixDryRun", func(h graphv1connect.LanternServiceHandler) error {
-			_, err := h.DeleteVerticesByPrefix(context.Background(), connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "a", DryRun: true}))
-			return err
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			log := mutationlog.New(mutationlog.Options{})
-			defer func() { _ = log.Close() }()
-			backend := &blockingPrefixCountBackend{
-				Backend: newFakeBackend(), entered: make(chan struct{}), release: make(chan struct{}),
-			}
-			defer func() {
-				select {
-				case <-backend.release:
-				default:
-					close(backend.release)
-				}
-			}()
-			svc := NewLanternService(backend).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
-			handler := NewLanternServiceConnectHandler(svc)
-			readDone := make(chan error, 1)
-			go func() { readDone <- tc.read(handler) }()
-			select {
-			case <-backend.entered:
-			case err := <-readDone:
-				t.Fatalf("prefix count skipped the blocking Backend probe: %v", err)
-			case <-time.After(2 * time.Second):
-				t.Fatal("prefix count did not enter the blocking Backend probe")
-			}
-			writerDone := make(chan struct{})
-			go func() {
-				svc.replicationCutMu.Lock()
-				svc.replicationCutMu.Unlock()
-				close(writerDone)
-			}()
-			select {
-			case <-writerDone:
-			case <-time.After(2 * time.Second):
-				t.Fatal("prefix count blocked publication")
-			}
-			close(backend.release)
-			select {
-			case err := <-readDone:
-				if err != nil {
-					t.Fatalf("retried prefix count: %v", err)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("prefix count did not finish")
-			}
-		})
-	}
-}
-
-// BenchmarkConnectAdapter_GetEdgesPublicationCut isolates the read-side
-// publication gate cost from the network and Connect framing overhead.
-func BenchmarkConnectAdapter_GetEdgesPublicationCut(b *testing.B) {
-	for _, replicated := range []bool{false, true} {
-		name := "single-node"
-		if replicated {
-			name = "replicated"
-		}
-		for _, parallel := range []bool{false, true} {
-			mode := "serial"
-			if parallel {
-				mode = "parallel"
-			}
-			b.Run(name+"/"+mode, func(b *testing.B) {
-				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-				cache.PutEdgeWithExpiration("bench/tail", "bench/head", 1, time.Now().Add(time.Hour))
-				svc := NewLanternService(cache)
-				if replicated {
-					log := mutationlog.New(mutationlog.Options{})
-					b.Cleanup(func() { _ = log.Close() })
-					svc.WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
-				}
-				handler := NewLanternServiceConnectHandler(svc)
-				req := connect.NewRequest(&pb.GetEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "bench/tail", Head: "bench/head"}}})
-				ctx := context.Background()
-				read := func() {
-					if _, err := handler.GetEdges(ctx, req); err != nil {
-						b.Error(err)
-					}
-				}
-				b.ReportAllocs()
-				b.ResetTimer()
-				if parallel {
-					b.RunParallel(func(pb *testing.PB) {
-						for pb.Next() {
-							read()
-						}
-					})
-				} else {
-					for i := 0; i < b.N; i++ {
-						read()
-					}
-				}
-			})
-		}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("JSON full Subscribe = %v, want InvalidArgument", err)
 	}
 }

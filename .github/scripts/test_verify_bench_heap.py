@@ -7,6 +7,15 @@ from local_gate_plan import affected_steps, steps
 
 
 class BenchHeapVerificationTest(unittest.TestCase):
+    def test_observer_targets_have_real_tests_after_runtime_extraction(self):
+        self.assertIn("./service", gate.TARGETS)
+        self.assertIn("./internal/dataruntime", gate.TARGETS)
+        root = Path(__file__).resolve().parents[2] / "server"
+        for target in gate.TARGETS:
+            with self.subTest(target=target):
+                self.assertTrue(any("func TestBenchHeap" in source.read_text()
+                                    for source in (root / target).glob("*_test.go")))
+
     def events(self):
         result = []
         for target in gate.TARGETS:

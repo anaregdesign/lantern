@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -184,8 +185,8 @@ func NewLanternListener(
 	tlsCfg TLSConfig,
 	obs ObservabilityConfig,
 	cors CORSConfig,
-	svc *service.LanternService,
-	rep *service.LanternReplicationService,
+	svc *dataruntime.Executor,
+	rep *dataruntime.Replication,
 	val *ValidationInterceptor,
 	rl *RateLimitInterceptor,
 	auth *AuthInterceptor,

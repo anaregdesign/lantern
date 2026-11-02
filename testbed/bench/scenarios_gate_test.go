@@ -2748,7 +2748,7 @@ func TestSearchReleaseQualificationIsBlocking(t *testing.T) {
 	}
 	for _, contract := range []string{
 		"search-qualification:",
-		"go test ./server/service -run",
+		"go test ./server/internal/dataruntime -run",
 		"go test ./tests/integration -run",
 		"./testbed/bench/run.sh search_qualification",
 		`all($stages[]; .status == "pass")`,
@@ -4033,7 +4033,7 @@ else: raise SystemExit(82)
 	for _, name := range []string{"runtime_pre.json", "runtime_steady.json", "runtime_post.json", "workload_gate.json"} {
 		writeJSON(name, map[string]string{"fixture": "unchanged"})
 	}
-	for _, name := range []string{"server/internal/security/control_renewal_network_test.go", "server/service/replication_delivery_test.go", "server/replication/pump_test.go"} {
+	for _, name := range []string{"server/internal/security/control_renewal_network_test.go", "server/internal/dataruntime/replication_delivery_test.go", "server/replication/pump_test.go"} {
 		write("source/"+name, []byte("// source-test reference fixture only\n"), 0o644)
 	}
 	functions := goroutinePolicyFragment(t, "goroutine_policy_profile() {\n", "# Extract a single Prom metric value")

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -32,7 +32,7 @@ type fakeService struct {
 	completeErr           error
 }
 
-func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error {
+func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequest, stream dataruntime.Sender[pb.BackupSnapshotResponse]) error {
 	for _, fr := range f.frames {
 		if err := stream.Send(fr); err != nil {
 			return err

@@ -12,7 +12,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 // connectCallValidator drives the ValidationInterceptor's Connect
@@ -239,12 +239,12 @@ func TestValidationInterceptorReceiptStatusBatchUsesLowerEffectiveLimit(t *testi
 		{name: "configured limit", configured: 2, count: 3},
 		{
 			name:       "handler hard limit",
-			configured: service.MaxReceiptStatusBatchSize + 1,
-			count:      service.MaxReceiptStatusBatchSize + 1,
+			configured: dataruntime.MaxReceiptStatusBatchSize + 1,
+			count:      dataruntime.MaxReceiptStatusBatchSize + 1,
 		},
 		{
 			name:  "unlimited config still uses handler hard limit",
-			count: service.MaxReceiptStatusBatchSize + 1,
+			count: dataruntime.MaxReceiptStatusBatchSize + 1,
 		},
 	}
 	for _, tc := range tests {

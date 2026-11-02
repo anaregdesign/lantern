@@ -9,12 +9,12 @@ import (
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/authn"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/readinessdiag"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/internal/securitytransport"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 // SecurityRuntime owns native control state and authentication evidence beside
@@ -36,7 +36,7 @@ type SecurityRuntime struct {
 	logins         *oidc.LoginTransactions
 	nativeLogins   *oidc.NativeTransactions
 	control        *securitytransport.SecurityConnectHandler
-	data           *service.ServingRuntime
+	data           *dataruntime.ServingRuntime
 	config         SecurityConfig
 	now            func() time.Time
 	closeOnce      sync.Once
@@ -46,7 +46,7 @@ type SecurityRuntime struct {
 	readinessObservation *readinessdiag.Observer
 }
 
-func NewSecurityRuntime(ctx context.Context, config SecurityConfig, data *service.ServingRuntime) (result *SecurityRuntime, cleanup func(), err error) {
+func NewSecurityRuntime(ctx context.Context, config SecurityConfig, data *dataruntime.ServingRuntime) (result *SecurityRuntime, cleanup func(), err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}

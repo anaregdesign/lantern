@@ -18,7 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 var errReceiptSnapshotCollect = errors.New("backup: invalid receipt Snapshot stream")
@@ -201,7 +201,7 @@ func (c *ReceiptSnapshotCollector) Collect(
 			return nil, err
 		}
 		frame := stream.Msg()
-		if err := service.ValidateReceiptSnapshotFrame(frame); err != nil {
+		if err := dataruntime.ValidateReceiptSnapshotFrame(frame); err != nil {
 			return nil, receiptSnapshotCollectError("%v", err)
 		}
 		if size := proto.Size(frame); size <= 0 || uint64(size) > c.config.Limits.MaxFrameBytes {
@@ -261,7 +261,7 @@ func (c *ReceiptSnapshotCollector) Collect(
 	wireHeader := proto.Clone(frames[0].GetHeader()).(*pb.SnapshotHeader)
 	retiredConfig := c.config.ExpectedRetiredConfig
 	retiredConfig.ClockHighWater = time.Time{}
-	capture, err := service.DecodeReceiptSnapshotFrames(
+	capture, err := dataruntime.DecodeReceiptSnapshotFrames(
 		frames,
 		c.config.ExpectedPolicy,
 		retiredConfig,
@@ -284,7 +284,7 @@ func (c *ReceiptSnapshotCollector) Collect(
 		uint64(len(capture.Graph)-2) > c.config.Limits.MaxGraphFrames {
 		return nil, receiptSnapshotCollectError("decoded section count exceeds limit")
 	}
-	canonicalFrames, err := service.PrepareReceiptSnapshotFrames(capture, c.config.ExpectedPolicy)
+	canonicalFrames, err := dataruntime.PrepareReceiptSnapshotFrames(capture, c.config.ExpectedPolicy)
 	if err != nil {
 		return nil, receiptSnapshotCollectError("reconstruct canonical frames: %v", err)
 	}
@@ -554,7 +554,7 @@ func readReceiptSnapshotSpool(
 		if err := proto.Unmarshal(raw, frame); err != nil {
 			return nil, receiptSnapshotCollectError("decode spooled frame: %v", err)
 		}
-		if err := service.ValidateReceiptSnapshotFrame(frame); err != nil {
+		if err := dataruntime.ValidateReceiptSnapshotFrame(frame); err != nil {
 			return nil, receiptSnapshotCollectError("%v", err)
 		}
 		frames = append(frames, frame)
@@ -580,7 +580,7 @@ func validateReceiptSnapshotFrameWire(raw []byte) error {
 
 func (c *ReceiptSnapshotCollector) stageReceiptSnapshot(
 	ctx context.Context,
-	capture service.ReceiptWholeStateCapture,
+	capture dataruntime.ReceiptWholeStateCapture,
 ) (*receiptSnapshotStage, error) {
 	stageFile, err := os.CreateTemp(c.config.TempDir, ".lantern-receipt-snapshot-*.stage")
 	if err != nil {

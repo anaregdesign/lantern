@@ -22,7 +22,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
@@ -390,7 +390,7 @@ func TestReceiptBaselineCodecRejectsNoncanonicalAndMismatchedPolicy(t *testing.T
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if raw, err := codec.EncodeCombinedReceiptBaseline(canceled, service.ReceiptWholeStateCapture{}); raw != nil ||
+	if raw, err := codec.EncodeCombinedReceiptBaseline(canceled, dataruntime.ReceiptWholeStateCapture{}); raw != nil ||
 		!errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled encode = %d bytes, %v", len(raw), err)
 	}
@@ -440,7 +440,7 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 		0x75,
 	)
 	path := filepath.Join(t.TempDir(), "receipts.wal")
-	config := service.DurableReceiptWALRuntimeConfig{
+	config := dataruntime.DurableReceiptWALRuntimeConfig{
 		Path:       path,
 		Receipt:    archive.Policy,
 		Log:        mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
@@ -457,13 +457,13 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 		Now:           archive.Policy.ClockHighWater,
 		BaselineCodec: ReceiptBaselineCodec{},
 	}
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := dataruntime.CreateDurableReceiptWALServingRuntime(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	graphIdentity := runtime.GraphCache()
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	replication, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,13 +499,13 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 	}
 
 	config.Now = archive.Policy.ClockHighWater
-	restarted, err := service.OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := dataruntime.OpenDurableReceiptWALServingRuntime(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	restartedReplication, err := restarted.NewLanternReplicationService(restartedPrimary)
+	restartedPrimary := restarted.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	restartedReplication, err := restarted.NewReplication(restartedPrimary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 		archive.Graph[len(archive.Graph)-1].GetFooter().EdgeTombstoneCount = 1
 
 		path := filepath.Join(t.TempDir(), "receipts.wal")
-		config := service.DurableReceiptWALRuntimeConfig{
+		config := dataruntime.DurableReceiptWALRuntimeConfig{
 			Path: path, Receipt: archive.Policy,
 			Log:        mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
 			DefaultTTL: time.Hour,
@@ -593,12 +593,12 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 			},
 			NodeID: hlc.NodeID{0x44}, Now: issued, BaselineCodec: ReceiptBaselineCodec{},
 		}
-		runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+		runtime, err := dataruntime.CreateDurableReceiptWALServingRuntime(config)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer runtime.Close()
-		primary := runtime.NewLanternService(nil)
+		primary := runtime.NewExecutor(nil)
 		if err := primary.InstallReceiptBaseline(context.Background(), producerCapture(archive)); err != nil {
 			t.Fatal(err)
 		}
@@ -613,7 +613,7 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 		}
 
 		config.Now = expiration.Add(time.Second)
-		restarted, err := service.OpenDurableReceiptWALServingRuntime(config)
+		restarted, err := dataruntime.OpenDurableReceiptWALServingRuntime(config)
 		if err != nil {
 			t.Fatal(err)
 		}

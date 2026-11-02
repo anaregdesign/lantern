@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
-	"github.com/anaregdesign/lantern/server/service"
 	"os"
 	"strings"
 )
@@ -15,7 +15,7 @@ import (
 // ChangeConfig is public CDC configuration; it never enables private Subscribe.
 type ChangeConfig struct {
 	Enabled bool
-	Options service.ChangeServiceOptions
+	Options dataruntime.ChangeServiceOptions
 }
 
 func loadChangeConfig(auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, error) {
@@ -44,11 +44,11 @@ func loadChangeConfig(auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, 
 		if auth.Mode == "oidc" || peer.ListenAddress != "" {
 			return ChangeConfig{}, errors.New("protected or HA CDC requires shared operator-owned cursor keys")
 		}
-		key := service.ChangeCursorKey{Version: 1}
+		key := dataruntime.ChangeCursorKey{Version: 1}
 		if _, err := rand.Read(key.Key[:]); err != nil {
 			return ChangeConfig{}, err
 		}
-		cfg.Options.CursorKeys, cfg.Options.CurrentKeyVersion = []service.ChangeCursorKey{key}, 1
+		cfg.Options.CursorKeys, cfg.Options.CurrentKeyVersion = []dataruntime.ChangeCursorKey{key}, 1
 		return cfg, nil
 	}
 	raw, err := readSecurityOperatorFile(file, true, 4096)
@@ -78,7 +78,7 @@ func changeConfigFromKeyRing(raw []byte) (ChangeConfig, error) {
 		if err != nil || len(key) != 32 || source.Key != hex.EncodeToString(key) || source.Version == 0 || seen[source.Version] {
 			return ChangeConfig{}, errors.New("invalid CDC cursor key")
 		}
-		item := service.ChangeCursorKey{Version: source.Version}
+		item := dataruntime.ChangeCursorKey{Version: source.Version}
 		copy(item.Key[:], key)
 		if item.Key == [32]byte{} {
 			return ChangeConfig{}, errors.New("zero CDC cursor key")

@@ -23,6 +23,12 @@ GO_TESTS = (
     "TestAuthorityTimeUnsupportedNativeProfile",
     "TestNativeWorkloadTimeTargetPreservesOtherOFFProfiles",
 )
+GO_PACKAGES = (
+    "./core/privatefile", "./core/mutationlog", "./core/mutationreceipt",
+    "./server/service", "./server/internal/dataruntime", "./server/provider",
+    "./server/internal/listenerlaunch", "./server/internal/security",
+    "./server/cmd", "./server/cmd/authfixture",
+)
 RUST_TESTS = (
     "transport::tests::real_wire_https_roots_and_invalid_certificates",
     "transport::tests::real_wire_off_mtls_requires_client_identity",
@@ -79,9 +85,7 @@ def main():
     run("server-build", ["go", "build", "-o", str(server), "./server/cmd"])
     run("fixture-build", ["go", "build", "-o", str(fixture), "./server/cmd/authfixture"])
     pattern = "^(" + "|".join(GO_TESTS) + ")$"
-    output = run("native-go", ["go", "test", "-json", "-count=1", "./core/privatefile",
-        "./core/mutationlog", "./core/mutationreceipt", "./server/service", "./server/provider",
-        "./server/internal/listenerlaunch", "./server/internal/security", "./server/cmd", "./server/cmd/authfixture", "-run", pattern])
+    output = run("native-go", ["go", "test", "-json", "-count=1", *GO_PACKAGES, "-run", pattern])
     require_go(output, GO_TESTS)
     require_go(run("backup", ["go", "test", "-json", "-count=1", "./backup"], root / "server"))
     if args.rust == "true":

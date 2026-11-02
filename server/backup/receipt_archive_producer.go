@@ -10,11 +10,11 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 type ReceiptSource interface {
-	CaptureForBackup(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error)
+	CaptureForBackup(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error)
 }
 
 // receiptBackupSetProduct keeps one backup set's three binary artifacts

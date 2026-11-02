@@ -606,10 +606,10 @@ func productionOFFBackupper(t *testing.T, cfg *provider.Config, logs io.Writer) 
 		t.Fatal(err)
 	}
 	t.Cleanup(cleanup)
-	svc := runtime.NewLanternService(nil).
+	svc := runtime.NewExecutor(nil).
 		WithTombstoneTTL(cfg.Replication.TombstoneTTL).
 		WithSearchLimits(productionSearchLimits(cfg.Search.Enabled, cfg.Search.Positions))
-	replication, err := runtime.NewLanternReplicationService(svc)
+	replication, err := runtime.NewReplication(svc)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 const (
@@ -53,7 +53,7 @@ type retiredCatalogArchiveMetadata struct {
 
 func (ReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
 	ctx context.Context,
-	capture service.ReceiptWholeStateCapture,
+	capture dataruntime.ReceiptWholeStateCapture,
 ) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 	expected mutationreceipt.Config,
 	defaultTTL time.Duration,
 	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
-) (*service.ReceiptBaselineCandidate, error) {
+) (*dataruntime.ReceiptBaselineCandidate, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -137,13 +137,13 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 	if err := validateRetiredCatalogArchive(stage.policy, activeState.ClockHighWaterMillis, retired); err != nil {
 		return nil, err
 	}
-	return &service.ReceiptBaselineCandidate{
+	return &dataruntime.ReceiptBaselineCandidate{
 		NamespaceFormat: archive.Graph[0].GetHeader().GetNamespaceFormat(),
 		Graph:           stage.graph,
 		Receipts:        stage.receipts,
 		Retired:         retired,
 		Policy:          stage.policy,
-		Origins:         append([]service.OriginState(nil), stage.origins...),
+		Origins:         append([]dataruntime.OriginState(nil), stage.origins...),
 		CutoffLocalSeq:  stage.cutoffLocalSeq,
 		CutoffHLC:       stage.cutoffHLC,
 	}, nil

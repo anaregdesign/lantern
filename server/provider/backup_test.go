@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
-	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -235,8 +235,8 @@ func TestNewBackupperRejectsForeignCertification(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name    string
-		runtime *service.ServingRuntime
-		primary *service.LanternService
+		runtime *dataruntime.ServingRuntime
+		primary *dataruntime.Executor
 		marker  runtimeCertified
 	}{
 		{"foreign runtime", foreignRuntime, primary, certified},

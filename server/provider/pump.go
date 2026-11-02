@@ -7,9 +7,9 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/replication"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 // PeerConfig groups the outbound peer-replication pump knobs (#185, #190).
@@ -98,7 +98,7 @@ func NewReplicationPump(
 	resolver *PeerResolver,
 	rc ReplicationConfig,
 	peerTransport *replication.PeerTransport,
-	svc *service.LanternService,
+	svc *dataruntime.Executor,
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m replication.Metrics,
 	logger *slog.Logger,
@@ -114,7 +114,7 @@ func newReplicationPumpConfig(
 	resolver *PeerResolver,
 	rc ReplicationConfig,
 	peerTransport *replication.PeerTransport,
-	svc *service.LanternService,
+	svc *dataruntime.Executor,
 	m replication.Metrics,
 	logger *slog.Logger,
 	installer *SnapshotInstallerSelection,

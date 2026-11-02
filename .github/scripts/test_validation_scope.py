@@ -1,11 +1,12 @@
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
 from local_gate_plan import steps, affected_steps
 import validation_scope as scope
-from windows_native import GO_TESTS, RUST_TESTS, require_go, require_rust
+from windows_native import GO_PACKAGES, GO_TESTS, RUST_TESTS, require_go, require_rust
 
 
 class ValidationScopeTest(unittest.TestCase):
@@ -53,6 +54,22 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertTrue(scope.affected({"tests/integration/auth_test.go": "M"})["windows_rust_required"])
         self.assertTrue(scope.affected({"core/search/new_windows.go": "M"})["windows_required"])
         self.assertTrue(scope.affected({"core/search/new.go": "A"})["windows_required"])
+
+    def test_data_runtime_retains_native_and_module_obligations(self):
+        for path in ("server/internal/dataruntime/runtime.go",
+                     "server/internal/dataruntime/receipt_directory_sync_notwindows.go",
+                     "server/internal/dataruntime/receipt_wal_recovery.go",
+                     "server/internal/dataruntime/publication_gate.go",
+                     "server/internal/dataruntime/snapshot_tail.go"):
+            with self.subTest(path=path):
+                result = scope.affected({path: "M"})
+                self.assertFalse(result["full"])
+                self.assertEqual(set(result["go_modules"]), {"server", "."})
+                self.assertTrue(result["windows_required"])
+                self.assertIn("go-test-server", self.names(path))
+                self.assertIn("go-test-.", self.names(path))
+        self.assertTrue(scope.affected({"server/internal/dataruntime/runtime.go": "M",
+                                       ".github/scripts/windows_native.py": "M"})["full"])
 
     def test_unknown_policy_fixtures_and_bad_diffs_keep_full(self):
         for path in ("unknown.file", "tests/fixture.md", ".github/scripts/validation_scope.py",
@@ -143,6 +160,16 @@ class ValidationScopeTest(unittest.TestCase):
             self.assertIn("mod " + module, owner)
             body = owner if file == "test_server" else (root / file / "tests.rs").read_text()
             self.assertIn("async fn " + function + "(", body)
+
+    def test_native_go_selectors_include_the_current_test_owners(self):
+        root = Path(__file__).resolve().parents[2]
+        available = set()
+        for package in GO_PACKAGES:
+            directory = root / package
+            self.assertTrue(directory.is_dir(), package)
+            for source in directory.glob("*_test.go"):
+                available.update(re.findall(r"^func (Test\w+)\(", source.read_text(), re.MULTILINE))
+        self.assertTrue(set(GO_TESTS) <= available, sorted(set(GO_TESTS) - available))
 
     def test_native_verifiers_refuse_empty_skipped_and_failed_tests(self):
         events = "\n".join(json.dumps(dict(Action="pass", Test=name)) for name in GO_TESTS)

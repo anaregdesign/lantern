@@ -14,12 +14,13 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/config"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
 // NewLifecycleConfig forwards Config knobs into the service-layer lifecycle
-// struct. Kept narrow so service.go doesn't need to import provider.
+// struct. Kept narrow so server.go does not need to import provider.
 func NewLifecycleConfig(cache CacheConfig, shutdown ShutdownConfig) service.LifecycleConfig {
 	return service.LifecycleConfig{
 		GCInterval:      cache.GCInterval,
@@ -279,10 +280,10 @@ func (v *ValidationInterceptor) checkBatchLimit(n, maxBatchSize int) error {
 }
 
 func (v *ValidationInterceptor) receiptStatusBatchLimit() int {
-	if v.limits.MaxBatchSize > 0 && v.limits.MaxBatchSize < service.MaxReceiptStatusBatchSize {
+	if v.limits.MaxBatchSize > 0 && v.limits.MaxBatchSize < dataruntime.MaxReceiptStatusBatchSize {
 		return v.limits.MaxBatchSize
 	}
-	return service.MaxReceiptStatusBatchSize
+	return dataruntime.MaxReceiptStatusBatchSize
 }
 
 // ---------------------------------------------------------------------------

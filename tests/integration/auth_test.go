@@ -245,8 +245,8 @@ func TestAuth_DataNamespaceReceiptReplayOverConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	primary := runtime.NewLanternService(nil).WithDataNamespace().WithTombstoneTTL(2 * time.Hour)
-	rep, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithDataNamespace().WithTombstoneTTL(2 * time.Hour)
+	rep, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,8 +483,8 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 			t.Errorf("close durable runtime: %v", err)
 		}
 	})
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	replicationService, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	replicationService, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2052,7 +2052,7 @@ func TestAuth_OFFScopedCursorQualifiedClockOverConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = data.Close() })
-	changes, err := service.NewChangeConnectHandler(data.NewLanternService(nil), service.ChangeServiceOptions{Now: clock, CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1, Heartbeat: 10 * time.Millisecond})
+	changes, err := service.NewChangeConnectHandler(data.NewExecutor(nil), service.ChangeServiceOptions{Now: clock, CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1, Heartbeat: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2239,7 +2239,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(cleanup)
-		path, handler, err := runtime.PublicChangeHTTPHandler(data.NewLanternService(nil), service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond})
+		path, handler, err := runtime.PublicChangeHTTPHandler(data.NewExecutor(nil), service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2683,7 +2683,7 @@ func TestAuth_OFFPublicChangeLifecycleRealConnect(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	metrics := domainmetrics.New(registry, domainmetrics.Options{})
 	configured := provider.NewChangeConfig(&provider.Config{Changes: provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1}}}, metrics)
-	path, handler, err := runtime.PublicChangeHTTPHandler(data.NewLanternService(nil), configured.Options)
+	path, handler, err := runtime.PublicChangeHTTPHandler(data.NewExecutor(nil), configured.Options)
 	if err != nil {
 		t.Fatal(err)
 	}

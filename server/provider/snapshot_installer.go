@@ -8,8 +8,8 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/replication"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 const (
@@ -32,8 +32,8 @@ func NewSnapshotInstallerSelection(
 	peers PeerPlaneConfig,
 	cacheConfig CacheConfig,
 	searchConfig SearchConfig,
-	runtime *service.ServingRuntime,
-	primary *service.LanternService,
+	runtime *dataruntime.ServingRuntime,
+	primary *dataruntime.Executor,
 	logger *slog.Logger,
 	certified runtimeCertified,
 ) (*SnapshotInstallerSelection, error) {

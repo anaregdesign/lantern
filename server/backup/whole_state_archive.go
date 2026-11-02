@@ -15,7 +15,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 // This private codec is a framing prerequisite for ADR 0010, not a backup
@@ -52,7 +52,7 @@ type wholeStateArchive struct {
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
 	Policy   mutationreceipt.Config
-	Origins  []service.OriginState
+	Origins  []dataruntime.OriginState
 }
 
 func wholeStateArchiveError(format string, args ...any) error {
@@ -245,8 +245,8 @@ func archiveMaxEntries(value int) (uint32, error) {
 	return uint32(value), nil
 }
 
-func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []service.OriginState) error {
-	if err := service.ValidateReceiptSnapshotGraphCapture(frames, origins); err != nil {
+func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []dataruntime.OriginState) error {
+	if err := dataruntime.ValidateReceiptSnapshotGraphCapture(frames, origins); err != nil {
 		return wholeStateArchiveError("%v", err)
 	}
 	return nil
@@ -354,7 +354,7 @@ func decodeArchiveReceipt(raw []byte) (mutationreceipt.Receipt, error) {
 	return r, nil
 }
 
-func encodeArchiveOrigin(o service.OriginState) []byte {
+func encodeArchiveOrigin(o dataruntime.OriginState) []byte {
 	var b bytes.Buffer
 	b.Write(o.Origin[:])
 	writeArchiveU64(&b, o.LastSeq)
@@ -364,8 +364,8 @@ func encodeArchiveOrigin(o service.OriginState) []byte {
 	return b.Bytes()
 }
 
-func decodeArchiveOrigin(raw []byte) (service.OriginState, error) {
-	var o service.OriginState
+func decodeArchiveOrigin(raw []byte) (dataruntime.OriginState, error) {
+	var o dataruntime.OriginState
 	if len(raw) != wholeStateArchiveOriginSize {
 		return o, wholeStateArchiveError("invalid origin record length")
 	}
