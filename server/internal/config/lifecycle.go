@@ -24,9 +24,9 @@ type ShutdownConfig struct {
 	DrainDelay time.Duration
 }
 
-func loadShutdown() ShutdownConfig {
+func loadShutdown(reader *envconfig.Reader) ShutdownConfig {
 	return ShutdownConfig{
-		Timeout:    time.Duration(envconfig.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
-		DrainDelay: time.Duration(envconfig.Int("LANTERN_DRAIN_DELAY_SECONDS", 0)) * time.Second,
+		Timeout:    time.Duration(reader.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
+		DrainDelay: time.Duration(reader.Int("LANTERN_DRAIN_DELAY_SECONDS", 0)) * time.Second,
 	}
 }

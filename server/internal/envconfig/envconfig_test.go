@@ -3,343 +3,347 @@ package envconfig
 import (
 	"log/slog"
 	"os"
+	"reflect"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestInt(t *testing.T) {
-	const key = "LANTERN_TEST_INT"
-	cases := []struct {
-		name   string
-		set    bool
-		value  string
-		def    int
-		expect int
+	for _, tc := range []struct {
+		name      string
+		environ   []string
+		want      int
+		malformed bool
 	}{
-		{"unset returns default", false, "", 7, 7},
-		{"valid value", true, "42", 7, 42},
-		{"empty value falls back", true, "", 7, 7},
-		{"non-numeric falls back", true, "abc", 7, 7},
-		{"negative value", true, "-3", 0, -3},
-	}
-	for _, tc := range cases {
+		{"unset", nil, 7, false}, {"valid", []string{"VALUE=42"}, 42, false},
+		{"empty", []string{"VALUE="}, 7, false}, {"whitespace", []string{"VALUE=  "}, 7, false},
+		{"malformed", []string{"VALUE=abc"}, 7, true}, {"negative", []string{"VALUE=-3"}, -3, false},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(key, tc.value)
-			} else {
-				unset(t, key)
+			t.Parallel()
+			reader := NewReader(tc.environ)
+			if got := reader.Int("VALUE", 7); got != tc.want {
+				t.Fatalf("Int = %d, want %d", got, tc.want)
 			}
-			if got := Int(key, tc.def); got != tc.expect {
-				t.Fatalf("Int(%q)=%d, want %d", tc.value, got, tc.expect)
+			if got := len(reader.Findings()); (got != 0) != tc.malformed {
+				t.Fatalf("findings = %+v", reader.Findings())
 			}
 		})
 	}
 }
 
 func TestUint32(t *testing.T) {
-	const key = "LANTERN_TEST_UINT32"
-	cases := []struct {
-		name   string
-		set    bool
-		value  string
-		def    uint32
-		expect uint32
+	for _, tc := range []struct {
+		input     string
+		want      uint32
+		malformed bool
 	}{
-		{"unset returns default", false, "", 7, 7},
-		{"valid value", true, "42", 7, 42},
-		{"empty value falls back", true, "", 7, 7},
-		{"non-numeric falls back", true, "abc", 7, 7},
-		{"negative falls back", true, "-3", 7, 7},
-		{"max uint32 is honoured", true, "4294967295", 7, 4294967295},
-		{"above uint32 range falls back", true, "4294967296", 7, 7},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(key, tc.value)
-			} else {
-				unset(t, key)
+		{"42", 42, false}, {"", 7, false}, {"abc", 7, true}, {"-3", 7, true},
+		{"4294967295", 4294967295, false}, {"4294967296", 7, true},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			reader := NewReader([]string{"VALUE=" + tc.input})
+			if got := reader.Uint32("VALUE", 7); got != tc.want {
+				t.Fatalf("Uint32 = %d, want %d", got, tc.want)
 			}
-			if got := Uint32(key, tc.def); got != tc.expect {
-				t.Fatalf("Uint32(%q)=%d, want %d", tc.value, got, tc.expect)
+			if (len(reader.Findings()) != 0) != tc.malformed {
+				t.Fatalf("findings = %+v", reader.Findings())
 			}
 		})
+	}
+	reader := NewReader(nil)
+	if got := reader.Uint32("UNSET", 7); got != 7 {
+		t.Fatalf("unset Uint32 = %d", got)
 	}
 }
 
 func TestFloat(t *testing.T) {
-	const key = "LANTERN_TEST_FLOAT"
-	cases := []struct {
-		name   string
-		set    bool
-		value  string
-		def    float64
-		expect float64
+	for _, tc := range []struct {
+		input     string
+		want      float64
+		malformed bool
 	}{
-		{"unset returns default", false, "", 1.5, 1.5},
-		{"valid value", true, "3.14", 0, 3.14},
-		{"int parses as float", true, "10", 0, 10},
-		{"garbage falls back", true, "not-a-float", 2.5, 2.5},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(key, tc.value)
-			} else {
-				unset(t, key)
+		{"3.14", 3.14, false}, {"10", 10, false}, {"", 2.5, false}, {"bad", 2.5, true},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			reader := NewReader([]string{"VALUE=" + tc.input})
+			if got := reader.Float("VALUE", 2.5); got != tc.want {
+				t.Fatalf("Float = %v, want %v", got, tc.want)
 			}
-			if got := Float(key, tc.def); got != tc.expect {
-				t.Fatalf("Float(%q)=%v, want %v", tc.value, got, tc.expect)
+			if (len(reader.Findings()) != 0) != tc.malformed {
+				t.Fatalf("findings = %+v", reader.Findings())
 			}
 		})
+	}
+	if got := NewReader(nil).Float("UNSET", 1.5); got != 1.5 {
+		t.Fatalf("unset Float = %v", got)
 	}
 }
 
 func TestString(t *testing.T) {
-	const key = "LANTERN_TEST_STRING"
-	t.Run("unset returns default", func(t *testing.T) {
-		unset(t, key)
-		if got := String(key, "fallback"); got != "fallback" {
-			t.Fatalf("got %q, want fallback", got)
-		}
-	})
-	t.Run("set value wins", func(t *testing.T) {
-		t.Setenv(key, "explicit")
-		if got := String(key, "fallback"); got != "explicit" {
-			t.Fatalf("got %q, want explicit", got)
-		}
-	})
-	t.Run("empty string is honoured", func(t *testing.T) {
-		t.Setenv(key, "")
-		if got := String(key, "fallback"); got != "" {
-			t.Fatalf("got %q, want empty string", got)
-		}
-	})
+	for _, tc := range []struct {
+		name    string
+		environ []string
+		want    string
+	}{
+		{"unset", nil, "fallback"}, {"set", []string{"VALUE=explicit"}, "explicit"},
+		{"empty", []string{"VALUE="}, ""}, {"whitespace", []string{"VALUE=  "}, "  "},
+		{"equals", []string{"VALUE=a=b"}, "a=b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := NewReader(tc.environ).String("VALUE", "fallback"); got != tc.want {
+				t.Fatalf("String = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestBool(t *testing.T) {
-	const key = "LANTERN_TEST_BOOL"
-	truthy := []string{"1", "true", "TRUE", " True ", "yes", "on"}
-	falsy := []string{"0", "false", " False ", "no", "off"}
-	for _, v := range truthy {
-		t.Run("truthy_"+v, func(t *testing.T) {
-			t.Setenv(key, v)
-			if !Bool(key, false) {
-				t.Fatalf("Bool(%q) should be true", v)
+	for _, input := range []string{"1", "true", "TRUE", " True ", "yes", "on"} {
+		t.Run("truthy_"+input, func(t *testing.T) {
+			t.Parallel()
+			if !NewReader([]string{"VALUE=" + input}).Bool("VALUE", false) {
+				t.Fatalf("Bool(%q) should be true", input)
 			}
 		})
 	}
-	for _, v := range falsy {
-		t.Run("falsy_"+v, func(t *testing.T) {
-			t.Setenv(key, v)
-			if Bool(key, true) {
-				t.Fatalf("Bool(%q) should be false", v)
+	for _, input := range []string{"0", "false", " False ", "no", "off"} {
+		t.Run("falsy_"+input, func(t *testing.T) {
+			t.Parallel()
+			if NewReader([]string{"VALUE=" + input}).Bool("VALUE", true) {
+				t.Fatalf("Bool(%q) should be false", input)
 			}
 		})
 	}
-	t.Run("unset returns default", func(t *testing.T) {
-		unset(t, key)
-		if !Bool(key, true) {
-			t.Fatal("unset should return default true")
-		}
-		if Bool(key, false) {
-			t.Fatal("unset should return default false")
-		}
-	})
-	t.Run("garbage returns default", func(t *testing.T) {
-		t.Setenv(key, "maybe")
-		if !Bool(key, true) {
-			t.Fatal("garbage should return default")
-		}
-	})
-}
-
-func TestLogLevel(t *testing.T) {
-	cases := []struct {
-		in     string
-		expect slog.Level
-	}{
-		{"debug", slog.LevelDebug},
-		{"DEBUG", slog.LevelDebug},
-		{" info ", slog.LevelInfo},
-		{"warn", slog.LevelWarn},
-		{"warning", slog.LevelWarn},
-		{"error", slog.LevelError},
-		{"", slog.LevelInfo},
-		{"verbose", slog.LevelInfo},
+	reader := NewReader(nil)
+	if !reader.Bool("UNSET", true) || reader.Bool("UNSET", false) {
+		t.Fatal("unset Boolean did not preserve default")
 	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			if got := LogLevel(tc.in); got != tc.expect {
-				t.Fatalf("LogLevel(%q)=%v, want %v", tc.in, got, tc.expect)
-			}
-		})
+	reader = NewReader([]string{"VALUE=maybe"})
+	if !reader.Bool("VALUE", true) || len(reader.Findings()) != 1 {
+		t.Fatalf("malformed Boolean = %+v", reader.Findings())
+	}
+	reader = NewReader([]string{"VALUE= "})
+	if !reader.Bool("VALUE", true) || len(reader.Findings()) != 0 {
+		t.Fatal("empty Boolean should use default without finding")
 	}
 }
 
 func TestDuration(t *testing.T) {
-	const key = "LANTERN_TEST_DURATION"
-	cases := []struct {
-		name   string
-		set    bool
-		value  string
-		def    time.Duration
-		expect time.Duration
+	for _, tc := range []struct {
+		input     string
+		want      time.Duration
+		malformed bool
 	}{
-		{"unset returns default", false, "", time.Minute, time.Minute},
-		{"valid value", true, "90s", time.Minute, 90 * time.Second},
-		{"empty value falls back", true, "", time.Minute, time.Minute},
-		{"garbage falls back", true, "soon", time.Minute, time.Minute},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(key, tc.value)
-			} else {
-				unset(t, key)
+		{"90s", 90 * time.Second, false}, {"", time.Minute, false}, {"soon", time.Minute, true},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			reader := NewReader([]string{"VALUE=" + tc.input})
+			if got := reader.Duration("VALUE", time.Minute); got != tc.want {
+				t.Fatalf("Duration = %v, want %v", got, tc.want)
 			}
-			if got := Duration(key, tc.def); got != tc.expect {
-				t.Fatalf("Duration(%q)=%v, want %v", tc.value, got, tc.expect)
+			if (len(reader.Findings()) != 0) != tc.malformed {
+				t.Fatalf("findings = %+v", reader.Findings())
+			}
+		})
+	}
+	if got := NewReader(nil).Duration("UNSET", time.Minute); got != time.Minute {
+		t.Fatalf("unset Duration = %v", got)
+	}
+}
+
+func TestLevel(t *testing.T) {
+	for _, tc := range []struct {
+		input     string
+		want      slog.Level
+		malformed bool
+	}{
+		{"debug", slog.LevelDebug, false}, {" INFO ", slog.LevelInfo, false},
+		{"warning", slog.LevelWarn, false}, {"error", slog.LevelError, false},
+		{"", slog.LevelWarn, false}, {"verbose", slog.LevelWarn, true},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			reader := NewReader([]string{"VALUE=" + tc.input})
+			if got := reader.Level("VALUE", slog.LevelWarn); got != tc.want {
+				t.Fatalf("Level = %v, want %v", got, tc.want)
+			}
+			if (len(reader.Findings()) != 0) != tc.malformed {
+				t.Fatalf("findings = %+v", reader.Findings())
+			}
+		})
+	}
+	if got := NewReader(nil).Level("UNSET", slog.LevelWarn); got != slog.LevelWarn {
+		t.Fatalf("unset Level = %v", got)
+	}
+}
+
+func TestLogLevel(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  slog.Level
+	}{
+		{"debug", slog.LevelDebug}, {"DEBUG", slog.LevelDebug}, {" info ", slog.LevelInfo},
+		{"warn", slog.LevelWarn}, {"warning", slog.LevelWarn}, {"error", slog.LevelError}, {"", slog.LevelInfo}, {"verbose", slog.LevelInfo},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := LogLevel(tc.input); got != tc.want {
+				t.Fatalf("LogLevel = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestLevel(t *testing.T) {
-	const key = "LANTERN_TEST_LEVEL"
-	t.Run("unset returns default", func(t *testing.T) {
-		unset(t, key)
-		if got := Level(key, slog.LevelWarn); got != slog.LevelWarn {
-			t.Fatalf("got %v, want warn", got)
-		}
-	})
-	t.Run("valid value", func(t *testing.T) {
-		t.Setenv(key, "debug")
-		if got := Level(key, slog.LevelInfo); got != slog.LevelDebug {
-			t.Fatalf("got %v, want debug", got)
-		}
-	})
-	t.Run("garbage falls back and records a finding", func(t *testing.T) {
-		ResetForTesting()
-		t.Setenv(key, "verbose")
-		if got := Level(key, slog.LevelInfo); got != slog.LevelInfo {
-			t.Fatalf("got %v, want info", got)
-		}
-		fs := Findings()
-		if len(fs) != 1 || fs[0].Key != key || fs[0].Raw != "verbose" {
-			t.Fatalf("findings = %+v, want one for %s", fs, key)
-		}
-	})
-}
-
 func TestRegistryAndFindings(t *testing.T) {
-	t.Run("registry captures key, kind, and default", func(t *testing.T) {
-		ResetForTesting()
-		unset(t, "LANTERN_TEST_REG_INT")
-		unset(t, "LANTERN_TEST_REG_DUR")
-		_ = Int("LANTERN_TEST_REG_INT", 42)
-		_ = Duration("LANTERN_TEST_REG_DUR", 5*time.Minute)
-		specs := Known()
-		if len(specs) != 2 {
-			t.Fatalf("Known() = %+v, want 2 specs", specs)
-		}
-		// Known() sorts by key: DUR < INT.
-		if specs[0].Key != "LANTERN_TEST_REG_DUR" || specs[0].Kind != "duration" || specs[0].Default != "5m0s" {
-			t.Fatalf("spec[0] = %+v", specs[0])
-		}
-		if specs[1].Key != "LANTERN_TEST_REG_INT" || specs[1].Kind != "int" || specs[1].Default != "42" {
-			t.Fatalf("spec[1] = %+v", specs[1])
-		}
-	})
-
-	t.Run("malformed set values are recorded, unset and empty are not", func(t *testing.T) {
-		ResetForTesting()
-		unset(t, "LANTERN_TEST_F_UNSET")
-		_ = Int("LANTERN_TEST_F_UNSET", 1)
-		t.Setenv("LANTERN_TEST_F_EMPTY", "  ")
-		_ = Int("LANTERN_TEST_F_EMPTY", 1)
-		t.Setenv("LANTERN_TEST_F_BAD", "abc")
-		_ = Int("LANTERN_TEST_F_BAD", 1)
-		fs := Findings()
-		if len(fs) != 1 || fs[0].Key != "LANTERN_TEST_F_BAD" || fs[0].Raw != "abc" {
-			t.Fatalf("findings = %+v, want exactly the malformed set value", fs)
-		}
-	})
-
-	t.Run("SetKeys reports set variables without values", func(t *testing.T) {
-		ResetForTesting()
-		t.Setenv("LANTERN_TEST_SET", "9")
-		unset(t, "LANTERN_TEST_UNSET")
-		_ = Int("LANTERN_TEST_SET", 1)
-		_ = Int("LANTERN_TEST_UNSET", 1)
-		keys := SetKeys()
-		if len(keys) != 1 || keys[0] != "LANTERN_TEST_SET" {
-			t.Fatalf("SetKeys() = %v", keys)
-		}
-	})
-
-	t.Run("Malformed records custom-parser failures", func(t *testing.T) {
-		ResetForTesting()
-		Malformed("LANTERN_TEST_CUSTOM", "zz", "not hex")
-		fs := Findings()
-		if len(fs) != 1 || fs[0].Reason != "not hex" {
-			t.Fatalf("findings = %+v", fs)
-		}
-	})
+	reader := NewReader([]string{"LANTERN_SET=9", "LANTERN_EMPTY=  ", "LANTERN_BAD=abc"})
+	reader.Int("LANTERN_SET", 1)
+	reader.Duration("LANTERN_DURATION", 5*time.Minute)
+	reader.Int("LANTERN_UNSET", 1)
+	reader.Int("LANTERN_EMPTY", 1)
+	reader.Int("LANTERN_BAD", 1)
+	reader.Int("LANTERN_SET", 2) // The first registration is the contract.
+	reader.Malformed("LANTERN_CUSTOM", "zz", "not hex")
+	specs := reader.Known()
+	if len(specs) != 5 || specs[0] != (Spec{Key: "LANTERN_BAD", Kind: "int", Default: "1"}) || specs[1] != (Spec{Key: "LANTERN_DURATION", Kind: "duration", Default: "5m0s"}) || specs[3].Default != "1" {
+		t.Fatalf("Known = %+v", specs)
+	}
+	wantFindings := []Finding{{Key: "LANTERN_BAD", Raw: "abc", Reason: "not a base-10 integer"}, {Key: "LANTERN_CUSTOM", Raw: "zz", Reason: "not hex"}}
+	if !reflect.DeepEqual(reader.Findings(), wantFindings) {
+		t.Fatalf("Findings = %+v", reader.Findings())
+	}
+	if want := []string{"LANTERN_BAD", "LANTERN_EMPTY", "LANTERN_SET"}; !reflect.DeepEqual(reader.SetKeys(), want) {
+		t.Fatalf("SetKeys = %v", reader.SetKeys())
+	}
+	diagnostics := reader.Diagnostics()
+	if !reflect.DeepEqual(diagnostics.Known, specs) || !reflect.DeepEqual(diagnostics.Findings, wantFindings) || !reflect.DeepEqual(diagnostics.SetKeys, reader.SetKeys()) {
+		t.Fatalf("Diagnostics = %+v", diagnostics)
+	}
+	diagnostics.Known[0].Key = "changed"
+	diagnostics.Findings[0].Raw = "changed"
+	diagnostics.SetKeys[0] = "changed"
+	specs[0].Key = "changed"
+	findings := reader.Findings()
+	findings[0].Raw = "changed"
+	keys := reader.SetKeys()
+	keys[0] = "changed"
+	if reader.Known()[0].Key != "LANTERN_BAD" || reader.Findings()[0].Raw != "abc" || reader.SetKeys()[0] != "LANTERN_BAD" {
+		t.Fatal("returned diagnostics mutated reader")
+	}
 }
 
 func TestUnknownLanternVars(t *testing.T) {
-	ResetForTesting()
-	unset(t, "LANTERN_TEST_PORT")
-	_ = Int("LANTERN_TEST_PORT", 6380)
-
-	environ := []string{
-		"PATH=/usr/bin",               // non-LANTERN: ignored
-		"LANTERN_TEST_PORT=6380",      // registered: ignored
-		"LANTERN_TEST_PROT=6380",      // typo of a registered key: flagged with suggestion
-		"LANTERN_TOTALLY_DIFFERENT=1", // unknown, nothing close: flagged without suggestion
-		"LANTERN_MCP_AGENT_ID=foo",    // foreign namespace: ignored
-		"MALFORMED-NO-EQUALS",         // not KEY=value: ignored
-	}
-	got := UnknownLanternVars(environ, "LANTERN_MCP_")
-	if len(got) != 2 {
-		t.Fatalf("UnknownLanternVars = %+v, want 2 entries", got)
-	}
-	if got[0].Key != "LANTERN_TEST_PROT" || got[0].Suggestion != "LANTERN_TEST_PORT" {
-		t.Fatalf("typo entry = %+v, want suggestion LANTERN_TEST_PORT", got[0])
-	}
-	if got[1].Key != "LANTERN_TOTALLY_DIFFERENT" || got[1].Suggestion != "" {
-		t.Fatalf("unrelated entry = %+v, want no suggestion", got[1])
-	}
-}
-
-// unset removes the env var for the duration of the test, restoring its
-// prior value on cleanup.
-func unset(t *testing.T, key string) {
-	t.Helper()
-	prev, had := os.LookupEnv(key)
-	if err := os.Unsetenv(key); err != nil {
-		t.Fatalf("unset %s: %v", key, err)
-	}
-	t.Cleanup(func() {
-		if had {
-			_ = os.Setenv(key, prev)
-		} else {
-			_ = os.Unsetenv(key)
-		}
+	reader := NewReader([]string{
+		"PATH=/usr/bin", "LANTERN_TEST_PORT=6380", "LANTERN_TEST_PROT=6380",
+		"LANTERN_TOTALLY_DIFFERENT=1", "LANTERN_MCP_AGENT_ID=foo", "MALFORMED-NO-EQUALS",
 	})
+	reader.Int("LANTERN_TEST_PORT", 6380)
+	got := reader.UnknownLanternVars("LANTERN_MCP_")
+	want := []Unknown{{Key: "LANTERN_TEST_PROT", Suggestion: "LANTERN_TEST_PORT"}, {Key: "LANTERN_TOTALLY_DIFFERENT"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unknown = %+v, want %+v", got, want)
+	}
+	reader.String("LANTERN_TEST_PROT", "")
+	if got := reader.UnknownLanternVars("LANTERN_MCP_"); len(got) != 1 || got[0].Key != "LANTERN_TOTALLY_DIFFERENT" {
+		t.Fatalf("later component registration not observed: %+v", got)
+	}
 }
 
 func TestRegisterStringDoesNotReadOrMarkConfiguredValue(t *testing.T) {
-	ResetForTesting()
-	defer ResetForTesting()
-	t.Setenv("LANTERN_CONDITIONAL_TEST", "operator-secret")
-	RegisterString("LANTERN_CONDITIONAL_TEST", "disabled-default")
-	specs := Known()
-	if len(specs) != 1 || specs[0].Default != "disabled-default" || specs[0].Kind != "string" || len(Findings()) != 0 {
-		t.Fatal("conditional declaration drift", specs)
+	reader := NewReader([]string{"LANTERN_CONDITIONAL_TEST=operator-secret"})
+	reader.RegisterString("LANTERN_CONDITIONAL_TEST", "disabled-default")
+	specs := reader.Known()
+	if len(specs) != 1 || specs[0].Default != "disabled-default" || specs[0].Kind != "string" || len(reader.Findings()) != 0 || len(reader.SetKeys()) != 0 {
+		t.Fatalf("conditional declaration drift: %+v", reader.Diagnostics())
 	}
-	if String("LANTERN_CONDITIONAL_TEST", "disabled-default") != "operator-secret" {
+	if reader.String("LANTERN_CONDITIONAL_TEST", "disabled-default") != "operator-secret" {
 		t.Fatal("declaration changed actual loading")
+	}
+}
+
+func TestReaderSnapshot(t *testing.T) {
+	input := []string{"LANTERN_VALUE=first", "LANTERN_VALUE=second", "EMPTY=", "WITH_EQUALS=a=b", "invalid"}
+	reader := NewReader(input)
+	input[0] = "LANTERN_VALUE=mutated"
+	output := reader.Environ()
+	output[0] = "LANTERN_VALUE=mutated-again"
+	if value, present := reader.LookupEnv("LANTERN_VALUE"); !present || value != "first" {
+		t.Fatalf("snapshot lookup = %q, %t", value, present)
+	}
+	if value, present := reader.LookupEnv("EMPTY"); !present || value != "" {
+		t.Fatal("empty presence lost")
+	}
+	if _, present := reader.LookupEnv("ABSENT"); present {
+		t.Fatal("absent key appeared")
+	}
+	if value, present := reader.LookupEnv("WITH_EQUALS"); !present || value != "a=b" {
+		t.Fatal("value split at later equals")
+	}
+	if _, present := reader.LookupEnv("invalid"); present {
+		t.Fatal("malformed input became a value")
+	}
+	if len(reader.Known()) != 0 || len(reader.SetKeys()) != 0 {
+		t.Fatal("raw lookup registered settings")
+	}
+	t.Setenv("LANTERN_SNAPSHOT_TEST", "before")
+	captured := NewReader(os.Environ())
+	t.Setenv("LANTERN_SNAPSHOT_TEST", "after")
+	if got := captured.String("LANTERN_SNAPSHOT_TEST", ""); got != "before" {
+		t.Fatalf("process mutation changed captured value: %q", got)
+	}
+	processValue, processPresent := os.LookupEnv("lantern_snapshot_test")
+	snapshotValue, snapshotPresent := NewReader(os.Environ()).LookupEnv("lantern_snapshot_test")
+	if snapshotValue != processValue || snapshotPresent != processPresent {
+		t.Fatalf("platform key lookup = %q, %t; process = %q, %t", snapshotValue, snapshotPresent, processValue, processPresent)
+	}
+}
+
+func TestConcurrentReadersAreIndependent(t *testing.T) {
+	const count = 32
+	var workers sync.WaitGroup
+	for i := range count {
+		workers.Go(func() {
+			key := "LANTERN_ONLY_" + strconv.Itoa(i)
+			reader := NewReader([]string{key + "=bad", "LANTERN_SHARED=" + strconv.Itoa(i), "LANTERN_UNKNOWN="})
+			reader.Int(key, 7)
+			if got := reader.Int("LANTERN_SHARED", -1); got != i {
+				t.Errorf("reader %d shared value = %d", i, got)
+			}
+			if findings := reader.Findings(); len(findings) != 1 || findings[0].Key != key {
+				t.Errorf("reader %d findings = %+v", i, findings)
+			}
+			if known := reader.Known(); len(known) != 2 {
+				t.Errorf("reader %d known = %+v", i, known)
+			}
+			if unknown := reader.UnknownLanternVars(); len(unknown) != 1 || unknown[0].Key != "LANTERN_UNKNOWN" {
+				t.Errorf("reader %d unknown = %+v", i, unknown)
+			}
+		})
+	}
+	workers.Wait()
+}
+
+func TestConcurrentReaderDiagnostics(t *testing.T) {
+	reader := NewReader([]string{"LANTERN_VALUE=bad"})
+	const count = 32
+	var workers sync.WaitGroup
+	for range count {
+		workers.Go(func() {
+			reader.Int("LANTERN_VALUE", 7)
+			reader.Diagnostics()
+			reader.Known()
+			reader.Findings()
+			reader.SetKeys()
+			reader.UnknownLanternVars()
+		})
+	}
+	workers.Wait()
+	if got := reader.Diagnostics(); len(got.Known) != 1 || len(got.Findings) != count || len(got.SetKeys) != 1 {
+		t.Fatalf("concurrent diagnostics = %+v", got)
 	}
 }

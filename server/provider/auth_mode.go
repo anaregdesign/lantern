@@ -2,19 +2,19 @@ package provider
 
 import (
 	"errors"
-	"github.com/anaregdesign/lantern/server/internal/envconfig"
-	"os"
 	"strings"
+
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 // validateAuthMode rejects ignored trust settings before configuration is
 // published. OIDC activation additionally requires the certified Wire graph.
-func validateAuthMode() error {
-	mode := envconfig.String("LANTERN_AUTH_MODE", "off")
+func validateAuthMode(reader *envconfig.Reader) error {
+	mode := reader.String("LANTERN_AUTH_MODE", "off")
 	if mode != "off" && mode != "oidc" {
 		return errors.New("LANTERN_AUTH_MODE must be off or oidc; an explicitly empty value is invalid")
 	}
-	for _, setting := range os.Environ() {
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		upper := strings.ToUpper(name)
 		if strings.HasPrefix(upper, "LANTERN_AUTH_") && name != "LANTERN_AUTH_MODE" {

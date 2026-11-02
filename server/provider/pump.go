@@ -60,8 +60,8 @@ func NewPeerConfig(c *Config) PeerConfig { return c.Peer }
 
 // loadPeerConfig reads PeerConfig from the environment. Called from
 // NewConfig so all env reads remain colocated.
-func loadPeerConfig() PeerConfig {
-	raw := strings.TrimSpace(envconfig.String("LANTERN_PEERS", ""))
+func loadPeerConfig(reader *envconfig.Reader) PeerConfig {
+	raw := strings.TrimSpace(reader.String("LANTERN_PEERS", ""))
 	var peers []string
 	if raw != "" {
 		for _, s := range strings.Split(raw, ",") {
@@ -73,15 +73,15 @@ func loadPeerConfig() PeerConfig {
 	}
 	return PeerConfig{
 		Peers:             peers,
-		CAFile:            envconfig.String("LANTERN_PEER_CA_FILE", ""),
-		ClientCertFile:    envconfig.String("LANTERN_PEER_CLIENT_CERT_FILE", ""),
-		ClientKeyFile:     envconfig.String("LANTERN_PEER_CLIENT_KEY_FILE", ""),
-		BackoffMin:        time.Duration(envconfig.Int("LANTERN_PUMP_BACKOFF_MIN_MS", 250)) * time.Millisecond,
-		BackoffMax:        time.Duration(envconfig.Int("LANTERN_PUMP_BACKOFF_MAX_MS", 30_000)) * time.Millisecond,
-		Discovery:         strings.ToLower(strings.TrimSpace(envconfig.String("LANTERN_PEER_DISCOVERY", "static"))),
-		DNSName:           strings.TrimSpace(envconfig.String("LANTERN_PEER_DNS_NAME", "")),
-		DefaultPort:       strings.TrimSpace(envconfig.String("LANTERN_PEER_DEFAULT_PORT", "50051")),
-		DiscoveryInterval: time.Duration(envconfig.Int("LANTERN_PEER_DISCOVERY_INTERVAL_MS", 10_000)) * time.Millisecond,
+		CAFile:            reader.String("LANTERN_PEER_CA_FILE", ""),
+		ClientCertFile:    reader.String("LANTERN_PEER_CLIENT_CERT_FILE", ""),
+		ClientKeyFile:     reader.String("LANTERN_PEER_CLIENT_KEY_FILE", ""),
+		BackoffMin:        time.Duration(reader.Int("LANTERN_PUMP_BACKOFF_MIN_MS", 250)) * time.Millisecond,
+		BackoffMax:        time.Duration(reader.Int("LANTERN_PUMP_BACKOFF_MAX_MS", 30_000)) * time.Millisecond,
+		Discovery:         strings.ToLower(strings.TrimSpace(reader.String("LANTERN_PEER_DISCOVERY", "static"))),
+		DNSName:           strings.TrimSpace(reader.String("LANTERN_PEER_DNS_NAME", "")),
+		DefaultPort:       strings.TrimSpace(reader.String("LANTERN_PEER_DEFAULT_PORT", "50051")),
+		DiscoveryInterval: time.Duration(reader.Int("LANTERN_PEER_DISCOVERY_INTERVAL_MS", 10_000)) * time.Millisecond,
 	}
 }
 

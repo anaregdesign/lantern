@@ -86,24 +86,30 @@ type Config struct {
 // semantic validation failures such as negative capacity budgets are rejected
 // in every mode.
 func NewConfig() (*Config, error) {
-	if err := validateAuthMode(); err != nil {
+	return LoadConfig(envconfig.NewReader(os.Environ()))
+}
+
+// LoadConfig composes all settings from one captured input and diagnostics context.
+// Callers must provide a fresh Reader for each independent configuration load.
+func LoadConfig(reader *envconfig.Reader) (*Config, error) {
+	if err := validateAuthMode(reader); err != nil {
 		return nil, err
 	}
-	securityConfig, err := loadSecurityConfig()
+	securityConfig, err := loadSecurityConfig(reader)
 	if err != nil {
 		return nil, err
 	}
-	peer := loadPeerConfig()
-	peerPlane, err := loadPeerPlaneConfig(securityConfig, peer)
+	peer := loadPeerConfig(reader)
+	peerPlane, err := loadPeerPlaneConfig(reader, securityConfig, peer)
 	if err != nil {
 		return nil, err
 	}
-	changeConfig, err := loadChangeConfig(securityConfig, peerPlane)
+	changeConfig, err := loadChangeConfig(reader, securityConfig, peerPlane)
 	if err != nil {
 		return nil, err
 	}
-	receiptWAL := loadReceiptWALConfig()
-	graphSnapshotSpool, err := selectGraphSnapshotSpoolForSecurity(securityConfig, receiptWAL.Mode)
+	receiptWAL := loadReceiptWALConfig(reader)
+	graphSnapshotSpool, err := selectGraphSnapshotSpoolForSecurity(reader, securityConfig, receiptWAL.Mode)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +117,7 @@ func NewConfig() (*Config, error) {
 	if securityConfig.Mode == "oidc" {
 		metricsDefault = "127.0.0.1:9090"
 	}
-	operational := config.Load(metricsDefault)
+	operational := config.Load(reader, metricsDefault)
 	cfg := &Config{
 		Security:           securityConfig,
 		PeerPlane:          peerPlane,
@@ -119,9 +125,9 @@ func NewConfig() (*Config, error) {
 		GraphSnapshotSpool: graphSnapshotSpool,
 		Net:                operational.Net,
 		TLS: TLSConfig{
-			CertFile:     envconfig.String("LANTERN_TLS_CERT_FILE", ""),
-			KeyFile:      envconfig.String("LANTERN_TLS_KEY_FILE", ""),
-			ClientCAFile: envconfig.String("LANTERN_TLS_CLIENT_CA_FILE", ""),
+			CertFile:     reader.String("LANTERN_TLS_CERT_FILE", ""),
+			KeyFile:      reader.String("LANTERN_TLS_KEY_FILE", ""),
+			ClientCAFile: reader.String("LANTERN_TLS_CLIENT_CA_FILE", ""),
 		},
 		RateLimit:     operational.RateLimit,
 		Observability: operational.Observability,
@@ -131,20 +137,20 @@ func NewConfig() (*Config, error) {
 		Traversal:     operational.Traversal,
 		Tracing:       operational.Tracing,
 		Auth: AuthConfig{
-			Tokens:           splitTokens(envconfig.String("LANTERN_AUTH_TOKENS", "")),
-			ExemptReflection: envconfig.Bool("LANTERN_AUTH_EXEMPT_REFLECTION", true),
+			Tokens:           splitTokens(reader.String("LANTERN_AUTH_TOKENS", "")),
+			ExemptReflection: reader.Bool("LANTERN_AUTH_EXEMPT_REFLECTION", true),
 		},
-		LLM:         loadLLMConfig(),
+		LLM:         loadLLMConfig(reader),
 		Scan:        operational.Scan,
 		Search:      operational.Search,
-		MutationLog: loadMutationLogConfig(),
+		MutationLog: loadMutationLogConfig(reader),
 		ReceiptWAL:  receiptWAL,
-		Replication: loadReplicationConfig(),
-		Readiness:   loadReadinessConfig(),
+		Replication: loadReplicationConfig(reader),
+		Readiness:   loadReadinessConfig(reader),
 		Peer:        peer,
-		AntiEntropy: loadAntiEntropyConfig(),
-		CORS:        loadCORSConfig(),
-		Backup:      loadBackupConfig(),
+		AntiEntropy: loadAntiEntropyConfig(reader),
+		CORS:        loadCORSConfig(reader),
+		Backup:      loadBackupConfig(reader),
 	}
 	if len(securityConfig.AuthorityJSON) != 0 {
 		cfg.TLS.CertPEM = securityConfig.TLS.CertPEM
@@ -156,7 +162,7 @@ func NewConfig() (*Config, error) {
 	// records are structured (and keep their severity in collectors such as
 	// GKE Cloud Logging) instead of falling back to slog's plain-text stderr
 	// handler.
-	if err := config.CheckEnvironment(os.Environ(), newLogger(cfg.Observability, os.Stderr)); err != nil {
+	if err := config.CheckEnvironment(reader, newLogger(cfg.Observability, os.Stderr)); err != nil {
 		return nil, err
 	}
 	if err := operational.Validate(); err != nil {

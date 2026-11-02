@@ -1,8 +1,9 @@
 // Package config owns ordinary Server operational values, defaults and value
 // validation. Runtime construction and trust certification belong to provider.
-// Loading uses envconfig's process-wide registry; it is not an isolated or
-// concurrently independent operation.
+// Loading uses an explicit environment Reader shared by the composition root.
 package config
+
+import "github.com/anaregdesign/lantern/server/internal/envconfig"
 
 // Config groups ordinary values for loading and validation. Constructors should
 // receive the focused value group they need rather than this aggregate.
@@ -20,20 +21,20 @@ type Config struct {
 }
 
 // Load reads operational environment values and records primitive parser
-// findings using envconfig. The composition root supplies the metrics default
+// findings using reader. The composition root supplies the metrics default
 // after it has resolved the authentication mode. Call CheckEnvironment only
 // after every other Server loader has registered its settings, then Validate.
-func Load(metricsDefault string) Config {
+func Load(reader *envconfig.Reader, metricsDefault string) Config {
 	return Config{
-		Net:           loadNetwork(),
-		RateLimit:     loadRateLimit(),
-		Observability: loadObservability(metricsDefault),
-		Cache:         loadCache(),
-		Shutdown:      loadShutdown(),
-		Validation:    loadValidation(),
-		Traversal:     loadTraversal(),
-		Scan:          loadScan(),
-		Search:        loadSearch(),
-		Tracing:       loadTracing(),
+		Net:           loadNetwork(reader),
+		RateLimit:     loadRateLimit(reader),
+		Observability: loadObservability(reader, metricsDefault),
+		Cache:         loadCache(reader),
+		Shutdown:      loadShutdown(reader),
+		Validation:    loadValidation(reader),
+		Traversal:     loadTraversal(reader),
+		Scan:          loadScan(reader),
+		Search:        loadSearch(reader),
+		Tracing:       loadTracing(reader),
 	}
 }

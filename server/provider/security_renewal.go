@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/membershippublisher"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
@@ -56,6 +58,7 @@ func RenewSecurity(ctx context.Context, options SecurityRenewOptions) error {
 }
 
 func renewSecurityAt(ctx context.Context, options SecurityRenewOptions, now time.Time) error {
+	reader := envconfig.NewReader(os.Environ())
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -143,7 +146,7 @@ func renewSecurityAt(ctx context.Context, options SecurityRenewOptions, now time
 		}
 		seen[name] = true
 		originalPath := filepath.Join(dir, "identity.json")
-		document, raw, err := readSecurityMaterial(originalPath)
+		document, raw, err := readSecurityMaterial(reader, originalPath)
 		if err != nil || document.Node != name ||
 			pathsOverlap(options.OutputDirectory, document.StatePaths.Directory) || pathsOverlap(options.OutputDirectory, document.StatePaths.CustodyDirectory) ||
 			pathsOverlap(operator, document.StatePaths.Directory) || pathsOverlap(operator, document.StatePaths.CustodyDirectory) {

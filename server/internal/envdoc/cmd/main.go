@@ -17,16 +17,14 @@ func main() {
 	out := flag.String("out", "", "output path (default: stdout)")
 	flag.Parse()
 
-	// Scrub the process environment first so the captured registry reflects
-	// pure defaults and the rendered file is deterministic regardless of the
-	// invoking shell (a dev with LANTERN_* exported must produce the same
-	// bytes CI does).
-	os.Clearenv()
-	if _, err := provider.NewConfig(); err != nil {
+	// An explicit empty snapshot renders defaults without changing the
+	// invoking process environment or inheriting a previous load's findings.
+	reader := envconfig.NewReader(nil)
+	if _, err := provider.LoadConfig(reader); err != nil {
 		fmt.Fprintln(os.Stderr, "envdoc: config load:", err)
 		os.Exit(1)
 	}
-	doc, err := envdoc.Render(envconfig.Known())
+	doc, err := envdoc.Render(reader.Known())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "envdoc:", err)
 		os.Exit(1)

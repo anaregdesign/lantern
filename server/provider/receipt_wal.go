@@ -53,19 +53,19 @@ type ReceiptWALConfig struct {
 	MaxBytes   int
 }
 
-func loadReceiptWALConfig() ReceiptWALConfig {
-	mode := ReceiptWALMode(strings.TrimSpace(envconfig.String("LANTERN_RECEIPT_WAL_MODE", string(ReceiptWALModeGraphOnly))))
-	path := strings.TrimSpace(envconfig.String("LANTERN_RECEIPT_WAL_PATH", ""))
-	epochText := strings.TrimSpace(envconfig.String("LANTERN_RECEIPT_EPOCH", ""))
-	retention := envconfig.Duration("LANTERN_RECEIPT_RETENTION", 0)
-	maxEntries := envconfig.Int("LANTERN_RECEIPT_MAX_ENTRIES", 0)
-	maxBytes := envconfig.Int("LANTERN_RECEIPT_MAX_BYTES", 0)
+func loadReceiptWALConfig(reader *envconfig.Reader) ReceiptWALConfig {
+	mode := ReceiptWALMode(strings.TrimSpace(reader.String("LANTERN_RECEIPT_WAL_MODE", string(ReceiptWALModeGraphOnly))))
+	path := strings.TrimSpace(reader.String("LANTERN_RECEIPT_WAL_PATH", ""))
+	epochText := strings.TrimSpace(reader.String("LANTERN_RECEIPT_EPOCH", ""))
+	retention := reader.Duration("LANTERN_RECEIPT_RETENTION", 0)
+	maxEntries := reader.Int("LANTERN_RECEIPT_MAX_ENTRIES", 0)
+	maxBytes := reader.Int("LANTERN_RECEIPT_MAX_BYTES", 0)
 
 	var epoch mutationreceipt.Epoch
 	if epochText != "" {
 		decoded, err := hex.DecodeString(epochText)
 		if err != nil || len(decoded) != len(epoch) {
-			envconfig.Malformed("LANTERN_RECEIPT_EPOCH", epochText, "must be exactly 32 hexadecimal characters")
+			reader.Malformed("LANTERN_RECEIPT_EPOCH", epochText, "must be exactly 32 hexadecimal characters")
 		} else {
 			copy(epoch[:], decoded)
 		}

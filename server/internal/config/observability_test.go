@@ -2,13 +2,17 @@ package config
 
 import (
 	"log/slog"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 func TestObservabilityLoading(t *testing.T) {
 	cleanEnvironment(t)
-	got := Load("127.0.0.1:9090").Observability
+	reader := envconfig.NewReader(os.Environ())
+	got := Load(reader, "127.0.0.1:9090").Observability
 	want := ObservabilityConfig{
 		LogLevel: slog.LevelInfo, LogFormat: "json", MetricsAddr: "127.0.0.1:9090",
 		EnableReflection: true, SlowRPCThreshold: 500 * time.Millisecond,
@@ -24,7 +28,8 @@ func TestObservabilityLoading(t *testing.T) {
 	} {
 		t.Setenv(key, value)
 	}
-	got = Load(":9090").Observability
+	reader = envconfig.NewReader(os.Environ())
+	got = Load(reader, ":9090").Observability
 	want = ObservabilityConfig{
 		LogLevel: slog.LevelDebug, LogFormat: "text", MetricsAddr: "", EnableReflection: false,
 		Version: "test", Commit: "commit", EnablePprof: true, MutexProfileFraction: 7, BlockProfileRate: 123,
@@ -54,7 +59,8 @@ func TestTracingEnvironmentPrecedence(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", tc.traceEndpoint)
 			t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", tc.protocol)
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", tc.traceProtocol)
-			if got := Load(":9090").Tracing; got != tc.want {
+			reader := envconfig.NewReader(os.Environ())
+			if got := Load(reader, ":9090").Tracing; got != tc.want {
 				t.Fatalf("tracing values = %+v, want %+v", got, tc.want)
 			}
 		})

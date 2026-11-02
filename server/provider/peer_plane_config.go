@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -21,19 +20,19 @@ type PeerPlaneConfig struct {
 	Identity      PeerIdentityConfig
 }
 
-func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfig, error) {
+func loadPeerPlaneConfig(reader *envconfig.Reader, auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfig, error) {
 	known := map[string]bool{}
 	names := []string{"LANTERN_PEER_LISTEN_ADDR", "LANTERN_PEER_DEPLOYMENT", "LANTERN_PEER_MEMBERSHIP_MODE", "LANTERN_PEER_MEMBERSHIP_FILE", "LANTERN_PEER_MEMBERSHIP_STATE_FILE", "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE", "LANTERN_PEER_WORKLOAD_ID", "LANTERN_PEER_CERT_FILE", "LANTERN_PEER_KEY_FILE", "LANTERN_PEER_TRUST_CA_FILE"}
 	values := make(map[string]string, len(names))
 	configured := false
 	for _, name := range names {
 		known[name] = true
-		values[name] = envconfig.String(name, "")
-		if _, set := os.LookupEnv(name); set {
+		values[name] = reader.String(name, "")
+		if _, set := reader.LookupEnv(name); set {
 			configured = true
 		}
 	}
-	for _, setting := range os.Environ() {
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		upper := strings.ToUpper(name)
 		if auth.ProvisionedPeer != nil && (strings.HasPrefix(upper, "LANTERN_PEER_") || upper == "LANTERN_PEERS") {

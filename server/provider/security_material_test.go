@@ -20,11 +20,11 @@ func TestSecurityMaterialBindsSeparateJournalAndCustodyLocations(t *testing.T) {
 				t.Fatal(err)
 			}
 			currentJSON := os.Getenv("LANTERN_SECURITY_CONFIG_JSON")
-			config, err := loadSecurityConfigJSON(currentJSON)
+			config, err := loadSecurityConfigJSON(testEnvironmentReader(), currentJSON)
 			if err != nil {
 				t.Fatal(err)
 			}
-			document, _, err := readSecurityMaterial(config.MaterialFile)
+			document, _, err := readSecurityMaterial(testEnvironmentReader(), config.MaterialFile)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -47,7 +47,7 @@ func TestSecurityMaterialBindsSeparateJournalAndCustodyLocations(t *testing.T) {
 			}
 			document.Authority, _ = json.Marshal(authority)
 			writeSecurityMaterialTestDocument(t, config.MaterialFile, document, options.OperatorDirectory)
-			loaded, err := loadSecurityConfigJSON(currentJSON)
+			loaded, err := loadSecurityConfigJSON(testEnvironmentReader(), currentJSON)
 			if err != nil || loaded.StateDirectory != document.StatePaths.Directory || loaded.CustodyDirectory != document.StatePaths.CustodyDirectory || loaded.PersistenceRoot != document.StatePaths.PersistenceRoot {
 				t.Fatal("genuine split custody material was rejected or rebased", err)
 			}
@@ -74,7 +74,7 @@ func TestSecurityMaterialBindsSeparateJournalAndCustodyLocations(t *testing.T) {
 					} else {
 						writeSecurityMaterialTestDocument(t, config.MaterialFile, bad, options.OperatorDirectory)
 					}
-					if _, err := loadSecurityConfigJSON(currentJSON); err == nil {
+					if _, err := loadSecurityConfigJSON(testEnvironmentReader(), currentJSON); err == nil {
 						t.Fatal("mismatched custody descriptor was accepted")
 					}
 					writeSecurityMaterialTestDocument(t, config.MaterialFile, document, options.OperatorDirectory)
@@ -86,7 +86,7 @@ func TestSecurityMaterialBindsSeparateJournalAndCustodyLocations(t *testing.T) {
 			}
 			input.PersistenceRoot += "-different"
 			changed, _ := json.Marshal(input)
-			if _, err := loadSecurityConfigJSON(string(changed)); err == nil {
+			if _, err := loadSecurityConfigJSON(testEnvironmentReader(), string(changed)); err == nil {
 				t.Fatal("current persistence root disagreed with signed material")
 			}
 		})
@@ -126,11 +126,11 @@ func TestSecurityMaterialRejectsNativePeerAndSpoolFamilyAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentJSON := os.Getenv("LANTERN_SECURITY_CONFIG_JSON")
-	config, err := loadSecurityConfigJSON(currentJSON)
+	config, err := loadSecurityConfigJSON(testEnvironmentReader(), currentJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, _, err := readSecurityMaterial(config.MaterialFile)
+	original, _, err := readSecurityMaterial(testEnvironmentReader(), config.MaterialFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSecurityMaterialRejectsNativePeerAndSpoolFamilyAliases(t *testing.T) {
 			}
 			document.Authority, _ = json.Marshal(authority)
 			writeSecurityMaterialTestDocument(t, config.MaterialFile, document, options.OperatorDirectory)
-			if _, err := loadSecurityConfigJSON(currentJSON); err == nil {
+			if _, err := loadSecurityConfigJSON(testEnvironmentReader(), currentJSON); err == nil {
 				t.Fatal("signed colliding storage families accepted")
 			}
 			if _, err := os.Stat(original.StatePaths.Directory); !errors.Is(err, os.ErrNotExist) {
@@ -193,7 +193,7 @@ func TestSecurityConfigurationEveryLoadConsumesSuppliedIssuersAndSecrets(t *test
 	if err := ProvisionSecurity(t.Context(), options); err != nil {
 		t.Fatal(err)
 	}
-	original, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
+	original, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestSecurityConfigurationEveryLoadConsumesSuppliedIssuersAndSecrets(t *test
 		t.Fatal(err)
 	}
 	t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(raw))
-	current, err := loadSecurityConfig()
+	current, err := loadSecurityConfig(testEnvironmentReader())
 	if err != nil {
 		t.Fatal("changed current configuration rejected", err)
 	}
@@ -231,20 +231,20 @@ func TestSecurityConfigurationEveryLoadConsumesSuppliedIssuersAndSecrets(t *test
 		t.Fatal(err)
 	}
 	t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(raw))
-	empty, err := loadSecurityConfig()
+	empty, err := loadSecurityConfig(testEnvironmentReader())
 	if err != nil || len(empty.Issuers) != 0 || empty.HistoricalImage == nil || len(empty.HistoricalImage.Issuers) != 1 {
 		t.Fatal("explicit empty Issuers were replaced by saved issuer configuration", err)
 	}
 	for _, bad := range []string{"", `{"provisioned_file":"` + original.MaterialFile + `"}`} {
 		t.Setenv("LANTERN_SECURITY_CONFIG_JSON", bad)
-		if _, err := loadSecurityConfig(); err == nil {
+		if _, err := loadSecurityConfig(testEnvironmentReader()); err == nil {
 			t.Fatal("missing or retired configuration selected stored provider input")
 		}
 	}
 	if err := os.Unsetenv("LANTERN_SECURITY_CONFIG_JSON"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadSecurityConfig(); err == nil {
+	if _, err := loadSecurityConfig(testEnvironmentReader()); err == nil {
 		t.Fatal("missing every-start configuration was ignored")
 	}
 	after, err := os.ReadFile(original.MaterialFile)

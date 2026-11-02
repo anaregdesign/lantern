@@ -68,7 +68,7 @@ func InitializeSecurity(ctx context.Context, config SecurityConfig) (counts deci
 }
 
 func initializeSecurityStorage(config SecurityConfig) error {
-	if config.MaterialFile == "" {
+	if config.MaterialFile == "" || config.environment == nil {
 		return errSecurityProvisioning
 	}
 	if !securityTargetMatches(config.TargetPlatform) {
@@ -77,7 +77,7 @@ func initializeSecurityStorage(config SecurityConfig) error {
 	if config.ProvisionedSnapshotSpool == nil || validateProvisionedSnapshotSpool(*config.ProvisionedSnapshotSpool, config.StateDirectory) != nil {
 		return errSecurityProvisioning
 	}
-	spool, err := selectGraphSnapshotSpoolForSecurity(config, loadReceiptWALConfig().Mode)
+	spool, err := selectGraphSnapshotSpoolForSecurity(config.environment, config, loadReceiptWALConfig(config.environment).Mode)
 	if err != nil {
 		return err
 	}

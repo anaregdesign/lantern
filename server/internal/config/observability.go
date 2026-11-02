@@ -2,7 +2,6 @@ package config
 
 import (
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
@@ -46,18 +45,18 @@ type ObservabilityConfig struct {
 	BlockProfileRate     int
 }
 
-func loadObservability(metricsDefault string) ObservabilityConfig {
+func loadObservability(reader *envconfig.Reader, metricsDefault string) ObservabilityConfig {
 	return ObservabilityConfig{
-		LogLevel:             envconfig.Level("LANTERN_LOG_LEVEL", slog.LevelInfo),
-		LogFormat:            envconfig.String("LANTERN_LOG_FORMAT", "json"),
-		MetricsAddr:          envconfig.String("LANTERN_METRICS_ADDR", metricsDefault),
-		EnableReflection:     envconfig.Bool("LANTERN_REFLECTION", true),
-		Version:              envconfig.String("LANTERN_VERSION", ""),
-		Commit:               envconfig.String("LANTERN_COMMIT", ""),
-		SlowRPCThreshold:     time.Duration(envconfig.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
-		EnablePprof:          envconfig.Bool("LANTERN_PPROF_ENABLED", false),
-		MutexProfileFraction: envconfig.Int("LANTERN_MUTEX_PROFILE_FRACTION", 0),
-		BlockProfileRate:     envconfig.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
+		LogLevel:             reader.Level("LANTERN_LOG_LEVEL", slog.LevelInfo),
+		LogFormat:            reader.String("LANTERN_LOG_FORMAT", "json"),
+		MetricsAddr:          reader.String("LANTERN_METRICS_ADDR", metricsDefault),
+		EnableReflection:     reader.Bool("LANTERN_REFLECTION", true),
+		Version:              reader.String("LANTERN_VERSION", ""),
+		Commit:               reader.String("LANTERN_COMMIT", ""),
+		SlowRPCThreshold:     time.Duration(reader.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
+		EnablePprof:          reader.Bool("LANTERN_PPROF_ENABLED", false),
+		MutexProfileFraction: reader.Int("LANTERN_MUTEX_PROFILE_FRACTION", 0),
+		BlockProfileRate:     reader.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
 	}
 }
 
@@ -69,10 +68,10 @@ type TracingConfig struct {
 	Protocol string
 }
 
-func loadTracing() TracingConfig {
+func loadTracing(reader *envconfig.Reader) TracingConfig {
 	return TracingConfig{
-		Enabled:  firstNonEmpty(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"), os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) != "",
-		Protocol: firstNonEmpty(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"), os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"), "grpc"),
+		Enabled:  firstNonEmpty(rawValue(reader, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"), rawValue(reader, "OTEL_EXPORTER_OTLP_ENDPOINT")) != "",
+		Protocol: firstNonEmpty(rawValue(reader, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"), rawValue(reader, "OTEL_EXPORTER_OTLP_PROTOCOL"), "grpc"),
 	}
 }
 
@@ -83,4 +82,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// rawValue preserves the OpenTelemetry SDK's empty-versus-nonempty precedence
+// while reading the same captured input as the ordinary Server settings.
+func rawValue(reader *envconfig.Reader, key string) string {
+	value, _ := reader.LookupEnv(key)
+	return value
 }

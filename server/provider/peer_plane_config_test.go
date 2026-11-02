@@ -11,7 +11,7 @@ import (
 
 func TestPeerPlaneCannotFallbackToPublicOrIgnoreTrust(t *testing.T) {
 	off := SecurityConfig{Mode: "off"}
-	if cfg, err := loadPeerPlaneConfig(off, PeerConfig{Discovery: "static"}); err != nil || cfg.ListenAddress != "" {
+	if cfg, err := loadPeerPlaneConfig(testEnvironmentReader(), off, PeerConfig{Discovery: "static"}); err != nil || cfg.ListenAddress != "" {
 		t.Fatal(err)
 	}
 	for _, legacy := range []PeerConfig{
@@ -20,12 +20,12 @@ func TestPeerPlaneCannotFallbackToPublicOrIgnoreTrust(t *testing.T) {
 		{Discovery: "static", CAFile: "/tmp/ca"},
 		{Discovery: "static", ClientKeyFile: "/tmp/key"},
 	} {
-		if _, err := loadPeerPlaneConfig(off, legacy); err == nil {
+		if _, err := loadPeerPlaneConfig(testEnvironmentReader(), off, legacy); err == nil {
 			t.Fatal("legacy anonymous/public peer configuration accepted")
 		}
 	}
 	t.Setenv("LANTERN_PEER_LISTEN_ADDR", "")
-	if _, err := loadPeerPlaneConfig(off, PeerConfig{Discovery: "static"}); err == nil {
+	if _, err := loadPeerPlaneConfig(testEnvironmentReader(), off, PeerConfig{Discovery: "static"}); err == nil {
 		t.Fatal("explicit incomplete private plane ignored")
 	}
 	if _, _, err := NewConfiguredPeerIdentity(PeerPlaneConfig{Identity: PeerIdentityConfig{CAFile: "/tmp/ignored"}}); err == nil {
@@ -47,13 +47,13 @@ func TestProvisionedPeerRejectsCompetingInputs(t *testing.T) {
 	for _, name := range []string{"LANTERN_PEER_LISTEN_ADDR", "LANTERN_PEER_MEMBERSHIP_MODE", "LANTERN_PEER_CERT_FILE", "LANTERN_PEER_DISCOVERY", "LANTERN_PEERS", "lantern_peer_key_file"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "")
-			if _, err := loadPeerPlaneConfig(config, PeerConfig{Discovery: "static"}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+			if _, err := loadPeerPlaneConfig(testEnvironmentReader(), config, PeerConfig{Discovery: "static"}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 				t.Fatal("provisioned trust ignored an explicitly present peer setting", err)
 			}
 		})
 	}
 	for _, legacy := range []PeerConfig{{Discovery: "static", Peers: []string{"https://peer.invalid"}}, {Discovery: "dns"}, {Discovery: "static", DNSName: "ignored"}, {Discovery: "static", CAFile: "/ignored"}} {
-		if _, err := loadPeerPlaneConfig(config, legacy); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		if _, err := loadPeerPlaneConfig(testEnvironmentReader(), config, legacy); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 			t.Fatal("provisioned trust ignored legacy peer configuration", err)
 		}
 	}
@@ -66,7 +66,7 @@ func TestProvisionedPeerRequiresOwnedAuthorityAndUninjectedTime(t *testing.T) {
 		{Mode: "oidc", ProvisionedPeer: &PeerPlaneConfig{ListenAddress: "127.0.0.1:17380", Identity: PeerIdentityConfig{Now: time.Now}}},
 		{Mode: "oidc", AuthorityJSON: []byte(`{}`), ProvisionedPeer: &PeerPlaneConfig{ListenAddress: "127.0.0.1:17380"}},
 	} {
-		if _, err := loadPeerPlaneConfig(config, PeerConfig{Discovery: "static"}); err == nil {
+		if _, err := loadPeerPlaneConfig(testEnvironmentReader(), config, PeerConfig{Discovery: "static"}); err == nil {
 			t.Fatal("incomplete or clock-injected provisioned peer accepted")
 		}
 	}
@@ -84,7 +84,7 @@ func TestProvisionedPeerBindsJSONAuthorityAndAlwaysResumes(t *testing.T) {
 	if err := ProvisionSecurity(t.Context(), options); err != nil {
 		t.Fatal(err)
 	}
-	config, err := loadSecurityConfigJSON(string(raw))
+	config, err := loadSecurityConfigJSON(testEnvironmentReader(), string(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestProvisionedPeerBindsJSONAuthorityAndAlwaysResumes(t *testing.T) {
 	}
 	peer := config.ProvisionedPeer
 	original := peer.Identity
-	cfg, err := loadPeerPlaneConfig(config, PeerConfig{Discovery: "static"})
+	cfg, err := loadPeerPlaneConfig(testEnvironmentReader(), config, PeerConfig{Discovery: "static"})
 	if err != nil {
 		t.Fatal("load JSON-backed peer authority", err)
 	}
@@ -111,7 +111,7 @@ func TestProvisionedPeerBindsJSONAuthorityAndAlwaysResumes(t *testing.T) {
 		copy := *peer
 		mutate(&copy.Identity)
 		config.ProvisionedPeer = &copy
-		if _, err := loadPeerPlaneConfig(config, PeerConfig{Discovery: "static"}); err == nil || !strings.Contains(err.Error(), "different current cohort") {
+		if _, err := loadPeerPlaneConfig(testEnvironmentReader(), config, PeerConfig{Discovery: "static"}); err == nil || !strings.Contains(err.Error(), "different current cohort") {
 			t.Fatal("mismatched generated data cohort accepted", err)
 		}
 	}

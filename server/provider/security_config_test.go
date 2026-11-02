@@ -3,6 +3,8 @@ package provider
 import (
 	"os"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 func authorityConfigEnvironment(t *testing.T) {
@@ -17,14 +19,14 @@ func TestSecurityConfigRequiresCurrentJSONOnEveryInvocation(t *testing.T) {
 	t.Setenv("LANTERN_AUTH_MODE", "oidc")
 	for _, raw := range []string{"", "null", `{}`, `{"provisioned_file":"/old/config.json"}`, `{"version":1}`} {
 		t.Setenv("LANTERN_SECURITY_CONFIG_JSON", raw)
-		if _, err := loadSecurityConfig(); err == nil {
+		if _, err := loadSecurityConfig(testEnvironmentReader()); err == nil {
 			t.Fatal("missing,malformed or obsolete configuration accepted")
 		}
 	}
 	if err := os.Unsetenv("LANTERN_SECURITY_CONFIG_JSON"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadSecurityConfig(); err == nil {
+	if _, err := loadSecurityConfig(testEnvironmentReader()); err == nil {
 		t.Fatal("missing configuration acquired persisted fallback")
 	}
 }
@@ -51,7 +53,7 @@ func TestSecurityConfigRetiredSettingsRejectedByPresence(t *testing.T) {
 						t.Setenv("LANTERN_AUTH_MODE", mode)
 					}
 					t.Setenv(name, value)
-					if _, err := loadSecurityConfig(); err == nil {
+					if _, err := loadSecurityConfig(testEnvironmentReader()); err == nil {
 						t.Fatal("retired input was ignored")
 					}
 				})
@@ -66,16 +68,41 @@ func TestSecurityConfigDefaultOffHasNoPrerequisites(t *testing.T) {
 		if explicit {
 			t.Setenv("LANTERN_AUTH_MODE", "off")
 		}
-		c, err := loadSecurityConfig()
+		c, err := loadSecurityConfig(testEnvironmentReader())
 		if err != nil || c.Mode != "off" || c.MaterialFile != "" {
 			t.Fatal("OFF prerequisites", err)
 		}
 	}
 	t.Setenv("LANTERN_SECURITY_CONFIG_FILE", "")
-	if _, err := loadSecurityConfig(); err == nil {
+	if _, err := loadSecurityConfig(testEnvironmentReader()); err == nil {
 		t.Fatal("OFF ignored a present authority setting")
 	}
 	if validateSecurityConfig(SecurityConfig{Mode: "off", MaterialFile: "/operator/ignored"}) == nil {
 		t.Fatal("direct OFF composition ignored authority input")
+	}
+}
+
+func TestSecurityConfigValidationKeepsCapturedEnvironment(t *testing.T) {
+	for _, name := range []string{
+		"LANTERN_TLS_CERT_FILE",
+		"LANTERN_PEER_MEMBERSHIP_FILE",
+		"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR",
+		"LANTERN_CDC_ENABLED",
+	} {
+		t.Run(name, func(t *testing.T) {
+			captured, err := parseSecurityConfigJSON(envconfig.NewReader(nil), inlineSecurityExample())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Presence, including a present empty value, is a conflicting input.
+			// Later process changes cannot alter validation of an earlier load.
+			t.Setenv(name, "")
+			if err := validateSecurityConfig(captured); err != nil {
+				t.Fatalf("prior load observed changed process environment: %v", err)
+			}
+			if _, err := parseSecurityConfigJSON(envconfig.NewReader([]string{name + "="}), inlineSecurityExample()); err == nil {
+				t.Fatal("new load ignored conflicting setting presence")
+			}
+		})
 	}
 }

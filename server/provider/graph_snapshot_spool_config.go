@@ -3,7 +3,6 @@ package provider
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,11 +32,11 @@ func validateProvisionedSnapshotSpool(config GraphSnapshotSpoolConfig, stateDire
 	return config.ValidateConfiguration()
 }
 
-func loadGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig) (GraphSnapshotSpoolConfig, error) {
+func loadGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig SecurityConfig) (GraphSnapshotSpoolConfig, error) {
 	if securityConfig.Mode != "oidc" {
-		return loadGraphSnapshotSpoolConfig()
+		return loadGraphSnapshotSpoolConfig(reader)
 	}
-	for _, setting := range os.Environ() {
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_GRAPH_SNAPSHOT_SPOOL_") {
 			return GraphSnapshotSpoolConfig{}, errors.New("provisioned security cannot be combined with separate Snapshot spool settings")
@@ -49,8 +48,8 @@ func loadGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig) (GraphSnap
 	return *securityConfig.ProvisionedSnapshotSpool, nil
 }
 
-func selectGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig, mode ReceiptWALMode) (GraphSnapshotSpoolConfig, error) {
-	profile, err := loadGraphSnapshotSpoolForSecurity(securityConfig)
+func selectGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig SecurityConfig, mode ReceiptWALMode) (GraphSnapshotSpoolConfig, error) {
+	profile, err := loadGraphSnapshotSpoolForSecurity(reader, securityConfig)
 	if err != nil || securityConfig.Mode != "oidc" {
 		return profile, err
 	}
@@ -66,16 +65,16 @@ func selectGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig, mode Rec
 	}
 }
 
-func loadGraphSnapshotSpoolConfig() (GraphSnapshotSpoolConfig, error) {
+func loadGraphSnapshotSpoolConfig(reader *envconfig.Reader) (GraphSnapshotSpoolConfig, error) {
 	const (
 		directoryKey = "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"
 		diskKey      = "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"
 		frameKey     = "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"
 	)
-	directory := strings.TrimSpace(envconfig.String(directoryKey, ""))
-	diskText := strings.TrimSpace(envconfig.String(diskKey, "0"))
-	frameText := strings.TrimSpace(envconfig.String(frameKey, "0"))
-	for _, setting := range os.Environ() {
+	directory := strings.TrimSpace(reader.String(directoryKey, ""))
+	diskText := strings.TrimSpace(reader.String(diskKey, "0"))
+	frameText := strings.TrimSpace(reader.String(frameKey, "0"))
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_GRAPH_SNAPSHOT_SPOOL_") &&
 			name != directoryKey && name != diskKey && name != frameKey {

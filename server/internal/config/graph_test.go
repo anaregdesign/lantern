@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -9,7 +10,8 @@ import (
 
 func TestGraphLoading(t *testing.T) {
 	cleanEnvironment(t)
-	cfg := Load(":9090")
+	reader := envconfig.NewReader(os.Environ())
+	cfg := Load(reader, ":9090")
 	if cfg.Cache != (CacheConfig{TTL: time.Minute, GCInterval: time.Minute}) {
 		t.Fatalf("cache defaults = %+v", cfg.Cache)
 	}
@@ -31,7 +33,8 @@ func TestGraphLoading(t *testing.T) {
 	} {
 		t.Setenv(key, value)
 	}
-	cfg = Load(":9090")
+	reader = envconfig.NewReader(os.Environ())
+	cfg = Load(reader, ":9090")
 	if cfg.Cache != (CacheConfig{TTL: 4 * time.Second, GCInterval: 5 * time.Second, GCEdgeBudget: 6, MaxVertices: 7, MaxEdges: 8, MaxVertexCausalEntries: 9, MaxEdgeCausalEntries: 10}) {
 		t.Fatalf("cache overrides = %+v", cfg.Cache)
 	}
@@ -50,12 +53,13 @@ func TestTraversalInvalidValuesKeepExistingFallback(t *testing.T) {
 	} {
 		t.Setenv(key, value)
 	}
-	cfg := Load(":9090")
+	reader := envconfig.NewReader(os.Environ())
+	cfg := Load(reader, ":9090")
 	if cfg.Traversal.Timeout != 5*time.Second || cfg.Traversal.MaxPushes != 1_000_000 || cfg.Traversal.MaxTouchedEdges != 10_000_000 || cfg.Traversal.MaxResults != 1024 {
 		t.Fatalf("invalid traversal fallback = %+v", cfg.Traversal)
 	}
-	if len(envconfig.Findings()) != 4 {
-		t.Fatalf("traversal findings = %+v, want four", envconfig.Findings())
+	if len(reader.Findings()) != 4 {
+		t.Fatalf("traversal findings = %+v, want four", reader.Findings())
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("fallback value validation: %v", err)

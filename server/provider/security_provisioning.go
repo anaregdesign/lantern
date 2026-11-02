@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/membershippublisher"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
@@ -45,17 +46,18 @@ func ProvisionSecurity(ctx context.Context, options SecurityProvisionOptions) er
 }
 
 func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionOptions, write func(string, []byte) error) error {
+	reader := envconfig.NewReader(os.Environ())
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	mode, raw, err := securityConfigurationEnvironment()
+	mode, raw, err := securityConfigurationEnvironment(reader)
 	if err != nil {
 		return err
 	}
 	if mode != "oidc" {
 		return errSecurityProvisioning
 	}
-	config, err := parseSecurityConfigJSON(raw)
+	config, err := parseSecurityConfigJSON(reader, raw)
 	if err != nil {
 		return err
 	}
@@ -196,7 +198,7 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 // checks. Fresh administrator usability is deliberately checked only at creation.
 func validateSecurityInput(config SecurityConfig) error {
 	s := config.input
-	if s == nil || s.TargetPlatform != "linux" && s.TargetPlatform != "darwin" || !cleanAbsolutePath(s.PersistenceRoot) || !cleanAbsolutePath(s.MaterialRoot) ||
+	if s == nil || config.environment == nil || s.TargetPlatform != "linux" && s.TargetPlatform != "darwin" || !cleanAbsolutePath(s.PersistenceRoot) || !cleanAbsolutePath(s.MaterialRoot) ||
 		pathsOverlap(s.PersistenceRoot, s.MaterialRoot) || len(s.Nodes) < 1 || len(s.Nodes) > 31 ||
 		s.InitialAdmin.Issuer == "" || s.InitialAdmin.Subject == "" || len(s.InitialAdmin.Subject) > 255 ||
 		s.TLSTermination != "proxy" && s.TLSTermination != "server" || s.TLSTermination == "server" && s.TLS.CertPEM == "" ||
@@ -215,7 +217,7 @@ func validateSecurityInput(config SecurityConfig) error {
 	if !found {
 		return errors.New("security configuration must select one explicit fixed node")
 	}
-	for _, setting := range os.Environ() {
+	for _, setting := range config.environment.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		upper := strings.ToUpper(name)
 		if strings.HasPrefix(upper, "LANTERN_PEER_") || upper == "LANTERN_PEERS" || strings.HasPrefix(upper, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") || strings.HasPrefix(upper, "LANTERN_CDC_") {

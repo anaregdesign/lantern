@@ -46,7 +46,7 @@ func TestProvisionedDataTrustRejectsSignedSubstitutionBeforeInitialization(t *te
 				if err != nil {
 					t.Fatal(err)
 				}
-				config, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
+				config, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
 				if err != nil {
 					t.Fatal("intact generation rejected", err)
 				}
@@ -126,7 +126,7 @@ func TestProvisionedDataTrustRejectsSignedSubstitutionBeforeInitialization(t *te
 				if err := os.WriteFile(expected.ManifestFile, substituted, 0600); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
+				if _, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
 					t.Fatal("signed replacement became original trust before first init")
 				}
 				if _, err := os.Stat(config.StateDirectory); !errors.Is(err, os.ErrNotExist) {
@@ -149,7 +149,7 @@ func TestProvisionedDataTrustAllowsOnlySameOriginalTrustRenewal(t *testing.T) {
 	if err := ProvisionSecurity(t.Context(), options); err != nil {
 		t.Fatal(err)
 	}
-	config, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
+	config, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestProvisionedDataTrustAllowsOnlySameOriginalTrustRenewal(t *testing.T) {
 	if err := publisher.Step(signed.Payload.IssuedAt.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	after, err := loadSecurityConfigJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
+	after, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
 	if err != nil {
 		t.Fatal("valid signed renewal rejected", err)
 	}

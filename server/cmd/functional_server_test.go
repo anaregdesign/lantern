@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
-	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -54,8 +53,6 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 			_ = os.Unsetenv(key)
 		}
 	}
-	envconfig.ResetForTesting()
-	t.Cleanup(envconfig.ResetForTesting)
 	launch, err := listenerlaunch.Reserve(t.Context(), true)
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +128,6 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 	for key, value := range fixture.Nodes[1].Environment {
 		t.Setenv(key, value)
 	}
-	envconfig.ResetForTesting()
 	probeApp, probeCleanup, err := initializeAppWithListeners(t.Context(), launches[1])
 	if err != nil {
 		t.Fatal("controlled peer client composition", err)

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 func TestCheckEnvironment(t *testing.T) {
@@ -20,12 +22,13 @@ func TestCheckEnvironment(t *testing.T) {
 			t.Setenv("LANTERN_STRICT_CONFIG", strconv.FormatBool(strict))
 			t.Setenv("LANTERN_PORT", "not-a-number")
 			t.Setenv("LANTERN_PROT", "do-not-log-this-value")
-			cfg := Load(":9090")
+			reader := envconfig.NewReader(os.Environ())
+			cfg := Load(reader, ":9090")
 			if cfg.Net.Port != 6380 {
 				t.Fatalf("malformed port = %d, want default", cfg.Net.Port)
 			}
 			var output bytes.Buffer
-			err := CheckEnvironment(os.Environ(), slog.New(slog.NewJSONHandler(&output, nil)))
+			err := CheckEnvironment(reader, slog.New(slog.NewJSONHandler(&output, nil)))
 			if (err != nil) != strict {
 				t.Fatalf("CheckEnvironment strict=%t: %v", strict, err)
 			}
@@ -47,9 +50,10 @@ func TestCheckEnvironment(t *testing.T) {
 		t.Setenv("LANTERN_STRICT_CONFIG", "true")
 		t.Setenv("LANTERN_MCP_AGENT_ID", "agent")
 		t.Setenv("LANTERN_TOKEN", "client-secret")
-		Load(":9090")
+		reader := envconfig.NewReader(os.Environ())
+		Load(reader, ":9090")
 		var output bytes.Buffer
-		if err := CheckEnvironment(os.Environ(), slog.New(slog.NewJSONHandler(&output, nil))); err != nil {
+		if err := CheckEnvironment(reader, slog.New(slog.NewJSONHandler(&output, nil))); err != nil {
 			t.Fatalf("foreign settings rejected: %v", err)
 		}
 		if strings.Contains(output.String(), "client-secret") {

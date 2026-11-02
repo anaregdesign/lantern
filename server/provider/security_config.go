@@ -39,21 +39,25 @@ type SecurityConfig struct {
 	TargetPlatform           string
 	Node                     string
 	input                    *securityConfigJSON
-	configuredTrust          *security.ConfiguredTrust
-	authorityManifest        []byte
+	// Revalidation uses the original captured input, never a later process environment.
+	environment       *envconfig.Reader
+	configuredTrust   *security.ConfiguredTrust
+	authorityManifest []byte
 }
 
-func LoadSecurityConfig() (SecurityConfig, error)  { return loadSecurityConfig() }
+func LoadSecurityConfig() (SecurityConfig, error) {
+	return loadSecurityConfig(envconfig.NewReader(os.Environ()))
+}
 func NewSecurityConfig(cfg *Config) SecurityConfig { return cfg.Security }
 
-func securityConfigurationEnvironment() (string, string, error) {
-	if err := validateAuthMode(); err != nil {
+func securityConfigurationEnvironment(reader *envconfig.Reader) (string, string, error) {
+	if err := validateAuthMode(reader); err != nil {
 		return "", "", err
 	}
-	envconfig.RegisterString("LANTERN_SECURITY_CONFIG_JSON", "")
-	mode := envconfig.String("LANTERN_AUTH_MODE", "off")
-	raw, present := os.LookupEnv("LANTERN_SECURITY_CONFIG_JSON")
-	for _, setting := range os.Environ() {
+	reader.RegisterString("LANTERN_SECURITY_CONFIG_JSON", "")
+	mode := reader.String("LANTERN_AUTH_MODE", "off")
+	raw, present := reader.LookupEnv("LANTERN_SECURITY_CONFIG_JSON")
+	for _, setting := range reader.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		upper := strings.ToUpper(name)
 		if (strings.HasPrefix(upper, "LANTERN_OIDC_") || strings.HasPrefix(upper, "LANTERN_SECURITY_")) && name != "LANTERN_SECURITY_CONFIG_JSON" {
@@ -72,15 +76,15 @@ func securityConfigurationEnvironment() (string, string, error) {
 	return mode, raw, nil
 }
 
-func loadSecurityConfig() (SecurityConfig, error) {
-	mode, raw, err := securityConfigurationEnvironment()
+func loadSecurityConfig(reader *envconfig.Reader) (SecurityConfig, error) {
+	mode, raw, err := securityConfigurationEnvironment(reader)
 	if err != nil {
 		return SecurityConfig{}, err
 	}
 	if mode == "off" {
 		return SecurityConfig{Mode: "off"}, nil
 	}
-	return loadSecurityConfigJSON(raw)
+	return loadSecurityConfigJSON(reader, raw)
 }
 
 func strictSecurityConfigJSON(raw string, value any) error {
@@ -113,14 +117,14 @@ func validateSecurityConfig(config SecurityConfig) error {
 		}
 		return nil
 	}
-	if config.Mode != "oidc" || config.input == nil || config.configuredTrust == nil || !canonicalSecurityOrigin(config.BrowserOrigin) {
+	if config.Mode != "oidc" || config.environment == nil || config.input == nil || config.configuredTrust == nil || !canonicalSecurityOrigin(config.BrowserOrigin) {
 		return errors.New("OIDC requires current configuration and an exact HTTPS public origin")
 	}
 	if err := validateSecurityInput(config); err != nil {
 		return err
 	}
 	for _, name := range []string{"LANTERN_TLS_CERT_FILE", "LANTERN_TLS_KEY_FILE", "LANTERN_TLS_CLIENT_CA_FILE"} {
-		if _, present := os.LookupEnv(name); present {
+		if _, present := config.environment.LookupEnv(name); present {
 			return errors.New("security JSON cannot be combined with TLS file settings")
 		}
 	}
@@ -142,12 +146,12 @@ func validateSecurityConfig(config SecurityConfig) error {
 		return errors.New("invalid OIDC private origins")
 	}
 	if config.ProvisionedSnapshotSpool != nil {
-		if _, err := loadGraphSnapshotSpoolForSecurity(config); err != nil {
+		if _, err := loadGraphSnapshotSpoolForSecurity(config.environment, config); err != nil {
 			return err
 		}
 	}
 	if len(config.CDC) > 0 {
-		if _, err := loadJSONChangeConfig(config.CDC); err != nil {
+		if _, err := loadJSONChangeConfig(config.environment, config.CDC); err != nil {
 			return errors.New("invalid internal CDC key material")
 		}
 	}

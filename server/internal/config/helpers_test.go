@@ -4,8 +4,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 func cleanEnvironment(t *testing.T) {
@@ -19,6 +17,4 @@ func cleanEnvironment(t *testing.T) {
 			}
 		}
 	}
-	envconfig.ResetForTesting()
-	t.Cleanup(envconfig.ResetForTesting)
 }

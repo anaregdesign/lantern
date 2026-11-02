@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
@@ -77,8 +79,8 @@ type securityNodeJSON struct {
 	DataListen    string `json:"data_listen"`
 }
 
-func loadSecurityConfigJSON(raw string) (SecurityConfig, error) {
-	config, err := parseSecurityConfigJSON(raw)
+func loadSecurityConfigJSON(reader *envconfig.Reader, raw string) (SecurityConfig, error) {
+	config, err := parseSecurityConfigJSON(reader, raw)
 	if err != nil {
 		return SecurityConfig{}, err
 	}
@@ -88,7 +90,7 @@ func loadSecurityConfigJSON(raw string) (SecurityConfig, error) {
 // LoadSecurityConfigJSON applies the same required configuration and material
 // validation as the environment loader, without changing process environment.
 func LoadSecurityConfigJSON(raw string) (SecurityConfig, error) {
-	return loadSecurityConfigJSON(raw)
+	return loadSecurityConfigJSON(envconfig.NewReader(os.Environ()), raw)
 }
 
 func selectedSecurityNode(config SecurityConfig) (securityNodeJSON, bool) {
@@ -118,7 +120,7 @@ func securityIssuerPreset(input securityIssuerJSON) (securityIssuerJSON, error) 
 	return input, nil
 }
 
-func parseSecurityConfigJSON(raw string) (SecurityConfig, error) {
+func parseSecurityConfigJSON(reader *envconfig.Reader, raw string) (SecurityConfig, error) {
 	// Leave room below Linux's per-environment-string bound. A deployment
 	// platform can impose a smaller limit; no input is split into fragments.
 	if len(raw) > 120<<10 {
@@ -132,7 +134,7 @@ func parseSecurityConfigJSON(raw string) (SecurityConfig, error) {
 		return SecurityConfig{}, errors.New("security configuration requires an explicit issuers array")
 	}
 	config := SecurityConfig{
-		Mode: "oidc", BrowserOrigin: input.PublicOrigin,
+		Mode: "oidc", BrowserOrigin: input.PublicOrigin, environment: reader,
 		SecretBindings: map[string]oidc.SecretBinding{}, RootCAPEM: input.RootCAPEM, TLS: input.TLS, input: &input, Issuers: []security.Issuer{},
 	}
 	for handle, binding := range input.SecretBindings {

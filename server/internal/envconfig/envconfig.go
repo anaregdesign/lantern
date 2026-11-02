@@ -1,12 +1,12 @@
 // Package envconfig is the single place where the server reads typed values
-// out of process environment variables. Keeping these helpers in one
+// out of a captured environment snapshot. Keeping these helpers in one
 // dependency-light package makes them trivially unit-testable (no imports
 // from the rest of the server tree) and frees the larger provider layer from
 // reimplementing the same os.Getenv + strconv dance.
 //
 // All helpers fall back to the supplied default when the variable is unset
 // or malformed — they never return an error. Since #847 they additionally
-// feed two process-wide records so the composition root can fail loudly at
+// feed per-load records so the composition root can fail loudly at
 // boot instead of silently running on defaults:
 //
 //   - a REGISTRY of every variable a helper has been asked about (name,
@@ -23,7 +23,7 @@ package envconfig
 
 import (
 	"log/slog"
-	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,7 +45,7 @@ type Spec struct {
 }
 
 // Finding records a variable that was set but failed to parse; the loader
-// fell back to its default. Raw is the offending value verbatim.
+// fell back to its default. Raw is the offending parser input.
 type Finding struct {
 	Key    string
 	Raw    string
@@ -60,47 +60,120 @@ type Unknown struct {
 	Suggestion string
 }
 
-var (
+// Reader owns one immutable environment input and its load-local diagnostics.
+// Construct one Reader at the composition root and share it with every loader
+// before checking for unknown variables. Independent Readers never share state.
+// Readers may be used concurrently; registry and diagnostic mutations are locked.
+type Reader struct {
+	environ  []string
+	values   map[string]string
 	mu       sync.Mutex
-	registry = map[string]Spec{}
+	registry map[string]Spec
 	findings []Finding
-	setKeys  = map[string]struct{}{}
-)
+	setKeys  map[string]struct{}
+}
 
-func register(key, kind, def string) {
-	mu.Lock()
-	defer mu.Unlock()
-	if _, ok := registry[key]; !ok {
-		registry[key] = Spec{Key: key, Kind: kind, Default: def}
+// NewReader captures environ in os.Environ's KEY=value format. Invalid entries
+// are retained by Environ but are not values. The first occurrence of a key wins,
+// matching process-environment lookup when duplicate entries are supplied.
+func NewReader(environ []string) *Reader {
+	r := &Reader{
+		environ:  append([]string(nil), environ...),
+		values:   make(map[string]string),
+		registry: make(map[string]Spec),
+		setKeys:  make(map[string]struct{}),
+	}
+	for _, entry := range r.environ {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		key = environmentKey(key)
+		if _, exists := r.values[key]; !exists {
+			r.values[key] = value
+		}
+	}
+	return r
+}
+
+// LookupEnv returns the captured raw value and presence without registration or
+// parser diagnostics. Present-empty values remain distinguishable from absence.
+func (r *Reader) LookupEnv(key string) (string, bool) {
+	value, ok := r.values[environmentKey(key)]
+	return value, ok
+}
+
+// environmentKey preserves the process environment's case-insensitive lookup
+// on Windows while keeping the captured spelling in diagnostics and Environ.
+func environmentKey(key string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key)
+	}
+	return key
+}
+
+// Environ returns a detached copy of the captured input.
+func (r *Reader) Environ() []string { return append([]string(nil), r.environ...) }
+
+// Diagnostics is a detached snapshot of one load's registered contract, parser
+// findings and explicitly configured keys. Slices may be changed by the caller.
+type Diagnostics struct {
+	Known    []Spec
+	Findings []Finding
+	SetKeys  []string
+}
+
+// Diagnostics captures all diagnostic records consistently under one lock.
+func (r *Reader) Diagnostics() Diagnostics {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	known := make([]Spec, 0, len(r.registry))
+	for _, spec := range r.registry {
+		known = append(known, spec)
+	}
+	sort.Slice(known, func(i, j int) bool { return known[i].Key < known[j].Key })
+	keys := make([]string, 0, len(r.setKeys))
+	for key := range r.setKeys {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return Diagnostics{Known: known, Findings: append([]Finding(nil), r.findings...), SetKeys: keys}
+}
+
+func (r *Reader) register(key, kind, def string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.registry[key]; !ok {
+		r.registry[key] = Spec{Key: key, Kind: kind, Default: def}
 	}
 }
 
 // RegisterString declares a conditional setting without reading its value.
 // This keeps strict typo checks and generated docs complete in disabled modes.
-func RegisterString(key, def string) { register(key, "string", def) }
+func (r *Reader) RegisterString(key, def string) { r.register(key, "string", def) }
 
-func markSet(key string) {
-	mu.Lock()
-	defer mu.Unlock()
-	setKeys[key] = struct{}{}
+func (r *Reader) markSet(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setKeys[key] = struct{}{}
 }
 
 // Malformed records a set-but-unparseable value for key. The typed helpers
 // call it internally; it is exported for the few loaders that parse a raw
 // String themselves (e.g. the LANTERN_NODE_ID hex decode) so custom parse
 // failures land in the same startup report as everything else.
-func Malformed(key, raw, reason string) {
-	mu.Lock()
-	defer mu.Unlock()
-	findings = append(findings, Finding{Key: key, Raw: raw, Reason: reason})
+func (r *Reader) Malformed(key, raw, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.findings = append(r.findings, Finding{Key: key, Raw: raw, Reason: reason})
 }
 
 // Known returns every registered variable, sorted by key.
-func Known() []Spec {
-	mu.Lock()
-	defer mu.Unlock()
-	out := make([]Spec, 0, len(registry))
-	for _, s := range registry {
+func (r *Reader) Known() []Spec {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Spec, 0, len(r.registry))
+	for _, s := range r.registry {
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
@@ -109,55 +182,46 @@ func Known() []Spec {
 
 // Findings returns the malformed-value records collected so far, in call
 // order.
-func Findings() []Finding {
-	mu.Lock()
-	defer mu.Unlock()
-	return append([]Finding(nil), findings...)
+func (r *Reader) Findings() []Finding {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Finding(nil), r.findings...)
 }
 
 // SetKeys returns the sorted names of registered variables that were set in
 // the environment (whether or not they parsed). Values are deliberately not
 // reported — a future secret-bearing variable must never end up in the boot
 // log.
-func SetKeys() []string {
-	mu.Lock()
-	defer mu.Unlock()
-	out := make([]string, 0, len(setKeys))
-	for k := range setKeys {
+func (r *Reader) SetKeys() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.setKeys))
+	for k := range r.setKeys {
 		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// ResetForTesting clears the registry, findings, and set-key records so a
-// test can load a fresh config without cross-test bleed. Not for production
-// use.
-func ResetForTesting() {
-	mu.Lock()
-	defer mu.Unlock()
-	registry = map[string]Spec{}
-	findings = nil
-	setKeys = map[string]struct{}{}
-}
-
-// UnknownLanternVars scans environ (the os.Environ() slice format,
-// "KEY=value") for Prefix-named variables that were never registered by any
-// loader. Names starting with any of ignorePrefixes are skipped — that is
+// UnknownLanternVars scans the captured input for Prefix-named variables
+// that were never registered by any loader. Names starting with any of ignorePrefixes are skipped — that is
 // the escape hatch for sibling processes that legitimately share an env file
 // (e.g. the MCP server's LANTERN_MCP_* namespace). Results are sorted by
 // key, each with a did-you-mean suggestion when a registered key is within
 // small edit distance.
-func UnknownLanternVars(environ []string, ignorePrefixes ...string) []Unknown {
-	mu.Lock()
-	known := make([]string, 0, len(registry))
-	for k := range registry {
-		known = append(known, k)
+func (r *Reader) UnknownLanternVars(ignorePrefixes ...string) []Unknown {
+	r.mu.Lock()
+	known := make([]string, 0, len(r.registry))
+	registered := make(map[string]struct{}, len(r.registry))
+	for key := range r.registry {
+		known = append(known, key)
+		registered[key] = struct{}{}
 	}
-	mu.Unlock()
+	r.mu.Unlock()
+	sort.Strings(known)
 
 	var out []Unknown
-	for _, kv := range environ {
+	for _, kv := range r.environ {
 		eq := strings.IndexByte(kv, '=')
 		if eq < 0 {
 			continue
@@ -176,12 +240,7 @@ func UnknownLanternVars(environ []string, ignorePrefixes ...string) []Unknown {
 		}() {
 			continue
 		}
-		if func() bool {
-			mu.Lock()
-			defer mu.Unlock()
-			_, ok := registry[key]
-			return ok
-		}() {
+		if _, ok := registered[key]; ok {
 			continue
 		}
 		out = append(out, Unknown{Key: key, Suggestion: suggest(key, known)})
@@ -247,12 +306,12 @@ func editDistance(a, b string, limit int) int {
 
 // lookup fetches key, treating an all-whitespace value as unset for the
 // non-string kinds (a bare `LANTERN_FOO=` conventionally means "default").
-func lookup(key string) (string, bool) {
-	raw, ok := os.LookupEnv(key)
+func (r *Reader) lookup(key string) (string, bool) {
+	raw, ok := r.LookupEnv(key)
 	if !ok {
 		return "", false
 	}
-	markSet(key)
+	r.markSet(key)
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false
@@ -263,15 +322,15 @@ func lookup(key string) (string, bool) {
 // Duration returns the time.Duration value of the named env var (accepted
 // by time.ParseDuration, e.g. "24h", "500ms"), or def when unset or
 // unparseable.
-func Duration(key string, def time.Duration) time.Duration {
-	register(key, "duration", def.String())
-	raw, ok := lookup(key)
+func (r *Reader) Duration(key string, def time.Duration) time.Duration {
+	r.register(key, "duration", def.String())
+	raw, ok := r.lookup(key)
 	if !ok {
 		return def
 	}
 	v, err := time.ParseDuration(raw)
 	if err != nil {
-		Malformed(key, raw, `not a Go duration (e.g. "30s", "24h")`)
+		r.Malformed(key, raw, `not a Go duration (e.g. "30s", "24h")`)
 		return def
 	}
 	return v
@@ -279,15 +338,15 @@ func Duration(key string, def time.Duration) time.Duration {
 
 // Int returns the integer value of the named env var, or def when unset or
 // not a valid base-10 integer.
-func Int(key string, def int) int {
-	register(key, "int", strconv.Itoa(def))
-	raw, ok := lookup(key)
+func (r *Reader) Int(key string, def int) int {
+	r.register(key, "int", strconv.Itoa(def))
+	raw, ok := r.lookup(key)
 	if !ok {
 		return def
 	}
 	v, err := strconv.Atoi(raw)
 	if err != nil {
-		Malformed(key, raw, "not a base-10 integer")
+		r.Malformed(key, raw, "not a base-10 integer")
 		return def
 	}
 	return v
@@ -297,15 +356,15 @@ func Int(key string, def int) int {
 // not a valid base-10 unsigned integer, or outside the uint32 range. Parsing
 // with a 32-bit size makes the conversion bounds-safe: an out-of-range value
 // yields an error (and the default) rather than silently truncating.
-func Uint32(key string, def uint32) uint32 {
-	register(key, "uint32", strconv.FormatUint(uint64(def), 10))
-	raw, ok := lookup(key)
+func (r *Reader) Uint32(key string, def uint32) uint32 {
+	r.register(key, "uint32", strconv.FormatUint(uint64(def), 10))
+	raw, ok := r.lookup(key)
 	if !ok {
 		return def
 	}
 	v, err := strconv.ParseUint(raw, 10, 32)
 	if err != nil {
-		Malformed(key, raw, "not an unsigned 32-bit integer")
+		r.Malformed(key, raw, "not an unsigned 32-bit integer")
 		return def
 	}
 	return uint32(v)
@@ -313,15 +372,15 @@ func Uint32(key string, def uint32) uint32 {
 
 // Float returns the float64 value of the named env var, or def when unset
 // or not a valid float.
-func Float(key string, def float64) float64 {
-	register(key, "float", strconv.FormatFloat(def, 'g', -1, 64))
-	raw, ok := lookup(key)
+func (r *Reader) Float(key string, def float64) float64 {
+	r.register(key, "float", strconv.FormatFloat(def, 'g', -1, 64))
+	raw, ok := r.lookup(key)
 	if !ok {
 		return def
 	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		Malformed(key, raw, "not a floating-point number")
+		r.Malformed(key, raw, "not a floating-point number")
 		return def
 	}
 	return v
@@ -330,10 +389,10 @@ func Float(key string, def float64) float64 {
 // String returns the value of the named env var, or def when unset.
 // An explicitly empty value ("") is returned as-is — only a missing variable
 // falls back to the default.
-func String(key, def string) string {
-	register(key, "string", def)
-	if v, ok := os.LookupEnv(key); ok {
-		markSet(key)
+func (r *Reader) String(key, def string) string {
+	r.register(key, "string", def)
+	if v, ok := r.LookupEnv(key); ok {
+		r.markSet(key)
 		return v
 	}
 	return def
@@ -342,9 +401,9 @@ func String(key, def string) string {
 // Bool returns the boolean value of the named env var, or def when unset or
 // not one of the recognised truthy/falsy spellings ("1"/"true"/"yes"/"on"
 // vs "0"/"false"/"no"/"off", case- and whitespace-insensitive).
-func Bool(key string, def bool) bool {
-	register(key, "bool", strconv.FormatBool(def))
-	raw, ok := lookup(key)
+func (r *Reader) Bool(key string, def bool) bool {
+	r.register(key, "bool", strconv.FormatBool(def))
+	raw, ok := r.lookup(key)
 	if !ok {
 		return def
 	}
@@ -354,7 +413,7 @@ func Bool(key string, def bool) bool {
 	case "0", "false", "no", "off":
 		return false
 	default:
-		Malformed(key, raw, `not a boolean ("true"/"false"/"1"/"0"/"yes"/"no"/"on"/"off")`)
+		r.Malformed(key, raw, `not a boolean ("true"/"false"/"1"/"0"/"yes"/"no"/"on"/"off")`)
 		return def
 	}
 }
@@ -362,9 +421,9 @@ func Bool(key string, def bool) bool {
 // Level returns the slog level of the named env var ("debug"/"info"/
 // "warn"|"warning"/"error", case- and whitespace-insensitive), or def when
 // unset or unrecognised. It is the registry-aware sibling of LogLevel.
-func Level(key string, def slog.Level) slog.Level {
-	register(key, "level", strings.ToLower(def.String()))
-	raw, ok := lookup(key)
+func (r *Reader) Level(key string, def slog.Level) slog.Level {
+	r.register(key, "level", strings.ToLower(def.String()))
+	raw, ok := r.lookup(key)
 	if !ok {
 		return def
 	}
@@ -378,7 +437,7 @@ func Level(key string, def slog.Level) slog.Level {
 	case "error":
 		return slog.LevelError
 	default:
-		Malformed(key, raw, `not a log level ("debug"/"info"/"warn"/"error")`)
+		r.Malformed(key, raw, `not a log level ("debug"/"info"/"warn"/"error")`)
 		return def
 	}
 }

@@ -62,19 +62,19 @@ func NewReplicationConfig(c *Config) ReplicationConfig { return c.Replication }
 
 // loadMutationLogConfig reads MutationLogConfig from the environment. Called
 // from NewConfig so all env reads remain colocated.
-func loadMutationLogConfig() MutationLogConfig {
+func loadMutationLogConfig(reader *envconfig.Reader) MutationLogConfig {
 	return MutationLogConfig{
-		Capacity:         envconfig.Int("LANTERN_MUTATION_LOG_CAPACITY", 100_000),
-		SubscriberBuffer: envconfig.Int("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER", 512),
+		Capacity:         reader.Int("LANTERN_MUTATION_LOG_CAPACITY", 100_000),
+		SubscriberBuffer: reader.Int("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER", 512),
 	}
 }
 
 // loadReplicationConfig reads ReplicationConfig from the environment. Called
 // from NewConfig so all env reads remain colocated.
-func loadReplicationConfig() ReplicationConfig {
-	ttl := envconfig.Duration("LANTERN_TOMBSTONE_TTL", 365*24*time.Hour) // 1 year
+func loadReplicationConfig(reader *envconfig.Reader) ReplicationConfig {
+	ttl := reader.Duration("LANTERN_TOMBSTONE_TTL", 365*24*time.Hour) // 1 year
 	var id hlc.NodeID
-	raw := strings.TrimSpace(envconfig.String("LANTERN_NODE_ID", ""))
+	raw := strings.TrimSpace(reader.String("LANTERN_NODE_ID", ""))
 	raw = strings.TrimPrefix(raw, "0x")
 	if raw != "" {
 		if b, err := hex.DecodeString(raw); err == nil && len(b) == len(id) {
@@ -85,7 +85,7 @@ func loadReplicationConfig() ReplicationConfig {
 		// operator sees the fallback without crashing startup, and recorded
 		// in the envconfig findings so LANTERN_STRICT_CONFIG treats it like
 		// every other malformed value (#847).
-		envconfig.Malformed("LANTERN_NODE_ID", raw, "must be 32 hex chars (16 bytes)")
+		reader.Malformed("LANTERN_NODE_ID", raw, "must be 32 hex chars (16 bytes)")
 		slog.Warn("ignoring malformed LANTERN_NODE_ID; using random NodeID",
 			slog.String("value", raw))
 	}

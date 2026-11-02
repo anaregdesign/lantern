@@ -15,7 +15,7 @@ import (
 func TestNewConfigOperationalComposition(t *testing.T) {
 	t.Run("strict sweep waits for both operational and provider loaders", func(t *testing.T) {
 		clearSecurityEnvironment(t)
-		envconfig.ResetForTesting()
+
 		for key, value := range map[string]string{
 			"LANTERN_STRICT_CONFIG":                  "true",
 			"LANTERN_PORT":                           "6399",
@@ -57,7 +57,7 @@ func TestNewConfigOperationalComposition(t *testing.T) {
 
 	t.Run("metrics keeps the OFF default and explicit overrides", func(t *testing.T) {
 		clearSecurityEnvironment(t)
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_METRICS_ADDR", "")
 		if err := os.Unsetenv("LANTERN_METRICS_ADDR"); err != nil {
 			t.Fatal(err)
@@ -71,7 +71,7 @@ func TestNewConfigOperationalComposition(t *testing.T) {
 		}
 		for _, address := range []string{"", "127.0.0.1:9393"} {
 			t.Setenv("LANTERN_METRICS_ADDR", address)
-			envconfig.ResetForTesting()
+
 			cfg, err := NewConfig()
 			if err != nil {
 				t.Fatalf("explicit metrics setting: %v", err)
@@ -90,7 +90,7 @@ func TestNewConfigOperationalComposition(t *testing.T) {
 // a refused boot never reaches listener construction.
 func TestNewConfigValidation(t *testing.T) {
 	t.Run("GC edge budget loads and rejects a negative value", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_GC_EDGE_BUDGET", "5000")
 		cfg, err := NewConfig()
 		if err != nil {
@@ -99,7 +99,7 @@ func TestNewConfigValidation(t *testing.T) {
 		if cfg.Cache.GCEdgeBudget != 5000 {
 			t.Fatalf("GCEdgeBudget = %d, want 5000", cfg.Cache.GCEdgeBudget)
 		}
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_GC_EDGE_BUDGET", "-1")
 		if _, err := NewConfig(); err == nil || !strings.Contains(err.Error(), "LANTERN_GC_EDGE_BUDGET") {
 			t.Fatalf("NewConfig error = %v, want negative-budget rejection", err)
@@ -107,7 +107,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("bootstrap validation uses configured JSON logger", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "false")
 		var buf bytes.Buffer
 		logger := newLogger(ObservabilityConfig{
@@ -115,7 +115,7 @@ func TestNewConfigValidation(t *testing.T) {
 			LogFormat: "json",
 		}, &buf)
 
-		if err := config.CheckEnvironment([]string{"LANTERN_NOT_REAL=1"}, logger); err != nil {
+		if err := config.CheckEnvironment(envconfig.NewReader([]string{"LANTERN_NOT_REAL=1", "LANTERN_STRICT_CONFIG=false"}), logger); err != nil {
 			t.Fatalf("validateEnv: %v", err)
 		}
 		recs := decodeRecords(t, &buf)
@@ -136,7 +136,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("traversal safety defaults are finite", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		for _, key := range []string{
 			"LANTERN_TRAVERSAL_TIMEOUT_MS",
 			"LANTERN_TRAVERSAL_MAX_PUSHES",
@@ -164,7 +164,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("defaults survive a malformed value without strict", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "false")
 		t.Setenv("LANTERN_PORT", "not-a-number")
 		cfg, err := NewConfig()
@@ -177,7 +177,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("causal metadata budgets default unlimited and accept explicit limits", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "123")
 		t.Setenv("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", "456")
 		cfg, err := NewConfig()
@@ -188,7 +188,6 @@ func TestNewConfigValidation(t *testing.T) {
 			t.Fatalf("causal budgets = %d/%d, want 123/456", cfg.Cache.MaxVertexCausalEntries, cfg.Cache.MaxEdgeCausalEntries)
 		}
 
-		envconfig.ResetForTesting()
 		t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "")
 		t.Setenv("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", "")
 		defaults, err := NewConfig()
@@ -205,7 +204,7 @@ func TestNewConfigValidation(t *testing.T) {
 		"LANTERN_MAX_EDGE_CAUSAL_ENTRIES",
 	} {
 		t.Run("causal metadata budget rejects negative "+key, func(t *testing.T) {
-			envconfig.ResetForTesting()
+
 			t.Setenv(key, "-1")
 			_, err := NewConfig()
 			if err == nil || !strings.Contains(err.Error(), key) {
@@ -215,7 +214,7 @@ func TestNewConfigValidation(t *testing.T) {
 	}
 
 	t.Run("strict mode rejects a malformed value", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "true")
 		t.Setenv("LANTERN_PORT", "not-a-number")
 		_, err := NewConfig()
@@ -228,7 +227,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("strict mode rejects an unknown variable with a suggestion", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "true")
 		t.Setenv("LANTERN_PROT", "6381") // typo of LANTERN_PORT
 		_, err := NewConfig()
@@ -244,7 +243,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("foreign namespaces are exempt from the sweep", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "true")
 		t.Setenv("LANTERN_MCP_AGENT_ID", "agent-a")
 		if _, err := NewConfig(); err != nil {
@@ -253,7 +252,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("malformed NodeID reaches the strict gate via Malformed", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "true")
 		t.Setenv("LANTERN_NODE_ID", "zz-not-hex")
 		_, err := NewConfig()
@@ -269,7 +268,7 @@ func TestNewConfigValidation(t *testing.T) {
 	// independent of LANTERN_STRICT_CONFIG — the value parses as a string but a
 	// typo would silently rewrite server-wide default ranking semantics.
 	t.Run("invalid DEFAULT_MODE fails boot even without strict", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_STRICT_CONFIG", "false")
 		t.Setenv("LANTERN_SEARCH_DEFAULT_MODE", "min_shold") // typo of min-should
 		_, err := NewConfig()
@@ -286,7 +285,7 @@ func TestNewConfigValidation(t *testing.T) {
 
 	t.Run("canonical and alias DEFAULT_MODE spellings boot", func(t *testing.T) {
 		for _, mode := range []string{"any", "all", "min-should", "minshould", "min_should", "ALL", ""} {
-			envconfig.ResetForTesting()
+
 			t.Setenv("LANTERN_SEARCH_DEFAULT_MODE", mode)
 			if _, err := NewConfig(); err != nil {
 				t.Fatalf("NewConfig rejected DEFAULT_MODE=%q: %v", mode, err)
@@ -295,7 +294,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("search work limits default to finite positive values", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		cfg, err := NewConfig()
 		if err != nil {
 			t.Fatalf("NewConfig: %v", err)
@@ -334,7 +333,7 @@ func TestNewConfigValidation(t *testing.T) {
 		"LANTERN_SEARCH_COMPACTION_MIN_RETIRED",
 	} {
 		t.Run("search safety rejects non-positive "+key, func(t *testing.T) {
-			envconfig.ResetForTesting()
+
 			t.Setenv("LANTERN_STRICT_CONFIG", "false")
 			t.Setenv(key, "0")
 			_, err := NewConfig()
@@ -345,7 +344,7 @@ func TestNewConfigValidation(t *testing.T) {
 	}
 
 	t.Run("search compaction ratio must exceed one", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_SEARCH_COMPACTION_RATIO", "1")
 		_, err := NewConfig()
 		if err == nil || !strings.Contains(err.Error(), "LANTERN_SEARCH_COMPACTION_RATIO") {
@@ -354,7 +353,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("query term cap cannot exceed byte cap", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_SEARCH_MAX_QUERY_BYTES", "4")
 		t.Setenv("LANTERN_SEARCH_MAX_QUERY_TERMS", "5")
 		_, err := NewConfig()
@@ -364,7 +363,7 @@ func TestNewConfigValidation(t *testing.T) {
 	})
 
 	t.Run("search session hit cap must exceed a page", func(t *testing.T) {
-		envconfig.ResetForTesting()
+
 		t.Setenv("LANTERN_SEARCH_MAX_LIMIT", "100")
 		t.Setenv("LANTERN_SEARCH_MAX_SESSION_HITS", "100")
 		_, err := NewConfig()
@@ -372,4 +371,38 @@ func TestNewConfigValidation(t *testing.T) {
 			t.Fatalf("NewConfig error = %v, want session/page relationship rejection", err)
 		}
 	})
+}
+
+func TestLoadConfigOwnsOneEnvironmentSnapshot(t *testing.T) {
+	t.Setenv("LANTERN_PORT", "6499")
+	reader := envconfig.NewReader([]string{"LANTERN_PORT=6401", "LANTERN_STRICT_CONFIG=true", "LANTERN_CDC_ENABLED=false"})
+	cfg, err := LoadConfig(reader)
+	if err != nil || cfg.Net.Port != 6401 {
+		t.Fatalf("captured config = %v, error = %v", cfg, err)
+	}
+	if raw, _ := reader.LookupEnv("LANTERN_PORT"); raw != "6401" {
+		t.Fatal("configuration load mutated its captured input")
+	}
+}
+
+func TestLoadConfigIndependentContexts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    []string
+		port     int
+		findings int
+	}{
+		{"malformed tolerated", []string{"LANTERN_PORT=malformed", "LANTERN_CDC_ENABLED=false"}, 6380, 1},
+		{"strict independent", []string{"LANTERN_PORT=6402", "LANTERN_STRICT_CONFIG=true", "LANTERN_CDC_ENABLED=false"}, 6402, 0},
+		{"default independent", []string{"LANTERN_STRICT_CONFIG=true", "LANTERN_CDC_ENABLED=false"}, 6380, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reader := envconfig.NewReader(tc.input)
+			cfg, err := LoadConfig(reader)
+			if err != nil || cfg.Net.Port != tc.port || len(reader.Findings()) != tc.findings {
+				t.Fatalf("independent load = %v, error = %v, findings = %v", cfg, err, reader.Findings())
+			}
+		})
+	}
 }

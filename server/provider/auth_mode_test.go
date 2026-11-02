@@ -41,7 +41,7 @@ func TestAuthModePreflight(t *testing.T) {
 			for name, value := range test.env {
 				t.Setenv(name, value)
 			}
-			err := validateAuthMode()
+			err := validateAuthMode(testEnvironmentReader())
 			if (err != nil) != test.wantError {
 				t.Fatalf("preflight = %v", err)
 			}
