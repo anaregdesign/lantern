@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -13,6 +15,63 @@ import (
 	"testing"
 	"time"
 )
+
+// Check these exact owned handles, not a released address that another owner
+// may legitimately acquire. Close on a live handle must fail this assertion.
+func receiptHAOwnedListenersClosed(listeners []net.Listener) error {
+	for i, owned := range listeners {
+		err := owned.Close()
+		if err == nil {
+			return fmt.Errorf("owned listener %d was still open", i)
+		}
+		if !errors.Is(err, net.ErrClosed) {
+			return fmt.Errorf("owned listener %d closure not established: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func TestReceiptHALaunchCleanupUsesOwnedListenerIdentity(t *testing.T) {
+	t.Run("open listener is rejected", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		if err := receiptHAOwnedListenersClosed([]net.Listener{listener}); err == nil {
+			t.Fatal("open owned listener was reported closed")
+		}
+	})
+	t.Run("replacement address owner does not reopen closed handles", func(t *testing.T) {
+		public, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer public.Close()
+		peer, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer peer.Close()
+		h := &receiptHALaunch{public: newReceiptHAFrontend(public), peers: []net.Listener{peer}}
+		defer h.close()
+		owned := []net.Listener{h.public.listener, h.peers[0]}
+		address := public.Addr().String()
+		h.close()
+		replacement, err := net.Listen("tcp", address)
+		if err != nil {
+			t.Fatal("controlled replacement could not acquire released address", err)
+		}
+		defer replacement.Close()
+		if competing, err := net.Listen("tcp", address); err == nil {
+			_ = competing.Close()
+			t.Fatal("controlled replacement did not exclude a competing bind")
+		}
+		if err := receiptHAOwnedListenersClosed(owned); err != nil {
+			t.Fatal("replacement address owner changed old listener closure", err)
+		}
+	})
+}
 
 func TestReceiptHALaunchOwnsCohortThroughCertificationAndCleanup(t *testing.T) {
 	binary := fixtureServerBinary(t)
@@ -26,6 +85,7 @@ func TestReceiptHALaunchOwnsCohortThroughCertificationAndCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer h.close()
+			owned := append([]net.Listener{h.public.listener}, h.peers...)
 			addresses := []string{h.public.listener.Addr().String()}
 			for _, listener := range h.peers {
 				addresses = append(addresses, listener.Addr().String())
@@ -87,12 +147,8 @@ func TestReceiptHALaunchOwnsCohortThroughCertificationAndCleanup(t *testing.T) {
 					t.Fatal("child was not reaped")
 				}
 			}
-			for _, address := range addresses {
-				listener, err := net.Listen("tcp", address)
-				if err != nil {
-					t.Fatal("owned socket leaked", err)
-				}
-				_ = listener.Close()
+			if err := receiptHAOwnedListenersClosed(owned); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
