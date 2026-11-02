@@ -66,11 +66,12 @@ func newReceiptBackupFS() receiptBackupFS {
 	}
 }
 
-func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source string) (Stats, error) {
+func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source string, policy ProductionSnapshot) (Stats, error) {
 	start := b.now()
 	tickID := strconv.FormatInt(start.UnixNano(), 10)
 	b.logger.Info("backup: dump started",
 		"source", source,
+		"production_generation", policy.Generation,
 		"tick_id", tickID,
 		"format", receiptBackupSetFormat,
 		"started_unix_ns", start.UnixNano())
@@ -145,6 +146,7 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 	}
 	b.logger.Info("backup: wrote dump",
 		"source", source,
+		"production_generation", policy.Generation,
 		"tick_id", tickID,
 		"format", receiptBackupSetFormat,
 		"set_id", manifest.SetID,
@@ -161,7 +163,7 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 		"members", stats.Members,
 		"bytes", stats.Bytes,
 		"took", took)
-	if err := b.pruneReceiptBackupSets(); err != nil {
+	if err := b.pruneReceiptBackupSets(policy.Config.Retain); err != nil {
 		b.failed()
 		return stats, err
 	}

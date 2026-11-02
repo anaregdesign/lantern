@@ -242,8 +242,7 @@ func TestReceiptBackupSetRetentionIsolationOrphansAndMonotonicIDs(t *testing.T) 
 			}
 		}
 
-		b.cfg.Retain = 3
-		if err := b.pruneReceiptBackupSets(); err != nil {
+		if err := b.pruneReceiptBackupSets(3); err != nil {
 			t.Fatal(err)
 		}
 		sets, err := b.collectReceiptBackupSets()
@@ -289,8 +288,7 @@ func TestReceiptBackupSetRetentionRemovesMarkerBeforeMembers(t *testing.T) {
 		events = append(events, "directory-sync")
 		return baseFS.syncDir(path)
 	}
-	b.cfg.Retain = 1
-	if err := b.pruneReceiptBackupSets(); err != nil {
+	if err := b.pruneReceiptBackupSets(1); err != nil {
 		t.Fatal(err)
 	}
 	if len(events) != 6 ||
@@ -339,8 +337,7 @@ func TestReceiptBackupSetRetentionClosesDirectoryBeforePruning(t *testing.T) {
 		}
 		return baseFS.remove(path)
 	}
-	b.cfg.Retain = 3
-	if err := b.pruneReceiptBackupSets(); err != nil {
+	if err := b.pruneReceiptBackupSets(3); err != nil {
 		t.Fatal(err)
 	}
 	if openDirectories != 0 {

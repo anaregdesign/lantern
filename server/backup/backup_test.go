@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -327,12 +328,52 @@ func TestBackupper_Retention(t *testing.T) {
 
 func TestBackupper_DisabledNoOps(t *testing.T) {
 	b := New(&fakeService{}, Config{Enabled: false, Dir: t.TempDir(), RestoreOnStart: false}, nil, nil)
-	if err := b.Run(context.Background()); err != nil {
-		t.Fatalf("disabled Run should return nil immediately, got %v", err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := b.Run(ctx); err != nil {
+		t.Fatalf("disabled Run should stop without producing a final backup, got %v", err)
 	}
 	stats, err := b.RestoreOnStartup(context.Background())
 	if err != nil || stats != (Stats{}) {
 		t.Fatalf("disabled restore should be a no-op, got stats=%+v err=%v", stats, err)
+	}
+}
+
+func TestBackupper_GraphRetentionBoundsPreserveRecoveryPoints(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	cfg.Retain = 0
+	b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("bounded")}}, cfg, nil, nil)
+	for range 2 {
+		if _, err := b.BackupNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := 0
+	b.fs.readFile = func(string, int64) ([]byte, error) { reads++; return nil, ErrRetentionPreviewLimit }
+	if err := b.ApplyProduction(ProductionSnapshot{Generation: 1, Config: ProductionConfig{Interval: time.Hour, Retain: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := b.BackupNow(t.Context())
+	if !errors.Is(err, ErrRetentionPreviewLimit) || stats.Vertices != 1 || reads != 1 {
+		t.Fatalf("bounded post-publication retention = %+v, %v, reads %d", stats, err, reads)
+	}
+	files, err := b.listBackups()
+	if err != nil || len(files) != 3 {
+		t.Fatalf("incomplete retention removed recovery points: %v, %v", files, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := b.prune(ctx, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled retention = %v", err)
+	}
+	reads = 0
+	for _, retain := range []int{0, receiptBackupDirectoryMaxEntries, int(^uint(0) >> 1)} {
+		if err := b.prune(t.Context(), retain); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reads != 0 {
+		t.Fatal("safe keep-all/large retention unnecessarily validated catalog")
 	}
 }
 
