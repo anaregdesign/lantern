@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,8 +41,7 @@ func decodeRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 }
 
 // TestSlowRPCInterceptor_Enabled asserts the Enabled() gate honours
-// threshold/logger preconditions (drives the wiring branch in
-// NewLanternListener).
+// threshold/logger preconditions. Disabled owners remain installed.
 func TestSlowRPCInterceptor_Enabled(t *testing.T) {
 	var buf bytes.Buffer
 	l := newJSONLogger(&buf, slog.LevelWarn)
@@ -62,6 +63,91 @@ func TestSlowRPCInterceptor_Enabled(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSlowRPCInterceptor_ValidatedUpdates(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewSlowRPCInterceptor(-time.Millisecond, newJSONLogger(&buf, slog.LevelWarn))
+	if s.Threshold() != 0 {
+		t.Fatal("legacy negative startup threshold must disable emission")
+	}
+	const maximum = int64(1<<63-1) / int64(time.Millisecond)
+	for _, value := range []int64{0, 5, maximum} {
+		if err := s.SetThresholdMilliseconds(value); err != nil || s.Threshold() != time.Duration(value)*time.Millisecond {
+			t.Fatalf("valid threshold %d: %v, %v", value, s.Threshold(), err)
+		}
+	}
+	for _, value := range []int64{-1, maximum + 1} {
+		before := s.Threshold()
+		if err := s.SetThresholdMilliseconds(value); err == nil || s.Threshold() != before {
+			t.Fatalf("invalid threshold %d changed policy: %v", value, err)
+		}
+	}
+	for _, owner := range []*SlowRPCInterceptor{nil, NewSlowRPCInterceptor(0, nil)} {
+		if err := owner.SetThresholdMilliseconds(1); err == nil {
+			t.Fatal("an absent logging owner cannot report an applied threshold")
+		}
+	}
+}
+
+func TestSlowRPCInterceptor_ResidentSnapshots(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewSlowRPCInterceptor(0, newJSONLogger(&buf, slog.LevelWarn))
+	var ticks atomic.Int64
+	s.now = func() time.Time { return time.Unix(0, ticks.Add(int64(10*time.Millisecond))) }
+	update := int64(5)
+	wrapped := s.ConnectInterceptor()(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		if err := s.SetThresholdMilliseconds(update); err != nil {
+			return nil, err
+		}
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	})
+	call := func() {
+		t.Helper()
+		if _, err := wrapped(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Enabling during a disabled request cannot start timing that request.
+	call()
+	if ticks.Load() != 0 || buf.Len() != 0 {
+		t.Fatal("disabled request performed timing or emitted a log")
+	}
+	// Disabling during the next request does not change its captured threshold.
+	update = 0
+	call()
+	records := decodeRecords(t, &buf)
+	if len(records) != 1 || records[0]["threshold_ms"] != float64(5) {
+		t.Fatalf("in-flight threshold was not retained: %v", records)
+	}
+	buf.Reset()
+	before := ticks.Load()
+	call()
+	if ticks.Load() != before || buf.Len() != 0 {
+		t.Fatal("later disabled request performed timing or emitted a log")
+	}
+}
+
+func TestSlowRPCInterceptor_ConcurrentUpdates(t *testing.T) {
+	s := NewSlowRPCInterceptor(time.Hour, slog.New(slog.DiscardHandler))
+	wrapped := s.ConnectInterceptor()(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	})
+	var group sync.WaitGroup
+	for worker := range 8 {
+		group.Go(func() {
+			for range 100 {
+				if worker%2 == 0 {
+					if err := s.SetThresholdMilliseconds(int64(worker) * 1000); err != nil {
+						t.Error(err)
+					}
+				} else if _, err := wrapped(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"})); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+	group.Wait()
 }
 
 // TestSlowRPCInterceptor_ConnectFiresOnSlowHandler asserts a single

@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,8 +27,9 @@ import (
 // The Connect interceptor implementation lives in connect_middleware.go
 // (SlowRPCInterceptor.ConnectInterceptor).
 type SlowRPCInterceptor struct {
-	threshold time.Duration
+	threshold atomic.Int64
 	logger    *slog.Logger
+	now       func() time.Time
 }
 
 // NewSlowRPCInterceptor builds an interceptor that emits a warn log per RPC
@@ -35,7 +38,33 @@ type SlowRPCInterceptor struct {
 // logger MUST be non-nil; pass slog.Default() if no dedicated logger is
 // available.
 func NewSlowRPCInterceptor(threshold time.Duration, logger *slog.Logger) *SlowRPCInterceptor {
-	return &SlowRPCInterceptor{threshold: threshold, logger: logger}
+	s := &SlowRPCInterceptor{logger: logger, now: time.Now}
+	// Preserve the startup constructor's historical nonpositive disable mode.
+	if threshold > 0 {
+		s.threshold.Store(int64(threshold))
+	}
+	return s
+}
+
+var errSlowRPCThreshold = errors.New("slow RPC threshold requires a logging owner and nonnegative representable milliseconds")
+
+// SetThresholdMilliseconds publishes one validated policy for future requests.
+// Requests already running retain the threshold captured at their entry.
+func (s *SlowRPCInterceptor) SetThresholdMilliseconds(milliseconds int64) error {
+	const maxMilliseconds = int64(1<<63-1) / int64(time.Millisecond)
+	if s == nil || s.logger == nil || milliseconds < 0 || milliseconds > maxMilliseconds {
+		return errSlowRPCThreshold
+	}
+	s.threshold.Store(milliseconds * int64(time.Millisecond))
+	return nil
+}
+
+// Threshold returns the configured value, including zero for disabled owners.
+func (s *SlowRPCInterceptor) Threshold() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return time.Duration(s.threshold.Load())
 }
 
 // NewSlowRPCInterceptorProvider is the wire seam that pulls the
@@ -46,9 +75,8 @@ func NewSlowRPCInterceptorProvider(obs ObservabilityConfig, logger *slog.Logger)
 	return NewSlowRPCInterceptor(obs.SlowRPCThreshold, logger)
 }
 
-// Enabled reports whether the interceptor will measure / emit logs. Used by
-// the wiring layer to decide whether to install the interceptor at all,
-// keeping the hot path identical to pre-#223 when the threshold is 0.
+// Enabled reports current emission capability, not whether to mount the owner.
+// The owner stays installed while disabled so later settings can enable it.
 func (s *SlowRPCInterceptor) Enabled() bool {
-	return s != nil && s.threshold > 0 && s.logger != nil
+	return s != nil && s.Threshold() > 0 && s.logger != nil
 }
