@@ -217,13 +217,21 @@ export function validateOperationalChange(change: OperationalPolicyChange): void
     fail();
   fingerprint(group, change.compatibilityFingerprint);
 }
+/** Native allows one operational group with ordinary security changes. Admin's
+ * operational recovery lane separately promises exactly one total operation. */
 export function validateOperationalChanges(changes: readonly SecurityChange[]): void {
-  for (const change of changes)
+  let operational = 0,
+    logging = false;
+  for (const change of changes) {
     if (change.operation.case === "putOperationalPolicy") {
-      if (changes.length !== 1) fail();
       validateOperationalChange(change.operation.value);
+      operational++;
     }
+    if (change.operation.case === "putLogPolicy") logging = true;
+  }
+  if (operational > 1 || (operational > 0 && logging)) fail();
 }
+
 export function validateOperationalPreview(
   response: PreviewOperationalPolicyResponse,
   values: OperationalPolicyValues,

@@ -216,6 +216,15 @@ export class SecurityChangeRecovery {
             : {}),
         });
         const fields = validateOwner(row.owner, record.review);
+        // Operational policies have never used the legacy security lane. A
+        // public mixed batch cannot be reindexed into this editor's urgent lane.
+        if (
+          fields.length === 4 &&
+          record.review.changes.some(
+            (change) => change.operation.case === "putOperationalPolicy",
+          )
+        )
+          invalid();
         // This one explicit lane upgrade changes only unsigned local indexing.
         // Exact originals remain intact and persisted raw bytes are replaced
         // only by the next successful atomic commit before any new dispatch.

@@ -784,3 +784,22 @@ test("security original blocks operational dispatch and storage failure preserve
   expect(() => store.stage(opsOwner(ops), ops)).toThrow("storage");
   expect(backend.raw()).toBe(confirmed);
 });
+
+test("operational lane stays exactly one operation when the public codec accepts a mixed ordinary batch", () => {
+  const mixed = opsReview(210);
+  mixed.changes.push(review(211).changes[0]);
+  // Acceptance at the public codec must not bypass this narrower editor owner.
+  expect(() => encodeCurrentSecurityReview(mixed)).not.toThrow();
+  const store = new SecurityChangeRecovery(storage().port);
+  expect(() => store.stage(opsOwner(mixed), mixed)).toThrow("recovery storage");
+  expect(() => store.stage(owner(mixed), mixed)).toThrow("own recovery lane");
+});
+
+test("operational rows forged into the legacy security lane are blocked without rewriting retained bytes", () => {
+  const ops = opsReview(212),
+    raw = envelope(ops),
+    backend = storage(raw),
+    store = new SecurityChangeRecovery(backend.port);
+  expect(() => store.read(owner(ops))).toThrow("recovery storage");
+  expect(backend.raw()).toBe(raw);
+});

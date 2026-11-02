@@ -319,10 +319,15 @@ export class OperationalSettingsController {
         if (
           currentSecurityVersionBinding(preview.version) !==
           currentSecurityVersionBinding(this.state.version)
-        )
-          throw new Error(
-            "Settings changed during compatibility preview. Reload and review again.",
-          );
+        ) {
+          this.change.publish({
+            phase: "ready",
+            version: undefined,
+            message:
+              "Settings changed during compatibility preview. Reload and review again.",
+          });
+          return;
+        }
         compatibilityFingerprint = preview.compatibilityFingerprint;
         this.change.publish({ phase: "ready", message: "" });
       }

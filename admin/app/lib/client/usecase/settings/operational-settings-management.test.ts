@@ -305,6 +305,7 @@ test("operational search preview cannot authorize a review across a changed secu
   expect(f.prepares()).toBe(0);
   expect(c.getSnapshot().message).toContain("Reload");
   expect(c.getSnapshot().review).toBeUndefined();
+  expect(operationalBlocked(c.getSnapshot(), true)).toBe(true);
 });
 
 test("operational incomplete retention preview refuses finite adoption but permits keep-all", async () => {

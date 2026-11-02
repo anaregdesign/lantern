@@ -361,3 +361,17 @@ are positive and capped at `4294967295`, matching the existing public capability
 fields' uint32 representation. The typed domain, query resolver, SDK and Admin
 refuse a value above that bound instead of wrapping the advertised capability.
 This managed-policy bound does not change the environment bootstrap contract.
+
+The public SDK recovery codec matches the native batch grammar: one operational
+group may accompany ordinary security changes, while multiple operational groups
+and logging mixed with an operational group are refused. These batches still use
+ordinary capacity and the existing actor, purpose-authorization and CAS rules.
+The Admin operational editor and its recovery lane remain narrower by design:
+exactly one total typed group operation is retained in that lane, so uncertain
+operational work cannot occupy or overwrite the urgent security lane.
+
+Operational history has no legacy security-lane representation. Cold-loaded
+operational rows under the four-field security owner are refused without
+rewriting stored bytes; only the existing explicit legacy-log normalization is
+supported. A Search preview that observes a different complete security version
+retires the stale local version and requires a reload before a new review.

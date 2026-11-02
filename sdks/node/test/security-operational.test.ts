@@ -149,7 +149,7 @@ test("operational settings reject inconsistent application, foreign cut, missing
   state.provenance[0]!.source = OperationalSettingsSource.MANAGED;
   expect(() => validateOperationalSettings(r)).toThrow();
 });
-test("recovery rejects empty nested unions, future versions, mixed commands and non-Search fingerprints", () => {
+test("recovery rejects empty nested unions, future versions, Log/multi-Ops commands and non-Search fingerprints", () => {
   const valid = create(OperationalPolicyChangeSchema, {
     version: 1,
     expectedGeneration: 9007199254740999n,
@@ -182,6 +182,19 @@ test("recovery rejects empty nested unions, future versions, mixed commands and 
   review.changes.push({
     $typeName: "graph.v1.SecurityChange",
     operation: { case: "deleteRole", value: "reader" },
+  });
+  expect(parseCurrentSecurityReview(encodeCurrentSecurityReview(review)).changes).toEqual(
+    review.changes,
+  );
+  review.changes.push(structuredClone(review.changes[0]!));
+  expect(() => encodeCurrentSecurityReview(review)).toThrow();
+  review.changes.pop();
+  review.changes.push({
+    $typeName: "graph.v1.SecurityChange",
+    operation: {
+      case: "putLogPolicy",
+      value: { $typeName: "graph.v1.ManagedLogPolicy", version: 1, level: 2 },
+    },
   });
   expect(() => encodeCurrentSecurityReview(review)).toThrow();
   expect(() => parseCurrentSecurityReview(encoded.replace('"version":1', '"version":2'))).toThrow();
