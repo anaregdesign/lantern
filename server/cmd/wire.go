@@ -73,6 +73,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewSlowRPCInterceptorProvider,
 		provider.NewValidationInterceptorProvider,
 		provider.NewRateLimitInterceptorProvider,
+		provider.NewRateRecoveryRuntime,
 		provider.NewHealthChecker,
 		provider.NewPublicLanternListener,
 		provider.NewServingMetricsServer,

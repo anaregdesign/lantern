@@ -286,10 +286,15 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal(err)
 	}
+	rateOwner := provider.NewRateLimitInterceptor(0, 0)
+	rateRecovery, err := provider.NewRateRecoveryRuntime(runtime, rateOwner)
+	if err != nil {
+		t.Fatal("rate recovery owner", err)
+	}
 	f.server = httptest.NewUnstartedServer(nil)
 	listener, err := provider.NewPublicLanternListener(f.server.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{EnableReflection: true}, provider.CORSConfig{}, dataService, runtime,
 		provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}},
-		nil, nil, nil, nil, slowOwner, provider.NewHealthChecker(), servingLogger, publicCertified)
+		nil, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), servingLogger, publicCertified, rateRecovery)
 	if err != nil {
 		t.Fatal(err)
 	}

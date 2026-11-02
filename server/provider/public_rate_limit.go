@@ -10,12 +10,16 @@ import (
 // Rate limiting precedes JWT verification, session lookup, discovery and
 // streaming admission. Production Connect handlers do not charge it twice.
 func publicRateLimit(handler http.Handler, limiter *RateLimitInterceptor) http.Handler {
+	return publicRateLimitWithRecovery(handler, limiter, nil)
+}
+
+func publicRateLimitWithRecovery(handler http.Handler, limiter *RateLimitInterceptor, recovery *rateRecoveryRuntime) http.Handler {
 	if limiter == nil {
 		return handler
 	}
 	writer := connect.NewErrorWriter()
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path == "/grpc.health.v1.Health/Check" || limiter.Allow() {
+		if req.URL.Path == "/grpc.health.v1.Health/Check" || limiter.Allow() || recovery.allow(req) {
 			handler.ServeHTTP(w, req)
 			return
 		}

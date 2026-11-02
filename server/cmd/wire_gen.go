@@ -134,7 +134,15 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
 	healthChecker := provider.NewHealthChecker()
-	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, executor, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
+	rateRecoveryRuntime, err := provider.NewRateRecoveryRuntime(securityRuntime, rateLimitInterceptor)
+	if err != nil {
+		cleanup4()
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, executor, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified, rateRecoveryRuntime)
 	if err != nil {
 		cleanup4()
 		cleanup3()

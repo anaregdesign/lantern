@@ -303,6 +303,7 @@ type RateLimitInterceptor struct {
 	policyErr  error
 	rejectHook func()
 	now        func() time.Time
+	recovery   *rateRecoveryRuntime
 }
 
 func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {

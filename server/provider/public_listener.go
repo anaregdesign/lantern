@@ -16,12 +16,15 @@ import (
 
 // NewPublicLanternListener is the production public composition. Complete peer
 // replication and private policy renewal are never registered on this mux.
-func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConfig, obs ObservabilityConfig, cors CORSConfig, svc *dataruntime.Executor, runtime *SecurityRuntime, changes ChangeConfig, val *ValidationInterceptor, rl *RateLimitInterceptor, logInt *LoggingInterceptor, met *PrometheusInterceptor, slow *SlowRPCInterceptor, hc *HealthChecker, logger *slog.Logger, certified publicSecurityCertified) (*LanternListener, error) {
+func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConfig, obs ObservabilityConfig, cors CORSConfig, svc *dataruntime.Executor, runtime *SecurityRuntime, changes ChangeConfig, val *ValidationInterceptor, rl *RateLimitInterceptor, logInt *LoggingInterceptor, met *PrometheusInterceptor, slow *SlowRPCInterceptor, hc *HealthChecker, logger *slog.Logger, certified publicSecurityCertified, recovery *rateRecoveryRuntime) (*LanternListener, error) {
 	if runtime == nil || certified.runtime != runtime || certified.primary != svc {
 		return nil, errors.New("public listener requires security certification")
 	}
 	if slow == nil || certified.slowRPC != slow {
 		return nil, errors.New("public listener requires the exact certified slow RPC owner")
+	}
+	if !recovery.bound(runtime, rl) {
+		return nil, errRateRecoveryBinding
 	}
 	// Reuse message/TLS/protocol configuration before installing the certified
 	// mux. The listener is not serving during construction.
@@ -88,7 +91,7 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 		}, browserOptions...)
 		mux.Handle(path, runtime.requireGlobalHTTP(security.SchemaRead, handler))
 	}
-	listener.server.Handler = otelhttp.NewHandler(runtime.publicOutputMetadata(runtime.publicIngressHandler(CORSMiddleware(cors)(publicRateLimit(mux, rl)))), "lantern", otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string { return req.URL.Path }))
+	listener.server.Handler = otelhttp.NewHandler(runtime.publicOutputMetadata(runtime.publicIngressHandler(CORSMiddleware(cors)(publicRateLimitWithRecovery(mux, rl, recovery)))), "lantern", otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string { return req.URL.Path }))
 	if runtime.output != nil {
 		listener.server.Handler = runtime.output.Wrap(listener.server.Handler)
 	}

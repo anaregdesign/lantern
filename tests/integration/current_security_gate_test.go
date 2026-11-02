@@ -130,6 +130,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
 	var managedLogGeneration uint64
 	var managedSlowGeneration uint64
+	var rateOwners []*provider.RateLimitInterceptor
 	previousDefaultLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousDefaultLogger) })
 	var initializationCounts []decisiontrace.AcquisitionCounts
@@ -288,7 +289,13 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("selected native TLS listener unavailable", err)
 			}
 		}
-		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, nil, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public)
+		rateOwner := provider.NewRateLimitInterceptor(0, 0)
+		rateRecovery, err := provider.NewRateRecoveryRuntime(runtime, rateOwner)
+		if err != nil {
+			t.Fatal("rate recovery owner", err)
+		}
+		rateOwners = append(rateOwners, rateOwner)
+		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public, rateRecovery)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -521,6 +528,33 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				principal = result.Msg
 			})
 		}
+		t.Run("bounded management recovery while data admission is exhausted", func(t *testing.T) {
+			owner := rateOwners[0]
+			if err := owner.Configure(0.000001, 1); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := owner.Configure(0, 0); err != nil {
+					t.Error("restore isolated fixture admission", err)
+				}
+			})
+			if !owner.Allow() || owner.Allow() {
+				t.Fatal("isolated ordinary admission did not exhaust")
+			}
+			if _, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{})); err != nil {
+				t.Fatal("bounded recovery lost authenticated principal", err)
+			}
+			if _, err := controls[0].GetLogSettings(ctx, securityWireRequest(token, &pb.GetLogSettingsRequest{})); err != nil {
+				t.Fatal("bounded recovery lost authorized settings", err)
+			}
+			if _, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest("invalid-bearer", &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+				t.Fatal("recovery allowance bypassed current authentication", err)
+			}
+			data := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
+			if _, err := data.GetServerStatus(ctx, securityWireRequest(token, &pb.GetServerStatusRequest{})); connect.CodeOf(err) != connect.CodeResourceExhausted {
+				t.Fatal("data/operations borrowed management allowance", err)
+			}
+		})
 	})
 	if principal == nil {
 		// A focused subtest still needs the common native principal setup.

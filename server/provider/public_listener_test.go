@@ -47,15 +47,23 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	}
 	server := httptest.NewUnstartedServer(nil)
 	defer server.Close()
-	listener, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{EnableReflection: true}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, nil, nil, nil, slowOwner, NewHealthChecker(), logger, public)
+	rateOwner := NewRateLimitInterceptor(0, 0)
+	recovery, err := NewRateRecoveryRuntime(runtime, rateOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
+	listener, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{EnableReflection: true}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, NewRateLimitInterceptor(0, 0), nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
+		t.Fatal("different rate owner accepted recovery certification")
+	}
 	foreign := data.NewExecutor(nil)
-	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, foreign, runtime, ChangeConfig{}, nil, nil, nil, nil, slowOwner, NewHealthChecker(), logger, public); err == nil {
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, foreign, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
 		t.Fatal("different service accepted certification")
 	}
-	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, nil, nil, nil, NewSlowRPCInterceptor(0, logger), NewHealthChecker(), logger, public); err == nil {
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, NewSlowRPCInterceptor(0, logger), NewHealthChecker(), logger, public, recovery); err == nil {
 		t.Fatal("equal-valued foreign Slow RPC owner accepted certification")
 	}
 	server.Config.Handler = listener.Server().Handler
