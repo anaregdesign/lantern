@@ -147,11 +147,17 @@ handle cancellation, stale review, conflict and reload recovery explicitly.
 | Order | Issue | Cohesive outcome |
 | --- | --- | --- |
 | 1 | [#1991](https://github.com/anaregdesign/lantern/issues/1991) | This design/catalog and isolated load foundation |
+| Preparation | [#1997](https://github.com/anaregdesign/lantern/issues/1997) | Actual serving logger owner, before native support attestation; startup-owned only |
 | 2 | [#1992](https://github.com/anaregdesign/lantern/issues/1992) | Typed committed policy, capacity, rollout and verified recovery |
 | 3 | [#1993](https://github.com/anaregdesign/lantern/issues/1993) | Logger owner, local desired/applied generations and readiness |
 | 4 | [#1994](https://github.com/anaregdesign/lantern/issues/1994) | Authenticated API, generated consumers and Admin review/apply |
 | 5 | [#1995](https://github.com/anaregdesign/lantern/issues/1995) | Final integrated exact-source pilot acceptance |
 | Later | [#1996](https://github.com/anaregdesign/lantern/issues/1996) | Separately scheduled atomic admission policy design |
+
+The logger preparation is separately reviewable. It does not enable policy
+adoption, management writes or an application-status claim. The native protocol
+must attest an actually installed owner, and verified projection/readiness
+integration follows in #1993.
 
 Required tests include isolated concurrent loads; schema/canonical rejection;
 adoption/update/new-generation rollback; idempotency/conflicts/lost response;
