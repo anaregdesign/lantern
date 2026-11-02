@@ -6,9 +6,9 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/replication"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 // AntiEntropyConfig groups the periodic anti-entropy driver knobs (#186).
@@ -57,7 +57,7 @@ func NewAntiEntropyDriver(
 	rc ReplicationConfig,
 	ac AntiEntropyConfig,
 	peerTransport *replication.PeerTransport,
-	svc *service.LanternService,
+	svc *dataruntime.Executor,
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	pump *replication.Pump,
 	m replication.AntiEntropyMetrics,
@@ -75,7 +75,7 @@ func newAntiEntropyReplicationConfig(
 	rc ReplicationConfig,
 	ac AntiEntropyConfig,
 	peerTransport *replication.PeerTransport,
-	svc *service.LanternService,
+	svc *dataruntime.Executor,
 	m replication.AntiEntropyMetrics,
 	logger *slog.Logger,
 	installer *SnapshotInstallerSelection,

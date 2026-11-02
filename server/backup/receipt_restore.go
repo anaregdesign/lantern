@@ -9,7 +9,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 // PrepareRestartReceiptStartupRestore decodes one already selected backup set
@@ -18,20 +18,20 @@ import (
 func PrepareRestartReceiptStartupRestore(
 	evidence ReceiptBackupSetEvidence,
 	expected mutationreceipt.Config,
-) (service.ReceiptStartupRestore, error) {
+) (dataruntime.ReceiptStartupRestore, error) {
 	capture, err := decodeReceiptStartupRestoreEvidence(evidence)
 	if err != nil {
-		return service.ReceiptStartupRestore{}, err
+		return dataruntime.ReceiptStartupRestore{}, err
 	}
 	expected.ClockHighWater = time.Time{}
 	configured, err := mutationreceipt.New(expected)
 	if err != nil {
-		return service.ReceiptStartupRestore{}, fmt.Errorf("backup: invalid restart receipt policy: %w", err)
+		return dataruntime.ReceiptStartupRestore{}, fmt.Errorf("backup: invalid restart receipt policy: %w", err)
 	}
 	if capture.Policy.Epoch != expected.Epoch ||
 		capture.Receipts.Epoch != expected.Epoch ||
 		capture.Receipts.PolicyFingerprint != configured.PolicyFingerprint() {
-		return service.ReceiptStartupRestore{}, errors.New(
+		return dataruntime.ReceiptStartupRestore{}, errors.New(
 			"backup: active receipt policy or epoch differs from restart",
 		)
 	}
@@ -51,13 +51,13 @@ func PrepareFreshReceiptStartupRestore(
 	evidence ReceiptBackupSetEvidence,
 	configured mutationreceipt.Config,
 	now time.Time,
-) (service.ReceiptStartupRestore, error) {
+) (dataruntime.ReceiptStartupRestore, error) {
 	archived, err := decodeReceiptStartupRestoreEvidence(evidence)
 	if err != nil {
-		return service.ReceiptStartupRestore{}, err
+		return dataruntime.ReceiptStartupRestore{}, err
 	}
 	if configured.Epoch == archived.Policy.Epoch {
-		return service.ReceiptStartupRestore{}, errors.New(
+		return dataruntime.ReceiptStartupRestore{}, errors.New(
 			"backup: fresh receipt restore requires a different active epoch",
 		)
 	}
@@ -66,7 +66,7 @@ func PrepareFreshReceiptStartupRestore(
 	}
 	effectiveHighWater := archived.Receipts.ClockHighWaterMillis
 	if now.UnixMilli() < 0 {
-		return service.ReceiptStartupRestore{}, mutationreceipt.ErrInvalidClock
+		return dataruntime.ReceiptStartupRestore{}, mutationreceipt.ErrInvalidClock
 	}
 	if effectiveHighWater < now.UnixMilli() {
 		effectiveHighWater = now.UnixMilli()
@@ -74,7 +74,7 @@ func PrepareFreshReceiptStartupRestore(
 	if !configured.ClockHighWater.IsZero() {
 		configuredHighWater := configured.ClockHighWater.UnixMilli()
 		if configuredHighWater < 0 {
-			return service.ReceiptStartupRestore{}, mutationreceipt.ErrInvalidClock
+			return dataruntime.ReceiptStartupRestore{}, mutationreceipt.ErrInvalidClock
 		}
 		if effectiveHighWater < configuredHighWater {
 			effectiveHighWater = configuredHighWater
@@ -86,7 +86,7 @@ func PrepareFreshReceiptStartupRestore(
 		archived.Receipts,
 	)
 	if err != nil {
-		return service.ReceiptStartupRestore{}, fmt.Errorf(
+		return dataruntime.ReceiptStartupRestore{}, fmt.Errorf(
 			"backup: convert archived active receipts: %w",
 			err,
 		)
@@ -103,14 +103,14 @@ func PrepareFreshReceiptStartupRestore(
 		archivedActive,
 	)
 	if err != nil {
-		return service.ReceiptStartupRestore{}, fmt.Errorf(
+		return dataruntime.ReceiptStartupRestore{}, fmt.Errorf(
 			"backup: union fresh retired receipt evidence: %w",
 			err,
 		)
 	}
 	retiredState, err := retired.Snapshot(time.UnixMilli(effectiveHighWater))
 	if err != nil {
-		return service.ReceiptStartupRestore{}, fmt.Errorf(
+		return dataruntime.ReceiptStartupRestore{}, fmt.Errorf(
 			"backup: snapshot fresh retired receipt evidence: %w",
 			err,
 		)
@@ -118,19 +118,19 @@ func PrepareFreshReceiptStartupRestore(
 	configured.ClockHighWater = time.UnixMilli(effectiveHighWater)
 	active, err := mutationreceipt.New(configured)
 	if err != nil {
-		return service.ReceiptStartupRestore{}, fmt.Errorf(
+		return dataruntime.ReceiptStartupRestore{}, fmt.Errorf(
 			"backup: configure fresh active receipt Store: %w",
 			err,
 		)
 	}
 	activeState, err := active.Snapshot()
 	if err != nil {
-		return service.ReceiptStartupRestore{}, fmt.Errorf(
+		return dataruntime.ReceiptStartupRestore{}, fmt.Errorf(
 			"backup: snapshot fresh active receipt Store: %w",
 			err,
 		)
 	}
-	capture := service.ReceiptWholeStateCapture{
+	capture := dataruntime.ReceiptWholeStateCapture{
 		Graph:    archived.Graph,
 		Receipts: activeState,
 		Retired:  retiredState,
@@ -147,12 +147,12 @@ func PrepareFreshReceiptStartupRestore(
 
 func decodeReceiptStartupRestoreEvidence(
 	evidence ReceiptBackupSetEvidence,
-) (service.ReceiptWholeStateCapture, error) {
+) (dataruntime.ReceiptWholeStateCapture, error) {
 	if evidence.SetID == 0 ||
 		evidence.BackupTimestamp.IsZero() ||
 		evidence.NodeID == (hlc.NodeID{}) ||
 		evidence.Generation == ([16]byte{}) {
-		return service.ReceiptWholeStateCapture{}, errors.New(
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New(
 			"backup: receipt startup restore identity is incomplete",
 		)
 	}
@@ -163,31 +163,31 @@ func decodeReceiptStartupRestoreEvidence(
 		evidence.WALCut.SHA256,
 		evidence.WALCut.ChainSHA256,
 	); err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	archive, err := decodeWholeStateArchive(bytes.NewReader(evidence.Archive))
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	var canonical bytes.Buffer
 	if err := encodeWholeStateArchive(&canonical, archive); err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	if !bytes.Equal(canonical.Bytes(), evidence.Archive) {
-		return service.ReceiptWholeStateCapture{}, wholeStateArchiveError(
+		return dataruntime.ReceiptWholeStateCapture{}, wholeStateArchiveError(
 			"archive is not canonical",
 		)
 	}
 	retired, metadata, err := decodeRetiredCatalogArchive(evidence.RetiredCatalog)
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	canonicalRetired, err := encodeRetiredCatalogArchiveWithoutPolicy(metadata, retired)
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	if !bytes.Equal(canonicalRetired, evidence.RetiredCatalog) {
-		return service.ReceiptWholeStateCapture{}, fmt.Errorf(
+		return dataruntime.ReceiptWholeStateCapture{}, fmt.Errorf(
 			"%w: retired catalog is not canonical",
 			errReceiptCombinedBaseline,
 		)
@@ -196,7 +196,7 @@ func decodeReceiptStartupRestoreEvidence(
 		metadata.ClockHighWaterMillis != archive.Receipts.ClockHighWaterMillis ||
 		metadata.MaxEntries != archive.Policy.MaxEntries ||
 		metadata.MaxBytes != archive.Policy.MaxBytes {
-		return service.ReceiptWholeStateCapture{}, errors.New(
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New(
 			"backup: active and retired receipt backup members differ",
 		)
 	}
@@ -206,11 +206,11 @@ func decodeReceiptStartupRestoreEvidence(
 		evidence.NodeID,
 		evidence.Generation,
 	); err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	retiredCount, err := receiptBackupRetiredReceiptCount(retired)
 	if err != nil || retiredCount > uint64(math.MaxInt)-uint64(len(archive.Receipts.Receipts)) {
-		return service.ReceiptWholeStateCapture{}, errors.New(
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New(
 			"backup: receipt startup restore count overflows",
 		)
 	}
@@ -222,7 +222,7 @@ func decodeReceiptStartupRestoreEvidence(
 		evidence.Stats.Receipts != stats.Receipts ||
 		evidence.Stats.Origins != stats.Origins ||
 		evidence.Stats.Members != stats.Members {
-		return service.ReceiptWholeStateCapture{}, errors.New(
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New(
 			"backup: receipt startup restore statistics differ",
 		)
 	}
@@ -231,9 +231,9 @@ func decodeReceiptStartupRestoreEvidence(
 		archive.Receipts,
 		retired,
 	); err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
-	return service.ReceiptWholeStateCapture{
+	return dataruntime.ReceiptWholeStateCapture{
 		Graph:    archive.Graph,
 		Receipts: archive.Receipts,
 		Retired:  retired,
@@ -244,11 +244,11 @@ func decodeReceiptStartupRestoreEvidence(
 
 func receiptStartupRestore(
 	evidence ReceiptBackupSetEvidence,
-	capture service.ReceiptWholeStateCapture,
+	capture dataruntime.ReceiptWholeStateCapture,
 	archivedEpoch mutationreceipt.Epoch,
 	archivedPolicy [32]byte,
-) service.ReceiptStartupRestore {
-	return service.ReceiptStartupRestore{
+) dataruntime.ReceiptStartupRestore {
+	return dataruntime.ReceiptStartupRestore{
 		Capture:        capture,
 		WALCut:         evidence.WALCut,
 		NodeID:         evidence.NodeID,

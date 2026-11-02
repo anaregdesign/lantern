@@ -17,8 +17,8 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
@@ -62,12 +62,12 @@ func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
 			}
 			defer closePeer()
 			graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Minute)
-			data, err := service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
+			data, err := dataruntime.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer data.Close()
-			primary := data.NewLanternService(nil)
+			primary := data.NewExecutor(nil)
 			if err := certifyEdgeCreateTopology(primary, "oidc", provisioning.FixedVoterCount(), peer); err != nil {
 				t.Fatal(err)
 			}
@@ -84,7 +84,7 @@ func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
 			} else if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatal("fixed multi-node enabled unsupported Create", err)
 			}
-			if err := certifyEdgeCreateTopology(data.NewLanternService(nil), "oidc", count+1, peer); err == nil {
+			if err := certifyEdgeCreateTopology(data.NewExecutor(nil), "oidc", count+1, peer); err == nil {
 				t.Fatal("data topology mismatch reached public certification")
 			}
 		})
@@ -99,8 +99,8 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		t.Fatal(err)
 	}
 	defer closeRuntime()
-	primary := data.NewLanternService(nil)
-	peer, err := data.NewLanternReplicationService(primary)
+	primary := data.NewExecutor(nil)
+	peer, err := data.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, runtimeCertified{}); err == nil {
 		t.Fatal("missing data certification accepted")
 	}
-	foreign := service.NewLanternService(data.GraphCache())
+	foreign := dataruntime.NewExecutor(data.GraphCache())
 	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, foreign, cert); err == nil {
 		t.Fatal("foreign service certified")
 	}

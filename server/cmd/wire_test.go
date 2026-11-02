@@ -198,8 +198,8 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 	}
 	if strings.Count(text, "provider.NewSnapshotInstallerSelection(") != 1 ||
 		strings.Count(text, "provider.NewWorkloadPeerTransport(") != 1 ||
-		!strings.Contains(text, "peerTransport, lanternService, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)") ||
-		!strings.Contains(text, "peerTransport, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)") {
+		!strings.Contains(text, "peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)") ||
+		!strings.Contains(text, "peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)") {
 		t.Fatal("generated injector does not share the certified peer transport and Snapshot installer across Pump and anti-entropy")
 	}
 }

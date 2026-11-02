@@ -21,6 +21,7 @@ NATIVE_GO = ("core/privatefile/", "core/mutationlog/", "core/mutationreceipt/",
              "server/internal/security/", "server/internal/authn/",
              "server/internal/listenerlaunch/", "server/internal/envconfig/",
              "server/internal/config/",
+             "server/internal/dataruntime/",
              "server/service/receipt", "server/service/runtime")
 NATIVE_RUST = ("sdks/rust/src/transport", "sdks/rust/src/test_server.rs",
                "sdks/rust/src/value", "sdks/rust/src/smoke.rs")

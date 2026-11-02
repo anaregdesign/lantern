@@ -19,7 +19,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 type receiptArchiveWALFunc func(mutationlog.Entry) error
@@ -29,36 +29,36 @@ func (f receiptArchiveWALFunc) Write(entry mutationlog.Entry) error { return f(e
 type receiptWholeStateBackupCaptureFunc func(
 	context.Context,
 	mutationreceipt.Config,
-) (service.ReceiptWholeStateBackupCapture, error)
+) (dataruntime.ReceiptWholeStateBackupCapture, error)
 
 func (f receiptWholeStateBackupCaptureFunc) CaptureForBackup(
 	ctx context.Context,
 	policy mutationreceipt.Config,
-) (service.ReceiptWholeStateBackupCapture, error) {
+) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 	return f(ctx, policy)
 }
 
 type receiptWholeStateSourceSpy struct {
 	backupCalls  int
 	captureCalls int
-	capture      service.ReceiptWholeStateBackupCapture
+	capture      dataruntime.ReceiptWholeStateBackupCapture
 }
 
 func (s *receiptWholeStateSourceSpy) Capture(
 	context.Context,
 	mutationreceipt.Config,
-) (service.ReceiptWholeStateCapture, error) {
+) (dataruntime.ReceiptWholeStateCapture, error) {
 	s.captureCalls++
-	return service.ReceiptWholeStateCapture{}, errors.New("ordinary Capture must not be called")
+	return dataruntime.ReceiptWholeStateCapture{}, errors.New("ordinary Capture must not be called")
 }
 
 func (s *receiptWholeStateSourceSpy) CaptureForBackup(
 	_ context.Context,
 	policy mutationreceipt.Config,
-) (service.ReceiptWholeStateBackupCapture, error) {
+) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 	s.backupCalls++
 	if policy != s.capture.WholeState.Policy || s.backupCalls != 1 {
-		return service.ReceiptWholeStateBackupCapture{}, errors.New("unexpected second source read or policy")
+		return dataruntime.ReceiptWholeStateBackupCapture{}, errors.New("unexpected second source read or policy")
 	}
 	return s.capture, nil
 }
@@ -120,7 +120,7 @@ func TestReceiptArchiveProducerUsesOneCombinedDetachedCut(t *testing.T) {
 		receiptWholeStateBackupCaptureFunc(func(
 			context.Context,
 			mutationreceipt.Config,
-		) (service.ReceiptWholeStateBackupCapture, error) {
+		) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			return capture, nil
 		}),
 		a.Policy,
@@ -225,46 +225,46 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 		source ReceiptSource
 	}{
 		{"nil source", nil},
-		{"capture failure", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"capture failure", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			return producerBackupCapture(a), errors.New("capture failed after partial work")
 		})},
-		{"zero capture", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
-			return service.ReceiptWholeStateBackupCapture{}, nil
+		{"zero capture", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
+			return dataruntime.ReceiptWholeStateBackupCapture{}, nil
 		})},
-		{"missing witness", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"missing witness", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WALTip = mutationlog.FileWALTipWitness{}
 			return bad, nil
 		})},
-		{"missing node ID", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"missing node ID", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.NodeID = hlc.NodeID{}
 			return bad, nil
 		})},
-		{"missing generation", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"missing generation", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.Generation = [16]byte{}
 			return bad, nil
 		})},
-		{"node ID mismatch", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"node ID mismatch", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.NodeID[0] ^= 0xff
 			return bad, nil
 		})},
-		{"missing whole state", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
-			return service.ReceiptWholeStateBackupCapture{WALTip: producerWALTipWitness(0)}, nil
+		{"missing whole state", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
+			return dataruntime.ReceiptWholeStateBackupCapture{WALTip: producerWALTipWitness(0)}, nil
 		})},
-		{"invalid policy", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"invalid policy", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WholeState.Policy.MaxEntries = 0
 			return bad, nil
 		})},
-		{"zero retired catalog", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"zero retired catalog", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WholeState.Retired = mutationreceipt.RetiredCatalogSnapshot{}
 			return bad, nil
 		})},
-		{"lower retired high-water", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"lower retired high-water", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WholeState.Retired = producerEmptyRetiredSnapshot(
 				t,
@@ -273,7 +273,7 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 			)
 			return bad, nil
 		})},
-		{"invalid graph", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+		{"invalid graph", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WholeState.Graph[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 			return bad, nil
@@ -289,7 +289,7 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	calls := 0
-	product, err := produceReceiptWholeStateArchive(canceled, receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+	product, err := produceReceiptWholeStateArchive(canceled, receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 		calls++
 		return producerBackupCapture(a), nil
 	}), a.Policy)
@@ -297,7 +297,7 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 		t.Fatalf("canceled producer = %#v, %v, %d source calls", product, err, calls)
 	}
 	ctx, cancelDuringCapture := context.WithCancel(context.Background())
-	product, err = produceReceiptWholeStateArchive(ctx, receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+	product, err = produceReceiptWholeStateArchive(ctx, receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 		cancelDuringCapture()
 		return producerBackupCapture(a), nil
 	}), a.Policy)
@@ -329,7 +329,7 @@ func TestReceiptArchiveProducerRejectsMiswiredSourcePolicy(t *testing.T) {
 			requested := a.Policy
 			tc.change(&requested)
 			calls := 0
-			product, err := produceReceiptWholeStateArchive(context.Background(), receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+			product, err := produceReceiptWholeStateArchive(context.Background(), receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 				calls++
 				return producerBackupCapture(a), nil
 			}), requested)
@@ -344,25 +344,25 @@ func TestReceiptArchiveProducerRejectsInvalidCapturedWitness(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
 	for _, tc := range []struct {
 		name   string
-		change func(*service.ReceiptWholeStateBackupCapture)
+		change func(*dataruntime.ReceiptWholeStateBackupCapture)
 	}{
-		{"archive sequence mismatch", func(c *service.ReceiptWholeStateBackupCapture) {
+		{"archive sequence mismatch", func(c *dataruntime.ReceiptWholeStateBackupCapture) {
 			c.WALTip.Seq++
 			c.WALTip.Offset++
 		}},
-		{"offset below header", func(c *service.ReceiptWholeStateBackupCapture) {
+		{"offset below header", func(c *dataruntime.ReceiptWholeStateBackupCapture) {
 			c.WALTip.Offset = receiptArchiveWALZeroOffset - 1
 		}},
-		{"zero sequence with framed offset", func(c *service.ReceiptWholeStateBackupCapture) {
+		{"zero sequence with framed offset", func(c *dataruntime.ReceiptWholeStateBackupCapture) {
 			c.WALTip.Seq = 0
 		}},
-		{"nonzero sequence at header offset", func(c *service.ReceiptWholeStateBackupCapture) {
+		{"nonzero sequence at header offset", func(c *dataruntime.ReceiptWholeStateBackupCapture) {
 			c.WALTip.Offset = receiptArchiveWALZeroOffset
 		}},
-		{"zero prefix digest", func(c *service.ReceiptWholeStateBackupCapture) {
+		{"zero prefix digest", func(c *dataruntime.ReceiptWholeStateBackupCapture) {
 			c.WALTip.SHA256 = [sha256.Size]byte{}
 		}},
-		{"zero chain digest", func(c *service.ReceiptWholeStateBackupCapture) {
+		{"zero chain digest", func(c *dataruntime.ReceiptWholeStateBackupCapture) {
 			c.WALTip.ChainSHA256 = [sha256.Size]byte{}
 		}},
 	} {
@@ -374,7 +374,7 @@ func TestReceiptArchiveProducerRejectsInvalidCapturedWitness(t *testing.T) {
 				receiptWholeStateBackupCaptureFunc(func(
 					context.Context,
 					mutationreceipt.Config,
-				) (service.ReceiptWholeStateBackupCapture, error) {
+				) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 					return capture, nil
 				}),
 				archive.Policy,
@@ -393,9 +393,9 @@ func TestReceiptArchiveProducerDoesNotReopenMissingWALPath(t *testing.T) {
 	source := receiptWholeStateBackupCaptureFunc(func(
 		context.Context,
 		mutationreceipt.Config,
-	) (service.ReceiptWholeStateBackupCapture, error) {
+	) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 		if _, err := os.Stat(missingPath); !errors.Is(err, os.ErrNotExist) {
-			return service.ReceiptWholeStateBackupCapture{}, errors.New("test WAL path unexpectedly exists")
+			return dataruntime.ReceiptWholeStateBackupCapture{}, errors.New("test WAL path unexpectedly exists")
 		}
 		return producerBackupCapture(archive), nil
 	})
@@ -442,7 +442,7 @@ func TestReceiptArchiveProducerManifestMatchesClosedFileWALCut(t *testing.T) {
 		receiptWholeStateBackupCaptureFunc(func(
 			context.Context,
 			mutationreceipt.Config,
-		) (service.ReceiptWholeStateBackupCapture, error) {
+		) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 			return capture, nil
 		}),
 		archive.Policy,
@@ -473,7 +473,7 @@ func TestReceiptArchiveProducerManifestMatchesClosedFileWALCut(t *testing.T) {
 func TestReceiptArchiveProducerRejectsOversizeFrame(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
 	a.Graph[1].GetVertex().Vertex.Value = &pb.Vertex_String_{String_: strings.Repeat("v", wholeStateArchiveMaxFrame)}
-	product, err := produceReceiptWholeStateArchive(context.Background(), receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+	product, err := produceReceiptWholeStateArchive(context.Background(), receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 		return producerBackupCapture(a), nil
 	}), a.Policy)
 	if !errors.Is(err, errWholeStateArchive) || product != (receiptBackupSetProduct{}) {
@@ -484,8 +484,8 @@ func TestReceiptArchiveProducerRejectsOversizeFrame(t *testing.T) {
 type receiptArchiveFixture struct {
 	cache        *graphcache.GraphCache[string, *pb.Vertex]
 	log          *mutationlog.Log
-	service      *service.LanternService
-	source       *service.ReceiptWholeStateSource
+	service      *dataruntime.Executor
+	source       *dataruntime.ReceiptWholeStateSource
 	backupSource ReceiptSource
 	policy       mutationreceipt.Config
 	clock        *hlc.Clock
@@ -511,24 +511,24 @@ func newReceiptArchiveFixture(t *testing.T, wal mutationlog.WAL) receiptArchiveF
 	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32, WAL: wal})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(hlc.NodeID{0x72}, hlc.Options{})
-	svc := service.NewLanternService(cache).WithReplication(log, clock, nil).WithTombstoneTTL(time.Hour)
-	source, err := service.NewReceiptWholeStateSource(svc, store)
+	svc := dataruntime.NewExecutor(cache).WithReplication(log, clock, nil).WithTombstoneTTL(time.Hour)
+	source, err := dataruntime.NewReceiptWholeStateSource(svc, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	backupSource := receiptWholeStateBackupCaptureFunc(func(
 		ctx context.Context,
 		policy mutationreceipt.Config,
-	) (service.ReceiptWholeStateBackupCapture, error) {
+	) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 		capture, err := source.Capture(ctx, policy)
 		if err != nil {
-			return service.ReceiptWholeStateBackupCapture{}, err
+			return dataruntime.ReceiptWholeStateBackupCapture{}, err
 		}
 		var seq uint64
 		if len(capture.Graph) != 0 && capture.Graph[0].GetHeader() != nil {
 			seq = capture.Graph[0].GetHeader().GetCutoffLocalSeq()
 		}
-		return service.ReceiptWholeStateBackupCapture{
+		return dataruntime.ReceiptWholeStateBackupCapture{
 			WholeState: capture,
 			WALTip:     producerWALTipWitness(seq),
 			NodeID:     clock.NodeID(),
@@ -631,7 +631,7 @@ func TestReceiptArchiveProducerBlocksStagedWALAndKeepsPublicSnapshotGraphOnly(t 
 	}
 	assertProducerGraphCut(t, decodedProducerArchive(t, after.raw), 1, false, true)
 	assertProducerGraphCut(t, decodedProducerArchive(t, beforeRaw), 0, true, false)
-	rep := service.NewLanternReplicationService(f.log, f.cache, f.clock).WithOriginStates(f.service)
+	rep := dataruntime.NewReplication(f.log, f.cache, f.clock).WithOriginStates(f.service)
 	sender := &receiptArchiveSnapshotSender{}
 	if err := rep.Snapshot(context.Background(), &pb.SnapshotRequest{}, sender); err != nil {
 		t.Fatal(err)

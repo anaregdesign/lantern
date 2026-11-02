@@ -38,19 +38,19 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	v4 := provider.NewValidationLimits(config)
 	v5 := provider.NewTraversalConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
-	lanternService := newLanternService(servingRuntime, v3, v2, replicationConfig, v4, v5, tlsConfig, cacheConfig, v, logger, domainMetrics)
+	executor := newLanternService(servingRuntime, v3, v2, replicationConfig, v4, v5, tlsConfig, cacheConfig, v, logger, domainMetrics)
 	v6 := provider.NewNetConfig(config)
-	lanternReplicationService, err := newLanternReplicationService(servingRuntime, logger, domainMetrics, lanternService)
+	replication, err := newLanternReplicationService(servingRuntime, logger, domainMetrics, executor)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	runtimeRestored, err := provider.NewRuntimeRestored(servingRuntime, lanternService)
+	runtimeRestored, err := provider.NewRuntimeRestored(servingRuntime, executor)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, lanternService, lanternReplicationService, runtimeRestored, v6)
+	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, executor, replication, runtimeRestored, v6)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -61,7 +61,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	backupper, err := provider.NewBackupper(backupConfig, receiptWALConfig, servingRuntime, lanternService, runtimeCertified, registry, logger)
+	backupper, err := provider.NewBackupper(backupConfig, receiptWALConfig, servingRuntime, executor, runtimeCertified, registry, logger)
 	if err != nil {
 		cleanup2()
 		cleanup()
@@ -74,14 +74,14 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, lanternService, runtimeCertified)
+	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, executor, runtimeCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
-	publicReceiptsCertified, err := provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, lanternService, backupper, runtimeCertified, publicSecurityCertified)
+	publicReceiptsCertified, err := provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -104,7 +104,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
 	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(v, logger)
 	healthChecker := provider.NewHealthChecker()
-	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, lanternService, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
+	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, executor, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -115,7 +115,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	v8 := provider.NewShutdownConfig(config)
 	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, v8)
 	graphCache := provider.NewRuntimeGraph(servingRuntime)
-	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, lanternService, lanternReplicationService)
+	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, executor, replication)
 	readinessConfig := provider.NewReadinessConfig(config)
 	peerConfig := provider.NewPeerConfig(config)
 	peerResolver := provider.NewWorkloadPeerResolver(peerIdentityRuntime)
@@ -147,7 +147,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
 	v10 := provider.NewGraphSnapshotSpoolConfig(config)
-	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, v10, peerPlaneConfig, cacheConfig, v2, servingRuntime, lanternService, logger, runtimeCertified)
+	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, v10, peerPlaneConfig, cacheConfig, v2, servingRuntime, executor, logger, runtimeCertified)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -155,10 +155,10 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, peerTransport, lanternService, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)
+	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, peerTransport, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {
@@ -168,7 +168,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, lanternReplicationService, v6, logger, runtimeCertified, launch)
+	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, replication, v6, logger, runtimeCertified, launch)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -179,7 +179,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, v8, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
+	app := newApp(config, logger, executor, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, v8, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
 	return app, func() {
 		cleanup5()
 		cleanup4()

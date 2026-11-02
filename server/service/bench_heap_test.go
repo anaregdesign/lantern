@@ -8,72 +8,74 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/benchheap"
 )
 
-func TestBenchHeapWholeHandlerReturn(t *testing.T) {
-	o := &BenchHeapObserver{}
-	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	h := o.WrapPublic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { defer func() { <-release }(); close(started) }))
-	go func() { h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/data", nil)); close(done) }()
-	<-started
-	if benchheap.CounterIdle(o.public.snapshot()) {
-		t.Fatal("handler cleanup was not counted")
-	}
-	close(release)
-	<-done
-	if !benchheap.CounterIdle(o.public.snapshot()) {
-		t.Fatal("completed handler remained active")
-	}
-}
-func TestBenchHeapNativeCutAndApply(t *testing.T) {
-	s := NewLanternService(&fakeBackend{})
-	o, err := NewBenchHeapObserver(s)
+func TestBenchHeapServerObservesCompleteHandlerLifetime(t *testing.T) {
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
+	observer, err := NewBenchHeapObserver(svc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer o.Close()
-	leave := benchHeapApply(s)
-	n, err := o.Snapshot(context.Background())
-	if err != nil || benchheap.NativeIdle(n) {
-		t.Fatal("in-flight Apply was not observed", err)
-	}
-	leave()
-	n, err = o.Snapshot(context.Background())
-	if err != nil || !benchheap.NativeIdle(n) {
-		t.Fatal("completed Apply was not drained", err)
-	}
-	s.snapshotReadCutMu.Lock()
-	_, err = o.Snapshot(context.Background())
-	s.snapshotReadCutMu.Unlock()
-	if err != benchheap.ErrBusy {
-		t.Fatal("snapshot cut failed to respect busy state")
-	}
-}
-
-func TestBenchHeapCounterConcurrentCutIsCoherent(t *testing.T) {
-	var counter benchHeapCounter
-	var workers sync.WaitGroup
-	start := make(chan struct{})
-	for range 8 {
-		workers.Go(func() {
-			<-start
-			for range 1000 {
-				leave := counter.enter()
-				leave()
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = observer.Close()
+		}
+	})
+	for _, tc := range []struct {
+		name     string
+		server   *LanternServer
+		observer *BenchHeapObserver
+	}{
+		{"nil receiver", nil, observer},
+		{"missing HTTP server", &LanternServer{}, observer},
+		{"missing handler", &LanternServer{server: &http.Server{}}, observer},
+		{"missing observer", &LanternServer{server: &http.Server{Handler: http.NotFoundHandler()}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.server.ObserveBenchHeap(tc.observer); err == nil {
+				t.Fatal("incomplete handler observation accepted")
 			}
 		})
 	}
-	close(start)
-	for range 10000 {
-		cut := counter.snapshot()
-		if cut.Active < 0 || cut.Begun != cut.Completed+uint64(cut.Active) {
-			t.Fatalf("torn activity cut: %+v", cut)
-		}
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	server := &LanternServer{server: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defer func() { <-release }()
+		w.WriteHeader(http.StatusAccepted)
+		close(entered)
+	})}}
+	if err := server.ObserveBenchHeap(observer); err != nil {
+		t.Fatal(err)
 	}
-	workers.Wait()
-	if cut := counter.snapshot(); cut.Begun != 8000 || !benchheap.CounterIdle(cut) {
-		t.Fatalf("incomplete handler activity: %+v", cut)
+	response := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		server.server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/data", nil))
+	}()
+	<-entered
+	cut, err := observer.Snapshot(context.Background())
+	if err != nil || cut.Public.Active != 1 || cut.Public.Begun != 1 || cut.Public.Completed != 0 || benchheap.NativeIdle(cut) {
+		t.Fatalf("handler cleanup was not observed: %+v, %v", cut.Public, err)
 	}
+	if err := observer.Close(); err == nil {
+		t.Fatal("observer closed before complete handler return")
+	}
+	unblock()
+	<-done
+	cut, err = observer.Snapshot(context.Background())
+	if err != nil || !benchheap.NativeIdle(cut) || cut.Public.Begun != 1 || cut.Public.Completed != 1 || response.Code != http.StatusAccepted {
+		t.Fatalf("completed handler observation = %+v, status %d, %v", cut.Public, response.Code, err)
+	}
+	if err := observer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closed = true
 }

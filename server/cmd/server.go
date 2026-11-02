@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/decisiontrace"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/query"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
@@ -33,7 +34,7 @@ import (
 type App struct {
 	cfg             *provider.Config
 	logger          *slog.Logger
-	svc             *service.LanternService
+	svc             *dataruntime.Executor
 	server          *service.LanternServer
 	metrics         provider.MetricsServer
 	tracing         *provider.Tracing
@@ -46,7 +47,7 @@ type App struct {
 	pump            *replication.Pump
 	llm             *provider.LLMEngine
 	antiEntropy     *replication.AntiEntropy
-	runtime         *service.ServingRuntime
+	runtime         *dataruntime.ServingRuntime
 	peerServer      *provider.PeerPlaneServer
 	securityWorkers *provider.SecurityWorkers
 	security        securityLifecycle
@@ -61,7 +62,7 @@ type securityLifecycle interface {
 func newApp(
 	cfg *provider.Config,
 	logger *slog.Logger,
-	svc *service.LanternService,
+	svc *dataruntime.Executor,
 	server *service.LanternServer,
 	metricsServer provider.MetricsServer,
 	tracing *provider.Tracing,
@@ -76,7 +77,7 @@ func newApp(
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
 	engine *provider.LLMEngine,
-	runtime *service.ServingRuntime,
+	runtime *dataruntime.ServingRuntime,
 	peerServer *provider.PeerPlaneServer,
 	securityWorkers *provider.SecurityWorkers,
 	security *provider.SecurityRuntime,
@@ -94,7 +95,7 @@ func newApp(
 	// is wired to talk to peers": static peer list non-empty OR DNS
 	// discovery configured.
 	enabled := peerPlane.ListenAddress != "" || len(pc.Peers) > 0 || pc.Discovery == "dns"
-	svc.WithReplicationStatus(pump, service.ReplicationStatusInfo{
+	svc.WithReplicationStatus(pump, dataruntime.ReplicationStatusInfo{
 		NodeID:  rc.NodeID,
 		Enabled: enabled,
 	})
@@ -144,11 +145,10 @@ func clampU32(v int) uint32 {
 }
 
 // newLanternService is the wire seam between provider.ScanConfig and the
-// service-layer ScanLimits value. Keeping the conversion here (rather than
-// in package service) preserves the rule that service/ has zero imports
-// from provider/.
+// runtime ScanLimits value. Keeping the conversion here preserves the rule
+// that the runtime has zero imports from provider/.
 func newLanternService(
-	runtime *service.ServingRuntime,
+	runtime *dataruntime.ServingRuntime,
 	sc provider.ScanConfig,
 	src provider.SearchConfig,
 	rc provider.ReplicationConfig,
@@ -159,16 +159,16 @@ func newLanternService(
 	obs provider.ObservabilityConfig,
 	logger *slog.Logger,
 	dm *domainmetrics.DomainMetrics,
-) *service.LanternService {
+) *dataruntime.Executor {
 	dm.SetCapacityLimits(cc.MaxVertices, cc.MaxEdges)
-	svc := runtime.NewLanternService(dm.OnMutationLogAppend).
-		WithScanLimits(service.ScanLimits{
+	svc := runtime.NewExecutor(dm.OnMutationLogAppend).
+		WithScanLimits(dataruntime.ScanLimits{
 			ScanDefaultLimit:           sc.ScanDefaultLimit,
 			ScanMaxLimit:               sc.ScanMaxLimit,
 			DeleteByPrefixDefaultLimit: sc.DeleteByPrefixDefaultLimit,
 			DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
 		}).
-		WithSearchLimits(service.SearchLimits{
+		WithSearchLimits(dataruntime.SearchLimits{
 			Enabled:          src.Enabled,
 			PositionsEnabled: src.Positions,
 			DefaultLimit:     src.DefaultLimit,
@@ -194,14 +194,14 @@ func newLanternService(
 		WithAppliedHook(dm.OnReplicationApplied).
 		WithReplicationApplyHook(dm.OnReplicationApply).
 		WithValidationRejectHook(dm.OnValidationRejected).
-		WithCapacityLimits(service.CapacityLimits{
+		WithCapacityLimits(dataruntime.CapacityLimits{
 			MaxVertices: cc.MaxVertices,
 			MaxEdges:    cc.MaxEdges,
 		}).
 		WithTombstoneClampRejectHook(dm.OnTombstoneClampRejected).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithTraversalTimeout(trc.Timeout).
-		WithTraversalLimits(service.TraversalLimits{
+		WithTraversalLimits(dataruntime.TraversalLimits{
 			WorkBudget: graphcache.PPRWorkBudget{
 				MaxPushes:       trc.MaxPushes,
 				MaxTouchedEdges: trc.MaxTouchedEdges,
@@ -210,7 +210,7 @@ func newLanternService(
 		}).
 		WithHotPathMetrics(dm).
 		WithLogger(logger).
-		WithStatusInfo(service.StatusInfo{
+		WithStatusInfo(dataruntime.StatusInfo{
 			Version:            obs.Version,
 			DefaultTTL:         cc.TTL,
 			MaxBatchSize:       clampU32(vc.MaxBatchSize),
@@ -233,15 +233,14 @@ func newLanternService(
 
 // newLanternReplicationService wires the streaming replication surface so it
 // shares the same *mutationlog.Log as the write path. Metrics are attached
-// here (rather than inside the service) to keep service/ free of
-// provider/metrics imports.
+// here to keep the runtime free of provider/metrics imports.
 func newLanternReplicationService(
-	runtime *service.ServingRuntime,
+	runtime *dataruntime.ServingRuntime,
 	logger *slog.Logger,
 	dm *domainmetrics.DomainMetrics,
-	svc *service.LanternService,
-) (*service.LanternReplicationService, error) {
-	replicationService, err := runtime.NewLanternReplicationService(svc)
+	svc *dataruntime.Executor,
+) (*dataruntime.Replication, error) {
+	replicationService, err := runtime.NewReplication(svc)
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/anaregdesign/lantern/server/benchheap"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 // Fixed in a measurement build. Only the explicitly controlled test binary's
@@ -74,7 +74,7 @@ func startBenchHeapObservation(ctx context.Context, a *App) (func() error, <-cha
 		return nil, nil, err
 	}
 	identity := benchheap.Identity{Session: session, PID: os.Getpid(), StartNonce: hex.EncodeToString(nonce[:])}
-	observer, err := service.NewBenchHeapObserver(a.svc)
+	observer, err := dataruntime.NewBenchHeapObserver(a.svc)
 	if err != nil {
 		store.Close()
 		return nil, nil, err

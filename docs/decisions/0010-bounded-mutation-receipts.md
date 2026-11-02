@@ -220,7 +220,7 @@ does not weaken this internal envelope/cutoff contract.
 A receipt-only envelope still advances the origin seq. Identity-only Subscribe
 emits a final zero-key `RECEIPT_ONLY` chunk when no graph identity was
 accepted, advancing the CDC cursor without invalidating graph data.
-[`projectMutationIdentities`](../../server/service/identity.go) implements
+[`projectMutationIdentities`](../../server/internal/dataruntime/identity.go) implements
 that bounded marker for all five receipt families; maintained SDK identity
 decoders accept it. Contribution Delete with a graph effect projects only
 its Edge pair, never the target ContribID, weight, or deadline. Older
@@ -370,11 +370,11 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 
 ### Internal implementation boundary
 
-The [Edge Delete coordinator](../../server/service/receipt_edge_delete.go),
-[Vertex Put coordinator](../../server/service/receipt_vertex_put.go),
-[Vertex Delete coordinator](../../server/service/receipt_vertex_delete.go),
-the [Edge Add coordinator](../../server/service/receipt_edge_add.go),
-and the [targeted contribution Delete coordinator](../../server/service/receipt_edge_contribution_delete.go)
+The [Edge Delete coordinator](../../server/internal/dataruntime/receipt_edge_delete.go),
+[Vertex Put coordinator](../../server/internal/dataruntime/receipt_vertex_put.go),
+[Vertex Delete coordinator](../../server/internal/dataruntime/receipt_vertex_delete.go),
+the [Edge Add coordinator](../../server/internal/dataruntime/receipt_edge_add.go),
+and the [targeted contribution Delete coordinator](../../server/internal/dataruntime/receipt_edge_contribution_delete.go)
 stage graph, per-item receipts, and one origin row before a WAL call. Public
 plural calls invoke their coordinator only when the sole optional
 `MutationReceiptContext` is present; each singular call forwards a one-item
@@ -383,7 +383,7 @@ distinguishes the original request, request-indexed results, causally accepted
 graph transitions, epoch/policy, and origin HLC/seq. A generic graph mutation
 carrying a receipt context is rejected so the private receipt envelope is the
 only durable representation.
-The private [Edge Delete WAL codec](../../server/service/receipt_edge_delete_codec.go)
+The private [Edge Delete WAL codec](../../server/internal/dataruntime/receipt_edge_delete_codec.go)
 can encode that envelope as a bounded, versioned, deterministic payload and
 decode it with strict structural and cross-field checks. It reconstructs the
 graph-only `Mutation` from indexed accepted keys. The enclosing FileWAL frame
@@ -393,17 +393,17 @@ expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
 clock metadata. Durable receipt-WAL mode carries this codec through the union
 WAL and replay path; the codec alone does not certify receipt recovery,
 replication, or status continuity. Targeted Delete has its own bounded
-versioned [WAL codec](../../server/service/receipt_edge_contribution_delete_codec.go)
+versioned [WAL codec](../../server/internal/dataruntime/receipt_edge_contribution_delete_codec.go)
 and a distinct `ReplicatedReceiptEdgeContributionDelete` arm; neither may be
 decoded as an ordinary whole-edge Delete. The original result and the
 accepted contribution identity indexes are both retained, even when an
 accepted target was absent. Its D4 deadline remains the origin's absolute
 timestamp through WAL, relay, and Snapshot.
-The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
+The private [FileWAL union codec](../../server/internal/dataruntime/receipt_wal_union_codec.go)
 adds a versioned kind discriminator for graph-only `Mutation`, private
-[graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
-[graph Put effect](../../server/service/graph_put_effect_wal.go) and
-[graph Add effect](../../server/service/graph_add_effect_wal.go) envelopes
+[graph Delete effect](../../server/internal/dataruntime/graph_delete_effect_wal.go) and
+[graph Put effect](../../server/internal/dataruntime/graph_put_effect_wal.go) and
+[graph Add effect](../../server/internal/dataruntime/graph_add_effect_wal.go) envelopes
 (also used with receipt evidence), or the receipt Edge Delete, Vertex Put,
 and exact Vertex Delete envelopes. Each Vertex receipt envelope carries the
 complete ordered original intent and immutable request-index-aligned result
@@ -543,7 +543,7 @@ kind pins the reachable `Mutation` schema, rejects an unreviewed field change
 under union v4, and old union versions fail closed rather than gaining aliases,
 dual readers, or compatibility fallback. Any future compatibility policy is a
 v1 activation decision, not a prerequisite for changing this private format.
-The private [read-only mixed-WAL audit](../../server/service/receipt_wal_recovery.go)
+The private [read-only mixed-WAL audit](../../server/internal/dataruntime/receipt_wal_recovery.go)
 checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
 contiguous per-origin sequences, one configured epoch/policy, and a bounded
 set of known unexpired receipt results. It validates those rows through the
@@ -657,7 +657,7 @@ wire-field validation rejects unknown fields, ambiguous duplicates, and
 malformed encodings without comparing bytes from a particular protobuf
 runtime; field and map-entry order remain semantically irrelevant. The v1
 codec pins the reachable graph schema and rejects unreviewed proto changes. The
-private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
+private [whole-state capture](../../server/internal/dataruntime/receipt_snapshot_capture.go)
 copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local log
 seq, and an HLC frontier under one exclusive service publication cut.
 `ReceiptWholeStateSource.Capture` returns that detached in-memory cut only.

@@ -7,13 +7,14 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
 // PublicChangeHTTPHandler mounts only the scoped public change protocol. It
 // never mounts a peer handler or treats a user Role as workload authority.
-func (r *SecurityRuntime) PublicChangeHTTPHandler(svc *service.LanternService, config service.ChangeServiceOptions, options ...connect.HandlerOption) (string, http.Handler, error) {
+func (r *SecurityRuntime) PublicChangeHTTPHandler(svc *dataruntime.Executor, config dataruntime.ChangeServiceOptions, options ...connect.HandlerOption) (string, http.Handler, error) {
 	if err := r.protectDataService(svc); err != nil {
 		return "", nil, err
 	}
@@ -36,7 +37,7 @@ func (r *SecurityRuntime) PublicChangeHTTPHandler(svc *service.LanternService, c
 	}), nil
 }
 
-func (r *SecurityRuntime) BrowserChangeHTTPHandler(svc *service.LanternService, config service.ChangeServiceOptions, options ...connect.HandlerOption) (string, http.Handler, error) {
+func (r *SecurityRuntime) BrowserChangeHTTPHandler(svc *dataruntime.Executor, config dataruntime.ChangeServiceOptions, options ...connect.HandlerOption) (string, http.Handler, error) {
 	if err := r.protectDataService(svc); err != nil {
 		return "", nil, err
 	}

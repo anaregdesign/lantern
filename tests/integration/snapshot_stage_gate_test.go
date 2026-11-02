@@ -256,7 +256,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 					if index != 0 {
 						return
 					}
-					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					source, err := runtime.NewReplication(f.primary[index])
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -506,7 +506,7 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 			if index != 0 {
 				return
 			}
-			source, err := runtime.NewLanternReplicationService(f.primary[index])
+			source, err := runtime.NewReplication(f.primary[index])
 			if err != nil {
 				t.Fatal(err)
 			}

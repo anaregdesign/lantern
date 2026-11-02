@@ -10,18 +10,18 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/replication"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
-// ReceiptSnapshotInstallTarget is the narrow service seam that atomically
+// ReceiptSnapshotInstallTarget is the narrow runtime seam that atomically
 // publishes one fully staged RECEIPT candidate.
 type ReceiptSnapshotInstallTarget interface {
-	InstallReceiptBaseline(context.Context, service.ReceiptWholeStateCapture) error
+	InstallReceiptBaseline(context.Context, dataruntime.ReceiptWholeStateCapture) error
 }
 
 // ReceiptSnapshotInstaller collects and validates a complete RECEIPT cut
-// before publishing it through the certified durable service primitive.
+// before publishing it through the certified durable runtime primitive.
 type ReceiptSnapshotInstaller struct {
 	collector *ReceiptSnapshotCollector
 	target    ReceiptSnapshotInstallTarget
@@ -132,69 +132,69 @@ func (i *ReceiptSnapshotInstaller) Install(
 	return result, nil
 }
 
-func (c *ReceiptSnapshotCandidate) installCapture(ctx context.Context) (service.ReceiptWholeStateCapture, error) {
+func (c *ReceiptSnapshotCandidate) installCapture(ctx context.Context) (dataruntime.ReceiptWholeStateCapture, error) {
 	if c == nil {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate is nil")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate is nil")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.spool == nil {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate is closed")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate is closed")
 	}
 	if err := ctx.Err(); err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	digest, size, err := digestReceiptSnapshotSpool(c.spool)
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	if size != c.metadata.SpoolBytes || digest != c.metadata.SpoolSHA256 {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate spool changed after validation")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate spool changed after validation")
 	}
 	if _, err := c.spool.Seek(0, 0); err != nil {
-		return service.ReceiptWholeStateCapture{}, fmt.Errorf("backup: rewind receipt Snapshot candidate: %w", err)
+		return dataruntime.ReceiptWholeStateCapture{}, fmt.Errorf("backup: rewind receipt Snapshot candidate: %w", err)
 	}
 	frames, err := readReceiptSnapshotSpool(ctx, c.spool, c.frameCount, c.limits)
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
-	capture, err := service.DecodeReceiptSnapshotFrames(
+	capture, err := dataruntime.DecodeReceiptSnapshotFrames(
 		frames,
 		c.expectedPolicy,
 		c.retiredConfig,
 	)
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	if c.stage == nil || c.stage.receiptWholeStateStage == nil ||
 		c.stage.graph == nil || c.stage.receipts == nil || c.stage.retired == nil {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate stage changed after validation")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate stage changed after validation")
 	}
 	active, err := c.stage.receipts.Snapshot()
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	retired, err := c.stage.retired.Snapshot(capture.Receipts.ClockHighWater())
 	if err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	if !equalReceiptSnapshotState(active, capture.Receipts) {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged active receipts differ from validated stream")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: staged active receipts differ from validated stream")
 	}
 	if !equalRetiredReceiptSnapshotState(retired, capture.Retired) {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged retired receipts differ from validated stream")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: staged retired receipts differ from validated stream")
 	}
 	if !slices.Equal(c.stage.origins, capture.Origins) {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged origin vector differs from validated stream")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: staged origin vector differs from validated stream")
 	}
 	if c.stage.policy != capture.Policy {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged receipt policy differs from validated stream")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: staged receipt policy differs from validated stream")
 	}
 	if c.stage.cutoffLocalSeq != capture.Graph[0].GetHeader().GetCutoffLocalSeq() {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged graph cutoff differs from validated stream")
+		return dataruntime.ReceiptWholeStateCapture{}, errors.New("backup: staged graph cutoff differs from validated stream")
 	}
 	if err := ctx.Err(); err != nil {
-		return service.ReceiptWholeStateCapture{}, err
+		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
 	return capture, nil
 }

@@ -537,8 +537,8 @@ func mountClusterRecoveryPublicReceiptServer(
 			t.Errorf("close recovered receipt runtime: %v", err)
 		}
 	})
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-	replicationService, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(2 * time.Hour)
+	replicationService, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}

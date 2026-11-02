@@ -10,7 +10,7 @@ import sys
 MODULE = "github.com/anaregdesign/lantern/server"
 OBSERVER = MODULE + "/benchheap"
 TAG = "lantern_bench_heap"
-TARGETS = ("./cmd", "./provider", "./service", "./benchheap")
+TARGETS = ("./cmd", "./provider", "./service", "./internal/dataruntime", "./benchheap")
 CONTROLLED_TAGS = TAG + ",lantern_test_time"
 CONTROLLED_TEST = "TestBenchHeapRefusalSurvivesCancellation"
 

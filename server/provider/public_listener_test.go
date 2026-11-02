@@ -20,8 +20,8 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 		t.Fatal(err)
 	}
 	defer cleanup()
-	primary := data.NewLanternService(nil)
-	rep, err := data.NewLanternReplicationService(primary)
+	primary := data.NewExecutor(nil)
+	rep, err := data.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreign := data.NewLanternService(nil)
+	foreign := data.NewExecutor(nil)
 	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, foreign, runtime, ChangeConfig{}, nil, nil, nil, nil, NewSlowRPCInterceptor(0, logger), NewHealthChecker(), logger, public); err == nil {
 		t.Fatal("different service accepted certification")
 	}

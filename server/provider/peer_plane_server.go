@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
@@ -23,7 +24,7 @@ type PeerPlaneServer struct {
 	closeSnapshotTails func()
 }
 
-func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, replication *service.LanternReplicationService, limits NetConfig, logger *slog.Logger, certified runtimeCertified, launch *listenerlaunch.Owner) (*PeerPlaneServer, func(), error) {
+func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, replication *dataruntime.Replication, limits NetConfig, logger *slog.Logger, certified runtimeCertified, launch *listenerlaunch.Owner) (*PeerPlaneServer, func(), error) {
 	if !certified.valid || certified.replication != replication || certified.replicationSendMaxBytes != limits.MaxSendMsgBytes {
 		return nil, nil, errors.New("private listener requires the exact certified replication service and frame limit")
 	}

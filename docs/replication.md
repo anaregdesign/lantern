@@ -790,7 +790,7 @@ live buffer alone does not make a retained replay gap.
 Handler implementation notes (issue #180):
 
 - The handler is `service.LanternReplicationService` in
-  `server/service/replication.go`; it is wired in `server/cmd/wire.go`
+  `server/internal/dataruntime/replication.go`; it is wired in `server/cmd/wire.go`
   alongside `LanternService` and shares the same `*mutationlog.Log` as
   the write path.
 - The handler maps `mutationlog.ErrGapped` to `codes.FailedPrecondition`
@@ -1311,7 +1311,7 @@ Framing contract:
 Implementation notes:
 
 - The handler is `LanternReplicationService.Snapshot` in
-  `server/service/replication.go`. It holds references to the same
+  `server/internal/dataruntime/replication.go`. It holds references to the same
   `Backend` and `*hlc.Clock` the write path uses; both are wired in
   `server/cmd/wire.go`. Production uses `GraphCache.SnapshotReplication()`:
   one sampled wall instant and one continuous graph write lock cover barrier

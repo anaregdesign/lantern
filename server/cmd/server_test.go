@@ -14,8 +14,8 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/provider"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
@@ -24,7 +24,7 @@ func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := mutationlog.New(mutationlog.Options{})
-	runtime, err := service.NewGraphOnlyServingRuntime(
+	runtime, err := dataruntime.NewGraphOnlyServingRuntime(
 		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
 		log,
 		hlc.New(hlc.NodeID{1}, hlc.Options{}),

@@ -11,13 +11,13 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func certifiedSnapshotInstallerRuntime(
 	t *testing.T,
 	config ReceiptWALConfig,
-) (*service.ServingRuntime, *service.LanternService, runtimeCertified) {
+) (*dataruntime.ServingRuntime, *dataruntime.Executor, runtimeCertified) {
 	t.Helper()
 	replicationConfig := ReplicationConfig{
 		NodeID: hlc.NodeID{0x61}, nodeIDExplicit: config.Mode != ReceiptWALModeGraphOnly,
@@ -35,8 +35,8 @@ func certifiedSnapshotInstallerRuntime(
 		t.Fatal(err)
 	}
 	t.Cleanup(cleanup)
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
-	replicationService, err := runtime.NewLanternReplicationService(primary)
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	replicationService, err := runtime.NewReplication(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestSnapshotInstallerSelectionRejectsRuntimeModeMismatch(t *testing.T) {
 func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T) {
 	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
 	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, config)
-	foreignPrimary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	foreignPrimary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
 	if selection, err := NewSnapshotInstallerSelection(
 		config,
 		GraphSnapshotSpoolConfig{},

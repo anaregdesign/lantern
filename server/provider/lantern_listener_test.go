@@ -27,7 +27,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -73,8 +73,8 @@ func TestLoadTLSConfigEnvironmentPEM(t *testing.T) {
 func newMessageLimitedListener(
 	t *testing.T,
 	netCfg NetConfig,
-	primary *service.LanternService,
-	replication *service.LanternReplicationService,
+	primary *dataruntime.Executor,
+	replication *dataruntime.Replication,
 ) (string, *http.Client) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -128,8 +128,8 @@ func newMessageLimitedListener(
 func newMessageLimitedClients(
 	t *testing.T,
 	netCfg NetConfig,
-	primary *service.LanternService,
-	replication *service.LanternReplicationService,
+	primary *dataruntime.Executor,
+	replication *dataruntime.Replication,
 ) (graphv1connect.LanternServiceClient, graphv1connect.LanternReplicationServiceClient) {
 	t.Helper()
 	baseURL, httpClient := newMessageLimitedListener(t, netCfg, primary, replication)
@@ -139,14 +139,14 @@ func newMessageLimitedClients(
 
 func newMessageLimitServices(
 	t *testing.T,
-) (*graphcache.GraphCache[string, *pb.Vertex], *service.LanternService, *service.LanternReplicationService) {
+) (*graphcache.GraphCache[string, *pb.Vertex], *dataruntime.Executor, *dataruntime.Replication) {
 	t.Helper()
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(hlc.NodeID{0x42}, hlc.Options{})
-	primary := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	replication := service.NewLanternReplicationService(log, cache, clock).WithOriginStates(primary)
+	primary := dataruntime.NewExecutor(cache).WithReplication(log, clock, nil)
+	replication := dataruntime.NewReplication(log, cache, clock).WithOriginStates(primary)
 	return cache, primary, replication
 }
 
@@ -585,7 +585,7 @@ func TestLanternListenerRejectsNegativeConnectMessageLimits(t *testing.T) {
 				TLSConfig{},
 				ObservabilityConfig{},
 				CORSConfig{},
-				service.NewLanternService(nil),
+				dataruntime.NewExecutor(nil),
 				nil,
 				nil,
 				nil,

@@ -10,9 +10,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 // loadBackupConfig reads the LANTERN_BACKUP_* contract (#770, #779).
@@ -93,8 +93,8 @@ func NewBackupConfig(c *Config) backup.Config { return c.Backup }
 func NewBackupper(
 	cfg backup.Config,
 	receiptConfig ReceiptWALConfig,
-	runtime *service.ServingRuntime,
-	svc *service.LanternService,
+	runtime *dataruntime.ServingRuntime,
+	svc *dataruntime.Executor,
 	certified runtimeCertified,
 	reg *prometheus.Registry,
 	logger *slog.Logger,

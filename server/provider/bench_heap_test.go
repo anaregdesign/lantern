@@ -10,12 +10,12 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func TestBenchHeapPeerStreamClassification(t *testing.T) {
-	s := service.NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](0))
-	o, err := service.NewBenchHeapObserver(s)
+	s := dataruntime.NewExecutor(graphcache.NewGraphCache[string, *pb.Vertex](0))
+	o, err := dataruntime.NewBenchHeapObserver(s)
 	if err != nil {
 		t.Fatal(err)
 	}

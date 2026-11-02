@@ -230,14 +230,14 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	}
 	t.Cleanup(closeRuntime)
 	f.runtime = runtime
-	dataService := data.NewLanternService(nil).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
+	dataService := data.NewExecutor(nil).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
 	if durableReceipts {
 		dataService.WithTombstoneTTL(time.Hour)
 	}
 	if len(traversalLimits) > 0 {
 		dataService.WithTraversalLimits(traversalLimits[0])
 	}
-	peer, err := data.NewLanternReplicationService(dataService)
+	peer, err := data.NewReplication(dataService)
 	if err != nil {
 		t.Fatal(err)
 	}

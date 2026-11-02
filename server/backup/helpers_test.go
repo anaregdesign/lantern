@@ -18,7 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 type receiptBackupStaticReadDir struct {
@@ -60,7 +60,7 @@ func producerWALTipWitness(seq uint64) mutationlog.FileWALTipWitness {
 	}
 }
 
-func producerCapture(a wholeStateArchive) service.ReceiptWholeStateCapture {
+func producerCapture(a wholeStateArchive) dataruntime.ReceiptWholeStateCapture {
 	retired, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
 		ActiveEpoch:    a.Policy.Epoch,
 		MaxEntries:     a.Policy.MaxEntries,
@@ -74,7 +74,7 @@ func producerCapture(a wholeStateArchive) service.ReceiptWholeStateCapture {
 	if err != nil {
 		panic(err)
 	}
-	return service.ReceiptWholeStateCapture{
+	return dataruntime.ReceiptWholeStateCapture{
 		Graph: a.Graph, Receipts: a.Receipts, Retired: retiredSnapshot,
 		Policy: a.Policy, Origins: a.Origins,
 	}
@@ -179,14 +179,14 @@ func producerEmptyRetiredSnapshot(
 	return state
 }
 
-func producerBackupCapture(a wholeStateArchive) service.ReceiptWholeStateBackupCapture {
+func producerBackupCapture(a wholeStateArchive) dataruntime.ReceiptWholeStateBackupCapture {
 	var seq uint64
 	var nodeID hlc.NodeID
 	if len(a.Graph) != 0 && a.Graph[0].GetHeader() != nil {
 		seq = a.Graph[0].GetHeader().GetCutoffLocalSeq()
 		copy(nodeID[:], a.Graph[0].GetHeader().GetCutoffHlc().GetNodeId())
 	}
-	return service.ReceiptWholeStateBackupCapture{
+	return dataruntime.ReceiptWholeStateBackupCapture{
 		WholeState: producerCapture(a),
 		WALTip:     producerWALTipWitness(seq),
 		NodeID:     nodeID,
@@ -195,7 +195,7 @@ func producerBackupCapture(a wholeStateArchive) service.ReceiptWholeStateBackupC
 }
 
 type receiptBackupSetSource struct {
-	capture service.ReceiptWholeStateBackupCapture
+	capture dataruntime.ReceiptWholeStateBackupCapture
 	hook    func(context.Context) error
 	calls   atomic.Int64
 	active  atomic.Int64
@@ -205,7 +205,7 @@ type receiptBackupSetSource struct {
 func (s *receiptBackupSetSource) CaptureForBackup(
 	ctx context.Context,
 	policy mutationreceipt.Config,
-) (service.ReceiptWholeStateBackupCapture, error) {
+) (dataruntime.ReceiptWholeStateBackupCapture, error) {
 	s.calls.Add(1)
 	active := s.active.Add(1)
 	defer s.active.Add(-1)
@@ -216,11 +216,11 @@ func (s *receiptBackupSetSource) CaptureForBackup(
 		}
 	}
 	if policy != s.capture.WholeState.Policy {
-		return service.ReceiptWholeStateBackupCapture{}, errors.New("test source policy mismatch")
+		return dataruntime.ReceiptWholeStateBackupCapture{}, errors.New("test source policy mismatch")
 	}
 	if s.hook != nil {
 		if err := s.hook(ctx); err != nil {
-			return service.ReceiptWholeStateBackupCapture{}, err
+			return dataruntime.ReceiptWholeStateBackupCapture{}, err
 		}
 	}
 	return s.capture, nil

@@ -9,18 +9,18 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/readiness"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 type publicSecurityCertified struct {
 	runtime *SecurityRuntime
-	primary *service.LanternService
+	primary *dataruntime.Executor
 }
 
-func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *service.ServingRuntime, primary *service.LanternService, certified runtimeCertified) (publicSecurityCertified, error) {
+func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified) (publicSecurityCertified, error) {
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
 	}
@@ -42,7 +42,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	return publicSecurityCertified{runtime: runtime, primary: primary}, nil
 }
 
-func certifyEdgeCreateTopology(primary *service.LanternService, mode string, voters int, peer *PeerIdentityRuntime) error {
+func certifyEdgeCreateTopology(primary *dataruntime.Executor, mode string, voters int, peer *PeerIdentityRuntime) error {
 	if peer == nil {
 		return nil
 	}

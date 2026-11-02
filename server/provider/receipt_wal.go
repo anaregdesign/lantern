@@ -15,9 +15,9 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 // ReceiptWALMode selects the process state owner before any listener or
@@ -137,7 +137,7 @@ func NewServingRuntime(
 	replicationConfig ReplicationConfig,
 	backups backup.Config,
 	metrics *domainmetrics.DomainMetrics,
-) (_ *service.ServingRuntime, cleanup func(), err error) {
+) (_ *dataruntime.ServingRuntime, cleanup func(), err error) {
 	if err := validateReceiptWALConfig(config, backups, replicationConfig); err != nil {
 		return nil, nil, err
 	}
@@ -150,19 +150,19 @@ func NewServingRuntime(
 		metrics.SetMutationLogCapacity(logConfig.Capacity)
 	}
 
-	var runtime *service.ServingRuntime
+	var runtime *dataruntime.ServingRuntime
 	switch config.Mode {
 	case ReceiptWALModeGraphOnly:
 		graph := NewGraphCache(cacheConfig, searchConfig)
 		log := mutationlog.New(options)
-		runtime, err = service.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig), cacheConfig.namespaceFormat)
+		runtime, err = dataruntime.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig), cacheConfig.namespaceFormat)
 		if err != nil {
 			_ = log.Close()
 			return nil, nil, err
 		}
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 		now := time.Now()
-		runtimeConfig := service.DurableReceiptWALRuntimeConfig{
+		runtimeConfig := dataruntime.DurableReceiptWALRuntimeConfig{
 			Path:            config.Path,
 			NamespaceFormat: cacheConfig.namespaceFormat,
 			Receipt:         config.receiptConfig(now),
@@ -183,11 +183,11 @@ func NewServingRuntime(
 				return nil, nil, restoreErr
 			}
 			runtimeConfig.StartupRestore = restore
-			runtime, err = service.CreateDurableReceiptWALServingRuntime(runtimeConfig)
+			runtime, err = dataruntime.CreateDurableReceiptWALServingRuntime(runtimeConfig)
 		} else {
-			runtime, err = service.OpenDurableReceiptWALServingRuntime(runtimeConfig)
+			runtime, err = dataruntime.OpenDurableReceiptWALServingRuntime(runtimeConfig)
 			if err != nil &&
-				errors.Is(err, service.ErrDurableReceiptWALBackupFallbackEligible) &&
+				errors.Is(err, dataruntime.ErrDurableReceiptWALBackupFallbackEligible) &&
 				backups.RestoreOnStart {
 				normalErr := err
 				restore, restoreErr := loadRestartReceiptStartupRestore(
@@ -198,7 +198,7 @@ func NewServingRuntime(
 					return nil, nil, errors.Join(normalErr, restoreErr)
 				}
 				runtimeConfig.StartupRestore = restore
-				runtime, err = service.OpenDurableReceiptWALServingRuntimeFromBackup(
+				runtime, err = dataruntime.OpenDurableReceiptWALServingRuntimeFromBackup(
 					runtimeConfig,
 				)
 				if err != nil {
@@ -222,7 +222,7 @@ func prepareFreshReceiptStartupRestore(
 	backups backup.Config,
 	config mutationreceipt.Config,
 	now time.Time,
-) (*service.ReceiptStartupRestore, error) {
+) (*dataruntime.ReceiptStartupRestore, error) {
 	if !backups.RestoreOnStart {
 		return nil, nil
 	}
@@ -243,7 +243,7 @@ func prepareFreshReceiptStartupRestore(
 func loadRestartReceiptStartupRestore(
 	backups backup.Config,
 	config mutationreceipt.Config,
-) (*service.ReceiptStartupRestore, error) {
+) (*dataruntime.ReceiptStartupRestore, error) {
 	evidence, err := backup.LoadLatestReceiptBackupSet(backups.Dir, backups.InstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("load restart receipt startup backup: %w", err)
@@ -270,9 +270,9 @@ func receiptWALGraphConfigurator(
 // require it, so Wire cannot bind network-facing objects to foreign state.
 type runtimeCertified struct {
 	valid                   bool
-	runtime                 *service.ServingRuntime
-	primary                 *service.LanternService
-	replication             *service.LanternReplicationService
+	runtime                 *dataruntime.ServingRuntime
+	primary                 *dataruntime.Executor
+	replication             *dataruntime.Replication
 	replicationSendMaxBytes int
 }
 
@@ -281,13 +281,13 @@ type runtimeCertified struct {
 // certify a runtime before any pending durable baseline has committed.
 type runtimeRestored struct {
 	valid   bool
-	runtime *service.ServingRuntime
-	primary *service.LanternService
+	runtime *dataruntime.ServingRuntime
+	primary *dataruntime.Executor
 }
 
 func NewRuntimeRestored(
-	runtime *service.ServingRuntime,
-	primary *service.LanternService,
+	runtime *dataruntime.ServingRuntime,
+	primary *dataruntime.Executor,
 ) (runtimeRestored, error) {
 	if runtime == nil || primary == nil {
 		return runtimeRestored{}, errors.New("startup restore requires the serving runtime and primary service")
@@ -307,9 +307,9 @@ type publicReceiptsCertified struct {
 
 // NewRuntimeCertified completes the production composition barrier.
 func NewRuntimeCertified(
-	runtime *service.ServingRuntime,
-	primary *service.LanternService,
-	replication *service.LanternReplicationService,
+	runtime *dataruntime.ServingRuntime,
+	primary *dataruntime.Executor,
+	replication *dataruntime.Replication,
 	restored runtimeRestored,
 	netConfig NetConfig,
 ) (runtimeCertified, error) {
@@ -340,8 +340,8 @@ func NewRuntimeCertified(
 func NewPublicReceiptsCertified(
 	config ReceiptWALConfig,
 	auth AuthConfig,
-	runtime *service.ServingRuntime,
-	primary *service.LanternService,
+	runtime *dataruntime.ServingRuntime,
+	primary *dataruntime.Executor,
 	_ *backup.Backupper,
 	certified runtimeCertified,
 ) (publicReceiptsCertified, error) {
@@ -350,14 +350,14 @@ func NewPublicReceiptsCertified(
 
 // NewOIDCPublicReceiptsCertified activates receipts only after the exact data
 // service has its native Principal/Role boundary installed.
-func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *service.ServingRuntime, primary *service.LanternService, _ *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
+func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, _ *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
 	if security == nil || public.runtime != security || security.data != runtime {
 		return publicReceiptsCertified{}, errors.New("receipt activation requires the exact public security runtime")
 	}
 	return certifyPublicReceipts(config, security.mode == "oidc", runtime, primary, certified)
 }
 
-func certifyPublicReceipts(config ReceiptWALConfig, authenticated bool, runtime *service.ServingRuntime, primary *service.LanternService, certified runtimeCertified) (publicReceiptsCertified, error) {
+func certifyPublicReceipts(config ReceiptWALConfig, authenticated bool, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified) (publicReceiptsCertified, error) {
 	if !certified.valid || runtime == nil || primary == nil ||
 		certified.runtime != runtime || certified.primary != primary ||
 		certified.replication == nil {
@@ -383,6 +383,6 @@ func certifyPublicReceipts(config ReceiptWALConfig, authenticated bool, runtime 
 	return publicReceiptsCertified{valid: true}, nil
 }
 
-func NewRuntimeGraph(runtime *service.ServingRuntime) *graphcache.GraphCache[string, *pb.Vertex] {
+func NewRuntimeGraph(runtime *dataruntime.ServingRuntime) *graphcache.GraphCache[string, *pb.Vertex] {
 	return runtime.GraphCache()
 }

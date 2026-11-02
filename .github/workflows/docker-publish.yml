@@ -51,7 +51,7 @@ jobs:
         id: request-boundary
         continue-on-error: true
         run: |
-          go test ./server/service -run 'TestSearchVertices_(PhraseWithoutPositionsFailsClosed|RejectsInvalidOptionsBeforeBackend|AcceptsOptionsDecisionTable)$'
+          go test ./server/internal/dataruntime -run 'TestSearchVertices_(PhraseWithoutPositionsFailsClosed|RejectsInvalidOptionsBeforeBackend|AcceptsOptionsDecisionTable)$'
 
       - name: Qualify production wire semantics
         id: wire-semantics

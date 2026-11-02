@@ -49,12 +49,13 @@ Both ports are configurable via environment variables (see below).
 | Path | Description |
 | --- | --- |
 | `cmd/` | `main`, the `App` composition root, and `wire`-generated graph (`wire.go` / `wire_gen.go`). |
-| `service/` | Data and replication RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination and prefix scans. |
+| `service/` | Connect adapters and `LanternServer` HTTP lifecycle, GC and graceful shutdown; construction aliases for callers outside the internal-package boundary. |
+| `internal/dataruntime/` | `Executor`, replication producer, private publication/receipt state, committed reads, Snapshot capture/install, WAL recovery and runtime certification. |
 | `provider/` | Wire providers — `Config` aggregation, `LanternListener` (the h2c http.Server wired with the Connect mux + grpchealth + grpcreflect + CORS + otelhttp), Connect interceptors (logging, metrics, slow-rpc, validation, rate-limit), TLS loader, Prometheus registry, metrics HTTP server, OTel tracing, readiness gate, replication pump, anti-entropy driver. |
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
 | `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
-| `internal/query/` | Bounded search execution, validation/settings, terminal observations and signed cursor sessions. `service/` supplies publication-aware reads and keeps authorization/namespace boundaries. |
+| `internal/query/` | Bounded search execution, validation/settings, terminal observations and signed cursor sessions. `internal/dataruntime/` supplies publication-aware reads and keeps authorization/namespace boundaries. |
 | `internal/config/` | Ordinary operational values, defaults, environment loading and semantic validation; no runtime construction or trust certification. |
 | `internal/envconfig/` | Primitive env-var parsing and the process-wide registration/diagnostic records used by config and provider loaders. |
 | `internal/authn/` | Login/session and purpose-callback workflows; genuine Code/Bearer producers. Borrows existing OIDC and security owners without opening state or owning transport. |
@@ -389,8 +390,11 @@ standing up a metrics stack:
   `internal/securitytransport -> internal/authn -> internal/oidc -> internal/security`;
   security transport does not import service, and authn/security have no upward
   transport imports. Shared protobuf wire safeguards live in `internal/rpcwire`.
-- `service/ -> internal/query` delegates bounded search and retained result paging.
-  Query consumes a narrow Reader; service retains Snapshot/WAL consistency,
+- `service/ -> internal/dataruntime` separates Connect framing from data execution.
+  Backup consumes runtime-owned capture/restore contracts; the runtime imports
+  neither service nor backup. See [ownership and lock order](../docs/data-runtime-ownership.md).
+- `internal/dataruntime -> internal/query` delegates bounded search and retained result paging.
+  Query consumes a narrow Reader; the executor retains Snapshot/WAL consistency,
   authorized contexts, namespace cursor bindings and payload detachment. Fresh
   search captures may retry; retained page reads run at most once.
 

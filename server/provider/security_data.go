@@ -7,12 +7,13 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/rpcwire"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-func (r *SecurityRuntime) protectDataService(svc *service.LanternService) error {
+func (r *SecurityRuntime) protectDataService(svc *dataruntime.Executor) error {
 	if r == nil || svc == nil {
 		return errors.New("missing data/security runtime")
 	}
@@ -27,7 +28,7 @@ func (r *SecurityRuntime) protectDataService(svc *service.LanternService) error 
 
 // These constructors retain caller-owned limits/observability while making
 // admission and the logical-key Role boundary mandatory on protected data.
-func (r *SecurityRuntime) PublicDataHTTPHandler(svc *service.LanternService, options ...connect.HandlerOption) (string, http.Handler, error) {
+func (r *SecurityRuntime) PublicDataHTTPHandler(svc *dataruntime.Executor, options ...connect.HandlerOption) (string, http.Handler, error) {
 	if err := r.protectDataService(svc); err != nil {
 		return "", nil, err
 	}
@@ -41,7 +42,7 @@ func (r *SecurityRuntime) PublicDataHTTPHandler(svc *service.LanternService, opt
 	}, options...)
 	return path, handler, nil
 }
-func (r *SecurityRuntime) BrowserDataHTTPHandler(svc *service.LanternService, options ...connect.HandlerOption) (string, http.Handler, error) {
+func (r *SecurityRuntime) BrowserDataHTTPHandler(svc *dataruntime.Executor, options ...connect.HandlerOption) (string, http.Handler, error) {
 	if err := r.protectDataService(svc); err != nil {
 		return "", nil, err
 	}

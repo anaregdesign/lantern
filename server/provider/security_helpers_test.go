@@ -16,8 +16,8 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
 func clearSecurityEnvironment(t *testing.T) {
@@ -68,11 +68,11 @@ func securityKeyFixture(t *testing.T, dir string) (string, string) {
 	}
 	return privatePath, publicPath
 }
-func securityDataFixture(t *testing.T) *service.ServingRuntime {
+func securityDataFixture(t *testing.T) *dataruntime.ServingRuntime {
 	t.Helper()
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	log := mutationlog.New(mutationlog.Options{Capacity: 16})
-	data, err := service.NewGraphOnlyServingRuntime(graph, log, hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
+	data, err := dataruntime.NewGraphOnlyServingRuntime(graph, log, hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
