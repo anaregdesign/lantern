@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -21,16 +20,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// NewLogger builds the process-wide structured logger and installs it as the
-// slog default so any package-level slog.* call inherits the same handler.
-func NewLogger(o ObservabilityConfig) *slog.Logger {
-	l := newLogger(o, os.Stderr)
-	slog.SetDefault(l)
-	return l
+// NewLogger installs the serving owner's structured logger as the slog default
+// so package-level calls and injected loggers use the same owned level.
+func NewLogger(owner *ServingLogger) *slog.Logger {
+	slog.SetDefault(owner.logger)
+	return owner.logger
 }
 
+// newLogger builds the separate bootstrap logger before serving construction.
+// Its fixed level does not depend on a future serving policy projection.
 func newLogger(o ObservabilityConfig, w io.Writer) *slog.Logger {
-	opts := &slog.HandlerOptions{Level: o.LogLevel}
+	return newLoggerWithLevel(o, w, o.LogLevel)
+}
+
+func newLoggerWithLevel(o ObservabilityConfig, w io.Writer, level slog.Leveler) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: level}
 	var h slog.Handler
 	if strings.EqualFold(o.LogFormat, "text") {
 		h = slog.NewTextHandler(w, opts)

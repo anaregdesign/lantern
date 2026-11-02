@@ -21,7 +21,8 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		return nil, nil, err
 	}
 	v := provider.NewObservabilityConfig(config)
-	logger := provider.NewLogger(v)
+	servingLogger := provider.NewServingLogger(v)
+	logger := provider.NewLogger(servingLogger)
 	receiptWALConfig := provider.NewReceiptWALConfig(config)
 	cacheConfig := provider.NewCacheConfig(config)
 	v2 := provider.NewSearchConfig(config)
