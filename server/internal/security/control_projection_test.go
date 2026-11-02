@@ -212,3 +212,36 @@ func TestS1IssuerRevocationPurposeAndRestrictiveReserve(t *testing.T) {
 		})
 	}
 }
+
+func TestS1LogPolicyUsesOrdinaryCapacityAndExactCut(t *testing.T) {
+	state := s1Fixture(t, s1Image())
+	log := Change{Kind: PutLogPolicy, LogPolicy: &LogPolicyChange{Version: LogPolicyVersion, Level: LogLevelWarn}}
+	identity := s1Bob()
+	for _, changes := range [][]Change{
+		{log},
+		{log, {Kind: RevokeSessions, Identity: &identity}},
+		{{Kind: RevokeSessions, Identity: &identity}, log},
+	} {
+		operation := s1Operation(t, state.projection, testIdentity(), s1Changes(changes...))
+		assessment, err := AssessS1(state.projection, operation)
+		if err != nil || assessment.ProvenNonexpanding || assessment.NeedsPurpose || assessment.Next.snapshot.LogPolicy().Generation != 1 {
+			t.Fatal("operational write consumed revocation classification", err)
+		}
+		if state.projection.snapshot.LogPolicy() != nil || assessment.Next.Cut().Projection == state.projection.Cut().Projection {
+			t.Fatal("adoption mutated predecessor or omitted projection commitment")
+		}
+		if _, err := AssessS1(assessment.Next, operation); !errors.Is(err, ErrRevisionConflict) {
+			t.Fatal("stale reviewed policy cut admitted", err)
+		}
+	}
+	op := s1Operation(t, state.projection, testIdentity(), s1Changes(log))
+	first, err := AssessS1(state.projection, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoke := s1Operation(t, first.Next, testIdentity(), s1Changes(Change{Kind: RevokeSessions, Identity: &identity}))
+	after, err := AssessS1(first.Next, revoke)
+	if err != nil || !after.ProvenNonexpanding || *after.Next.snapshot.LogPolicy() != *first.Next.snapshot.LogPolicy() {
+		t.Fatal("unrelated revocation lost its reserve or changed policy", err)
+	}
+}

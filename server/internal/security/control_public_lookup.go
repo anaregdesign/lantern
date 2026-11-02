@@ -40,7 +40,7 @@ func (o *s3aOwner) originalResponse(ctx context.Context, raw []byte) ([]byte, er
 			if h.handoff.operation.digest != q.Intent {
 				return nil, ErrChangeConflict
 			}
-			return []byte(h.raw), nil
+			return []byte(historicalWire(h)), nil
 		}
 	}
 	return nil, nil
@@ -110,7 +110,7 @@ func (o *CurrentAuthority) Lookup(ctx context.Context, profile CurrentProfile, i
 		if err != nil {
 			return r, err
 		}
-		if _, err = o.origin.carryOriginal(ctx, []byte(h.raw)); err != nil {
+		if _, err = o.origin.carryOriginal(ctx, []byte(historicalWire(h))); err != nil {
 			return r, err
 		}
 	}

@@ -213,6 +213,8 @@ func (o *CurrentAuthority) Ready(ctx context.Context) bool {
 	case ctx.Err() != nil:
 		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "context")
 		return false
+	case n.kernel.replayState.projection.snapshot.LogPolicy() != nil && n.kernel.logRuntime == nil:
+		return false
 	case !o.origin.configuredReadyLocked():
 		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "configuration")
 		return false

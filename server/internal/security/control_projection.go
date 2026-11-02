@@ -96,7 +96,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 	for id, epoch := range p.lineage {
 		next.lineage[id] = epoch
 	}
-	needsPurpose, trustMayExpand := false, false
+	needsPurpose, trustMayExpand, operationalChange := false, false, false
 	bump := func(identity Identity) error {
 		if identity.Kind != OIDCPrincipal {
 			return nil
@@ -124,6 +124,8 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		}
 		for _, change := range command.Changes {
 			switch change.Kind {
+			case PutLogPolicy:
+				operationalChange = true
 			case PutRegistrationPolicy:
 				expands := registrationPolicyExpands(p.Image().RegistrationPolicy, image.RegistrationPolicy)
 				needsPurpose = needsPurpose || expands
@@ -239,7 +241,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		Previous  [32]byte
 		Operation string
 	}{p.cut.Frontier, operation.canonical})
-	nonexpanding := !trustMayExpand && command.Kind != S1IssueSession && command.Kind != S1RegisterPrincipal && s1PermissionsSubset(p.snapshot, next.snapshot)
+	nonexpanding := !operationalChange && !trustMayExpand && command.Kind != S1IssueSession && command.Kind != S1RegisterPrincipal && s1PermissionsSubset(p.snapshot, next.snapshot)
 	return S1Assessment{next, needsPurpose, nonexpanding}, nil
 }
 

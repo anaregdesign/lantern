@@ -123,3 +123,22 @@ func TestS2CTrustNoncyclicScopeBinding(t *testing.T) {
 		t.Fatal("origin incarnation binding", err)
 	}
 }
+
+func TestS2CTrustCannotSeedManagedLogPolicy(t *testing.T) {
+	fixture := s2cTestCluster(t, 1)
+	image := fixture.genesis.state.projection.Image()
+	image.LogPolicy = &LogPolicy{Version: LogPolicyVersion, Generation: 1, Level: LogLevelInfo}
+	previous := fixture.genesis.state.projection.cut
+	projection, err := NewS1Projection(image, DefaultPolicyLimits(), previous.Domain, previous.Cohort, previous.Fences, previous.Generation)
+	if err != nil {
+		t.Fatal("historical policy should compile", err)
+	}
+	state, err := NewS1ApplyState(projection, fixture.genesis.state.membership, fixture.genesis.state.configuration.Capacity, S1Retention{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = newS2CTrust(s2cBootstrap{&s2TrustedGenesis{state: state, roots: fixture.genesis.roots}, fixture.members, fixture.origins, fixture.trust.bounds})
+	if err == nil {
+		t.Fatal("native fresh genesis bypassed explicit adoption and all-participant floors")
+	}
+}

@@ -88,3 +88,30 @@ func TestManagementApplyNativeSecretIntentAndSnapshotIsolation(t *testing.T) {
 		t.Fatal("unknown preserved profile accepted")
 	}
 }
+
+func TestManagementApplyLogPolicyGenerationAndRollback(t *testing.T) {
+	image := testImage()
+	change := &LogPolicyChange{Version: LogPolicyVersion, Level: LogLevelDebug}
+	for n, level := range []LogLevel{LogLevelDebug, LogLevelError, LogLevelDebug, LogLevelDebug} {
+		change.Level = level
+		if err := applyManagementChanges(&image, []Change{{Kind: PutLogPolicy, LogPolicy: change}}); err != nil {
+			t.Fatal(err)
+		}
+		if policy := image.LogPolicy; policy == nil || policy.Generation != uint64(n+1) || policy.Level != level || policy.Version != LogPolicyVersion {
+			t.Fatal("generation was not derived from the predecessor")
+		}
+	}
+	change.Level = LogLevelWarn
+	if image.LogPolicy.Level != LogLevelDebug {
+		t.Fatal("request aliases committed policy")
+	}
+	prior := *image.LogPolicy
+	identity := testIdentity()
+	if err := applyManagementChanges(&image, []Change{{Kind: RevokeSessions, Identity: &identity}}); err != nil || *image.LogPolicy != prior {
+		t.Fatal("unrelated security operation changed log policy", err)
+	}
+	image.LogPolicy.Generation = ^uint64(0)
+	if err := applyManagementChanges(&image, []Change{{Kind: PutLogPolicy, LogPolicy: change}}); err == nil || image.LogPolicy.Generation != ^uint64(0) || image.LogPolicy.Level != LogLevelDebug {
+		t.Fatal("generation overflow changed committed policy", err)
+	}
+}

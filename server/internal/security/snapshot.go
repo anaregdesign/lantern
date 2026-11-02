@@ -19,6 +19,7 @@ type principalAccess struct {
 // private so a caller cannot mutate an installed revision after publication.
 type Snapshot struct {
 	configuredTrustDigest string
+	logPolicy             *LogPolicy
 	image                 []byte
 	roleBytes             []byte
 	limits                PolicyLimits
@@ -109,4 +110,13 @@ func (s *Snapshot) Session(digest string) (Session, bool) {
 	}
 	session, known := s.sessions[digest]
 	return session, known
+}
+
+// LogPolicy returns a detached bounded desired policy without decoding the full
+// security image. Absence does not assert the state of any external logger.
+func (s *Snapshot) LogPolicy() *LogPolicy {
+	if s == nil {
+		return nil
+	}
+	return s.logPolicy.clone()
 }

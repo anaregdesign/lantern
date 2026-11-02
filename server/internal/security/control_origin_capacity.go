@@ -105,7 +105,17 @@ func authorityOriginCapacity(o *s2cParticipant, h authorityHistoricalHeader, op 
 	if err != nil {
 		return s2cCredit{}, 0, err
 	}
-	chosen := s2cChosenSizeBound(o.trust, hBytes)
+	candidateBytes := hBytes
+	logPreparation := hasLogPolicyChange(&S1Handoff{operation: op}) && o.replayState.projection.snapshot.LogPolicy() == nil
+	if logPreparation {
+		g := o.trust.genesis.state.projection.cut
+		profile := CurrentProfile{CurrentPublicVersion, g.Domain, g.Cohort, g.Generation, o.trust.scope, h.Time.Profile, h.Workloads, o.trust.genesis.state.configuration.Digest()}
+		candidateBytes, err = logPolicyCandidateBound(o.trust, profile, hBytes)
+		if err != nil || candidateBytes > o.config.PendingBytes-o.pendingBytes {
+			return s2cCredit{}, 0, errS2CCapacity
+		}
+	}
+	chosen := s2cChosenSizeBound(o.trust, candidateBytes)
 	if chosen == 0 || chosen+uint64(len(authorityPMagic)+s2cPFixedBytes) > o.trust.bounds.PayloadBytes {
 		return s2cCredit{}, 0, errS2CCapacity
 	}
@@ -124,5 +134,20 @@ func authorityOriginCapacity(o *s2cParticipant, h authorityHistoricalHeader, op 
 		return s2cCredit{}, 0, errS2CCapacity
 	}
 	completion.PRecords++
+	if logPreparation {
+		// The first durable floor preserves binary H with canonical base64.
+		// Its length bound precedes consume and protects the complete pipeline.
+		floorBytes, mulErr := logPolicyFloorSizeBound(hBytes)
+		floorCharge, chargeErr := s2cPCharge(floorBytes)
+		candidateCharge, candidateErr := s2cPCharge(candidateBytes)
+		if mulErr != nil || chargeErr != nil || candidateErr != nil || floorBytes+uint64(len(authorityPMagic)+s2cPFixedBytes) > o.trust.bounds.PayloadBytes || chosen > o.config.OutboxBytes/uint64(len(o.trust.members)) {
+			return s2cCredit{}, 0, errS2CCapacity
+		}
+		completion.PBytes, err = s2CheckedAdd(completion.PBytes, floorCharge+candidateCharge)
+		if err != nil || completion.PRecords > ^uint64(0)-2 {
+			return s2cCredit{}, 0, errS2CCapacity
+		}
+		completion.PRecords += 2
+	}
 	return completion, hBytes, nil
 }

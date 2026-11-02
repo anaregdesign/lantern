@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -47,7 +48,7 @@ func resumeS2CParticipant(c s2cParticipantConfig, requiredP s2cJournalFloor, req
 			applyCharge = o.preview.charge
 		}
 		if e = o.replayRecord(r); e != nil {
-			return e
+			return fmt.Errorf("participant replay index %d kind %d: %w", r.index, r.kind, e)
 		}
 		if o.replayState.slot != beforeSlot {
 			bUsed, e = s2CheckedAdd(bUsed, applyCharge)
@@ -77,6 +78,12 @@ func resumeS2CParticipant(c s2cParticipantConfig, requiredP s2cJournalFloor, req
 	o.p, err = resumeS2CJournal(o.config.PPath, o.binding, c.PPolicy, requiredP, validate)
 	if err != nil {
 		return nil, err
+	}
+	if err = o.restoreLogPolicyFloor(); err != nil {
+		return nil, err
+	}
+	if o.replayState.projection.snapshot.LogPolicy() != nil && o.logPolicyFloor.Index == 0 {
+		return nil, errS2CProtocol
 	}
 	if !o.bootstrapped || len(o.receipts) == 0 {
 		return nil, errS2CProtocol
@@ -249,6 +256,12 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 	if !o.bootstrapped || o.chosen != nil {
 		return errS2CProtocol
 	}
+	if r.kind == s2cPLogPolicyFloor {
+		return o.replayLogPolicyFloor(r)
+	}
+	if r.kind == s2cPLogPolicyCandidate {
+		return o.installLogPolicyCandidateLocked([]byte(r.raw))
+	}
 	if r.kind == s2cPOriginReservation {
 		return o.replayReservation(r.raw)
 	}
@@ -257,7 +270,7 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 	}
 	if r.kind == s2cPOrigin {
 		h, e := verifyHistoricalH(o.trust, []byte(r.raw))
-		if e != nil || o.config.OwnedOrigin == 0 || h.originID != o.config.OwnedOrigin {
+		if e != nil || h.candidate != "" || o.config.OwnedOrigin == 0 || h.originID != o.config.OwnedOrigin {
 			return errS2CProtocol
 		}
 		if !o.reservationMatches(h) {
@@ -267,13 +280,13 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 		if _, exists := o.serials[h.handoff.serial]; exists {
 			return errS2CProtocol
 		}
-		if uint64(len(o.pending)) >= o.config.PendingCount || uint64(len(h.raw)) > o.config.PendingBytes-o.pendingBytes {
+		if uint64(len(o.pending)) >= o.config.PendingCount || uint64(len(historicalWire(h))) > o.config.PendingBytes-o.pendingBytes {
 			return errS2CCapacity
 		}
 		o.origins[d] = h
 		o.serials[h.handoff.serial] = d
 		o.pending[d] = h
-		o.pendingBytes += uint64(len(h.raw))
+		o.pendingBytes += uint64(len(historicalWire(h)))
 		return nil
 	}
 	m, e := s2cDecodeMessage(o.trust, []byte(r.raw))
@@ -391,6 +404,9 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 	return nil
 }
 func (o *s2cParticipant) replayPreview(m *s2cMessage) (*s2cPreview, error) {
+	if err := o.requireLocalLogPolicyCandidate(m.h); err != nil {
+		return nil, err
+	}
 	return s2cPreviewCandidate(o.trust, o.replayState, o.trust.genesis.roots, o.config.BScope, o.replayReceipt, m.h, s2cLogicalCommit(o.trust, m.slot, m.value))
 }
 func s2cSameHistorical(a, b *s2cHistoricalH) bool {

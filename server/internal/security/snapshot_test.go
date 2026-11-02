@@ -132,3 +132,27 @@ func TestSnapshotReusesUnchangedRoles(t *testing.T) {
 		t.Fatal("malformed UTF8 matched cached policy")
 	}
 }
+
+func TestSnapshotLogPolicyOwnership(t *testing.T) {
+	image := testImage()
+	image.LogPolicy = &LogPolicy{Version: LogPolicyVersion, Generation: 4, Level: LogLevelInfo}
+	snapshot, err := CompileImage(image, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	image.LogPolicy.Level = LogLevelDebug
+	read := snapshot.LogPolicy()
+	if read == nil || read.Level != LogLevelInfo || read.Generation != 4 {
+		t.Fatal("snapshot aliases its input policy")
+	}
+	read.Level = LogLevelError
+	read.Generation++
+	copy := snapshot.Image()
+	copy.LogPolicy.Level = LogLevelWarn
+	if current := snapshot.LogPolicy(); current.Level != LogLevelInfo || current.Generation != 4 {
+		t.Fatal("policy read mutated the snapshot")
+	}
+	if (*Snapshot)(nil).LogPolicy() != nil {
+		t.Fatal("nil snapshot produced a managed policy")
+	}
+}
