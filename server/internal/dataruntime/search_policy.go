@@ -85,6 +85,44 @@ func NewSearchPolicyOwner(baseline SearchLimits, initial SearchPolicySnapshot, a
 	return owner, nil
 }
 
+// NewBootstrapSearchPolicyOwner preserves an actual normalized legacy engine
+// baseline at generation zero. Unmanageable startup values are not silently
+// replaced; every managed candidate still passes the strict resolver.
+func NewBootstrapSearchPolicyOwner(actual SearchLimits, authority SearchPolicyAuthority) (*SearchPolicyOwner, error) {
+	engine := query.New(actual)
+	if engine.Limits() != actual {
+		return nil, errors.New("search bootstrap must use actual normalized engine inputs")
+	}
+	initial := SearchPolicySnapshot{Version: SearchPolicyVersion{Fingerprint: engine.ConfigFingerprint()}, Policy: query.RequestPolicyFromLimits(actual)}
+	owner := &SearchPolicyOwner{baseline: actual, authority: authority}
+	owner.state.Store(&searchPolicyState{desired: initial, effective: &searchPolicyEngine{initial, engine}})
+	return owner, nil
+}
+
+// SearchPolicyInstallation is an opaque identity for one exact installed
+// owner/engine pair. It certifies composition only, never request authority.
+type SearchPolicyInstallation struct {
+	owner     *SearchPolicyOwner
+	effective *searchPolicyEngine
+}
+
+func (s *Executor) UsesSearchPolicyOwner(owner *SearchPolicyOwner) bool {
+	return s != nil && owner != nil && s.searchPolicies == owner
+}
+
+func (s *Executor) HasSearchPolicyOwner() bool { return s != nil && s.searchPolicies != nil }
+
+func (s *Executor) CaptureSearchPolicyInstallation(owner *SearchPolicyOwner) (SearchPolicyInstallation, bool) {
+	if !s.UsesSearchPolicyOwner(owner) {
+		return SearchPolicyInstallation{}, false
+	}
+	return SearchPolicyInstallation{owner, owner.state.Load().effective}, true
+}
+
+func (s *Executor) UsesSearchPolicyInstallation(installation SearchPolicyInstallation) bool {
+	return s.UsesSearchPolicyOwner(installation.owner) && installation.effective != nil && installation.owner.state.Load().effective == installation.effective
+}
+
 func (o *SearchPolicyOwner) Status() SearchPolicyStatus {
 	state := o.state.Load()
 	return SearchPolicyStatus{state.desired, state.effective.snapshot, state.desired != state.effective.snapshot}

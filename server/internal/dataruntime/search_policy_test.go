@@ -269,3 +269,39 @@ func TestSearchPolicyOwnerRejectsCapabilityOverflowAndReportsExactMaximum(t *tes
 		t.Fatalf("maximum capability wrapped: %+v", capabilities)
 	}
 }
+
+func TestSearchPolicyBootstrapAndOpaqueInstallationIdentity(t *testing.T) {
+	baseline := query.DefaultLimits()
+	baseline.DefaultMinShould = 1
+	baseline.MaxQueryBytes = int(int64(1) << 32)
+	owner, err := NewBootstrapSearchPolicyOwner(baseline, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.Status().Effective.Version.Generation != 0 || owner.Status().Effective.Policy.MaxQueryBytes != baseline.MaxQueryBytes {
+		t.Fatal("unmanageable actual bootstrap replaced")
+	}
+	executor := NewExecutor(newFakeBackend()).WithSearchPolicyOwner(owner)
+	installation, ok := executor.CaptureSearchPolicyInstallation(owner)
+	if !ok || !executor.UsesSearchPolicyInstallation(installation) || executor.UsesSearchPolicyInstallation(SearchPolicyInstallation{}) {
+		t.Fatal("invalid installation identity")
+	}
+	valid := baseline
+	valid.MaxQueryBytes = 16384
+	next, err := ResolveSearchPolicy(baseline, 1, query.RequestPolicyFromLimits(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.StageDesired(next); err != nil {
+		t.Fatal(err)
+	}
+	if !executor.UsesSearchPolicyInstallation(installation) {
+		t.Fatal("desired staging mutated effective identity")
+	}
+	if err := owner.Restart(next); err != nil {
+		t.Fatal(err)
+	}
+	if executor.UsesSearchPolicyInstallation(installation) {
+		t.Fatal("engine replacement retained old installation identity")
+	}
+}
