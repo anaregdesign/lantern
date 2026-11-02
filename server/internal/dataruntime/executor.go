@@ -81,7 +81,7 @@ type Executor struct {
 	traversalTimeout          time.Duration
 	traversalWorkBudget       graphcache.PPRWorkBudget
 	traversalMaxResults       int
-	capacity                  CapacityLimits
+	capacity                  atomic.Pointer[CapacityLimits]
 	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
 	// ApplyMutation or any local graph/log publication boundary.
 	replicationCutMu publicationGate
@@ -259,7 +259,7 @@ type CapacityLimits struct {
 // Intended for the wire provider to thread provider.CacheConfig into the
 // service.
 func (s *Executor) WithCapacityLimits(l CapacityLimits) *Executor {
-	s.capacity = l
+	s.capacity.Store(&l)
 	return s
 }
 
@@ -274,11 +274,12 @@ func (s *Executor) WithCapacityLimits(l CapacityLimits) *Executor {
 // by their combined size. Neither is an invariant violation — the cap exists
 // to fail fast instead of growing until the kernel OOM-kills the process.
 func (s *Executor) checkVertexCapacity(newVertices int) error {
-	if s.capacity.MaxVertices <= 0 {
+	limits := s.capacityLimits()
+	if limits.MaxVertices <= 0 {
 		return nil
 	}
 	vertices, _ := s.cache.CapacityFootprint()
-	if vertices+newVertices <= s.capacity.MaxVertices {
+	if newVertices <= limits.MaxVertices && vertices <= limits.MaxVertices-newVertices {
 		return nil
 	}
 	if s.onValidationReject != nil {
@@ -286,17 +287,18 @@ func (s *Executor) checkVertexCapacity(newVertices int) error {
 	}
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
 		"vertex capacity: %d live-plus-Put-barrier footprint + up to %d new would exceed LANTERN_MAX_VERTICES=%d (soft cap, counted conservatively)",
-		vertices, newVertices, s.capacity.MaxVertices))
+		vertices, newVertices, limits.MaxVertices))
 }
 
 // checkEdgeCapacity is the edge-side sibling of checkVertexCapacity;
 // newEdges is len(items) (each item writes exactly one (tail, head) bucket).
 func (s *Executor) checkEdgeCapacity(newEdges int) error {
-	if s.capacity.MaxEdges <= 0 {
+	limits := s.capacityLimits()
+	if limits.MaxEdges <= 0 {
 		return nil
 	}
 	_, edges := s.cache.CapacityFootprint()
-	if edges+newEdges <= s.capacity.MaxEdges {
+	if newEdges <= limits.MaxEdges && edges <= limits.MaxEdges-newEdges {
 		return nil
 	}
 	if s.onValidationReject != nil {
@@ -304,7 +306,7 @@ func (s *Executor) checkEdgeCapacity(newEdges int) error {
 	}
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
 		"edge capacity: %d live-plus-Put-barrier footprint + up to %d new would exceed LANTERN_MAX_EDGES=%d (soft cap, counted conservatively)",
-		edges, newEdges, s.capacity.MaxEdges))
+		edges, newEdges, limits.MaxEdges))
 }
 
 // WithReplication attaches the mutation log, hybrid logical clock, and an

@@ -2882,6 +2882,13 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 // delta (over-rejection near the cap for existing keys is the documented
 // soft-cap slack, not a bug); ApplyMutation bypasses the caps entirely; and
 // each rejection fires the validation-reject hook with reason "capacity".
+type capacityOverflowBackend struct{ Backend }
+
+func (capacityOverflowBackend) CapacityFootprint() (int, int) {
+	maximum := int(^uint(0) >> 1)
+	return maximum, maximum
+}
+
 func TestLanternService_CapacityCaps(t *testing.T) {
 	ctx := context.Background()
 	exp := timestamppb.New(time.Now().Add(time.Hour))
@@ -2896,6 +2903,17 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 		}
 		return svc
 	}
+	t.Run("FootprintAdditionCannotOverflow", func(t *testing.T) {
+		maximum := int(^uint(0) >> 1)
+		svc := NewExecutor(capacityOverflowBackend{Backend: graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)}).
+			WithCapacityLimits(CapacityLimits{MaxVertices: maximum, MaxEdges: maximum})
+		if err := svc.checkVertexCapacity(1); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("overflowing vertex footprint = %v", err)
+		}
+		if err := svc.checkEdgeCapacity(1); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("overflowing edge footprint = %v", err)
+		}
+	})
 	isExhausted := func(t *testing.T, err error, knob string) {
 		t.Helper()
 		if connect.CodeOf(err) != connect.CodeResourceExhausted {
@@ -3007,7 +3025,7 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		svc.capacity.MaxVertices = 0 // isolate the edge soft cap from endpoints.
+		svc.WithCapacityLimits(CapacityLimits{MaxEdges: svc.capacityLimits().MaxEdges}) // isolate the edge soft cap from endpoints.
 		deadEdge := &pb.Edge{Tail: "barrier-tail", Head: "barrier-head", Weight: 1, Expiration: expired}
 		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: deadEdge}); err != nil {
 			t.Fatal(err)
