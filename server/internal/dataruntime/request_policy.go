@@ -76,6 +76,16 @@ func NewRequestPolicyOwner(initial RequestPolicySnapshot) (*RequestPolicyOwner, 
 	return o, nil
 }
 
+// NewBootstrapRequestPolicyOwner retains actual legacy startup values at
+// generation zero, including values that cannot be adopted as managed policy.
+// It is trusted pre-serving composition only. Every later Apply still validates
+// the entire canonical policy; no defaults or clamping repair startup input.
+func NewBootstrapRequestPolicyOwner(actual RequestPolicy) *RequestPolicyOwner {
+	o := &RequestPolicyOwner{}
+	o.current.Store(&RequestPolicySnapshot{Policy: actual})
+	return o
+}
+
 func (o *RequestPolicyOwner) RequestPolicySnapshot() RequestPolicySnapshot {
 	return *o.current.Load()
 }
@@ -119,6 +129,21 @@ func RequestPolicyFromContext(ctx context.Context) (RequestPolicySnapshot, bool)
 func (s *Executor) WithRequestPolicySource(source RequestPolicySource) *Executor {
 	s.requestPolicies = source
 	return s
+}
+
+// BootstrapRequestPolicy reads the actual legacy executor configuration before
+// an owner is installed. Validation comes from the actual transport validator.
+func (s *Executor) BootstrapRequestPolicy(validation RequestValidationLimits) (RequestPolicy, error) {
+	if s == nil || s.requestPolicies != nil {
+		return RequestPolicy{}, errors.New("request policy bootstrap ownership unavailable")
+	}
+	actual := s.requestPolicy(context.Background())
+	actual.Validation = validation
+	return actual, nil
+}
+
+func (s *Executor) UsesRequestPolicyOwner(owner *RequestPolicyOwner) bool {
+	return s != nil && owner != nil && s.requestPolicies == owner
 }
 
 func (s *Executor) captureRequestPolicy(ctx context.Context) context.Context {

@@ -60,6 +60,33 @@ func TestRequestPolicyValidate(t *testing.T) {
 	}
 }
 
+func TestRequestPolicyBootstrapRetainsActualInvalidValuesAtGenerationZero(t *testing.T) {
+	actual := testRequestPolicy()
+	actual.Scan.ScanDefaultLimit = 0
+	owner := NewBootstrapRequestPolicyOwner(actual)
+	if got := owner.RequestPolicySnapshot(); got.Generation != 0 || got.Policy != actual {
+		t.Fatalf("bootstrap replaced actual values: %+v", got)
+	}
+	if err := owner.Apply(RequestPolicySnapshot{Generation: 1, Policy: actual}); err == nil {
+		t.Fatal("bootstrap seam bypassed managed validation")
+	}
+	valid := testRequestPolicy()
+	if err := owner.Apply(RequestPolicySnapshot{Generation: 1, Policy: valid}); err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(newFakeBackend())
+	if _, err := executor.BootstrapRequestPolicy(RequestValidationLimits{MaxKeyLen: 4}); err != nil {
+		t.Fatal(err)
+	}
+	executor.WithRequestPolicySource(owner)
+	if !executor.UsesRequestPolicyOwner(owner) {
+		t.Fatal("actual owner identity missing")
+	}
+	if _, err := executor.BootstrapRequestPolicy(RequestValidationLimits{}); err == nil {
+		t.Fatal("bound owner was treated as unowned startup")
+	}
+}
+
 func TestRequestPolicyOwnerAtomicGeneration(t *testing.T) {
 	initial := RequestPolicySnapshot{Generation: 4, Policy: testRequestPolicy()}
 	o, err := NewRequestPolicyOwner(initial)
