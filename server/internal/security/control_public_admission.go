@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"time"
 )
@@ -107,7 +108,7 @@ func (o *CurrentAuthority) Admit(ctx context.Context, producer CurrentCredential
 	if k.readyLocked() != nil || k.chosen != nil {
 		return nil, ErrAuthorityUnavailable
 	}
-	if _, err = o.origin.authorizeCurrentCredentialLocked(ctx, c); err != nil {
+	if err = o.origin.authorizePublicCredentialLocked(ctx, c); err != nil {
 		return nil, err
 	}
 	access, active := view.Snapshot().AccessFor(c.actor)
@@ -148,7 +149,21 @@ func (a *currentPublicAdmission) check(ctx context.Context) error {
 	if k.readyLocked() != nil || k.chosen != nil {
 		return ErrAuthorityUnavailable
 	}
-	_, err := o.authorizeCurrentCredentialLocked(ctx, a.credential)
+	return o.authorizePublicCredentialLocked(ctx, a.credential)
+}
+
+// Public callers may retry a fresh admission when installed state advances or
+// its native renewal is unavailable. Neither condition invalidates the actual
+// credential. Keep same-cut credential, lineage and expiry failures denied.
+// The caller owns kernel.gate; this adds no renewal, re-verification or I/O.
+func (o *authorityOriginOwner) authorizePublicCredentialLocked(ctx context.Context, c authorityCredential) error {
+	if !o.configuredReadyLocked() || c.cut != o.network.kernel.replayState.projection.cut {
+		return ErrAuthorityUnavailable
+	}
+	_, err := o.authorizeCurrentCredentialLocked(ctx, c)
+	if errors.Is(err, errAuthorityRenewal) {
+		return errors.Join(ErrAuthorityUnavailable, err)
+	}
 	return err
 }
 

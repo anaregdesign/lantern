@@ -3,6 +3,7 @@ package security
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -100,6 +101,43 @@ func TestCurrentPublicAdmissionDoesNotRelabelAfterApply(t *testing.T) {
 
 	if after.WithBrowserProof("unverified").Browser() {
 		t.Fatal("bearer admission promoted to cookie proof")
+	}
+}
+
+func TestCurrentPublicAdmissionCredentialFailuresStayDenied(t *testing.T) {
+	image, session, _ := nativeSessionBenchmarkImage()
+	image.Sessions[0].Revoked = true
+	_, origins, _ := authorityTestCompositeImage(t, 3, &image)
+	o := &CurrentAuthority{origin: origins[1]}
+	ctx := s3aTestContext(t)
+	if err := o.origin.network.renewAuthority(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"expired", "revoked session", "wrong issuer revision"} {
+		t.Run(kind, func(t *testing.T) {
+			producer := authorityPublicProducerFunc(func(ctx context.Context, view CurrentCredentialView) (CurrentCredentialFacts, error) {
+				if kind == "revoked session" {
+					return CurrentCredentialFacts{Session: &session}, nil
+				}
+				facts, err := (authorityFakeCredentialProducer{}).VerifyCurrentCredential(ctx, view)
+				if err != nil {
+					return facts, err
+				}
+				if kind == "expired" {
+					low, _, err := view.TimeBounds()
+					if err != nil {
+						return CurrentCredentialFacts{}, err
+					}
+					facts.Token.ExpiresAt = authorityNumericTime(low.Add(-time.Second))
+				} else {
+					facts.Token.ConfigRevision++
+				}
+				return facts, nil
+			})
+			if a, err := o.Admit(ctx, producer); a != nil || !errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrAuthorityUnavailable) {
+				t.Fatal("invalid credential was converted to retryable authority loss", a, err)
+			}
+		})
 	}
 }
 
