@@ -46,6 +46,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewPublicSecurityCertified,
 		provider.NewAntiEntropyConfig,
 		provider.NewServingLogger,
+		provider.NewManagedLogRuntime,
 		provider.NewLogger,
 		provider.NewTracing,
 		provider.NewTracingConfig,

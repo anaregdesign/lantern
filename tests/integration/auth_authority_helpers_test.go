@@ -11,7 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,6 +159,8 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
 		t.Skip("current-authority wire case requires the coordinated functional-validation/configured-source-integration campaign")
 	}
+	previousLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	f := newOIDCWireIssuer(t)
 	root, resolveErr := filepath.EvalSymlinks(t.TempDir())
 	if resolveErr != nil {
@@ -230,7 +231,13 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	}
 	t.Cleanup(closeRuntime)
 	f.runtime = runtime
-	dataService := data.NewExecutor(nil).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
+	logOwner := provider.NewServingLogger(provider.ObservabilityConfig{LogLevel: slog.LevelInfo})
+	servingLogger := provider.NewLogger(logOwner)
+	logging, err := provider.NewManagedLogRuntime(t.Context(), runtime, logOwner)
+	if err != nil {
+		t.Fatal("verified log-policy recovery", err)
+	}
+	dataService := data.NewExecutor(nil).WithLogger(servingLogger).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
 	if durableReceipts {
 		dataService.WithTombstoneTTL(time.Hour)
 	}
@@ -258,14 +265,14 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 			t.Fatal(err)
 		}
 	}
-	publicCertified, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, data, dataService, certified)
+	publicCertified, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, data, dataService, certified, logging)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.server = httptest.NewUnstartedServer(nil)
 	listener, err := provider.NewPublicLanternListener(f.server.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{EnableReflection: true}, provider.CORSConfig{}, dataService, runtime,
 		provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}},
-		nil, nil, nil, nil, nil, provider.NewHealthChecker(), slog.New(slog.NewTextHandler(io.Discard, nil)), publicCertified)
+		nil, nil, nil, nil, nil, provider.NewHealthChecker(), servingLogger, publicCertified)
 	if err != nil {
 		t.Fatal(err)
 	}

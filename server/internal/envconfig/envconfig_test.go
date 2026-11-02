@@ -163,10 +163,11 @@ func TestLevel(t *testing.T) {
 		input     string
 		want      slog.Level
 		malformed bool
+		explicit  bool
 	}{
-		{"debug", slog.LevelDebug, false}, {" INFO ", slog.LevelInfo, false},
-		{"warning", slog.LevelWarn, false}, {"error", slog.LevelError, false},
-		{"", slog.LevelWarn, false}, {"verbose", slog.LevelWarn, true},
+		{"debug", slog.LevelDebug, false, true}, {" INFO ", slog.LevelInfo, false, true},
+		{"warning", slog.LevelWarn, false, true}, {"error", slog.LevelError, false, true},
+		{"", slog.LevelWarn, false, false}, {"verbose", slog.LevelWarn, true, false},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
@@ -176,6 +177,13 @@ func TestLevel(t *testing.T) {
 			}
 			if (len(reader.Findings()) != 0) != tc.malformed {
 				t.Fatalf("findings = %+v", reader.Findings())
+			}
+			withSource := NewReader([]string{"VALUE=" + tc.input})
+			if level, explicit := withSource.LevelWithSource("VALUE", slog.LevelWarn); level != tc.want || explicit != tc.explicit {
+				t.Fatalf("LevelWithSource = %v/%v, want %v/%v", level, explicit, tc.want, tc.explicit)
+			}
+			if len(withSource.Findings()) != len(reader.Findings()) || len(withSource.Known()) != 1 {
+				t.Fatal("source metadata changed parser diagnostics or registration")
 			}
 		})
 	}

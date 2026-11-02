@@ -26,6 +26,7 @@ type SecurityRuntime struct {
 	workflow       *authn.Workflow
 	credentials    *authn.Credentials
 	current        *security.CurrentAuthority
+	managedLog     *managedLogRuntime
 	output         *security.CurrentOutput
 	attemptProcess [32]byte
 	peer           *PeerIdentityRuntime

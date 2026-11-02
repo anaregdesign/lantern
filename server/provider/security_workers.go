@@ -38,6 +38,9 @@ func (r *SecurityRuntime) readyObserved(ctx context.Context) (bool, string) {
 	if r.current != nil {
 		ready := r.current.Ready(ctx)
 		if ready {
+			if r.managedLog == nil || r.managedLog.reconcile(ctx) != nil {
+				return false, "unavailable"
+			}
 			return true, "ready"
 		}
 		return false, "unavailable"

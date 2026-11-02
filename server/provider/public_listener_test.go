@@ -34,7 +34,11 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert)
+	logging, err := NewManagedLogRuntime(t.Context(), runtime, newServingLogger(ObservabilityConfig{}, io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging)
 	if err != nil {
 		t.Fatal(err)
 	}

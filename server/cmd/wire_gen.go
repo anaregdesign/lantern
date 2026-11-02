@@ -75,7 +75,14 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, executor, runtimeCertified)
+	managedLogCertified, err := provider.NewManagedLogRuntime(ctx, securityRuntime, servingLogger)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, executor, runtimeCertified, managedLogCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()

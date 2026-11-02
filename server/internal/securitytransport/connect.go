@@ -27,6 +27,7 @@ type SecurityServiceOptions struct {
 	ValidateIssuer            func(context.Context, security.Issuer) error
 	Now                       func() time.Time
 	Ready                     func(context.Context) bool
+	LogSettingsObserver       LogSettingsObserver
 }
 
 type SecurityConnectHandler struct {
@@ -37,6 +38,7 @@ type SecurityConnectHandler struct {
 	cursors                   cipher.AEAD
 	now                       func() time.Time
 	ready                     func(context.Context) bool
+	logSettingsObserver       LogSettingsObserver
 }
 
 var _ graphv1connect.LanternSecurityServiceHandler = (*SecurityConnectHandler)(nil)
@@ -47,6 +49,7 @@ func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnect
 	}
 	handler := &SecurityConnectHandler{validateIssuer: options.ValidateIssuer, ready: options.Ready, now: time.Now}
 	handler.current = options.Current
+	handler.logSettingsObserver = options.LogSettingsObserver
 	handler.currentBeginAuthorization, handler.currentReadAuthorization = options.CurrentBeginAuthorization, options.CurrentReadAuthorization
 	if options.Now != nil {
 		handler.now = options.Now

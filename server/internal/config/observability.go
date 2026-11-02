@@ -33,30 +33,35 @@ import (
 //     passed to runtime.SetBlockProfileRate. Nanoseconds between block-event
 //     samples; lower = more samples. Same runtime-cost caveat as above.
 type ObservabilityConfig struct {
-	LogLevel             slog.Level
-	LogFormat            string
-	MetricsAddr          string
-	EnableReflection     bool
-	Version              string
-	Commit               string
-	SlowRPCThreshold     time.Duration
-	EnablePprof          bool
-	MutexProfileFraction int
-	BlockProfileRate     int
+	LogLevel slog.Level
+	// LogLevelFromEnvironment is true only for a valid explicit input. Empty
+	// or malformed environment input falls back to the default instead.
+	LogLevelFromEnvironment bool
+	LogFormat               string
+	MetricsAddr             string
+	EnableReflection        bool
+	Version                 string
+	Commit                  string
+	SlowRPCThreshold        time.Duration
+	EnablePprof             bool
+	MutexProfileFraction    int
+	BlockProfileRate        int
 }
 
 func loadObservability(reader *envconfig.Reader, metricsDefault string) ObservabilityConfig {
+	level, explicit := reader.LevelWithSource("LANTERN_LOG_LEVEL", slog.LevelInfo)
 	return ObservabilityConfig{
-		LogLevel:             reader.Level("LANTERN_LOG_LEVEL", slog.LevelInfo),
-		LogFormat:            reader.String("LANTERN_LOG_FORMAT", "json"),
-		MetricsAddr:          reader.String("LANTERN_METRICS_ADDR", metricsDefault),
-		EnableReflection:     reader.Bool("LANTERN_REFLECTION", true),
-		Version:              reader.String("LANTERN_VERSION", ""),
-		Commit:               reader.String("LANTERN_COMMIT", ""),
-		SlowRPCThreshold:     time.Duration(reader.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
-		EnablePprof:          reader.Bool("LANTERN_PPROF_ENABLED", false),
-		MutexProfileFraction: reader.Int("LANTERN_MUTEX_PROFILE_FRACTION", 0),
-		BlockProfileRate:     reader.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
+		LogLevel:                level,
+		LogLevelFromEnvironment: explicit,
+		LogFormat:               reader.String("LANTERN_LOG_FORMAT", "json"),
+		MetricsAddr:             reader.String("LANTERN_METRICS_ADDR", metricsDefault),
+		EnableReflection:        reader.Bool("LANTERN_REFLECTION", true),
+		Version:                 reader.String("LANTERN_VERSION", ""),
+		Commit:                  reader.String("LANTERN_COMMIT", ""),
+		SlowRPCThreshold:        time.Duration(reader.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
+		EnablePprof:             reader.Bool("LANTERN_PPROF_ENABLED", false),
+		MutexProfileFraction:    reader.Int("LANTERN_MUTEX_PROFILE_FRACTION", 0),
+		BlockProfileRate:        reader.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
 	}
 }
 

@@ -121,6 +121,10 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	publicRoots := x509.NewCertPool()
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
+	var servingLoggers []*slog.Logger
+	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
+	previousDefaultLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousDefaultLogger) })
 	var initializationCounts []decisiontrace.AcquisitionCounts
 	var stops []func()
 	var workerStops []func()
@@ -176,6 +180,13 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("current constructor", id, err)
 		}
 		t.Cleanup(closeRuntime)
+		logOwner := provider.NewServingLogger(provider.ObservabilityConfig{LogLevel: startupLogLevels[id], LogLevelFromEnvironment: true})
+		logger := provider.NewLogger(logOwner).With("fixture_member", id)
+		logging, err := provider.NewManagedLogRuntime(t.Context(), runtime, logOwner)
+		if err != nil {
+			t.Fatal("restore managed log owner before public listener", id, err)
+		}
+		servingLoggers = append(servingLoggers, logger)
 		runtimes = append(runtimes, runtime)
 		stops = append(stops, closeRuntime)
 		var workload *provider.PeerIdentityRuntime
@@ -191,7 +202,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("native data workload", err)
 			}
 			t.Cleanup(closePeer)
-			worker := provider.NewSecurityWorkers(runtime, workload, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			worker := provider.NewSecurityWorkers(runtime, workload, readiness.NewGate(100, false, nil), logger)
 			workerCtx, stopWorker := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- worker.Run(workerCtx) }()
@@ -233,7 +244,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, data, svc, certified)
+		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, data, svc, certified, logging)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,7 +258,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("selected native TLS listener unavailable", err)
 			}
 		}
-		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, nil, nil, nil, nil, provider.NewHealthChecker(), slog.New(slog.NewTextHandler(io.Discard, nil)), public)
+		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, nil, nil, nil, nil, provider.NewHealthChecker(), logger, public)
 		if err != nil {
 			t.Fatal(err)
 		}

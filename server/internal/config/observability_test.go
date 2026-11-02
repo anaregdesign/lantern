@@ -31,11 +31,36 @@ func TestObservabilityLoading(t *testing.T) {
 	reader = envconfig.NewReader(os.Environ())
 	got = Load(reader, ":9090").Observability
 	want = ObservabilityConfig{
-		LogLevel: slog.LevelDebug, LogFormat: "text", MetricsAddr: "", EnableReflection: false,
+		LogLevel: slog.LevelDebug, LogLevelFromEnvironment: true, LogFormat: "text", MetricsAddr: "", EnableReflection: false,
 		Version: "test", Commit: "commit", EnablePprof: true, MutexProfileFraction: 7, BlockProfileRate: 123,
 	}
 	if got != want {
 		t.Fatalf("observability overrides = %+v, want %+v", got, want)
+	}
+}
+
+func TestLogLevelSourceReflectsParsedInput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		input     []string
+		level     slog.Level
+		explicit  bool
+		malformed bool
+	}{
+		{"unset", nil, slog.LevelInfo, false, false},
+		{"empty", []string{"LANTERN_LOG_LEVEL="}, slog.LevelInfo, false, false},
+		{"whitespace", []string{"LANTERN_LOG_LEVEL=  "}, slog.LevelInfo, false, false},
+		{"malformed", []string{"LANTERN_LOG_LEVEL=verbose"}, slog.LevelInfo, false, true},
+		{"explicit default value", []string{"LANTERN_LOG_LEVEL=info"}, slog.LevelInfo, true, false},
+		{"alias", []string{"LANTERN_LOG_LEVEL= WARNING "}, slog.LevelWarn, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := envconfig.NewReader(tc.input)
+			got := loadObservability(reader, "")
+			if got.LogLevel != tc.level || got.LogLevelFromEnvironment != tc.explicit || (len(reader.Findings()) != 0) != tc.malformed {
+				t.Fatalf("level/source/findings = %v/%v/%v", got.LogLevel, got.LogLevelFromEnvironment, reader.Findings())
+			}
+		})
 	}
 }
 

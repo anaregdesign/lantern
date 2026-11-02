@@ -20,7 +20,10 @@ type publicSecurityCertified struct {
 	primary *dataruntime.Executor
 }
 
-func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified) (publicSecurityCertified, error) {
+func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified) (publicSecurityCertified, error) {
+	if logging.runtime != runtime || logging.owner == nil || logging.adapter == nil || runtime == nil || runtime.managedLog != logging.adapter || logging.adapter.owner != logging.owner {
+		return publicSecurityCertified{}, errors.New("public security requires the exact restored logging owner")
+	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
 	}
