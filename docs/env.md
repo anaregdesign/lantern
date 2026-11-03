@@ -44,7 +44,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_BACKUP_ENABLED` | bool | `false` | Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or durable receipt sets according to runtime mode. |
 | `LANTERN_BACKUP_INSTANCE_ID` | string | (empty) | Per-instance ownership token used to derive safe backup filenames; defaults to the hostname. |
 | `LANTERN_BACKUP_INTERVAL` | duration | `5m0s` | Backup production cadence (Go duration). |
-| `LANTERN_BACKUP_RESTORE_ON_START` | bool | `true` | Graph-only: replay the newest valid dump. Durable fresh: restore the strict newest receipt set, with optional absence starting empty. Durable restart: use a set only for eligible current-baseline damage. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | bool | `true` | With BACKUP_DIR configured, select startup restore independently of periodic production enablement. Graph-only: replay the newest valid dump. Durable fresh: restore the strict newest receipt set, with optional absence starting empty. Durable restart: use a set only for eligible current-baseline damage. |
 | `LANTERN_BACKUP_RESTORE_REQUIRED` | bool | `false` | Require a startup backup when durable fresh restore is selected; graph-only restore errors also fail boot. An incomplete durable restart always fails when it cannot be repaired. |
 | `LANTERN_BACKUP_RETAIN` | int | `3` | How many valid backups owned by this instance to keep, newest first (0 keeps all). |
 | `LANTERN_BLOCK_PROFILE_RATE` | int | `0` | runtime.SetBlockProfileRate in nanoseconds between samples (0 = disabled). |

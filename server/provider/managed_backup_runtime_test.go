@@ -307,3 +307,67 @@ func TestManagedBackupRecoveredEnabledPolicyRefusesMissingExternalDestination(t 
 		t.Fatal("missing external dependency was bound or claimed restored", err)
 	}
 }
+
+func TestManagedBackupEnvironmentDisabledProductionRestoresOnNextBoot(t *testing.T) {
+	dir := t.TempDir()
+	config, owner, _ := managedBackupTestOwner(t, "LANTERN_BACKUP_DIR="+dir, "LANTERN_BACKUP_ENABLED=false")
+	if config.Backup.Enabled || !config.Backup.RestoreOnStart {
+		t.Fatal("external restoration still depends on production enablement")
+	}
+	certified, err := NewManagedBackupRuntime(t.Context(), managedBackupTestManager(t, config), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := operationalpolicy.Policy{Version: 1, Generation: 1, Values: operationalpolicy.Values{Backup: &operationalpolicy.Backup{Enabled: true, IntervalNanos: int64(time.Hour), Retain: 0}}}
+	if err := certified.adapter.ApplyOperationalPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := owner.Production(); !snapshot.Config.Enabled || snapshot.Generation != 1 {
+		t.Fatal("managed production did not enable")
+	}
+	if stats, err := owner.BackupNow(t.Context()); err != nil || stats.Vertices != 1 {
+		t.Fatalf("managed production backup = %+v, %v", stats, err)
+	}
+	for _, test := range []struct {
+		name    string
+		flag    []string
+		restore bool
+	}{
+		{"default external restore", nil, true},
+		{"explicit empty startup", []string{"LANTERN_BACKUP_RESTORE_ON_START=false"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := append([]string{"LANTERN_BACKUP_DIR=" + dir, "LANTERN_BACKUP_ENABLED=false"}, test.flag...)
+			restartedConfig, err := LoadConfig(envconfig.NewReader(input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, primary, certification := certifiedSnapshotInstallerRuntime(t, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly})
+			restartedConfig.Backup.NamespaceFormat = data.DataNamespaceFormat()
+			restartedOwner, err := NewBackupper(restartedConfig.Backup, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, data, primary, certification, prometheus.NewRegistry(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Restore uses external bootstrap selection before the managed
+			// registry/authority exists on this restarted instance.
+			stats, err := restartedOwner.RestoreOnStartup(t.Context())
+			_, present := data.GraphCache().GetVertex("preserved")
+			if err != nil || present != test.restore || (stats.Vertices == 1) != test.restore {
+				t.Fatalf("independent restoration = %+v, present %v, %v", stats, present, err)
+			}
+			restarted, err := NewManagedBackupRuntime(t.Context(), managedBackupTestManager(t, restartedConfig), restartedOwner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy.Generation = 2
+			policy.Values.Backup.Enabled = false
+			if err := restarted.adapter.ApplyOperationalPolicy(policy); err != nil {
+				t.Fatal(err)
+			}
+			_, present = data.GraphCache().GetVertex("preserved")
+			if present != test.restore || restartedOwner.Production().Config.Enabled {
+				t.Fatal("managed disable changed selected restoration or restored graph")
+			}
+		})
+	}
+}

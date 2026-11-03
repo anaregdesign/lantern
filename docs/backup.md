@@ -241,8 +241,24 @@ every backend, and degrade cleanly to the single-instance case.
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Backup cadence (`time.ParseDuration`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N valid own dumps/sets; `0` keeps all. |
 | `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance ownership token used to derive safe filenames. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Graph-only: replay the newest valid dump. Durable `fresh`: restore the strict newest receipt set or, only when optional and absent, start empty. Durable `restart`: use a set only for eligible current-baseline damage. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | With a configured directory, select startup restore independently of production enablement. Graph-only: replay the newest valid dump. Durable `fresh`: restore the strict newest receipt set or, only when optional and absent, start empty. Durable `restart`: use a set only for eligible current-baseline damage. |
 | `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Graph-only: fail boot when restore errors. Durable `fresh`: require a valid newest set. Durable `restart`: restore failure is always terminal when the current runtime is incomplete; a valid current runtime remains authoritative. |
+
+Production and restoration have separate ownership. Environment or managed
+`BACKUP_ENABLED` controls production; the externally supplied directory and
+`LANTERN_BACKUP_RESTORE_ON_START` select restoration before native authority opens.
+Managed production enablement or disablement cannot change that selection.
+
+Migration for #2011: a configured `LANTERN_BACKUP_DIR` with production disabled
+now still selects startup restore when `LANTERN_BACKUP_RESTORE_ON_START` is true
+or omitted. Previously production disablement also suppressed restoration. To
+intentionally start without importing a backup, explicitly set the existing
+`LANTERN_BACKUP_RESTORE_ON_START=false`. An absent directory remains a no-op;
+existing `RESTORE_REQUIRED` constraints remain. Healthy durable WAL restarts
+still take precedence, and fallback remains limited to its existing eligible
+damage cases. Backup formats and recovery order do not change. These data and
+receipt backups do not import native `sys:` authority or rejoin a node that lost
+its native state.
 
 > **TTL-vs-interval caveat.** Entries decay, so a dump is only as useful as its
 > data is still live at restore time. Keep `LANTERN_DEFAULT_TTL_SECONDS`
