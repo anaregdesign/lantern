@@ -15,8 +15,9 @@ type managedSlowRPCCertified struct {
 }
 
 type managedSlowRPCRuntime struct {
-	owner            *SlowRPCInterceptor
-	bootstrapSources map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource
+	owner              *SlowRPCInterceptor
+	bootstrapThreshold time.Duration
+	bootstrapSources   map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource
 }
 
 func NewManagedSlowRPCRuntime(ctx context.Context, manager *ManagedOperationalRuntime, owner *SlowRPCInterceptor, bootstrap ObservabilityConfig) (managedSlowRPCCertified, error) {
@@ -27,12 +28,9 @@ func NewManagedSlowRPCRuntime(ctx context.Context, manager *ManagedOperationalRu
 	if sourceErr != nil {
 		return managedSlowRPCCertified{}, sourceErr
 	}
-	adapter := &managedSlowRPCRuntime{owner: owner, bootstrapSources: sources}
+	adapter := &managedSlowRPCRuntime{owner: owner, bootstrapThreshold: bootstrap.SlowRPCThreshold, bootstrapSources: sources}
 	if adapter.AvailableOperationalPolicy(operationalpolicy.GroupSlowRPC, operationalpolicy.Version) != nil {
 		return managedSlowRPCCertified{}, errManagedOperational
-	}
-	if owner.Threshold() != bootstrap.SlowRPCThreshold && sources != nil {
-		sources[securitytransport.OperationalSetting(1)] = securitytransport.OperationalSourceDerived
 	}
 	if err := manager.Register(ctx, operationalpolicy.GroupSlowRPC, adapter); err != nil {
 		return managedSlowRPCCertified{}, err
@@ -66,6 +64,8 @@ func (s *managedSlowRPCRuntime) ObserveOperationalPolicy() (OperationalOwnerObse
 	observation := OperationalOwnerObservation{EffectiveGeneration: actual.Generation, Mode: securitytransport.OperationalModeHot, Error: securitytransport.OperationalErrorNone, Sources: cloneOperationalSources(s.bootstrapSources)}
 	if actual.Generation != 0 {
 		observation.Sources = map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource{securitytransport.OperationalSetting(1): securitytransport.OperationalSourceManaged}
+	} else if actual.Threshold != s.bootstrapThreshold && observation.Sources != nil {
+		observation.Sources[securitytransport.OperationalSetting(1)] = securitytransport.OperationalSourceDerived
 	}
 	if actual.Threshold < 0 || actual.Threshold%time.Millisecond != 0 {
 		observation.Error = securitytransport.OperationalErrorInvalidPolicy

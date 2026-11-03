@@ -52,6 +52,20 @@ func TestManagedSlowRPCRuntimeActualStateAndBootstrapSources(t *testing.T) {
 			if err != nil || actual.Effective == nil || actual.EffectiveGeneration != 0 || actual.Effective.SlowRPC.ThresholdMS != test.threshold.Milliseconds() || actual.Sources[securitytransport.OperationalSetting(1)] != test.source {
 				t.Fatal("bootstrap value/source invented", actual, err)
 			}
+			if err := owner.SetThresholdMilliseconds(123); err != nil {
+				t.Fatal(err)
+			}
+			changed, err := cert.adapter.ObserveOperationalPolicy()
+			if err != nil || changed.Effective == nil || changed.EffectiveGeneration != 0 || changed.Effective.SlowRPC.ThresholdMS != 123 || changed.Sources[securitytransport.OperationalSetting(1)] != securitytransport.OperationalSourceDerived {
+				t.Fatal("bootstrap setter retained the original source", changed, err)
+			}
+			if err := owner.SetThresholdMilliseconds(test.threshold.Milliseconds()); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := cert.adapter.ObserveOperationalPolicy()
+			if err != nil || restored.Effective == nil || restored.EffectiveGeneration != 0 || restored.Effective.SlowRPC.ThresholdMS != test.threshold.Milliseconds() || restored.Sources[securitytransport.OperationalSetting(1)] != test.source {
+				t.Fatal("returning to bootstrap value changed its source", restored, err)
+			}
 			policy := operationalpolicy.Policy{Version: operationalpolicy.Version, Generation: 1, Values: operationalpolicy.Values{SlowRPC: &operationalpolicy.SlowRPC{ThresholdMS: 12}}}
 			if err := cert.adapter.ApplyOperationalPolicy(policy); err != nil {
 				t.Fatal(err)
