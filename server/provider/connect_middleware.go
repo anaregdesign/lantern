@@ -41,8 +41,7 @@ import (
 
 // ConnectInterceptor returns a connect.UnaryInterceptorFunc that emits
 // the warn-level "slow rpc" slog channel. Threshold of 0 disables
-// emission (Enabled() reports false and the listener skips
-// installation).
+// emission. The resident owner captures its threshold at each request entry.
 //
 // Fields:
 //
@@ -54,6 +53,10 @@ import (
 func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			threshold := s.Threshold()
+			if s == nil || s.logger == nil || threshold <= 0 {
+				return next(ctx, req)
+			}
 			illuminateLabels, hasIlluminateLabels := illuminateTelemetryLabelsFor(req.Any())
 			if hasIlluminateLabels {
 				setIlluminateSpanAttributes(ctx, illuminateLabels)
@@ -62,15 +65,19 @@ func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 			if hasSearchLabels {
 				setSearchSpanAttributes(ctx, searchLabels)
 			}
-			start := time.Now()
+			now := s.now
+			if now == nil {
+				now = time.Now
+			}
+			start := now()
 			resp, err := next(ctx, req)
-			d := time.Since(start)
-			if d > s.threshold {
+			d := now().Sub(start)
+			if d > threshold {
 				attrs := []slog.Attr{
 					slog.String("method", req.Spec().Procedure),
 					slog.String("code", connectCodeString(err)),
 					slog.Int64("duration_ms", d.Milliseconds()),
-					slog.Int64("threshold_ms", s.threshold.Milliseconds()),
+					slog.Int64("threshold_ms", threshold.Milliseconds()),
 				}
 				if hasIlluminateLabels {
 					attrs = append(attrs, illuminateLabels.slogAttrs()...)

@@ -51,11 +51,8 @@ import (
 // AUTHENTICATED client now consumes a token, which is the cheaper
 // trade.)
 //
-// Nil entries are skipped so call sites with a disabled component
-// (e.g. RateLimitConfig.RPS<=0 → rl.lim==nil; SlowRPCThreshold==0 →
-// slow.Enabled()==false; auth.Enabled()==false when
-// LANTERN_AUTH_TOKENS is unset) don't need to special-case
-// construction.
+// Nil entries are skipped. Operational owners remain mounted while disabled,
+// so future validated settings can enable them without rebuilding handlers.
 //
 // connect.WithRecover catches panics in handlers and returns
 // CodeInternal — the equivalent of the grpc-middleware recovery
@@ -85,7 +82,7 @@ func authenticatedHandlerOptions(netCfg NetConfig, val *ValidationInterceptor, r
 	if met != nil {
 		ints = append(ints, met.ConnectInterceptor())
 	}
-	if rl != nil && rl.lim != nil {
+	if rl != nil {
 		ints = append(ints, rl.ConnectInterceptor())
 	}
 	if authentication != nil {
@@ -94,7 +91,7 @@ func authenticatedHandlerOptions(netCfg NetConfig, val *ValidationInterceptor, r
 	if val != nil {
 		ints = append(ints, val.ConnectInterceptor())
 	}
-	if slow.Enabled() {
+	if slow != nil {
 		ints = append(ints, slow.ConnectInterceptor())
 	}
 	compressMinBytes := 1024

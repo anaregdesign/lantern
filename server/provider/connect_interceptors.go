@@ -34,19 +34,16 @@ func NewValidationInterceptorProvider(
 // *RateLimitInterceptor instance the Connect listener consults before
 // forwarding a call.
 //
-// When LANTERN_RATE_LIMIT_RPS<=0 the limiter is disabled: a
-// *RateLimitInterceptor with lim=nil is returned so the listener
-// wiring inside connectHandlerOptions can detect the disabled state
-// (rli.lim == nil) and skip the interceptor.
+// The owner and reject hook remain installed when startup policy disables it.
 func NewRateLimitInterceptorProvider(
 	rl RateLimitConfig,
 	dm *domainmetrics.DomainMetrics,
 ) *RateLimitInterceptor {
-	if rl.RPS <= 0 {
-		return &RateLimitInterceptor{}
+	owner := NewRateLimitInterceptor(rl.RPS, rl.Burst)
+	if dm != nil {
+		owner.WithRejectHook(dm.OnRateLimitRejected)
 	}
-	return NewRateLimitInterceptor(rl.RPS, rl.Burst).
-		WithRejectHook(dm.OnRateLimitRejected)
+	return owner
 }
 
 // ConnectInterceptor returns a connect.UnaryInterceptorFunc that
@@ -76,10 +73,8 @@ func (v *ValidationInterceptor) ConnectInterceptor() connect.UnaryInterceptorFun
 func (r *RateLimitInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			if !r.lim.Allow() {
-				if r.rejectHook != nil {
-					r.rejectHook()
-				}
+			if !r.Allow() {
+				r.rejected()
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("rate limit exceeded"))
 			}
 			return next(ctx, req)

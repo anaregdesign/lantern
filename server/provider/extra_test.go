@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"golang.org/x/time/rate"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
@@ -330,6 +333,106 @@ func TestRateLimitInterceptor_NilHookSafe(t *testing.T) {
 	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeResourceExhausted {
 		t.Fatalf("second call: expected CodeResourceExhausted, got %v", err)
 	}
+}
+
+func TestRateLimitInterceptor_ConfigurationValidation(t *testing.T) {
+	r := NewRateLimitInterceptor(2, 3)
+	want := RateLimitConfig{RPS: 2, Burst: 3}
+	for _, policy := range []RateLimitConfig{
+		{RPS: math.NaN(), Burst: 1}, {RPS: math.Inf(1), Burst: 1},
+		{RPS: math.Inf(-1)}, {RPS: -1}, {Burst: 1}, {RPS: 1}, {RPS: 1, Burst: -1},
+	} {
+		if err := r.Configure(policy.RPS, policy.Burst); err == nil {
+			t.Fatalf("invalid policy accepted: %+v", policy)
+		}
+		if actual, err := r.Configuration(); err != nil || actual != want {
+			t.Fatalf("invalid update changed configuration: %+v, %v", actual, err)
+		}
+	}
+	for _, rps := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		invalid := NewRateLimitInterceptor(rps, 1)
+		if _, err := invalid.Configuration(); err == nil || invalid.Allow() {
+			t.Fatalf("nonfinite startup rate must be visibly invalid and closed: %v", rps)
+		}
+		if err := invalid.Configure(1, 1); err != nil || !invalid.Allow() {
+			t.Fatalf("valid update did not recover invalid owner: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		rps   float64
+		burst int
+		want  RateLimitConfig
+	}{
+		{-1, 10, RateLimitConfig{}}, {0, 10, RateLimitConfig{}},
+		{2.5, 0, RateLimitConfig{RPS: 2.5, Burst: 2}},
+		{0.5, -1, RateLimitConfig{RPS: 0.5, Burst: 1}},
+	} {
+		actual, err := NewRateLimitInterceptor(tc.rps, tc.burst).Configuration()
+		if err != nil || actual != tc.want {
+			t.Fatalf("startup policy (%v, %d) = %+v, %v; want %+v", tc.rps, tc.burst, actual, err, tc.want)
+		}
+	}
+}
+
+func TestRateLimitInterceptor_RetainsCreditOnUpdates(t *testing.T) {
+	now := time.Now()
+	r := NewRateLimitInterceptor(0.0001, 2)
+	r.now = func() time.Time { return now }
+	for index, want := range []bool{true, true, false} {
+		if r.Allow() != want {
+			t.Fatalf("initial burst request %d: want admitted=%v", index, want)
+		}
+	}
+	for _, policy := range []RateLimitConfig{{RPS: 0.0001, Burst: 2}, {RPS: 0.0002, Burst: 10}, {RPS: 0.0002, Burst: 1}} {
+		if err := r.Configure(policy.RPS, policy.Burst); err != nil {
+			t.Fatal(err)
+		}
+		if r.Allow() {
+			t.Fatalf("enabled update minted fresh credit: %+v", policy)
+		}
+	}
+	if err := r.Configure(0, 0); err != nil || !r.Allow() {
+		t.Fatalf("disable failed: %v", err)
+	}
+	if err := r.Configure(0.0001, 2); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []bool{true, true, false} {
+		if r.Allow() != want {
+			t.Fatalf("explicit re-enable request %d: want admitted=%v", index, want)
+		}
+	}
+	full := NewRateLimitInterceptor(0.0001, 10)
+	full.now = func() time.Time { return now }
+	if err := full.Configure(0.0001, 1); err != nil || !full.Allow() || full.Allow() {
+		t.Fatalf("shrink must cap previously unspent credit: %v", err)
+	}
+}
+
+func TestRateLimitInterceptor_ConcurrentAtomicPair(t *testing.T) {
+	r := NewRateLimitInterceptor(1, 2)
+	var group sync.WaitGroup
+	for worker := range 8 {
+		group.Go(func() {
+			for range 100 {
+				if worker%2 == 0 {
+					policy := RateLimitConfig{RPS: float64(worker + 1), Burst: worker + 2}
+					if err := r.Configure(policy.RPS, policy.Burst); err != nil {
+						t.Error(err)
+					}
+				} else {
+					r.Allow()
+				}
+				// Observe the complete pair at the same boundary used by Allow.
+				r.mu.Lock()
+				if r.lim.Limit() != rate.Limit(r.policy.RPS) || r.lim.Burst() != r.policy.Burst || r.policy.Burst != int(r.policy.RPS)+1 {
+					t.Error("admission observed a partially installed pair")
+				}
+				r.mu.Unlock()
+			}
+		})
+	}
+	group.Wait()
 }
 
 // TestValidationInterceptor_LoggerEmitsDebugOnReject asserts that

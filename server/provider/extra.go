@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
+	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	"golang.org/x/time/rate"
@@ -294,18 +297,108 @@ func (v *ValidationInterceptor) receiptStatusBatchLimit() int {
 // the bucket return codes.ResourceExhausted so well-behaved clients (and the
 // SDK's default retry policy) can back off.
 type RateLimitInterceptor struct {
+	mu         sync.Mutex
 	lim        *rate.Limiter
+	policy     RateLimitConfig
+	policyErr  error
 	rejectHook func()
+	now        func() time.Time
 }
 
 func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {
-	if burst <= 0 {
-		burst = int(rps)
-		if burst <= 0 {
-			burst = 1
-		}
+	r := &RateLimitInterceptor{now: time.Now}
+	if math.IsNaN(rps) || math.IsInf(rps, 0) {
+		r.policyErr = errRateLimitPolicy
+		return r
 	}
-	return &RateLimitInterceptor{lim: rate.NewLimiter(rate.Limit(rps), burst)}
+	// The startup constructor retains the historical disabled and burst
+	// fallback rules. Managed updates use Configure's canonical pair instead.
+	if rps <= 0 {
+		return r
+	}
+	if burst <= 0 {
+		// Avoid an undefined out-of-range float-to-int conversion.
+		if rps < float64(int(^uint(0)>>1)) {
+			burst = int(rps)
+		}
+		burst = max(burst, 1)
+	}
+	_ = r.Configure(rps, burst)
+	return r
+}
+
+var errRateLimitPolicy = errors.New("rate policy requires finite nonnegative RPS, zero burst when disabled, and positive burst when enabled")
+
+// Configure atomically changes the per-process pair for future admissions.
+// An enabled bucket retains existing credit rather than receiving a fresh burst.
+// Enabling a previously disabled bucket intentionally grants its initial burst.
+func (r *RateLimitInterceptor) Configure(rps float64, burst int) error {
+	if r == nil || math.IsNaN(rps) || math.IsInf(rps, 0) || rps < 0 || (rps == 0 && burst != 0) || (rps > 0 && burst <= 0) {
+		return errRateLimitPolicy
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	policy := RateLimitConfig{RPS: rps, Burst: burst}
+	if r.policyErr == nil && r.policy == policy {
+		return nil
+	}
+	if rps == 0 {
+		r.lim = nil
+	} else if r.lim == nil {
+		r.lim = rate.NewLimiter(rate.Limit(rps), burst)
+	} else {
+		// Every Allow holds this same owner mutex: neither half of the pair
+		// can become visible between the two limiter updates. Capture time
+		// inside the lock so a waiting update cannot rewind the bucket clock.
+		now := time.Now
+		if r.now != nil {
+			now = r.now
+		}
+		at := now()
+		r.lim.SetLimitAt(at, rate.Limit(rps))
+		r.lim.SetBurstAt(at, burst)
+	}
+	r.policy, r.policyErr = policy, nil
+	return nil
+}
+
+// Configuration returns the last installed pair or an invalid-bootstrap error.
+// Invalid constructor input is closed admission, never an implicit disable.
+func (r *RateLimitInterceptor) Configuration() (RateLimitConfig, error) {
+	if r == nil {
+		return RateLimitConfig{}, errRateLimitPolicy
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.policy, r.policyErr
+}
+
+func (r *RateLimitInterceptor) Allow() bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.policyErr != nil {
+		return false
+	}
+	if r.lim == nil {
+		return true
+	}
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	return r.lim.AllowN(now(), 1)
+}
+
+func (r *RateLimitInterceptor) rejected() {
+	r.mu.Lock()
+	hook := r.rejectHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 // WithRejectHook registers a callback invoked once per rejected RPC
@@ -313,6 +406,8 @@ func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {
 // to bump lantern_rate_limit_rejected_total. A nil hook disables the
 // callback; safe to call exactly once during wiring.
 func (r *RateLimitInterceptor) WithRejectHook(f func()) *RateLimitInterceptor {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.rejectHook = f
 	return r
 }

@@ -1,17 +1,82 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+func TestIntegration_ResidentOperationalOwners(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	slow := provider.NewSlowRPCInterceptor(0, logger)
+	limiter := provider.NewRateLimitInterceptor(0, 0)
+	// A bounded handler delay makes the slow threshold visible over real h2c
+	// traffic without creating another runtime authority or native source.
+	delay := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
+			time.Sleep(10 * time.Millisecond)
+			return next(ctx, request)
+		}
+	})
+	srv := newConnectTestServer(t, service.NewLanternService(cache), nil, limiter.ConnectInterceptor(), slow.ConnectInterceptor(), delay)
+	c := newConnectClientFor(t, srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.PutVertex(ctx, "resident", "value", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if logs.Len() != 0 {
+		t.Fatal("disabled slow owner emitted logs")
+	}
+	if err := slow.SetThresholdMilliseconds(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := limiter.Configure(0.0001, 1); err != nil {
+		t.Fatal(err)
+	}
+	vertex, err := c.GetVertex(ctx, "resident")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := client.StringValue(vertex); value != "value" {
+		t.Fatalf("GetVertex value = %q", value)
+	}
+	if !strings.Contains(logs.String(), `"msg":"slow rpc"`) || !strings.Contains(logs.String(), `"method":"/graph.v1.LanternService/GetVertex"`) {
+		t.Fatalf("enabled slow owner missed real Connect RPC: %s", logs.String())
+	}
+	if err := limiter.Configure(0.0001, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetVertex(ctx, "resident"); !errors.Is(err, client.ErrResourceExhausted) {
+		t.Fatalf("replayed policy refilled admission credit: %v", err)
+	}
+	if err := limiter.Configure(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := slow.SetThresholdMilliseconds(0); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	if _, err := c.GetVertex(ctx, "resident"); err != nil {
+		t.Fatalf("disable did not reach the existing Connect handlers: %v", err)
+	}
+	if logs.Len() != 0 {
+		t.Fatal("disabled slow owner emitted logs after update")
+	}
+}
 
 // TestIntegration_FullMiddlewareChain spins up an h2c httptest server
 // mounting the full Connect interceptor chain (validation + rate-limit)

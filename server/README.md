@@ -216,6 +216,15 @@ failure (#847). The most common knobs:
 | `LANTERN_LLM_*` | `PROVIDER=disabled` | LLM engine wiring (#828): provider, model, key/base-URL, and the injectable auth modes. |
 | `LANTERN_TOMBSTONE_TTL` | `8760h` (1 year) | Tombstone retention + clamp on caller-supplied `Expiration`; set to `0` to disable (see HA RFC). |
 
+Slow-RPC and rate-limit owners stay mounted when disabled. A slow-RPC request
+uses the threshold captured at its start. Rate updates install RPS and Burst
+together per process, preserve existing credit while enabled, and cap credit
+when Burst shrinks. Explicitly enabling a disabled bucket grants one initial
+burst; reapplying an enabled policy does not. Nonfinite startup RPS is reported
+as an invalid policy and closes admission rather than silently disabling it.
+These runtime seams prepare managed settings; this change does not activate a
+management recovery reserve or expose new settings through Admin (#2006).
+
 Public edge Put/Add RPCs accept only finite source weights, for both singular and
 plural calls. Peer mutations and restored Snapshot/archive contributions follow
 the same rule. Finite contributions may still overflow to an infinite effective

@@ -6,9 +6,49 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/prometheus/client_golang/prometheus"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 )
+
+func TestRateLimitInterceptor_ProviderRetainsDisabledMetricsHook(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics := domainmetrics.New(registry, domainmetrics.Options{})
+	owner := NewRateLimitInterceptorProvider(RateLimitConfig{}, metrics)
+	wrapped := owner.ConnectInterceptor()(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	})
+	call := func() error {
+		_, err := wrapped(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"}))
+		return err
+	}
+	if err := call(); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Configure(0.0001, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("exhausted owner returned %v", err)
+	}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() == "lantern_rate_limit_rejected_total" {
+			if len(family.Metric) != 1 || family.Metric[0].GetCounter().GetValue() != 1 {
+				t.Fatalf("rejection metric = %v, want one", family.Metric)
+			}
+			return
+		}
+	}
+	t.Fatal("rate-limit rejection metric is absent")
+}
 
 // TestValidationInterceptor_ConnectInterceptor_RejectsAndFiresHook
 // covers the Connect-Go path of the validation interceptor: the same

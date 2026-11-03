@@ -70,6 +70,44 @@ func TestLoadTLSConfigEnvironmentPEM(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedHandlerOptionsResidentOwners(t *testing.T) {
+	var logs bytes.Buffer
+	logger := newJSONLogger(&logs, slog.LevelWarn)
+	slow := NewSlowRPCInterceptor(0, logger)
+	tick := int64(0)
+	slow.now = func() time.Time {
+		tick += int64(10 * time.Millisecond)
+		return time.Unix(0, tick)
+	}
+	limiter := NewRateLimitInterceptor(0, 0)
+	handler := connect.NewUnaryHandler("/test.Service/Call", func(context.Context, *connect.Request[pb.GetVertexRequest]) (*connect.Response[pb.GetVertexResponse], error) {
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	}, authenticatedHandlerOptions(NetConfig{}, nil, limiter, nil, nil, nil, slow, logger)...)
+	call := func() int {
+		t.Helper()
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/test.Service/Call", strings.NewReader(`{"key":"k"}`))
+		request.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(response, request)
+		return response.Code
+	}
+	if call() != http.StatusOK || logs.Len() != 0 {
+		t.Fatal("initial disabled policies affected request")
+	}
+	if err := slow.SetThresholdMilliseconds(5); err != nil {
+		t.Fatal(err)
+	}
+	if err := limiter.Configure(0.0001, 1); err != nil {
+		t.Fatal(err)
+	}
+	if call() != http.StatusOK || len(decodeRecords(t, &logs)) != 1 {
+		t.Fatal("listener omitted the initially disabled slow owner")
+	}
+	if call() != http.StatusTooManyRequests {
+		t.Fatal("listener omitted the initially disabled rate owner")
+	}
+}
+
 func newMessageLimitedListener(
 	t *testing.T,
 	netCfg NetConfig,
