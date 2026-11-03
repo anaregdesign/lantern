@@ -48,6 +48,16 @@ func NewOwner(initial Snapshot) (*Owner, error) {
 	return o, nil
 }
 
+// NewBootstrapOwner preserves an actual legacy-selected policy at generation
+// zero, including durations not representable by the managed seconds schema.
+// Only strict Apply can advance it to a managed generation; no default is
+// substituted for the actual future-action behavior.
+func NewBootstrapOwner(actual Policy) *Owner {
+	o := &Owner{}
+	o.current.Store(&Snapshot{Policy: actual})
+	return o
+}
+
 func (o *Owner) LifecycleSnapshot() Snapshot { return *o.current.Load() }
 
 // Apply rejects stale and conflicting callbacks without changing any field.

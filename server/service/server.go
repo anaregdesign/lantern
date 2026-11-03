@@ -52,6 +52,12 @@ func (s *LanternServer) WithShutdownPlan(plan *ShutdownPlan) *LanternServer {
 	return s
 }
 
+// UsesShutdownPlan verifies composition identity before Run without capturing
+// a generation or changing the server's shutdown behavior.
+func (s *LanternServer) UsesShutdownPlan(plan *ShutdownPlan) bool {
+	return s != nil && plan != nil && s.shutdownPlan == plan
+}
+
 // Watcher is the lifecycle hook LanternServer uses to drive the cache GC
 // loop. *graphcache.GraphCache satisfies it; tests can stub it.
 type Watcher interface {
@@ -82,6 +88,7 @@ type Listener interface {
 type LifecycleConfig struct {
 	GCInterval      time.Duration
 	ShutdownTimeout time.Duration
+	ShutdownPlan    *ShutdownPlan
 }
 
 // NewLanternServer takes the composed Listener (an http.Server bound to
@@ -109,6 +116,7 @@ func NewLanternServer(
 		logger:          logger,
 		gcInterval:      cfg.GCInterval,
 		shutdownTimeout: cfg.ShutdownTimeout,
+		shutdownPlan:    cfg.ShutdownPlan,
 		health:          hs,
 		watcher:         watcher,
 	}

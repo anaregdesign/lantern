@@ -14,6 +14,10 @@ func NewLifecyclePolicyOwner(initial LifecyclePolicySnapshot) (*LifecyclePolicyO
 	return lifecyclepolicy.NewOwner(initial)
 }
 
+func NewBootstrapLifecyclePolicyOwner(actual LifecyclePolicy) *LifecyclePolicyOwner {
+	return lifecyclepolicy.NewBootstrapOwner(actual)
+}
+
 func NewShutdownPlan(source LifecyclePolicySource) (*ShutdownPlan, error) {
 	return lifecyclepolicy.NewShutdownPlan(source)
 }

@@ -75,7 +75,7 @@ func TestGateUpdateMaxLagConcurrent(t *testing.T) {
 	workers.Wait()
 	g.SetLag("peer", "origin", 1)
 	g.UpdateMaxLag(0)
-	if g.Ready() {
+	if g.Ready() || g.MaxLag() != 0 {
 		t.Fatal("concurrent updates lost final threshold")
 	}
 }

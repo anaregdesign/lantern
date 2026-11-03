@@ -25,6 +25,14 @@ failure can begin HTTP shutdown first; App then observes the same captured plan.
 Without a managed source, existing static configuration behavior is preserved,
 including nonpositive legacy HTTP timeouts having no deadline.
 
+The reported effective lifecycle generation describes future actions. A newly
+installed generation does not claim that an already-running shutdown changed
+its captured drain delay or HTTP deadline. An unadopted legacy-selected positive
+fractional duration remains the actual behavior and reports invalid managed
+policy with no representable effective tuple. A valid reviewed commit repairs
+it without substituting defaults. Verified adopted policy takes precedence over
+conflicting or unrepresentable host inputs during recovery.
+
 Updating readiness's lag threshold reevaluates retained lag observations. It
 does not reset bootstrap, search compatibility, native serving permission or
 the one-way drain latch. Lag updates must never write the native authority's

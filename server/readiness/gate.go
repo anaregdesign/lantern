@@ -135,6 +135,13 @@ func (g *Gate) UpdateMaxLag(maxLag uint64) {
 	g.evaluateLocked()
 }
 
+// MaxLag reports the actual installed threshold without exposing mutable state.
+func (g *Gate) MaxLag() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.maxLag
+}
+
 // SetLag records the latest observed lag for a (peer, origin) row in
 // mutation-seq units. A value of 0 clears the row (caught up). In
 // single-instance mode this is a no-op.

@@ -53,3 +53,18 @@ func TestOwnerValidationAndAtomicGenerations(t *testing.T) {
 		}
 	}
 }
+
+func TestBootstrapOwnerPreservesUnrepresentableActualUntilManagedRepair(t *testing.T) {
+	actual := Policy{DrainDelay: 1500 * time.Millisecond, ShutdownTimeout: 2500 * time.Millisecond, MaxReplicationLag: 17}
+	owner := NewBootstrapOwner(actual)
+	if owner.LifecycleSnapshot() != (Snapshot{Policy: actual}) {
+		t.Fatal("bootstrap replaced actual policy with defaults")
+	}
+	if owner.Apply(Snapshot{Generation: 1, Policy: actual}) == nil {
+		t.Fatal("unrepresentable actual bootstrap became managed")
+	}
+	next := Snapshot{Generation: 1, Policy: Policy{ShutdownTimeout: 3 * time.Second}}
+	if err := owner.Apply(next); err != nil || owner.LifecycleSnapshot() != next {
+		t.Fatal("valid managed generation could not repair bootstrap", err)
+	}
+}

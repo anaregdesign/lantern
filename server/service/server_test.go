@@ -34,6 +34,34 @@ func TestLanternServerUsesOnlyTheExactManagedWatcher(t *testing.T) {
 	}
 }
 
+type lifecyclePlanTestListener struct{ server *http.Server }
+
+func (l lifecyclePlanTestListener) Server() *http.Server   { return l.server }
+func (l lifecyclePlanTestListener) Listener() net.Listener { return nil }
+func (l lifecyclePlanTestListener) TLSEnabled() bool       { return false }
+
+func TestLanternServerConstructorBindsExactShutdownPlan(t *testing.T) {
+	owner, err := NewLifecyclePolicyOwner(LifecyclePolicySnapshot{Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewShutdownPlan(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewLanternServer(lifecyclePlanTestListener{&http.Server{}}, slog.New(slog.DiscardHandler), LifecycleConfig{ShutdownPlan: plan}, nil, nil, nil, nil)
+	other, err := NewShutdownPlan(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.UsesShutdownPlan(plan) || server.UsesShutdownPlan(other) || server.UsesShutdownPlan(nil) {
+		t.Fatal("HTTP server constructor did not bind exact shared plan")
+	}
+	if plan.Current().Generation != 1 {
+		t.Fatal("identity check captured or changed plan")
+	}
+}
+
 // TestLanternServer_gracefulShutdown_TimeoutForcesClose pins an
 // in-flight HTTP request open so http.Server.Shutdown cannot drain,
 // then asserts gracefulShutdown honours ShutdownTimeout by escalating
