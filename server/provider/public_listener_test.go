@@ -62,8 +62,8 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 		t.Fatal("equal-valued foreign recovery accepted certification")
 	}
 	for name, mutate := range map[string]func(*publicSecurityCertified){
-		"Rate":     func(c *publicSecurityCertified) { c.rate = NewRateLimitInterceptor(0, 0) },
-		"recovery": func(c *publicSecurityCertified) { c.recovery = &foreignRecovery },
+		"Rate":             func(c *publicSecurityCertified) { c.rate = NewRateLimitInterceptor(0, 0) },
+		"recovery":         func(c *publicSecurityCertified) { c.recovery = &foreignRecovery },
 		"missing Capacity": func(c *publicSecurityCertified) { c.capacity = nil },
 		"foreign Capacity": func(c *publicSecurityCertified) { c.capacity = &dataruntime.GraphPolicyOwner{} },
 	} {

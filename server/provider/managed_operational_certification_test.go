@@ -242,9 +242,9 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 	}
 	manager.backup = backupEntry
 	for name, change := range map[string]func(*managedCapacityCertified){
-		"manager":       func(c *managedCapacityCertified) { c.manager = &ManagedOperationalRuntime{} },
-		"missing owner": func(c *managedCapacityCertified) { c.owner = nil },
-		"foreign owner": func(c *managedCapacityCertified) { c.owner = &dataruntime.GraphPolicyOwner{} },
+		"manager":         func(c *managedCapacityCertified) { c.manager = &ManagedOperationalRuntime{} },
+		"missing owner":   func(c *managedCapacityCertified) { c.owner = nil },
+		"foreign owner":   func(c *managedCapacityCertified) { c.owner = &dataruntime.GraphPolicyOwner{} },
 		"missing adapter": func(c *managedCapacityCertified) { c.adapter = nil },
 		"foreign adapter": func(c *managedCapacityCertified) { c.adapter = &managedCapacityRuntime{owner: c.owner} },
 	} {
@@ -285,7 +285,7 @@ func TestManagedOperationalCertificationKeepsInvalidRateAvailableForRepair(t *te
 			rate := operationalPublicTestRate(t, manager, cfg.RateLimit)
 			request := operationalPublicTestRequest(t, manager, primary, cfg)
 			backupMarker := operationalPublicTestBackup(t, manager, primary, cfg)
-	capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
+			capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
 			certified, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, slowMarker, rate, request, backupMarker, capacityMarker)
 			if err != nil || certified.rate != rate.owner || certified.recovery != rate.recovery || rate.owner.Allow() {
 				t.Fatal("invalid bootstrap lost its installed repair owner", err)

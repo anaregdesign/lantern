@@ -86,7 +86,7 @@ func TestGraphPolicyOwnsOnlyItsAvailableInstalledRuntimeAndPrimary(t *testing.T)
 	}
 	otherRuntime, otherPrimary := newGraphPolicyTestRuntime(t)
 	for _, invalid := range []struct {
-		owner *GraphPolicyOwner
+		owner   *GraphPolicyOwner
 		runtime *ServingRuntime
 		primary *Executor
 	}{
