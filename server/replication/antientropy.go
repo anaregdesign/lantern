@@ -168,6 +168,20 @@ type AntiEntropy struct {
 	observedSeq map[string]uint64
 }
 
+// SearchConfigFingerprint returns the immutable effective fingerprint captured
+// at construction, independently of later desired Search policy.
+func (a *AntiEntropy) SearchConfigFingerprint() string {
+	if a == nil {
+		return ""
+	}
+	return a.cfg.SearchConfigFingerprint
+}
+
+// UsesPump checks the exact worker installed for progress coordination.
+func (a *AntiEntropy) UsesPump(pump *Pump) bool {
+	return a != nil && pump != nil && a.cfg.Pump == pump
+}
+
 // NewAntiEntropy constructs the driver. local MUST be the same LanternService
 // that backs ApplyMutation so the watermark observed at compare-time matches
 // the state that newly-applied mutations will update. apply is also the

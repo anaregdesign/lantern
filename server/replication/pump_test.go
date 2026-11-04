@@ -120,10 +120,16 @@ func TestPumpUsesInjectedSnapshotInstaller(t *testing.T) {
 	installer := &scriptedSnapshotInstaller{
 		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}
-	pump := NewPump(Config{
+	config := Config{
 		HTTPClient:        defaultH2CClient(),
 		SnapshotInstaller: installer,
-	}, nil, nil)
+	}
+	pump := NewPump(config, nil, nil)
+	config.SearchConfigFingerprint = "later-desired-search"
+	var absent *Pump
+	if absent.SearchConfigFingerprint() != "" || pump.SearchConfigFingerprint() != "" {
+		t.Fatal("worker fingerprint did not retain its actual constructor value")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 

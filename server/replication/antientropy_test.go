@@ -39,11 +39,19 @@ func TestAntiEntropyUsesInjectedSnapshotInstallerAndResumes(t *testing.T) {
 	installer := &scriptedSnapshotInstaller{
 		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}
-	driver := NewAntiEntropy(AntiEntropyConfig{
+	config := AntiEntropyConfig{
 		HTTPClient:        defaultH2CClient(),
 		SubscribeTimeout:  time.Second,
 		SnapshotInstaller: installer,
-	}, fixedLocalState{}, nil, nil)
+	}
+	driver := NewAntiEntropy(config, fixedLocalState{}, nil, nil)
+	foreign := &Pump{}
+	config.SearchConfigFingerprint, config.Pump = "later-desired-search", foreign
+	var absent *AntiEntropy
+	if absent.SearchConfigFingerprint() != "" || absent.UsesPump(foreign) ||
+		driver.SearchConfigFingerprint() != "" || driver.UsesPump(foreign) || driver.UsesPump(nil) {
+		t.Fatal("worker did not retain its actual constructor Search/Pump binding")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 

@@ -49,7 +49,7 @@ proof from the private data admission, independently of management grants and
 ordinary query authorization; only explicitly environment-owned composition
 uses no authority source.
 
-An explicit engine restart uses the exact staged snapshot as its CAS token.
+The pure owner supports an explicit engine restart using the exact staged snapshot as its CAS token.
 It constructs a new immutable query engine, semaphore and bounded cursor store,
 then swaps the complete engine. It preserves the existing graph, core search
 index and replication data. A repeated activation of the same effective
@@ -71,18 +71,30 @@ an observer cache alone cannot establish authoritative desired state.
 Capabilities and `SearchConfigFingerprint` report the installed engine, never
 the pending candidate.
 
-The supported activation preserves graph data by restarting the owned query
-engine rather than stopping every graph-only process. Complete integration
-must refresh the replication workers' advertised fingerprint coherently with
-activation. Their current constructors capture a fingerprint string; this
-runtime package exposes a stable owner fingerprint provider for that later
-worker integration and does not claim those workers refresh automatically.
+Production reconstructs the engine during ordinary startup, after verified
+native policy restoration and before public certification or peer-worker
+construction. Once that installation is sealed, a live Apply only stages the
+desired policy and reports a coordinated restart pending; it cannot replace
+the engine or its cursors in that running process. The pure owner's restart
+method is not a live management activation endpoint.
+
+Concrete Search-certified Pump and anti-entropy providers depend on that exact
+sealed installation and verify both workers' actual captured fingerprints.
+A private witness binds the anti-entropy driver to the same constructed Pump,
+runtime, primary and graph cache. Raw constructors remain available for their
+existing callers, but the production injector selects the certified providers.
+Workers retain their original fingerprint during a live staged change.
+
+This operation does not automatically restart processes or establish a new
+data-restoration mechanism. Durable restart uses the existing WAL recovery
+contract. A graph-only process with volatile data needs its existing external
+backup/restore or other supported data-preserving restart procedure before
+an operator stops it; staging Search policy does not make that data durable.
 Existing peer fingerprint mismatch warns and marks readiness unavailable while
 graph replication continues. Management/private control and non-search data
 remain reachable during a search transition. Zero-downtime rolling process
 restart is not a blanket guarantee.
 
-This package implements the pure policy/runtime seam and real Connect
-transition tests for #2014. Native adoption, fixed-cohort proofs, persistence,
-Admin review/Apply/recovery and replication-worker integration remain owned by
-the common Epic #1990 integration packages.
+Native adoption, fixed-cohort proofs, persistence and Admin review/Apply/recovery
+reuse the common typed Epic #1990 protocol. Replication scheduling remains a
+separate operational group and is not activated by Search worker certification.

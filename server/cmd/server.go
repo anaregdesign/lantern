@@ -110,6 +110,10 @@ func newApp(
 	if !server.UsesShutdownPlan(shutdownPlan) || !server.UsesWatcher(graphPolicy) || !graphPolicy.OwnsInstallation(runtime, svc) {
 		return nil, errors.New("app requires the exact managed lifecycle and graph owners")
 	}
+	fingerprint := svc.SearchConfigFingerprint()
+	if pump == nil || antiEntropy == nil || fingerprint == "" || pump.SearchConfigFingerprint() != fingerprint || antiEntropy.SearchConfigFingerprint() != fingerprint || !antiEntropy.UsesPump(pump) {
+		return nil, errors.New("app requires the same replication pair with the final Search fingerprint")
+	}
 	// Wire the replication snapshotter onto svc here (rather than inside
 	// newLanternService) because pump itself depends on svc; that cycle
 	// is broken by deferring the binding until after both have been

@@ -1074,6 +1074,15 @@ type Pump struct {
 	tracker   *peerTracker
 }
 
+// SearchConfigFingerprint returns the immutable effective fingerprint captured
+// when this worker was constructed. It does not report a staged desired policy.
+func (p *Pump) SearchConfigFingerprint() string {
+	if p == nil {
+		return ""
+	}
+	return p.cfg.SearchConfigFingerprint
+}
+
 // NewPump constructs the pump. apply MUST be the local LanternService instance
 // so replayed mutations are not re-broadcast. When Config.SnapshotInstaller is
 // nil, snap MUST be the same underlying graph cache the read RPCs serve so the
