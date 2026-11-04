@@ -403,6 +403,55 @@ func TestManagedOperationalRuntimeFreshObserveNeverApplies(t *testing.T) {
 	}
 }
 
+func TestManagedOperationalRuntimeInvalidBootstrapRepairRemainsObservableOnApplyFailure(t *testing.T) {
+	for _, tc := range []struct {
+		group operationalpolicy.Group
+		mode  securitytransport.OperationalSettingsChangeMode
+	}{
+		{operationalpolicy.GroupRate, securitytransport.OperationalModeHot},
+		{operationalpolicy.GroupSearch, securitytransport.OperationalModeCoordinatedRestart},
+		{operationalpolicy.GroupReplication, securitytransport.OperationalModeProcessRestart},
+	} {
+		t.Run(string(tc.group), func(t *testing.T) {
+			initial := operationalRuntimeTestProjection(1)
+			manager, authority := operationalRuntimeTestManager(t, initial)
+			owner := newOperationalOwnerTestFake(t, tc.group, tc.mode)
+			owner.actual.Effective = nil
+			owner.actual.Error = securitytransport.OperationalErrorInvalidPolicy
+			for setting := range owner.actual.Sources {
+				owner.actual.Sources[setting] = securitytransport.OperationalSourceEnvironment
+			}
+			if err := manager.Register(t.Context(), tc.group, owner); err != nil {
+				t.Fatal(err)
+			}
+			next := operationalRuntimeTestPrepare(operationalRuntimeTestProjection(2), tc.group)
+			policy := operationalRuntimeTestPolicy(t, tc.group, 1)
+			if err := next.Policies.Set(tc.group, policy); err != nil {
+				t.Fatal(err)
+			}
+			authority.setProjection(next)
+			owner.applyErr = errors.New("repair could not apply")
+			if err := manager.Reconcile(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			observed, err := manager.Observe(next)
+			if err != nil {
+				t.Fatal("failed repair hid known desired and actual error", err)
+			}
+			actual := observed[tc.group]
+			if actual.Effective != nil || actual.Error != securitytransport.OperationalErrorInvalidPolicy || actual.AppliedGeneration != 0 || actual.AppliedCut != (security.SemanticCut{}) || !actual.Pending || actual.Mode != tc.mode || actual.RestartRequired != (tc.mode != securitytransport.OperationalModeHot) {
+				t.Fatal("failed repair changed the invalid-bootstrap status contract", actual)
+			}
+			if !reflect.DeepEqual(actual.Sources, owner.actual.Sources) || actual.EffectiveCompatibilityFingerprint != owner.actual.Fingerprint || !reflect.DeepEqual(manager.projection.Policies.Get(tc.group), policy) {
+				t.Fatal("failed repair lost provenance, actual fingerprint or committed desired policy", actual)
+			}
+			if manager.entry(tc.group).lastError != securitytransport.OperationalErrorApplyFailed {
+				t.Fatal("test did not retain the repair application failure")
+			}
+		})
+	}
+}
+
 func TestManagedOperationalRuntimeConstructorAndUnsupportedGroups(t *testing.T) {
 	for _, runtime := range []*SecurityRuntime{nil, {mode: "unknown"}, {mode: "oidc"}} {
 		if _, err := NewManagedOperationalRuntime(t.Context(), runtime, OperationalBootstrapConfig{}); err == nil {

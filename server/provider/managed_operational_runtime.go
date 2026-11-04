@@ -357,7 +357,10 @@ func (m *ManagedOperationalRuntime) Observe(p security.OperationalPolicyProjecti
 		} else if entry.applied != nil {
 			return nil, errManagedOperational
 		}
-		if entry.lastError != securitytransport.OperationalErrorNone {
+		// Keep the owner's actual-state error primary. In particular, an
+		// invalid bootstrap with no representable effective value must remain
+		// observable while a committed repair is pending or fails to apply.
+		if observed.Error == securitytransport.OperationalErrorNone && entry.lastError != securitytransport.OperationalErrorNone {
 			observed.Error = entry.lastError
 		}
 		result[group] = observed
