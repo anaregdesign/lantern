@@ -253,3 +253,112 @@ func TestManagedCapacityInvalidOverflowedBootstrapRemainsVisibleAndRepairable(t 
 		t.Fatalf("managed repair = %+v, %v", actual, err)
 	}
 }
+
+func TestManagedCapacityDeferredPreviewUsesActualRegisteredOwnerAndCandidate(t *testing.T) {
+	config, owner, data, primary := managedCapacityTestOwner(t)
+	if _, err := primary.PutEdges(t.Context(), &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "restored-a", Head: "restored-b", Weight: 1}, {Tail: "restored-b", Head: "restored-a", Weight: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	manager, authority := operationalRuntimeTestManager(t, operationalRuntimeTestProjection(1))
+	manager.bootstrap = NewOperationalBootstrapConfig(config)
+	manager.runtime.data, manager.runtime.managedOperational = data, manager
+	runtime := manager.runtime
+	candidate := operationalpolicy.Capacity{GCIntervalSeconds: 1, GCEdgeBudget: 1, MaxVertices: 1, MaxEdges: 1, MaxVertexCausalEntries: 1, MaxEdgeCausalEntries: 1}
+	var absent *SecurityRuntime
+	if _, err := absent.operationalCapacityPreview(t.Context(), candidate); err == nil {
+		t.Fatal("missing runtime fabricated capacity usage")
+	}
+	if _, err := runtime.operationalCapacityPreview(t.Context(), candidate); err == nil {
+		t.Fatal("unregistered owner fabricated capacity usage")
+	}
+	certified, err := NewManagedCapacityRuntime(t.Context(), manager, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, reads := owner.Snapshot(), authority.reads
+	actual, err := runtime.operationalCapacityPreview(t.Context(), candidate)
+	if err != nil || actual.Member != 1 || actual.EffectiveGeneration != 0 || actual.VertexFootprint != 2 || actual.EdgeFootprint != 2 || actual.VertexCausalEntries != 2 || actual.EdgeCausalEntries != 2 || !actual.VerticesOverLimit || !actual.EdgesOverLimit || !actual.VertexCausalOverLimit || !actual.EdgeCausalOverLimit {
+		t.Fatalf("actual connected-node shrink preview = %+v, %v", actual, err)
+	}
+	if owner.Snapshot() != before || data.GraphCache().VertexCount() != 2 || authority.reads != reads {
+		t.Fatal("preview applied policy, evicted data or read authority")
+	}
+	for _, limit := range []int64{2, 0} {
+		candidate.MaxVertices, candidate.MaxEdges = limit, limit
+		candidate.MaxVertexCausalEntries, candidate.MaxEdgeCausalEntries = limit, limit
+		actual, err := runtime.operationalCapacityPreview(t.Context(), candidate)
+		if err != nil || actual.VerticesOverLimit || actual.EdgesOverLimit || actual.VertexCausalOverLimit || actual.EdgeCausalOverLimit {
+			t.Fatal("equal or unlimited candidate reported over-limit", actual, err)
+		}
+	}
+	invalid := candidate
+	invalid.MaxVertices = -1
+	if _, err := runtime.operationalCapacityPreview(t.Context(), invalid); err == nil {
+		t.Fatal("invalid managed cap accepted by preview")
+	}
+	if err := certified.adapter.ApplyOperationalPolicy(operationalpolicy.Policy{Version: 1, Generation: 5, Values: operationalpolicy.Values{Capacity: &candidate}}); err != nil {
+		t.Fatal(err)
+	}
+	authority.readErr = errors.New("fixture authority unavailable")
+	actual, err = runtime.operationalCapacityPreview(t.Context(), candidate)
+	if err != nil || actual.EffectiveGeneration != 5 || authority.reads != reads {
+		t.Fatal("sample generation was inferred from authority", actual, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := runtime.operationalCapacityPreview(ctx, candidate); err == nil {
+		t.Fatal("canceled sampling accepted")
+	}
+	manager.mu.Lock()
+	entry, member := manager.capacity, manager.projection.Member
+	manager.projection.Member = 0
+	manager.mu.Unlock()
+	if _, err := runtime.operationalCapacityPreview(t.Context(), candidate); err == nil {
+		t.Fatal("missing member fabricated sample identity")
+	}
+	manager.mu.Lock()
+	manager.projection.Member = member
+	wrong := *entry
+	wrong.owner = newOperationalOwnerTestFake(t, operationalpolicy.GroupCapacity, securitytransport.OperationalModeWorkerRestart)
+	manager.capacity = &wrong
+	manager.mu.Unlock()
+	if _, err := runtime.operationalCapacityPreview(t.Context(), candidate); err == nil {
+		t.Fatal("foreign adapter fabricated capacity usage")
+	}
+	manager.mu.Lock()
+	manager.capacity = entry
+	manager.mu.Unlock()
+	if err := data.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.operationalCapacityPreview(t.Context(), candidate); err == nil {
+		t.Fatal("closed owner returned capacity usage")
+	}
+}
+
+func TestManagedCapacityPreviewAllowsValidRepairOfUnrepresentableBootstrap(t *testing.T) {
+	config, owner, data, _ := managedCapacityTestOwner(t, "LANTERN_GC_INTERVAL_SECONDS=18446744074")
+	if owner.Snapshot().Config.GCInterval <= 0 || owner.Snapshot().Config.GCInterval%time.Second == 0 {
+		t.Fatal("fixture did not retain an unrepresentable legacy GC interval")
+	}
+	manager, _ := operationalRuntimeTestManager(t, operationalRuntimeTestProjection(1))
+	manager.bootstrap = NewOperationalBootstrapConfig(config)
+	manager.runtime.data, manager.runtime.managedOperational = data, manager
+	certified, err := NewManagedCapacityRuntime(t.Context(), manager, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := operationalpolicy.Capacity{GCIntervalSeconds: 1}
+	before := owner.Snapshot()
+	actual, err := manager.runtime.operationalCapacityPreview(t.Context(), candidate)
+	if err != nil || actual.Member != 1 || actual.EffectiveGeneration != 0 || actual.VertexFootprint != 2 || owner.Snapshot() != before {
+		t.Fatal("invalid actual bootstrap blocked or changed during repair preview", actual, err)
+	}
+	if err := certified.adapter.ApplyOperationalPolicy(operationalpolicy.Policy{Version: 1, Generation: 1, Values: operationalpolicy.Values{Capacity: &candidate}}); err != nil {
+		t.Fatal(err)
+	}
+	actual, err = manager.runtime.operationalCapacityPreview(t.Context(), candidate)
+	if err != nil || actual.EffectiveGeneration != 1 || owner.Snapshot().Config.GCInterval != time.Second {
+		t.Fatal("valid committed repair was not reflected by preview", actual, err)
+	}
+}

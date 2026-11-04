@@ -131,3 +131,38 @@ func (c *managedCapacityRuntime) ObserveOperationalPolicy() (OperationalOwnerObs
 	}
 	return observation, nil
 }
+
+// operationalCapacityPreview resolves the registered owner after construction.
+// It samples actual usage without applying policy, reading authority or claiming
+// an atomic measurement across the independent Core counter snapshots.
+func (r *SecurityRuntime) operationalCapacityPreview(ctx context.Context, candidate operationalpolicy.Capacity) (securitytransport.OperationalCapacityPreview, error) {
+	if r == nil || r.managedOperational == nil || r.managedOperational.runtime != r || ctx.Err() != nil {
+		return securitytransport.OperationalCapacityPreview{}, errManagedOperational
+	}
+	manager := r.managedOperational
+	manager.mu.Lock()
+	entry, member := manager.capacity, manager.projection.Member
+	manager.mu.Unlock()
+	if entry == nil || member == 0 {
+		return securitytransport.OperationalCapacityPreview{}, errManagedOperational
+	}
+	adapter, ok := entry.owner.(*managedCapacityRuntime)
+	if !ok || adapter.AvailableOperationalPolicy(operationalpolicy.GroupCapacity, operationalpolicy.Version) != nil {
+		return securitytransport.OperationalCapacityPreview{}, errManagedOperational
+	}
+	config, err := managedCapacityConfig(operationalpolicy.Values{Capacity: &candidate})
+	if err != nil {
+		return securitytransport.OperationalCapacityPreview{}, errManagedOperational
+	}
+	preview, err := adapter.owner.Preview(config)
+	if err != nil || ctx.Err() != nil || preview.VertexFootprint < 0 || preview.EdgeFootprint < 0 || preview.VertexCausalEntries < 0 || preview.EdgeCausalEntries < 0 {
+		return securitytransport.OperationalCapacityPreview{}, errManagedOperational
+	}
+	return securitytransport.OperationalCapacityPreview{
+		Member: member, EffectiveGeneration: preview.Current.Generation,
+		VertexFootprint: uint64(preview.VertexFootprint), EdgeFootprint: uint64(preview.EdgeFootprint),
+		VertexCausalEntries: uint64(preview.VertexCausalEntries), EdgeCausalEntries: uint64(preview.EdgeCausalEntries),
+		VerticesOverLimit: preview.VerticesOverLimit, EdgesOverLimit: preview.EdgesOverLimit,
+		VertexCausalOverLimit: preview.VertexCausalOverLimit, EdgeCausalOverLimit: preview.EdgeCausalOverLimit,
+	}, nil
+}
