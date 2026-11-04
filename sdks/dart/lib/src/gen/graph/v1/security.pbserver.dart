@@ -41,6 +41,10 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $1.GetRegistrationPolicyRequest request);
   $async.Future<$1.GetLogSettingsResponse> getLogSettings(
       $pb.ServerContext ctx, $1.GetLogSettingsRequest request);
+  $async.Future<$1.GetOperationalSettingsResponse> getOperationalSettings(
+      $pb.ServerContext ctx, $1.GetOperationalSettingsRequest request);
+  $async.Future<$1.PreviewOperationalPolicyResponse> previewOperationalPolicy(
+      $pb.ServerContext ctx, $1.PreviewOperationalPolicyRequest request);
   $async.Future<$1.ListRoleAssignmentsResponse> listRoleAssignments(
       $pb.ServerContext ctx, $1.ListRoleAssignmentsRequest request);
   $async.Future<$1.ListSecurityAuditResponse> listSecurityAudit(
@@ -88,6 +92,10 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
         return $1.GetRegistrationPolicyRequest();
       case 'GetLogSettings':
         return $1.GetLogSettingsRequest();
+      case 'GetOperationalSettings':
+        return $1.GetOperationalSettingsRequest();
+      case 'PreviewOperationalPolicy':
+        return $1.PreviewOperationalPolicyRequest();
       case 'ListRoleAssignments':
         return $1.ListRoleAssignmentsRequest();
       case 'ListSecurityAudit':
@@ -141,6 +149,12 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
             ctx, request as $1.GetRegistrationPolicyRequest);
       case 'GetLogSettings':
         return getLogSettings(ctx, request as $1.GetLogSettingsRequest);
+      case 'GetOperationalSettings':
+        return getOperationalSettings(
+            ctx, request as $1.GetOperationalSettingsRequest);
+      case 'PreviewOperationalPolicy':
+        return previewOperationalPolicy(
+            ctx, request as $1.PreviewOperationalPolicyRequest);
       case 'ListRoleAssignments':
         return listRoleAssignments(
             ctx, request as $1.ListRoleAssignmentsRequest);

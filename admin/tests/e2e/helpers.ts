@@ -143,6 +143,8 @@ export async function securityUI(
   ) => {
     const value = makeResult(review, undefined, disposition);
     value.original?.items.forEach((item, index) => {
+      if (review.changes[index]?.operation.case === "putOperationalPolicy")
+        item.kind = "operational_policy.put";
       if (review.changes[index]?.operation.case === "putLogPolicy")
         item.kind = "log_policy.put";
       if (review.changes[index]?.operation.case === "revokeUserSessions")
@@ -263,6 +265,19 @@ export async function securityUI(
       });
       if (options.denied)
         return json({ code: "permission_denied", message: "Denied" }, 403);
+      if (method === "GetOperationalSettings")
+        return json({
+          schemaVersion: 1,
+          member: 1,
+          version,
+          groups: Array.from({ length: 8 }, (_, index) => ({
+            group: index + 1,
+            adoption: 1,
+            changeMode: 1,
+            application: 1,
+            error: 3,
+          })),
+        });
       if (method === "GetLogSettings") {
         const managed = managedLogLevel !== 0;
         const pending =

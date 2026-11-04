@@ -361,6 +361,541 @@ class LogSettingsError extends $pb.ProtobufEnum {
   const LogSettingsError._(super.value, super.name);
 }
 
+/// Closed business values only. No arbitrary configuration keys or secret values.
+class OperationalGroup extends $pb.ProtobufEnum {
+  static const OperationalGroup OPERATIONAL_GROUP_UNSPECIFIED =
+      OperationalGroup._(
+          0, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_UNSPECIFIED');
+  static const OperationalGroup OPERATIONAL_GROUP_SLOW_RPC =
+      OperationalGroup._(1, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_SLOW_RPC');
+  static const OperationalGroup OPERATIONAL_GROUP_RATE =
+      OperationalGroup._(2, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_RATE');
+  static const OperationalGroup OPERATIONAL_GROUP_REQUEST =
+      OperationalGroup._(3, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_REQUEST');
+  static const OperationalGroup OPERATIONAL_GROUP_BACKUP =
+      OperationalGroup._(4, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_BACKUP');
+  static const OperationalGroup OPERATIONAL_GROUP_CAPACITY =
+      OperationalGroup._(5, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_CAPACITY');
+  static const OperationalGroup OPERATIONAL_GROUP_LIFECYCLE =
+      OperationalGroup._(
+          6, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_LIFECYCLE');
+  static const OperationalGroup OPERATIONAL_GROUP_SEARCH =
+      OperationalGroup._(7, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_SEARCH');
+  static const OperationalGroup OPERATIONAL_GROUP_REPLICATION =
+      OperationalGroup._(
+          8, _omitEnumNames ? '' : 'OPERATIONAL_GROUP_REPLICATION');
+
+  static const $core.List<OperationalGroup> values = <OperationalGroup>[
+    OPERATIONAL_GROUP_UNSPECIFIED,
+    OPERATIONAL_GROUP_SLOW_RPC,
+    OPERATIONAL_GROUP_RATE,
+    OPERATIONAL_GROUP_REQUEST,
+    OPERATIONAL_GROUP_BACKUP,
+    OPERATIONAL_GROUP_CAPACITY,
+    OPERATIONAL_GROUP_LIFECYCLE,
+    OPERATIONAL_GROUP_SEARCH,
+    OPERATIONAL_GROUP_REPLICATION,
+  ];
+
+  static final $core.List<OperationalGroup?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 8);
+  static OperationalGroup? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalGroup._(super.value, super.name);
+}
+
+class OperationalSearchMode extends $pb.ProtobufEnum {
+  static const OperationalSearchMode OPERATIONAL_SEARCH_MODE_UNSPECIFIED =
+      OperationalSearchMode._(
+          0, _omitEnumNames ? '' : 'OPERATIONAL_SEARCH_MODE_UNSPECIFIED');
+  static const OperationalSearchMode OPERATIONAL_SEARCH_MODE_ANY =
+      OperationalSearchMode._(
+          1, _omitEnumNames ? '' : 'OPERATIONAL_SEARCH_MODE_ANY');
+  static const OperationalSearchMode OPERATIONAL_SEARCH_MODE_ALL =
+      OperationalSearchMode._(
+          2, _omitEnumNames ? '' : 'OPERATIONAL_SEARCH_MODE_ALL');
+  static const OperationalSearchMode OPERATIONAL_SEARCH_MODE_MIN_SHOULD =
+      OperationalSearchMode._(
+          3, _omitEnumNames ? '' : 'OPERATIONAL_SEARCH_MODE_MIN_SHOULD');
+
+  static const $core.List<OperationalSearchMode> values =
+      <OperationalSearchMode>[
+    OPERATIONAL_SEARCH_MODE_UNSPECIFIED,
+    OPERATIONAL_SEARCH_MODE_ANY,
+    OPERATIONAL_SEARCH_MODE_ALL,
+    OPERATIONAL_SEARCH_MODE_MIN_SHOULD,
+  ];
+
+  static final $core.List<OperationalSearchMode?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static OperationalSearchMode? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalSearchMode._(super.value, super.name);
+}
+
+/// Field identity is closed and carries provenance only, never arbitrary values.
+class OperationalSetting extends $pb.ProtobufEnum {
+  static const OperationalSetting OPERATIONAL_SETTING_UNSPECIFIED =
+      OperationalSetting._(
+          0, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_UNSPECIFIED');
+  static const OperationalSetting OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS =
+      OperationalSetting._(
+          1, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS');
+  static const OperationalSetting OPERATIONAL_SETTING_RATE_RPS =
+      OperationalSetting._(
+          2, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_RATE_RPS');
+  static const OperationalSetting OPERATIONAL_SETTING_RATE_BURST =
+      OperationalSetting._(
+          3, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_RATE_BURST');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT =
+      OperationalSetting._(
+          4,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT =
+      OperationalSetting._(
+          5,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT');
+  static const OperationalSetting OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K =
+      OperationalSetting._(6,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP = OperationalSetting._(
+          7,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP');
+  static const OperationalSetting OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE =
+      OperationalSetting._(8,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE');
+  static const OperationalSetting OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN =
+      OperationalSetting._(
+          9, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT = OperationalSetting._(
+          10,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT');
+  static const OperationalSetting OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT =
+      OperationalSetting._(11,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES = OperationalSetting._(
+          12,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS = OperationalSetting._(
+          13,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES =
+      OperationalSetting._(
+          14,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS = OperationalSetting._(
+          15,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS');
+  static const OperationalSetting OPERATIONAL_SETTING_BACKUP_ENABLED =
+      OperationalSetting._(
+          16, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_BACKUP_ENABLED');
+  static const OperationalSetting OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS =
+      OperationalSetting._(17,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS');
+  static const OperationalSetting OPERATIONAL_SETTING_BACKUP_RETAIN =
+      OperationalSetting._(
+          18, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_BACKUP_RETAIN');
+  static const OperationalSetting OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET =
+      OperationalSetting._(19,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS = OperationalSetting._(
+          20,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS');
+  static const OperationalSetting OPERATIONAL_SETTING_CAPACITY_MAX_EDGES =
+      OperationalSetting._(
+          21, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_CAPACITY_MAX_EDGES');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES =
+      OperationalSetting._(
+          22,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES =
+      OperationalSetting._(
+          23,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES');
+  static const OperationalSetting OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES =
+      OperationalSetting._(24,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS = OperationalSetting._(
+          25,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG = OperationalSetting._(
+          26,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS =
+      OperationalSetting._(
+          27,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS');
+  static const OperationalSetting OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT =
+      OperationalSetting._(
+          28, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT');
+  static const OperationalSetting OPERATIONAL_SETTING_SEARCH_MAX_LIMIT =
+      OperationalSetting._(
+          29, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SEARCH_MAX_LIMIT');
+  static const OperationalSetting OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE =
+      OperationalSetting._(
+          30, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD = OperationalSetting._(
+          31,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD');
+  static const OperationalSetting OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS =
+      OperationalSetting._(
+          32, _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS');
+  static const OperationalSetting OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES =
+      OperationalSetting._(33,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES');
+  static const OperationalSetting OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS =
+      OperationalSetting._(34,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS = OperationalSetting._(
+          35,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS = OperationalSetting._(
+          36,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS = OperationalSetting._(
+          37,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS = OperationalSetting._(
+          38,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD =
+      OperationalSetting._(
+          39,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS =
+      OperationalSetting._(
+          40,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS =
+      OperationalSetting._(
+          41,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS =
+      OperationalSetting._(
+          42,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS');
+  static const OperationalSetting
+      OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS =
+      OperationalSetting._(
+          43,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS');
+
+  static const $core.List<OperationalSetting> values = <OperationalSetting>[
+    OPERATIONAL_SETTING_UNSPECIFIED,
+    OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS,
+    OPERATIONAL_SETTING_RATE_RPS,
+    OPERATIONAL_SETTING_RATE_BURST,
+    OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_DEFAULT_LIMIT,
+    OPERATIONAL_SETTING_REQUEST_DELETE_BY_PREFIX_MAX_LIMIT,
+    OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_K,
+    OPERATIONAL_SETTING_REQUEST_ILLUMINATE_MAX_STEP,
+    OPERATIONAL_SETTING_REQUEST_MAX_BATCH_SIZE,
+    OPERATIONAL_SETTING_REQUEST_MAX_KEY_LEN,
+    OPERATIONAL_SETTING_REQUEST_SCAN_DEFAULT_LIMIT,
+    OPERATIONAL_SETTING_REQUEST_SCAN_MAX_LIMIT,
+    OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_PUSHES,
+    OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_RESULTS,
+    OPERATIONAL_SETTING_REQUEST_TRAVERSAL_MAX_TOUCHED_EDGES,
+    OPERATIONAL_SETTING_REQUEST_TRAVERSAL_TIMEOUT_MS,
+    OPERATIONAL_SETTING_BACKUP_ENABLED,
+    OPERATIONAL_SETTING_BACKUP_INTERVAL_NANOS,
+    OPERATIONAL_SETTING_BACKUP_RETAIN,
+    OPERATIONAL_SETTING_CAPACITY_GC_EDGE_BUDGET,
+    OPERATIONAL_SETTING_CAPACITY_GC_INTERVAL_SECONDS,
+    OPERATIONAL_SETTING_CAPACITY_MAX_EDGES,
+    OPERATIONAL_SETTING_CAPACITY_MAX_EDGE_CAUSAL_ENTRIES,
+    OPERATIONAL_SETTING_CAPACITY_MAX_VERTEX_CAUSAL_ENTRIES,
+    OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES,
+    OPERATIONAL_SETTING_LIFECYCLE_DRAIN_DELAY_SECONDS,
+    OPERATIONAL_SETTING_LIFECYCLE_MAX_REPLICATION_LAG,
+    OPERATIONAL_SETTING_LIFECYCLE_SHUTDOWN_TIMEOUT_SECONDS,
+    OPERATIONAL_SETTING_SEARCH_DEFAULT_LIMIT,
+    OPERATIONAL_SETTING_SEARCH_MAX_LIMIT,
+    OPERATIONAL_SETTING_SEARCH_DEFAULT_MODE,
+    OPERATIONAL_SETTING_SEARCH_DEFAULT_MIN_SHOULD,
+    OPERATIONAL_SETTING_SEARCH_TIMEOUT_MS,
+    OPERATIONAL_SETTING_SEARCH_MAX_QUERY_BYTES,
+    OPERATIONAL_SETTING_SEARCH_MAX_QUERY_TERMS,
+    OPERATIONAL_SETTING_SEARCH_MAX_DICTIONARY_VISITS,
+    OPERATIONAL_SETTING_SEARCH_MAX_POSTING_VISITS,
+    OPERATIONAL_SETTING_SEARCH_MAX_POSITION_VISITS,
+    OPERATIONAL_SETTING_SEARCH_MAX_EXPIRATION_VISITS,
+    OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_GAP_WARN_THRESHOLD,
+    OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_INTERVAL_MS,
+    OPERATIONAL_SETTING_REPLICATION_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS,
+    OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MAX_MS,
+    OPERATIONAL_SETTING_REPLICATION_PUMP_BACKOFF_MIN_MS,
+  ];
+
+  static final $core.List<OperationalSetting?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 43);
+  static OperationalSetting? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalSetting._(super.value, super.name);
+}
+
+class OperationalSettingsSource extends $pb.ProtobufEnum {
+  static const OperationalSettingsSource
+      OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED = OperationalSettingsSource._(
+          0, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED');
+  static const OperationalSettingsSource OPERATIONAL_SETTINGS_SOURCE_DEFAULT =
+      OperationalSettingsSource._(
+          1, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_SOURCE_DEFAULT');
+  static const OperationalSettingsSource
+      OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT = OperationalSettingsSource._(
+          2, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT');
+  static const OperationalSettingsSource OPERATIONAL_SETTINGS_SOURCE_DERIVED =
+      OperationalSettingsSource._(
+          3, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_SOURCE_DERIVED');
+  static const OperationalSettingsSource OPERATIONAL_SETTINGS_SOURCE_MANAGED =
+      OperationalSettingsSource._(
+          4, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_SOURCE_MANAGED');
+
+  static const $core.List<OperationalSettingsSource> values =
+      <OperationalSettingsSource>[
+    OPERATIONAL_SETTINGS_SOURCE_UNSPECIFIED,
+    OPERATIONAL_SETTINGS_SOURCE_DEFAULT,
+    OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT,
+    OPERATIONAL_SETTINGS_SOURCE_DERIVED,
+    OPERATIONAL_SETTINGS_SOURCE_MANAGED,
+  ];
+
+  static final $core.List<OperationalSettingsSource?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static OperationalSettingsSource? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalSettingsSource._(super.value, super.name);
+}
+
+class OperationalSettingsChangeMode extends $pb.ProtobufEnum {
+  static const OperationalSettingsChangeMode
+      OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED =
+      OperationalSettingsChangeMode._(0,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED');
+  static const OperationalSettingsChangeMode
+      OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE =
+      OperationalSettingsChangeMode._(1,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE');
+  static const OperationalSettingsChangeMode
+      OPERATIONAL_SETTINGS_CHANGE_MODE_HOT = OperationalSettingsChangeMode._(
+          2, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_CHANGE_MODE_HOT');
+  static const OperationalSettingsChangeMode
+      OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART =
+      OperationalSettingsChangeMode._(
+          3,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART');
+  static const OperationalSettingsChangeMode
+      OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART =
+      OperationalSettingsChangeMode._(
+          4,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART');
+  static const OperationalSettingsChangeMode
+      OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART =
+      OperationalSettingsChangeMode._(
+          5,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART');
+
+  static const $core.List<OperationalSettingsChangeMode> values =
+      <OperationalSettingsChangeMode>[
+    OPERATIONAL_SETTINGS_CHANGE_MODE_UNSPECIFIED,
+    OPERATIONAL_SETTINGS_CHANGE_MODE_UNAVAILABLE,
+    OPERATIONAL_SETTINGS_CHANGE_MODE_HOT,
+    OPERATIONAL_SETTINGS_CHANGE_MODE_WORKER_RESTART,
+    OPERATIONAL_SETTINGS_CHANGE_MODE_PROCESS_RESTART,
+    OPERATIONAL_SETTINGS_CHANGE_MODE_COORDINATED_RESTART,
+  ];
+
+  static final $core.List<OperationalSettingsChangeMode?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 5);
+  static OperationalSettingsChangeMode? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalSettingsChangeMode._(super.value, super.name);
+}
+
+class OperationalSettingsApplicationState extends $pb.ProtobufEnum {
+  static const OperationalSettingsApplicationState
+      OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED =
+      OperationalSettingsApplicationState._(
+          0,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED');
+  static const OperationalSettingsApplicationState
+      OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE =
+      OperationalSettingsApplicationState._(
+          1,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE');
+  static const OperationalSettingsApplicationState
+      OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED =
+      OperationalSettingsApplicationState._(
+          2,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED');
+  static const OperationalSettingsApplicationState
+      OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING =
+      OperationalSettingsApplicationState._(
+          3,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING');
+  static const OperationalSettingsApplicationState
+      OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR =
+      OperationalSettingsApplicationState._(4,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR');
+
+  static const $core.List<OperationalSettingsApplicationState> values =
+      <OperationalSettingsApplicationState>[
+    OPERATIONAL_SETTINGS_APPLICATION_STATE_UNSPECIFIED,
+    OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE,
+    OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED,
+    OPERATIONAL_SETTINGS_APPLICATION_STATE_PENDING,
+    OPERATIONAL_SETTINGS_APPLICATION_STATE_ERROR,
+  ];
+
+  static final $core.List<OperationalSettingsApplicationState?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static OperationalSettingsApplicationState? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalSettingsApplicationState._(super.value, super.name);
+}
+
+class OperationalSettingsError extends $pb.ProtobufEnum {
+  static const OperationalSettingsError OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED =
+      OperationalSettingsError._(
+          0, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED');
+  static const OperationalSettingsError OPERATIONAL_SETTINGS_ERROR_NONE =
+      OperationalSettingsError._(
+          1, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_ERROR_NONE');
+  static const OperationalSettingsError
+      OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY = OperationalSettingsError._(
+          2, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY');
+  static const OperationalSettingsError
+      OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE = OperationalSettingsError._(
+          3,
+          _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE');
+  static const OperationalSettingsError
+      OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED = OperationalSettingsError._(
+          4, _omitEnumNames ? '' : 'OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED');
+  static const OperationalSettingsError
+      OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE =
+      OperationalSettingsError._(
+          5,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE');
+  static const OperationalSettingsError
+      OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH =
+      OperationalSettingsError._(
+          6,
+          _omitEnumNames
+              ? ''
+              : 'OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH');
+
+  static const $core.List<OperationalSettingsError> values =
+      <OperationalSettingsError>[
+    OPERATIONAL_SETTINGS_ERROR_UNSPECIFIED,
+    OPERATIONAL_SETTINGS_ERROR_NONE,
+    OPERATIONAL_SETTINGS_ERROR_INVALID_POLICY,
+    OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE,
+    OPERATIONAL_SETTINGS_ERROR_APPLY_FAILED,
+    OPERATIONAL_SETTINGS_ERROR_DEPENDENCY_UNAVAILABLE,
+    OPERATIONAL_SETTINGS_ERROR_COMPATIBILITY_MISMATCH,
+  ];
+
+  static final $core.List<OperationalSettingsError?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
+  static OperationalSettingsError? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const OperationalSettingsError._(super.value, super.name);
+}
+
 class SecurityEnforcementState extends $pb.ProtobufEnum {
   static const SecurityEnforcementState SECURITY_ENFORCEMENT_STATE_UNSPECIFIED =
       SecurityEnforcementState._(

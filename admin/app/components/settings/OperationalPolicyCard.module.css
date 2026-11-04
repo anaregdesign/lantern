@@ -1,0 +1,80 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusMedium);
+  padding: 20px;
+}
+.card p {
+  margin: 0;
+}
+.card > button {
+  align-self: flex-start;
+}
+.status {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+.status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.reference {
+  overflow-wrap: anywhere;
+}
+.tableWrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.tableWrap table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+}
+.tableWrap th,
+.tableWrap td {
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  overflow-wrap: normal;
+}
+.tableWrap caption {
+  text-align: left;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.card form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.card form > button {
+  align-self: flex-start;
+}
+@media (max-width: 520px) {
+  .card {
+    padding: 16px;
+  }
+  .status {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .status dd {
+    margin-bottom: 8px;
+  }
+  .tableWrap th,
+  .tableWrap td {
+    padding: 6px;
+  }
+}

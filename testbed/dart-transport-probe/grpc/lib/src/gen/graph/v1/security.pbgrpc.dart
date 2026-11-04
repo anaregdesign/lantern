@@ -106,6 +106,26 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getLogSettings, request, options: options);
   }
 
+  /// Verified desired state and actual application of the eight closed groups.
+  $grpc.ResponseFuture<$0.GetOperationalSettingsResponse>
+      getOperationalSettings(
+    $0.GetOperationalSettingsRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getOperationalSettings, request,
+        options: options);
+  }
+
+  /// Read-only dependency resolution before the existing authoritative review.
+  $grpc.ResponseFuture<$0.PreviewOperationalPolicyResponse>
+      previewOperationalPolicy(
+    $0.PreviewOperationalPolicyRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$previewOperationalPolicy, request,
+        options: options);
+  }
+
   $grpc.ResponseFuture<$0.ListRoleAssignmentsResponse> listRoleAssignments(
     $0.ListRoleAssignmentsRequest request, {
     $grpc.CallOptions? options,
@@ -246,6 +266,17 @@ class LanternSecurityServiceClient extends $grpc.Client {
           '/graph.v1.LanternSecurityService/GetLogSettings',
           ($0.GetLogSettingsRequest value) => value.writeToBuffer(),
           $0.GetLogSettingsResponse.fromBuffer);
+  static final _$getOperationalSettings = $grpc.ClientMethod<
+          $0.GetOperationalSettingsRequest, $0.GetOperationalSettingsResponse>(
+      '/graph.v1.LanternSecurityService/GetOperationalSettings',
+      ($0.GetOperationalSettingsRequest value) => value.writeToBuffer(),
+      $0.GetOperationalSettingsResponse.fromBuffer);
+  static final _$previewOperationalPolicy = $grpc.ClientMethod<
+          $0.PreviewOperationalPolicyRequest,
+          $0.PreviewOperationalPolicyResponse>(
+      '/graph.v1.LanternSecurityService/PreviewOperationalPolicy',
+      ($0.PreviewOperationalPolicyRequest value) => value.writeToBuffer(),
+      $0.PreviewOperationalPolicyResponse.fromBuffer);
   static final _$listRoleAssignments = $grpc.ClientMethod<
           $0.ListRoleAssignmentsRequest, $0.ListRoleAssignmentsResponse>(
       '/graph.v1.LanternSecurityService/ListRoleAssignments',
@@ -392,6 +423,24 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.GetLogSettingsRequest.fromBuffer(value),
         ($0.GetLogSettingsResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetOperationalSettingsRequest,
+            $0.GetOperationalSettingsResponse>(
+        'GetOperationalSettings',
+        getOperationalSettings_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetOperationalSettingsRequest.fromBuffer(value),
+        ($0.GetOperationalSettingsResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.PreviewOperationalPolicyRequest,
+            $0.PreviewOperationalPolicyResponse>(
+        'PreviewOperationalPolicy',
+        previewOperationalPolicy_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.PreviewOperationalPolicyRequest.fromBuffer(value),
+        ($0.PreviewOperationalPolicyResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.ListRoleAssignmentsRequest,
             $0.ListRoleAssignmentsResponse>(
         'ListRoleAssignments',
@@ -578,6 +627,24 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
 
   $async.Future<$0.GetLogSettingsResponse> getLogSettings(
       $grpc.ServiceCall call, $0.GetLogSettingsRequest request);
+
+  $async.Future<$0.GetOperationalSettingsResponse> getOperationalSettings_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetOperationalSettingsRequest> $request) async {
+    return getOperationalSettings($call, await $request);
+  }
+
+  $async.Future<$0.GetOperationalSettingsResponse> getOperationalSettings(
+      $grpc.ServiceCall call, $0.GetOperationalSettingsRequest request);
+
+  $async.Future<$0.PreviewOperationalPolicyResponse>
+      previewOperationalPolicy_Pre($grpc.ServiceCall $call,
+          $async.Future<$0.PreviewOperationalPolicyRequest> $request) async {
+    return previewOperationalPolicy($call, await $request);
+  }
+
+  $async.Future<$0.PreviewOperationalPolicyResponse> previewOperationalPolicy(
+      $grpc.ServiceCall call, $0.PreviewOperationalPolicyRequest request);
 
   $async.Future<$0.ListRoleAssignmentsResponse> listRoleAssignments_Pre(
       $grpc.ServiceCall $call,

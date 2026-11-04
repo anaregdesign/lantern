@@ -20,6 +20,7 @@ import {
   SecurityChangeRecovery,
   securityRecoveryOwner,
   logPolicyRecoveryOwner,
+  operationalPolicyRecoveryOwner,
   type SecurityRecoveryStorage,
 } from "./security-change-recovery";
 
@@ -667,4 +668,138 @@ test("a reserved full store still permits a new security original in its existin
   expect(store.read(logOwner(logging, gateway))?.needsOriginalStatus).toBe(
     true,
   );
+});
+
+function opsReview(nonce = 200) {
+  const r = review(nonce);
+  r.changes = [
+    {
+      $typeName: "graph.v1.SecurityChange",
+      operation: {
+        case: "putOperationalPolicy",
+        value: {
+          $typeName: "graph.v1.OperationalPolicyChange",
+          version: 1,
+          expectedGeneration: 0n,
+          values: {
+            $typeName: "graph.v1.OperationalPolicyValues",
+            group: {
+              case: "slowRpc",
+              value: {
+                $typeName: "graph.v1.OperationalSlowRPCValues",
+                thresholdMs: 500n,
+              },
+            },
+          },
+          compatibilityFingerprint: "",
+          retentionReductionAcknowledged: false,
+        },
+      },
+    },
+  ];
+  return r;
+}
+function opsOwner(r = opsReview(), gateway = "https://admin.example") {
+  return operationalPolicyRecoveryOwner(gateway, {
+    identity: r.actor,
+    version: { ...version, currentProfile: r.profile },
+  });
+}
+test("logging and all operational groups share one unique reserved security row", () => {
+  const backend = storage(),
+    store = new SecurityChangeRecovery(backend.port);
+  for (let i = 0; i < 17; i++) {
+    const r = review(30 + i);
+    store.stage(owner(r, `https://admin.example/other-${i}`), r);
+  }
+  const logging = logReview(190),
+    ops = opsReview(191),
+    gateway = "https://admin.example/common";
+  store.stage(logOwner(logging, gateway), logging);
+  store.stage(opsOwner(ops, gateway), ops);
+  expect(JSON.parse(backend.raw()!).records).toHaveLength(19);
+  const before = backend.raw();
+  expect(() =>
+    store.stage(
+      owner(review(192), "https://admin.example/different"),
+      review(192),
+    ),
+  ).toThrow("history is full");
+  expect(backend.raw()).toBe(before);
+  store.stage(owner(review(193), gateway), review(193));
+  expect(JSON.parse(backend.raw()!).records).toHaveLength(20);
+  expect(
+    new SecurityChangeRecovery(backend.port).read(opsOwner(ops, gateway))
+      ?.review,
+  ).toEqual(ops);
+});
+test("unknown operational original blocks every operational group but urgent security still has its own lane", () => {
+  const backend = storage(),
+    store = new SecurityChangeRecovery(backend.port),
+    ops = opsReview(201);
+  store.stage(opsOwner(ops), ops);
+  store.ambiguous(ops);
+  const reloaded = new SecurityChangeRecovery(backend.port),
+    next = opsReview(202);
+  next.changes[0].operation = {
+    case: "putOperationalPolicy",
+    value: {
+      $typeName: "graph.v1.OperationalPolicyChange",
+      version: 1,
+      expectedGeneration: 0n,
+      values: {
+        $typeName: "graph.v1.OperationalPolicyValues",
+        group: {
+          case: "rate",
+          value: {
+            $typeName: "graph.v1.OperationalRateValues",
+            rps: 1,
+            burst: 1n,
+          },
+        },
+      },
+      compatibilityFingerprint: "",
+      retentionReductionAcknowledged: false,
+    },
+  };
+  expect(() => reloaded.stage(opsOwner(next), next, ops)).toThrow(
+    "original status",
+  );
+  reloaded.stage(owner(review(203)), review(203));
+  expect(reloaded.read(opsOwner(ops))?.needsOriginalStatus).toBe(true);
+  expect(() => reloaded.stage(owner(next), next)).toThrow("own recovery lane");
+});
+test("security original blocks operational dispatch and storage failure preserves exact previous bytes", () => {
+  const backend = storage(),
+    store = new SecurityChangeRecovery(backend.port),
+    security = review(204),
+    ops = opsReview(205);
+  store.stage(owner(security), security);
+  const before = backend.raw();
+  expect(() => store.stage(opsOwner(ops), ops)).toThrow("security");
+  expect(backend.raw()).toBe(before);
+  store.update(owner(security), security, result(security));
+  const confirmed = backend.raw();
+  backend.fail();
+  expect(() => store.stage(opsOwner(ops), ops)).toThrow("storage");
+  expect(backend.raw()).toBe(confirmed);
+});
+
+test("operational lane stays exactly one operation when the public codec accepts a mixed ordinary batch", () => {
+  const mixed = opsReview(210);
+  mixed.changes.push(review(211).changes[0]);
+  // Acceptance at the public codec must not bypass this narrower editor owner.
+  expect(() => encodeCurrentSecurityReview(mixed)).not.toThrow();
+  const store = new SecurityChangeRecovery(storage().port);
+  expect(() => store.stage(opsOwner(mixed), mixed)).toThrow("recovery storage");
+  expect(() => store.stage(owner(mixed), mixed)).toThrow("own recovery lane");
+});
+
+test("operational rows forged into the legacy security lane are blocked without rewriting retained bytes", () => {
+  const ops = opsReview(212),
+    raw = envelope(ops),
+    backend = storage(raw),
+    store = new SecurityChangeRecovery(backend.port);
+  expect(() => store.read(owner(ops))).toThrow("recovery storage");
+  expect(backend.raw()).toBe(raw);
 });

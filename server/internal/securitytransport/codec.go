@@ -283,6 +283,9 @@ func decodeSecurityChange(change *pb.SecurityChange) (security.Change, error) {
 	result := security.Change{}
 	var err error
 	switch op := change.Operation.(type) {
+	case *pb.SecurityChange_PutOperationalPolicy:
+		result.Kind = security.PutOperationalPolicy
+		result.OperationalPolicy, err = decodeOperationalPolicy(op.PutOperationalPolicy)
 	case *pb.SecurityChange_PutLogPolicy:
 		result.Kind = security.PutLogPolicy
 		result.LogPolicy, err = decodeLogPolicy(op.PutLogPolicy)

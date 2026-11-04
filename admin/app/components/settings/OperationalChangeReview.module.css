@@ -1,0 +1,39 @@
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  background: var(--colorNeutralBackground2);
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusMedium);
+  min-width: 0;
+}
+.review p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+.values dt {
+  font-weight: 600;
+}
+.values dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+@media (max-width: 520px) {
+  .review {
+    padding: 16px;
+  }
+  .actions {
+    flex-direction: column;
+  }
+}

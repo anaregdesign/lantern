@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   Button,
   MessageBar,
@@ -15,6 +16,7 @@ import { SettingsChangeReview } from "./SettingsChangeReview";
 import styles from "./SettingsPage.module.css";
 
 export type SettingsPageProps = {
+  children?: ReactNode;
   authentication: "off" | "ready" | "required";
   state: SettingsState;
   view: SettingsView;
@@ -35,7 +37,7 @@ export function SettingsPage(props: SettingsPageProps) {
       <Title2 as="h1">Settings</Title2>
       {authentication === "off" ? (
         <p>
-          Authentication is off. Log level remains environment-owned. OIDC is
+          Authentication is off. Settings remain environment-owned. OIDC is
           required to manage settings.
         </p>
       ) : authentication !== "ready" ? (
@@ -104,6 +106,7 @@ export function SettingsPage(props: SettingsPageProps) {
               review={props.review}
             />
           )}
+          {props.children}
           {state.review && (
             <SettingsChangeReview
               review={state.review}

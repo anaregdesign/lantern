@@ -1,0 +1,23 @@
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+.groups > button {
+  align-self: flex-start;
+}
+.groups > p {
+  margin: 0;
+}
+.original {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--colorNeutralBackground2);
+  overflow-wrap: anywhere;
+}
+.original > button {
+  align-self: flex-start;
+}

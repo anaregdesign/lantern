@@ -260,7 +260,7 @@ test("OFF shows the environment-owned explanation without a management mutation"
   const fixture = await securityUI(page, { mode: "off" });
   await page.goto(`${fixture.primary}/settings`);
   await expect(
-    page.getByText("Log level remains environment-owned.", { exact: false }),
+    page.getByText("Settings remain environment-owned.", { exact: false }),
   ).toBeVisible();
   await expect(page.getByLabel("New log level", { exact: true })).toHaveCount(
     0,

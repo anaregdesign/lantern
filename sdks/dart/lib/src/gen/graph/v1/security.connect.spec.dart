@@ -83,6 +83,22 @@ abstract final class LanternSecurityService {
     graphv1security.GetLogSettingsResponse.new,
   );
 
+  /// Verified desired state and actual application of the eight closed groups.
+  static const getOperationalSettings = connect.Spec(
+    '/$name/GetOperationalSettings',
+    connect.StreamType.unary,
+    graphv1security.GetOperationalSettingsRequest.new,
+    graphv1security.GetOperationalSettingsResponse.new,
+  );
+
+  /// Read-only dependency resolution before the existing authoritative review.
+  static const previewOperationalPolicy = connect.Spec(
+    '/$name/PreviewOperationalPolicy',
+    connect.StreamType.unary,
+    graphv1security.PreviewOperationalPolicyRequest.new,
+    graphv1security.PreviewOperationalPolicyResponse.new,
+  );
+
   static const listRoleAssignments = connect.Spec(
     '/$name/ListRoleAssignments',
     connect.StreamType.unary,
