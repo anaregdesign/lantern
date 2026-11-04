@@ -465,6 +465,7 @@ message GetLogSettingsResponse {
   // Required for fenced-but-unadopted state; may remain after adoption.
   LogPolicyPreparationReference preparation = 14;
 }
+
 // Closed business values only. No arbitrary configuration keys or secret values.
 enum OperationalGroup {
   OPERATIONAL_GROUP_UNSPECIFIED = 0;
@@ -554,6 +555,7 @@ message OperationalPolicyValues {
     OperationalReplicationValues replication = 8;
   }
 }
+
 // The authority allocates generation; zero expected_generation means adoption.
 message OperationalPolicyChange {
   uint32 version = 1;
@@ -570,6 +572,7 @@ message ManagedOperationalPolicy {
   OperationalPolicyValues values = 3;
   string compatibility_fingerprint = 4;
 }
+
 // Field identity is closed and carries provenance only, never arbitrary values.
 enum OperationalSetting {
   OPERATIONAL_SETTING_UNSPECIFIED = 0;
@@ -678,6 +681,7 @@ message GetOperationalSettingsResponse {
   repeated OperationalGroupSettings groups = 3;
   SecurityVersion version = 4;
 }
+
 // Connected-node sample only; this does not predict cluster-wide deletions or
 // freeze the catalog for future scheduled backup production.
 message OperationalBackupRetentionPreview {
