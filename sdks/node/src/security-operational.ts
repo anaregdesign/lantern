@@ -46,6 +46,7 @@ export type {
   GetOperationalSettingsResponse,
   PreviewOperationalPolicyResponse,
   OperationalBackupRetentionPreview,
+  OperationalCapacityPreview,
 } from "./gen/graph/v1/security_pb.js";
 function fail(): never {
   throw new Error("Invalid operational settings contract.");
@@ -253,6 +254,36 @@ export function validateOperationalPreview(
     )
       fail();
   } else if (preview) fail();
+  const capacity = response.capacityUsage;
+  if (response.group === OperationalGroup.CAPACITY) {
+    if (
+      !capacity ||
+      !Number.isInteger(capacity.member) ||
+      capacity.member < 1 ||
+      capacity.member > 0xffffffff ||
+      ![
+        capacity.effectiveGeneration,
+        capacity.vertexFootprint,
+        capacity.edgeFootprint,
+        capacity.vertexCausalEntries,
+        capacity.edgeCausalEntries,
+      ].every((v) => integer(v, 0n, u64)) ||
+      values.group.case !== "capacity"
+    )
+      fail();
+    const candidate = values.group.value;
+    for (const [count, limit, over] of [
+      [capacity.vertexFootprint, candidate.maxVertices, capacity.verticesOverLimit],
+      [capacity.edgeFootprint, candidate.maxEdges, capacity.edgesOverLimit],
+      [
+        capacity.vertexCausalEntries,
+        candidate.maxVertexCausalEntries,
+        capacity.vertexCausalOverLimit,
+      ],
+      [capacity.edgeCausalEntries, candidate.maxEdgeCausalEntries, capacity.edgeCausalOverLimit],
+    ] as const)
+      if (over !== (limit > 0n && count > limit)) fail();
+  } else if (capacity) fail();
 }
 export function validateOperationalSettings(settings: GetOperationalSettingsResponse): void {
   if (

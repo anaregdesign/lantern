@@ -6405,6 +6405,7 @@ type PreviewOperationalPolicyResponse struct {
 	CompatibilityFingerprint string                             `protobuf:"bytes,3,opt,name=compatibility_fingerprint,json=compatibilityFingerprint,proto3" json:"compatibility_fingerprint,omitempty"`
 	Version                  *SecurityVersion                   `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
 	BackupRetention          *OperationalBackupRetentionPreview `protobuf:"bytes,5,opt,name=backup_retention,json=backupRetention,proto3" json:"backup_retention,omitempty"`
+	CapacityUsage            *OperationalCapacityPreview        `protobuf:"bytes,6,opt,name=capacity_usage,json=capacityUsage,proto3" json:"capacity_usage,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -6470,6 +6471,13 @@ func (x *PreviewOperationalPolicyResponse) GetVersion() *SecurityVersion {
 func (x *PreviewOperationalPolicyResponse) GetBackupRetention() *OperationalBackupRetentionPreview {
 	if x != nil {
 		return x.BackupRetention
+	}
+	return nil
+}
+
+func (x *PreviewOperationalPolicyResponse) GetCapacityUsage() *OperationalCapacityPreview {
+	if x != nil {
+		return x.CapacityUsage
 	}
 	return nil
 }
@@ -8618,6 +8626,126 @@ func (x *CurrentSecurityInvocationRejected) GetPurposeRequired() bool {
 	return false
 }
 
+// Connected-member local-admission guidance. Counters are sampled separately;
+// footprints include retained Put barriers. This neither freezes usage nor
+// predicts admission or cluster-wide capacity. Existing data is not evicted.
+type OperationalCapacityPreview struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Member uint32                 `protobuf:"varint,1,opt,name=member,proto3" json:"member,omitempty"`
+	// Owner snapshot generation, not a native applied-cut certificate.
+	EffectiveGeneration   uint64 `protobuf:"varint,2,opt,name=effective_generation,json=effectiveGeneration,proto3" json:"effective_generation,omitempty"`
+	VertexFootprint       uint64 `protobuf:"varint,3,opt,name=vertex_footprint,json=vertexFootprint,proto3" json:"vertex_footprint,omitempty"`
+	EdgeFootprint         uint64 `protobuf:"varint,4,opt,name=edge_footprint,json=edgeFootprint,proto3" json:"edge_footprint,omitempty"`
+	VertexCausalEntries   uint64 `protobuf:"varint,5,opt,name=vertex_causal_entries,json=vertexCausalEntries,proto3" json:"vertex_causal_entries,omitempty"`
+	EdgeCausalEntries     uint64 `protobuf:"varint,6,opt,name=edge_causal_entries,json=edgeCausalEntries,proto3" json:"edge_causal_entries,omitempty"`
+	VerticesOverLimit     bool   `protobuf:"varint,7,opt,name=vertices_over_limit,json=verticesOverLimit,proto3" json:"vertices_over_limit,omitempty"`
+	EdgesOverLimit        bool   `protobuf:"varint,8,opt,name=edges_over_limit,json=edgesOverLimit,proto3" json:"edges_over_limit,omitempty"`
+	VertexCausalOverLimit bool   `protobuf:"varint,9,opt,name=vertex_causal_over_limit,json=vertexCausalOverLimit,proto3" json:"vertex_causal_over_limit,omitempty"`
+	EdgeCausalOverLimit   bool   `protobuf:"varint,10,opt,name=edge_causal_over_limit,json=edgeCausalOverLimit,proto3" json:"edge_causal_over_limit,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *OperationalCapacityPreview) Reset() {
+	*x = OperationalCapacityPreview{}
+	mi := &file_graph_v1_security_proto_msgTypes[97]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OperationalCapacityPreview) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OperationalCapacityPreview) ProtoMessage() {}
+
+func (x *OperationalCapacityPreview) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_security_proto_msgTypes[97]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OperationalCapacityPreview.ProtoReflect.Descriptor instead.
+func (*OperationalCapacityPreview) Descriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{97}
+}
+
+func (x *OperationalCapacityPreview) GetMember() uint32 {
+	if x != nil {
+		return x.Member
+	}
+	return 0
+}
+
+func (x *OperationalCapacityPreview) GetEffectiveGeneration() uint64 {
+	if x != nil {
+		return x.EffectiveGeneration
+	}
+	return 0
+}
+
+func (x *OperationalCapacityPreview) GetVertexFootprint() uint64 {
+	if x != nil {
+		return x.VertexFootprint
+	}
+	return 0
+}
+
+func (x *OperationalCapacityPreview) GetEdgeFootprint() uint64 {
+	if x != nil {
+		return x.EdgeFootprint
+	}
+	return 0
+}
+
+func (x *OperationalCapacityPreview) GetVertexCausalEntries() uint64 {
+	if x != nil {
+		return x.VertexCausalEntries
+	}
+	return 0
+}
+
+func (x *OperationalCapacityPreview) GetEdgeCausalEntries() uint64 {
+	if x != nil {
+		return x.EdgeCausalEntries
+	}
+	return 0
+}
+
+func (x *OperationalCapacityPreview) GetVerticesOverLimit() bool {
+	if x != nil {
+		return x.VerticesOverLimit
+	}
+	return false
+}
+
+func (x *OperationalCapacityPreview) GetEdgesOverLimit() bool {
+	if x != nil {
+		return x.EdgesOverLimit
+	}
+	return false
+}
+
+func (x *OperationalCapacityPreview) GetVertexCausalOverLimit() bool {
+	if x != nil {
+		return x.VertexCausalOverLimit
+	}
+	return false
+}
+
+func (x *OperationalCapacityPreview) GetEdgeCausalOverLimit() bool {
+	if x != nil {
+		return x.EdgeCausalOverLimit
+	}
+	return false
+}
+
 var File_graph_v1_security_proto protoreflect.FileDescriptor
 
 const file_graph_v1_security_proto_rawDesc = "" +
@@ -9008,13 +9136,14 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12 \n" +
 	"\vfingerprint\x18\x06 \x01(\tR\vfingerprint\"\\\n" +
 	"\x1fPreviewOperationalPolicyRequest\x129\n" +
-	"\x06values\x18\x01 \x01(\v2!.graph.v1.OperationalPolicyValuesR\x06values\"\xc5\x02\n" +
+	"\x06values\x18\x01 \x01(\v2!.graph.v1.OperationalPolicyValuesR\x06values\"\x92\x03\n" +
 	" PreviewOperationalPolicyResponse\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x120\n" +
 	"\x05group\x18\x02 \x01(\x0e2\x1a.graph.v1.OperationalGroupR\x05group\x12;\n" +
 	"\x19compatibility_fingerprint\x18\x03 \x01(\tR\x18compatibilityFingerprint\x123\n" +
 	"\aversion\x18\x04 \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\x12V\n" +
-	"\x10backup_retention\x18\x05 \x01(\v2+.graph.v1.OperationalBackupRetentionPreviewR\x0fbackupRetention\"\xea\x06\n" +
+	"\x10backup_retention\x18\x05 \x01(\v2+.graph.v1.OperationalBackupRetentionPreviewR\x0fbackupRetention\x12K\n" +
+	"\x0ecapacity_usage\x18\x06 \x01(\v2$.graph.v1.OperationalCapacityPreviewR\rcapacityUsage\"\xea\x06\n" +
 	"\x0eSecurityChange\x129\n" +
 	"\n" +
 	"put_issuer\x18\x01 \x01(\v2\x18.graph.v1.SecurityIssuerH\x00R\tputIssuer\x12'\n" +
@@ -9192,7 +9321,19 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\aprofile\x18\x01 \x01(\v2!.graph.v1.CurrentAuthorityProfileR\aprofile\x12>\n" +
 	"\tchange_id\x18\x02 \x01(\v2!.graph.v1.CurrentSecurityChangeIDR\bchangeId\x12#\n" +
 	"\rintent_digest\x18\x03 \x01(\fR\fintentDigest\x12)\n" +
-	"\x10purpose_required\x18\x04 \x01(\bR\x0fpurposeRequired*L\n" +
+	"\x10purpose_required\x18\x04 \x01(\bR\x0fpurposeRequired\"\xe5\x03\n" +
+	"\x1aOperationalCapacityPreview\x12\x16\n" +
+	"\x06member\x18\x01 \x01(\rR\x06member\x121\n" +
+	"\x14effective_generation\x18\x02 \x01(\x04R\x13effectiveGeneration\x12)\n" +
+	"\x10vertex_footprint\x18\x03 \x01(\x04R\x0fvertexFootprint\x12%\n" +
+	"\x0eedge_footprint\x18\x04 \x01(\x04R\redgeFootprint\x122\n" +
+	"\x15vertex_causal_entries\x18\x05 \x01(\x04R\x13vertexCausalEntries\x12.\n" +
+	"\x13edge_causal_entries\x18\x06 \x01(\x04R\x11edgeCausalEntries\x12.\n" +
+	"\x13vertices_over_limit\x18\a \x01(\bR\x11verticesOverLimit\x12(\n" +
+	"\x10edges_over_limit\x18\b \x01(\bR\x0eedgesOverLimit\x127\n" +
+	"\x18vertex_causal_over_limit\x18\t \x01(\bR\x15vertexCausalOverLimit\x123\n" +
+	"\x16edge_causal_over_limit\x18\n" +
+	" \x01(\bR\x13edgeCausalOverLimit*L\n" +
 	"\bAuthMode\x12\x19\n" +
 	"\x15AUTH_MODE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rAUTH_MODE_OFF\x10\x01\x12\x12\n" +
@@ -9429,7 +9570,7 @@ func file_graph_v1_security_proto_rawDescGZIP() []byte {
 }
 
 var file_graph_v1_security_proto_enumTypes = make([]protoimpl.EnumInfo, 25)
-var file_graph_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 97)
+var file_graph_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 98)
 var file_graph_v1_security_proto_goTypes = []any{
 	(AuthMode)(0),                                    // 0: graph.v1.AuthMode
 	(SecurityPrincipalKind)(0),                       // 1: graph.v1.SecurityPrincipalKind
@@ -9553,7 +9694,8 @@ var file_graph_v1_security_proto_goTypes = []any{
 	(*CurrentSecurityChangeResult)(nil),              // 119: graph.v1.CurrentSecurityChangeResult
 	(*CurrentSecurityAuditRecord)(nil),               // 120: graph.v1.CurrentSecurityAuditRecord
 	(*CurrentSecurityInvocationRejected)(nil),        // 121: graph.v1.CurrentSecurityInvocationRejected
-	(*timestamppb.Timestamp)(nil),                    // 122: google.protobuf.Timestamp
+	(*OperationalCapacityPreview)(nil),               // 122: graph.v1.OperationalCapacityPreview
+	(*timestamppb.Timestamp)(nil),                    // 123: google.protobuf.Timestamp
 }
 var file_graph_v1_security_proto_depIdxs = []int32{
 	0,   // 0: graph.v1.GetAuthCapabilitiesResponse.mode:type_name -> graph.v1.AuthMode
@@ -9576,7 +9718,7 @@ var file_graph_v1_security_proto_depIdxs = []int32{
 	28,  // 17: graph.v1.GetCurrentPrincipalResponse.identity:type_name -> graph.v1.SecurityIdentity
 	32,  // 18: graph.v1.GetCurrentPrincipalResponse.roles:type_name -> graph.v1.SecurityRole
 	37,  // 19: graph.v1.GetCurrentPrincipalResponse.version:type_name -> graph.v1.SecurityVersion
-	122, // 20: graph.v1.GetCurrentPrincipalResponse.expires_at:type_name -> google.protobuf.Timestamp
+	123, // 20: graph.v1.GetCurrentPrincipalResponse.expires_at:type_name -> google.protobuf.Timestamp
 	0,   // 21: graph.v1.BrowserSession.mode:type_name -> graph.v1.AuthMode
 	39,  // 22: graph.v1.BrowserSession.principal:type_name -> graph.v1.GetCurrentPrincipalResponse
 	112, // 23: graph.v1.BrowserSession.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
@@ -9606,7 +9748,7 @@ var file_graph_v1_security_proto_depIdxs = []int32{
 	28,  // 47: graph.v1.ListRoleAssignmentsRequest.identity:type_name -> graph.v1.SecurityIdentity
 	33,  // 48: graph.v1.ListRoleAssignmentsResponse.assignments:type_name -> graph.v1.SecurityRoleAssignment
 	37,  // 49: graph.v1.ListRoleAssignmentsResponse.version:type_name -> graph.v1.SecurityVersion
-	122, // 50: graph.v1.SecurityAuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	123, // 50: graph.v1.SecurityAuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
 	59,  // 51: graph.v1.ListSecurityAuditResponse.records:type_name -> graph.v1.SecurityAuditRecord
 	37,  // 52: graph.v1.ListSecurityAuditResponse.version:type_name -> graph.v1.SecurityVersion
 	120, // 53: graph.v1.ListSecurityAuditResponse.current_records:type_name -> graph.v1.CurrentSecurityAuditRecord
@@ -9665,121 +9807,122 @@ var file_graph_v1_security_proto_depIdxs = []int32{
 	11,  // 106: graph.v1.PreviewOperationalPolicyResponse.group:type_name -> graph.v1.OperationalGroup
 	37,  // 107: graph.v1.PreviewOperationalPolicyResponse.version:type_name -> graph.v1.SecurityVersion
 	93,  // 108: graph.v1.PreviewOperationalPolicyResponse.backup_retention:type_name -> graph.v1.OperationalBackupRetentionPreview
-	35,  // 109: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
-	32,  // 110: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
-	69,  // 111: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
-	28,  // 112: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
-	33,  // 113: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	33,  // 114: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	28,  // 115: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
-	71,  // 116: graph.v1.SecurityChange.put_registration_policy:type_name -> graph.v1.SecurityRegistrationPolicy
-	74,  // 117: graph.v1.SecurityChange.put_log_policy:type_name -> graph.v1.ManagedLogPolicy
-	87,  // 118: graph.v1.SecurityChange.put_operational_policy:type_name -> graph.v1.OperationalPolicyChange
-	96,  // 119: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
-	115, // 120: graph.v1.ApplySecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	37,  // 121: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
-	18,  // 122: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	119, // 123: graph.v1.ApplySecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	96,  // 124: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
-	115, // 125: graph.v1.ApplySecurityChangeRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	37,  // 126: graph.v1.SecurityChangeReview.expected_version:type_name -> graph.v1.SecurityVersion
-	96,  // 127: graph.v1.SecurityChangeReview.changes:type_name -> graph.v1.SecurityChange
-	37,  // 128: graph.v1.SecurityOperationAuthorizationRequired.expected_version:type_name -> graph.v1.SecurityVersion
-	19,  // 129: graph.v1.SecurityChangePrecommitRejected.reason:type_name -> graph.v1.SecurityChangeRejectionReason
-	100, // 130: graph.v1.PrepareSecurityChangesRequest.review:type_name -> graph.v1.SecurityChangeReview
-	115, // 131: graph.v1.PrepareSecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	37,  // 132: graph.v1.PrepareSecurityChangesResponse.expected_version:type_name -> graph.v1.SecurityVersion
-	20,  // 133: graph.v1.PrepareSecurityChangesResponse.requirement:type_name -> graph.v1.SecurityAuthorizationRequirement
-	111, // 134: graph.v1.PrepareSecurityChangesResponse.retained_commit:type_name -> graph.v1.GetSecurityChangeStatusResponse
-	115, // 135: graph.v1.PrepareSecurityChangesResponse.current_review:type_name -> graph.v1.CurrentSecurityReview
-	119, // 136: graph.v1.PrepareSecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	100, // 137: graph.v1.BeginSecurityChangeAuthorizationRequest.review:type_name -> graph.v1.SecurityChangeReview
-	115, // 138: graph.v1.BeginSecurityChangeAuthorizationRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	122, // 139: graph.v1.BeginSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	112, // 140: graph.v1.BeginSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	112, // 141: graph.v1.GetSecurityChangeAuthorizationRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	21,  // 142: graph.v1.GetSecurityChangeAuthorizationResponse.state:type_name -> graph.v1.SecurityAuthorizationState
-	122, // 143: graph.v1.GetSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	112, // 144: graph.v1.GetSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	37,  // 145: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
-	18,  // 146: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	119, // 147: graph.v1.ApplySecurityChangeResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	114, // 148: graph.v1.GetSecurityChangeStatusRequest.current_change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	112, // 149: graph.v1.GetSecurityChangeStatusRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	37,  // 150: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
-	18,  // 151: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	119, // 152: graph.v1.GetSecurityChangeStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	112, // 153: graph.v1.CurrentSecurityReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	113, // 154: graph.v1.CurrentSecurityReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
-	114, // 155: graph.v1.CurrentSecurityReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	28,  // 156: graph.v1.CurrentSecurityReview.actor:type_name -> graph.v1.SecurityIdentity
-	96,  // 157: graph.v1.CurrentSecurityReview.changes:type_name -> graph.v1.SecurityChange
-	22,  // 158: graph.v1.CurrentSecurityItemOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
-	114, // 159: graph.v1.CurrentSecurityOriginalOutcome.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	116, // 160: graph.v1.CurrentSecurityOriginalOutcome.commit:type_name -> graph.v1.CurrentControlCommit
-	22,  // 161: graph.v1.CurrentSecurityOriginalOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
-	117, // 162: graph.v1.CurrentSecurityOriginalOutcome.items:type_name -> graph.v1.CurrentSecurityItemOutcome
-	113, // 163: graph.v1.CurrentSecurityOriginalOutcome.observed_cut:type_name -> graph.v1.CurrentSemanticCut
-	113, // 164: graph.v1.CurrentSecurityOriginalOutcome.resulting_cut:type_name -> graph.v1.CurrentSemanticCut
-	112, // 165: graph.v1.CurrentSecurityChangeResult.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	114, // 166: graph.v1.CurrentSecurityChangeResult.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	23,  // 167: graph.v1.CurrentSecurityChangeResult.progress:type_name -> graph.v1.CurrentSecurityProgress
-	118, // 168: graph.v1.CurrentSecurityChangeResult.original:type_name -> graph.v1.CurrentSecurityOriginalOutcome
-	24,  // 169: graph.v1.CurrentSecurityChangeResult.stop_observation:type_name -> graph.v1.CurrentAuthorizationStopObservation
-	119, // 170: graph.v1.CurrentSecurityAuditRecord.result:type_name -> graph.v1.CurrentSecurityChangeResult
-	112, // 171: graph.v1.CurrentSecurityInvocationRejected.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	114, // 172: graph.v1.CurrentSecurityInvocationRejected.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	25,  // 173: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
-	38,  // 174: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
-	44,  // 175: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
-	48,  // 176: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
-	45,  // 177: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
-	50,  // 178: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
-	46,  // 179: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
-	52,  // 180: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
-	72,  // 181: graph.v1.LanternSecurityService.GetRegistrationPolicy:input_type -> graph.v1.GetRegistrationPolicyRequest
-	75,  // 182: graph.v1.LanternSecurityService.GetLogSettings:input_type -> graph.v1.GetLogSettingsRequest
-	91,  // 183: graph.v1.LanternSecurityService.GetOperationalSettings:input_type -> graph.v1.GetOperationalSettingsRequest
-	94,  // 184: graph.v1.LanternSecurityService.PreviewOperationalPolicy:input_type -> graph.v1.PreviewOperationalPolicyRequest
-	57,  // 185: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
-	47,  // 186: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
-	61,  // 187: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
-	64,  // 188: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
-	67,  // 189: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
-	103, // 190: graph.v1.LanternSecurityService.PrepareSecurityChanges:input_type -> graph.v1.PrepareSecurityChangesRequest
-	105, // 191: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:input_type -> graph.v1.BeginSecurityChangeAuthorizationRequest
-	107, // 192: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:input_type -> graph.v1.GetSecurityChangeAuthorizationRequest
-	97,  // 193: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
-	99,  // 194: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
-	110, // 195: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
-	27,  // 196: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
-	39,  // 197: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
-	54,  // 198: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
-	49,  // 199: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
-	55,  // 200: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
-	51,  // 201: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
-	56,  // 202: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
-	53,  // 203: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
-	73,  // 204: graph.v1.LanternSecurityService.GetRegistrationPolicy:output_type -> graph.v1.GetRegistrationPolicyResponse
-	77,  // 205: graph.v1.LanternSecurityService.GetLogSettings:output_type -> graph.v1.GetLogSettingsResponse
-	92,  // 206: graph.v1.LanternSecurityService.GetOperationalSettings:output_type -> graph.v1.GetOperationalSettingsResponse
-	95,  // 207: graph.v1.LanternSecurityService.PreviewOperationalPolicy:output_type -> graph.v1.PreviewOperationalPolicyResponse
-	58,  // 208: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
-	60,  // 209: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
-	62,  // 210: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
-	66,  // 211: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
-	68,  // 212: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
-	104, // 213: graph.v1.LanternSecurityService.PrepareSecurityChanges:output_type -> graph.v1.PrepareSecurityChangesResponse
-	106, // 214: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:output_type -> graph.v1.BeginSecurityChangeAuthorizationResponse
-	108, // 215: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:output_type -> graph.v1.GetSecurityChangeAuthorizationResponse
-	98,  // 216: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
-	109, // 217: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
-	111, // 218: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
-	196, // [196:219] is the sub-list for method output_type
-	173, // [173:196] is the sub-list for method input_type
-	173, // [173:173] is the sub-list for extension type_name
-	173, // [173:173] is the sub-list for extension extendee
-	0,   // [0:173] is the sub-list for field type_name
+	122, // 109: graph.v1.PreviewOperationalPolicyResponse.capacity_usage:type_name -> graph.v1.OperationalCapacityPreview
+	35,  // 110: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
+	32,  // 111: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
+	69,  // 112: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
+	28,  // 113: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
+	33,  // 114: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	33,  // 115: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	28,  // 116: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
+	71,  // 117: graph.v1.SecurityChange.put_registration_policy:type_name -> graph.v1.SecurityRegistrationPolicy
+	74,  // 118: graph.v1.SecurityChange.put_log_policy:type_name -> graph.v1.ManagedLogPolicy
+	87,  // 119: graph.v1.SecurityChange.put_operational_policy:type_name -> graph.v1.OperationalPolicyChange
+	96,  // 120: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
+	115, // 121: graph.v1.ApplySecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	37,  // 122: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
+	18,  // 123: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	119, // 124: graph.v1.ApplySecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	96,  // 125: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
+	115, // 126: graph.v1.ApplySecurityChangeRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	37,  // 127: graph.v1.SecurityChangeReview.expected_version:type_name -> graph.v1.SecurityVersion
+	96,  // 128: graph.v1.SecurityChangeReview.changes:type_name -> graph.v1.SecurityChange
+	37,  // 129: graph.v1.SecurityOperationAuthorizationRequired.expected_version:type_name -> graph.v1.SecurityVersion
+	19,  // 130: graph.v1.SecurityChangePrecommitRejected.reason:type_name -> graph.v1.SecurityChangeRejectionReason
+	100, // 131: graph.v1.PrepareSecurityChangesRequest.review:type_name -> graph.v1.SecurityChangeReview
+	115, // 132: graph.v1.PrepareSecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	37,  // 133: graph.v1.PrepareSecurityChangesResponse.expected_version:type_name -> graph.v1.SecurityVersion
+	20,  // 134: graph.v1.PrepareSecurityChangesResponse.requirement:type_name -> graph.v1.SecurityAuthorizationRequirement
+	111, // 135: graph.v1.PrepareSecurityChangesResponse.retained_commit:type_name -> graph.v1.GetSecurityChangeStatusResponse
+	115, // 136: graph.v1.PrepareSecurityChangesResponse.current_review:type_name -> graph.v1.CurrentSecurityReview
+	119, // 137: graph.v1.PrepareSecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	100, // 138: graph.v1.BeginSecurityChangeAuthorizationRequest.review:type_name -> graph.v1.SecurityChangeReview
+	115, // 139: graph.v1.BeginSecurityChangeAuthorizationRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	123, // 140: graph.v1.BeginSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	112, // 141: graph.v1.BeginSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	112, // 142: graph.v1.GetSecurityChangeAuthorizationRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	21,  // 143: graph.v1.GetSecurityChangeAuthorizationResponse.state:type_name -> graph.v1.SecurityAuthorizationState
+	123, // 144: graph.v1.GetSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	112, // 145: graph.v1.GetSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	37,  // 146: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
+	18,  // 147: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	119, // 148: graph.v1.ApplySecurityChangeResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	114, // 149: graph.v1.GetSecurityChangeStatusRequest.current_change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	112, // 150: graph.v1.GetSecurityChangeStatusRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	37,  // 151: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
+	18,  // 152: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	119, // 153: graph.v1.GetSecurityChangeStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	112, // 154: graph.v1.CurrentSecurityReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	113, // 155: graph.v1.CurrentSecurityReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
+	114, // 156: graph.v1.CurrentSecurityReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	28,  // 157: graph.v1.CurrentSecurityReview.actor:type_name -> graph.v1.SecurityIdentity
+	96,  // 158: graph.v1.CurrentSecurityReview.changes:type_name -> graph.v1.SecurityChange
+	22,  // 159: graph.v1.CurrentSecurityItemOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
+	114, // 160: graph.v1.CurrentSecurityOriginalOutcome.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	116, // 161: graph.v1.CurrentSecurityOriginalOutcome.commit:type_name -> graph.v1.CurrentControlCommit
+	22,  // 162: graph.v1.CurrentSecurityOriginalOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
+	117, // 163: graph.v1.CurrentSecurityOriginalOutcome.items:type_name -> graph.v1.CurrentSecurityItemOutcome
+	113, // 164: graph.v1.CurrentSecurityOriginalOutcome.observed_cut:type_name -> graph.v1.CurrentSemanticCut
+	113, // 165: graph.v1.CurrentSecurityOriginalOutcome.resulting_cut:type_name -> graph.v1.CurrentSemanticCut
+	112, // 166: graph.v1.CurrentSecurityChangeResult.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	114, // 167: graph.v1.CurrentSecurityChangeResult.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	23,  // 168: graph.v1.CurrentSecurityChangeResult.progress:type_name -> graph.v1.CurrentSecurityProgress
+	118, // 169: graph.v1.CurrentSecurityChangeResult.original:type_name -> graph.v1.CurrentSecurityOriginalOutcome
+	24,  // 170: graph.v1.CurrentSecurityChangeResult.stop_observation:type_name -> graph.v1.CurrentAuthorizationStopObservation
+	119, // 171: graph.v1.CurrentSecurityAuditRecord.result:type_name -> graph.v1.CurrentSecurityChangeResult
+	112, // 172: graph.v1.CurrentSecurityInvocationRejected.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	114, // 173: graph.v1.CurrentSecurityInvocationRejected.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	25,  // 174: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
+	38,  // 175: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
+	44,  // 176: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
+	48,  // 177: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
+	45,  // 178: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
+	50,  // 179: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
+	46,  // 180: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
+	52,  // 181: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
+	72,  // 182: graph.v1.LanternSecurityService.GetRegistrationPolicy:input_type -> graph.v1.GetRegistrationPolicyRequest
+	75,  // 183: graph.v1.LanternSecurityService.GetLogSettings:input_type -> graph.v1.GetLogSettingsRequest
+	91,  // 184: graph.v1.LanternSecurityService.GetOperationalSettings:input_type -> graph.v1.GetOperationalSettingsRequest
+	94,  // 185: graph.v1.LanternSecurityService.PreviewOperationalPolicy:input_type -> graph.v1.PreviewOperationalPolicyRequest
+	57,  // 186: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
+	47,  // 187: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
+	61,  // 188: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
+	64,  // 189: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
+	67,  // 190: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
+	103, // 191: graph.v1.LanternSecurityService.PrepareSecurityChanges:input_type -> graph.v1.PrepareSecurityChangesRequest
+	105, // 192: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:input_type -> graph.v1.BeginSecurityChangeAuthorizationRequest
+	107, // 193: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:input_type -> graph.v1.GetSecurityChangeAuthorizationRequest
+	97,  // 194: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
+	99,  // 195: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
+	110, // 196: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
+	27,  // 197: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
+	39,  // 198: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
+	54,  // 199: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
+	49,  // 200: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
+	55,  // 201: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
+	51,  // 202: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
+	56,  // 203: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
+	53,  // 204: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
+	73,  // 205: graph.v1.LanternSecurityService.GetRegistrationPolicy:output_type -> graph.v1.GetRegistrationPolicyResponse
+	77,  // 206: graph.v1.LanternSecurityService.GetLogSettings:output_type -> graph.v1.GetLogSettingsResponse
+	92,  // 207: graph.v1.LanternSecurityService.GetOperationalSettings:output_type -> graph.v1.GetOperationalSettingsResponse
+	95,  // 208: graph.v1.LanternSecurityService.PreviewOperationalPolicy:output_type -> graph.v1.PreviewOperationalPolicyResponse
+	58,  // 209: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
+	60,  // 210: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
+	62,  // 211: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
+	66,  // 212: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
+	68,  // 213: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
+	104, // 214: graph.v1.LanternSecurityService.PrepareSecurityChanges:output_type -> graph.v1.PrepareSecurityChangesResponse
+	106, // 215: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:output_type -> graph.v1.BeginSecurityChangeAuthorizationResponse
+	108, // 216: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:output_type -> graph.v1.GetSecurityChangeAuthorizationResponse
+	98,  // 217: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
+	109, // 218: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
+	111, // 219: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
+	197, // [197:220] is the sub-list for method output_type
+	174, // [174:197] is the sub-list for method input_type
+	174, // [174:174] is the sub-list for extension type_name
+	174, // [174:174] is the sub-list for extension extendee
+	0,   // [0:174] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_security_proto_init() }
@@ -9829,7 +9972,7 @@ func file_graph_v1_security_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_security_proto_rawDesc), len(file_graph_v1_security_proto_rawDesc)),
 			NumEnums:      25,
-			NumMessages:   97,
+			NumMessages:   98,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

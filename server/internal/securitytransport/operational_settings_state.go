@@ -62,3 +62,20 @@ type OperationalBackupRetentionPreview struct {
 	Complete     bool
 	Fingerprint  string
 }
+
+// OperationalCapacityPreviewer samples the registered owner on this node.
+// Counters are sampled separately; the generation labels the effective owner,
+// not an atomic graph measurement or a commitment to future admission.
+type OperationalCapacityPreviewer func(context.Context, operationalpolicy.Capacity) (OperationalCapacityPreview, error)
+type OperationalCapacityPreview struct {
+	Member                uint32
+	EffectiveGeneration   uint64
+	VertexFootprint       uint64
+	EdgeFootprint         uint64
+	VertexCausalEntries   uint64
+	EdgeCausalEntries     uint64
+	VerticesOverLimit     bool
+	EdgesOverLimit        bool
+	VertexCausalOverLimit bool
+	EdgeCausalOverLimit   bool
+}

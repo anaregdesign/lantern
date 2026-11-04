@@ -6588,6 +6588,7 @@ class PreviewOperationalPolicyResponse extends $pb.GeneratedMessage {
     $core.String? compatibilityFingerprint,
     SecurityVersion? version,
     OperationalBackupRetentionPreview? backupRetention,
+    OperationalCapacityPreview? capacityUsage,
   }) {
     final result = create();
     if (schemaVersion != null) result.schemaVersion = schemaVersion;
@@ -6596,6 +6597,7 @@ class PreviewOperationalPolicyResponse extends $pb.GeneratedMessage {
       result.compatibilityFingerprint = compatibilityFingerprint;
     if (version != null) result.version = version;
     if (backupRetention != null) result.backupRetention = backupRetention;
+    if (capacityUsage != null) result.capacityUsage = capacityUsage;
     return result;
   }
 
@@ -6623,6 +6625,8 @@ class PreviewOperationalPolicyResponse extends $pb.GeneratedMessage {
     ..aOM<OperationalBackupRetentionPreview>(
         5, _omitFieldNames ? '' : 'backupRetention',
         subBuilder: OperationalBackupRetentionPreview.create)
+    ..aOM<OperationalCapacityPreview>(6, _omitFieldNames ? '' : 'capacityUsage',
+        subBuilder: OperationalCapacityPreview.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -6697,6 +6701,17 @@ class PreviewOperationalPolicyResponse extends $pb.GeneratedMessage {
   void clearBackupRetention() => $_clearField(5);
   @$pb.TagNumber(5)
   OperationalBackupRetentionPreview ensureBackupRetention() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  OperationalCapacityPreview get capacityUsage => $_getN(5);
+  @$pb.TagNumber(6)
+  set capacityUsage(OperationalCapacityPreview value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasCapacityUsage() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearCapacityUsage() => $_clearField(6);
+  @$pb.TagNumber(6)
+  OperationalCapacityPreview ensureCapacityUsage() => $_ensure(5);
 }
 
 enum SecurityChange_Operation {
@@ -9763,6 +9778,188 @@ class CurrentSecurityInvocationRejected extends $pb.GeneratedMessage {
   $core.bool hasPurposeRequired() => $_has(3);
   @$pb.TagNumber(4)
   void clearPurposeRequired() => $_clearField(4);
+}
+
+/// Connected-member local-admission guidance. Counters are sampled separately;
+/// footprints include retained Put barriers. This neither freezes usage nor
+/// predicts admission or cluster-wide capacity. Existing data is not evicted.
+class OperationalCapacityPreview extends $pb.GeneratedMessage {
+  factory OperationalCapacityPreview({
+    $core.int? member,
+    $fixnum.Int64? effectiveGeneration,
+    $fixnum.Int64? vertexFootprint,
+    $fixnum.Int64? edgeFootprint,
+    $fixnum.Int64? vertexCausalEntries,
+    $fixnum.Int64? edgeCausalEntries,
+    $core.bool? verticesOverLimit,
+    $core.bool? edgesOverLimit,
+    $core.bool? vertexCausalOverLimit,
+    $core.bool? edgeCausalOverLimit,
+  }) {
+    final result = create();
+    if (member != null) result.member = member;
+    if (effectiveGeneration != null)
+      result.effectiveGeneration = effectiveGeneration;
+    if (vertexFootprint != null) result.vertexFootprint = vertexFootprint;
+    if (edgeFootprint != null) result.edgeFootprint = edgeFootprint;
+    if (vertexCausalEntries != null)
+      result.vertexCausalEntries = vertexCausalEntries;
+    if (edgeCausalEntries != null) result.edgeCausalEntries = edgeCausalEntries;
+    if (verticesOverLimit != null) result.verticesOverLimit = verticesOverLimit;
+    if (edgesOverLimit != null) result.edgesOverLimit = edgesOverLimit;
+    if (vertexCausalOverLimit != null)
+      result.vertexCausalOverLimit = vertexCausalOverLimit;
+    if (edgeCausalOverLimit != null)
+      result.edgeCausalOverLimit = edgeCausalOverLimit;
+    return result;
+  }
+
+  OperationalCapacityPreview._();
+
+  factory OperationalCapacityPreview.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory OperationalCapacityPreview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'OperationalCapacityPreview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aI(1, _omitFieldNames ? '' : 'member', fieldType: $pb.PbFieldType.OU3)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'effectiveGeneration', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'vertexFootprint', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'edgeFootprint', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        5, _omitFieldNames ? '' : 'vertexCausalEntries', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        6, _omitFieldNames ? '' : 'edgeCausalEntries', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOB(7, _omitFieldNames ? '' : 'verticesOverLimit')
+    ..aOB(8, _omitFieldNames ? '' : 'edgesOverLimit')
+    ..aOB(9, _omitFieldNames ? '' : 'vertexCausalOverLimit')
+    ..aOB(10, _omitFieldNames ? '' : 'edgeCausalOverLimit')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalCapacityPreview clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  OperationalCapacityPreview copyWith(
+          void Function(OperationalCapacityPreview) updates) =>
+      super.copyWith(
+              (message) => updates(message as OperationalCapacityPreview))
+          as OperationalCapacityPreview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static OperationalCapacityPreview create() => OperationalCapacityPreview._();
+  @$core.override
+  OperationalCapacityPreview createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static OperationalCapacityPreview getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<OperationalCapacityPreview>(create);
+  static OperationalCapacityPreview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get member => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set member($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMember() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMember() => $_clearField(1);
+
+  /// Owner snapshot generation, not a native applied-cut certificate.
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get effectiveGeneration => $_getI64(1);
+  @$pb.TagNumber(2)
+  set effectiveGeneration($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasEffectiveGeneration() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearEffectiveGeneration() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get vertexFootprint => $_getI64(2);
+  @$pb.TagNumber(3)
+  set vertexFootprint($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasVertexFootprint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearVertexFootprint() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get edgeFootprint => $_getI64(3);
+  @$pb.TagNumber(4)
+  set edgeFootprint($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasEdgeFootprint() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearEdgeFootprint() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get vertexCausalEntries => $_getI64(4);
+  @$pb.TagNumber(5)
+  set vertexCausalEntries($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasVertexCausalEntries() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearVertexCausalEntries() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get edgeCausalEntries => $_getI64(5);
+  @$pb.TagNumber(6)
+  set edgeCausalEntries($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasEdgeCausalEntries() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearEdgeCausalEntries() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.bool get verticesOverLimit => $_getBF(6);
+  @$pb.TagNumber(7)
+  set verticesOverLimit($core.bool value) => $_setBool(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasVerticesOverLimit() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearVerticesOverLimit() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.bool get edgesOverLimit => $_getBF(7);
+  @$pb.TagNumber(8)
+  set edgesOverLimit($core.bool value) => $_setBool(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasEdgesOverLimit() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearEdgesOverLimit() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.bool get vertexCausalOverLimit => $_getBF(8);
+  @$pb.TagNumber(9)
+  set vertexCausalOverLimit($core.bool value) => $_setBool(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasVertexCausalOverLimit() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearVertexCausalOverLimit() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $core.bool get edgeCausalOverLimit => $_getBF(9);
+  @$pb.TagNumber(10)
+  set edgeCausalOverLimit($core.bool value) => $_setBool(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasEdgeCausalOverLimit() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearEdgeCausalOverLimit() => $_clearField(10);
 }
 
 const $core.bool _omitFieldNames =

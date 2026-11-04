@@ -4201,6 +4201,8 @@ pub struct PreviewOperationalPolicyResponse {
     pub version: ::core::option::Option<SecurityVersion>,
     #[prost(message, optional, tag = "5")]
     pub backup_retention: ::core::option::Option<OperationalBackupRetentionPreview>,
+    #[prost(message, optional, tag = "6")]
+    pub capacity_usage: ::core::option::Option<OperationalCapacityPreview>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityChange {
@@ -4576,6 +4578,33 @@ pub struct CurrentSecurityInvocationRejected {
     pub intent_digest: ::prost::alloc::vec::Vec<u8>,
     #[prost(bool, tag = "4")]
     pub purpose_required: bool,
+}
+/// Connected-member local-admission guidance. Counters are sampled separately;
+/// footprints include retained Put barriers. This neither freezes usage nor
+/// predicts admission or cluster-wide capacity. Existing data is not evicted.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationalCapacityPreview {
+    #[prost(uint32, tag = "1")]
+    pub member: u32,
+    /// Owner snapshot generation, not a native applied-cut certificate.
+    #[prost(uint64, tag = "2")]
+    pub effective_generation: u64,
+    #[prost(uint64, tag = "3")]
+    pub vertex_footprint: u64,
+    #[prost(uint64, tag = "4")]
+    pub edge_footprint: u64,
+    #[prost(uint64, tag = "5")]
+    pub vertex_causal_entries: u64,
+    #[prost(uint64, tag = "6")]
+    pub edge_causal_entries: u64,
+    #[prost(bool, tag = "7")]
+    pub vertices_over_limit: bool,
+    #[prost(bool, tag = "8")]
+    pub edges_over_limit: bool,
+    #[prost(bool, tag = "9")]
+    pub vertex_causal_over_limit: bool,
+    #[prost(bool, tag = "10")]
+    pub edge_causal_over_limit: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

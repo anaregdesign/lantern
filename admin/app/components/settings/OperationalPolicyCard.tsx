@@ -1,12 +1,14 @@
 import { Button, Checkbox, Title3 } from "@fluentui/react-components";
 import {
   LogPolicyAdoptionState,
+  OperationalGroup,
   OperationalSettingsApplicationState,
   OperationalSettingsChangeMode,
   OperationalSettingsError,
   OperationalSettingsSource,
   type OperationalGroupSettings,
   type OperationalBackupRetentionPreview,
+  type OperationalCapacityPreview,
 } from "lantern-sdk/web";
 import {
   operationalDefinition,
@@ -23,7 +25,9 @@ export type OperationalPolicyCardProps = {
   retentionRequired: boolean;
   retentionAcknowledged: boolean;
   backupPreview?: OperationalBackupRetentionPreview;
+  capacityPreview?: OperationalCapacityPreview;
   previewBackup(): void;
+  previewCapacity(): void;
   select(adopt?: boolean): void;
   edit(key: string, value: string): void;
   acknowledge(value: boolean): void;
@@ -212,6 +216,69 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
               />
             ))}
           </div>
+          {settings.group === OperationalGroup.CAPACITY && (
+            <section aria-label="Connected-node capacity preview">
+              <Button disabled={blocked} onClick={props.previewCapacity}>
+                Preview connected-node capacity
+              </Button>
+              {props.capacityPreview && (
+                <>
+                  <p>
+                    Member {props.capacityPreview.member}; observed owner
+                    generation{" "}
+                    {props.capacityPreview.effectiveGeneration.toString()}.
+                    Counters are sampled separately and can change. Admission
+                    footprints include retained Put barriers. This local sample
+                    does not predict admission or cluster-wide capacity.
+                  </p>
+                  <div className={styles.tableWrap}>
+                    <table>
+                      <caption>Capacity usage sample</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Counter</th>
+                          <th scope="col">Usage</th>
+                          <th scope="col">Over proposed cap</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(
+                          [
+                            [
+                              "Vertex admission footprint",
+                              props.capacityPreview.vertexFootprint,
+                              props.capacityPreview.verticesOverLimit,
+                            ],
+                            [
+                              "Edge admission footprint",
+                              props.capacityPreview.edgeFootprint,
+                              props.capacityPreview.edgesOverLimit,
+                            ],
+                            [
+                              "Vertex causal identities",
+                              props.capacityPreview.vertexCausalEntries,
+                              props.capacityPreview.vertexCausalOverLimit,
+                            ],
+                            [
+                              "Edge causal identities",
+                              props.capacityPreview.edgeCausalEntries,
+                              props.capacityPreview.edgeCausalOverLimit,
+                            ],
+                          ] as const
+                        ).map(([label, count, over]) => (
+                          <tr key={String(label)}>
+                            <th scope="row">{label}</th>
+                            <td>{count.toString()}</td>
+                            <td>{over ? "Yes" : "No"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
           {props.retentionRequired && (
             <section aria-label="Connected-node retention preview">
               <p>

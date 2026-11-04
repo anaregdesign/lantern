@@ -5,6 +5,8 @@ import { version, review as makeReview } from "../../test/current-security";
 import {
   GetOperationalSettingsResponseSchema,
   CurrentSecurityReviewSchema,
+  PreviewOperationalPolicyRequestSchema,
+  PreviewOperationalPolicyResponseSchema,
   LogPolicyAdoptionState,
   OperationalSettingsApplicationState,
   OperationalSettingsChangeMode,
@@ -55,6 +57,30 @@ async function operationalUI(
       group.changeMode = OperationalSettingsChangeMode.HOT;
       group.application = OperationalSettingsApplicationState.APPLIED;
       group.error = OperationalSettingsError.NONE;
+      const capacity = response.groups[4]!;
+      capacity.effective = {
+        $typeName: "graph.v1.OperationalPolicyValues",
+        group: {
+          case: "capacity",
+          value: {
+            $typeName: "graph.v1.OperationalCapacityValues",
+            gcEdgeBudget: 0n,
+            gcIntervalSeconds: 60n,
+            maxVertices: 1n,
+            maxEdges: 0n,
+            maxVertexCausalEntries: 1n,
+            maxEdgeCausalEntries: 0n,
+          },
+        },
+      };
+      capacity.changeMode = OperationalSettingsChangeMode.WORKER_RESTART;
+      capacity.application = OperationalSettingsApplicationState.APPLIED;
+      capacity.error = OperationalSettingsError.NONE;
+      capacity.provenance = [19, 20, 21, 22, 23, 24].map((setting) => ({
+        $typeName: "graph.v1.OperationalSettingProvenance",
+        setting,
+        source: OperationalSettingsSource.DEFAULT,
+      }));
       const operation = committed?.changes[0]?.operation;
       if (operation?.case === "putOperationalPolicy") {
         group.desired = {
@@ -114,6 +140,45 @@ async function operationalUI(
         contentType: "application/json",
         body: JSON.stringify(
           toJson(GetOperationalSettingsResponseSchema, response),
+        ),
+      });
+    },
+  );
+  await page.route(
+    `${fixture.primary}/**/PreviewOperationalPolicy`,
+    async (route) => {
+      const request = fromJson(
+        PreviewOperationalPolicyRequestSchema,
+        route.request().postDataJSON() as JsonValue,
+      );
+      const candidate = request.values?.group;
+      if (candidate?.case !== "capacity")
+        throw new Error("Unexpected preview group.");
+      const over = (usage: bigint, cap: bigint) => cap > 0n && usage > cap;
+      const response = create(PreviewOperationalPolicyResponseSchema, {
+        schemaVersion: 1,
+        group: 5,
+        version,
+        capacityUsage: {
+          member: 1,
+          effectiveGeneration: 0n,
+          vertexFootprint: 3n,
+          edgeFootprint: 2n,
+          vertexCausalEntries: 3n,
+          edgeCausalEntries: 2n,
+          verticesOverLimit: over(3n, candidate.value.maxVertices),
+          edgesOverLimit: over(2n, candidate.value.maxEdges),
+          vertexCausalOverLimit: over(
+            3n,
+            candidate.value.maxVertexCausalEntries,
+          ),
+          edgeCausalOverLimit: over(2n, candidate.value.maxEdgeCausalEntries),
+        },
+      });
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(
+          toJson(PreviewOperationalPolicyResponseSchema, response),
         ),
       });
     },
@@ -180,6 +245,56 @@ for (const width of [1280, 390])
         .getByRole("region", { name: "Request admission", exact: true })
         .getByRole("button"),
     ).toBeDisabled();
+    const capacity = page.getByRole("region", {
+      name: "Graph capacity and garbage collection",
+      exact: true,
+    });
+    await capacity
+      .getByRole("button", {
+        name: "Edit graph capacity and garbage collection",
+        exact: true,
+      })
+      .click();
+    await capacity
+      .getByRole("button", {
+        name: "Use this node’s values for adoption",
+        exact: true,
+      })
+      .click();
+    await capacity
+      .getByRole("button", {
+        name: "Preview connected-node capacity",
+        exact: true,
+      })
+      .click();
+    const sample = capacity.getByRole("table", {
+      name: "Capacity usage sample",
+      exact: true,
+    });
+    await expect(
+      sample.getByRole("row").filter({ hasText: "Vertex admission footprint" }),
+    ).toHaveText("Vertex admission footprint3Yes");
+    await expect(
+      sample.getByRole("row").filter({ hasText: "Edge admission footprint" }),
+    ).toHaveText("Edge admission footprint2No");
+    await expect(capacity).toContainText("Counters are sampled separately");
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await capacity.screenshot({
+      path: testInfo.outputPath(`capacity-preview-${width}.png`),
+      animations: "disabled",
+    });
+    await capacity.getByLabel("Max vertices", { exact: true }).fill("2");
+    await expect(sample).toHaveCount(0);
+    await expect(
+      capacity.getByRole("button", {
+        name: "Review graph capacity and garbage collection change",
+        exact: true,
+      }),
+    ).toBeEnabled();
     await reviewSlow(page);
     await expect(
       page.getByRole("region", {
