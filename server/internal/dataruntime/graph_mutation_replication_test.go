@@ -110,14 +110,17 @@ func TestGraphMutationUnattemptedProjectionDoesNotDropOriginEffects(t *testing.T
 }
 
 func TestGraphMutationCommittedProjectionRejectsDrift(t *testing.T) {
-	_, _, committed := graphMutationCommittedFixture(t)
+	committed, err := decodeGraphMutation(graphMutationEnvelopeFixture(t).Mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
 	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
 	newer := hlcFromProto(committed.Mutation.GetHlc())
 	newer.Logical++
 	graph.PutVertexWithExpirationHLC("a", &pb.Vertex{Key: "a", Value: &pb.Vertex_String_{String_: "newer"}}, time.Time{}, newer)
 	before := graph.SnapshotReplication()
-	if err := replayGraphMutation(graph, committed); err == nil {
-		t.Fatal("committed WAL projection was silently recomputed")
+	if err := replayGraphMutation(graph, committed); !errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "mixed graph projection drift") {
+		t.Fatalf("committed WAL projection drift was not rejected: %v", err)
 	}
 	if !reflect.DeepEqual(before, graph.SnapshotReplication()) {
 		t.Fatal("failed committed replay leaked a partial decision")
