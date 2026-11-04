@@ -46,6 +46,8 @@ type SecurityRuntime struct {
 	closeOrderly       bool
 
 	readinessObservation *readinessdiag.Observer
+	rateRecoveryMu       sync.Mutex
+	rateRecovery         *rateRecoveryRuntime
 }
 
 func NewSecurityRuntime(ctx context.Context, config SecurityConfig, data *dataruntime.ServingRuntime) (result *SecurityRuntime, cleanup func(), err error) {

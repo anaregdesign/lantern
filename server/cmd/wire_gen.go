@@ -98,7 +98,23 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	managedOperationalCertified, err := provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, managedSlowRPCCertified)
+	v7 := provider.NewRateLimitConfig(config)
+	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(v7, domainMetrics)
+	rateRecoveryRuntime, err := provider.NewRateRecoveryRuntime(securityRuntime, rateLimitInterceptor)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	managedRateCertified, err := provider.NewManagedRateRuntime(ctx, managedOperationalRuntime, rateLimitInterceptor, rateRecoveryRuntime)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	managedOperationalCertified, err := provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, managedSlowRPCCertified, managedRateCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -129,12 +145,10 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	corsConfig := provider.NewCORSConfig(config)
 	changeConfig := provider.NewChangeConfig(config, domainMetrics)
 	validationInterceptor := provider.NewValidationInterceptorProvider(v4, domainMetrics, logger)
-	v7 := provider.NewRateLimitConfig(config)
-	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(v7, domainMetrics)
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
 	healthChecker := provider.NewHealthChecker()
-	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, executor, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
+	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, executor, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified, rateRecoveryRuntime)
 	if err != nil {
 		cleanup4()
 		cleanup3()

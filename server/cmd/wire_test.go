@@ -173,6 +173,9 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewManagedLogRuntime(",
 		"provider.NewManagedOperationalRuntime(",
 		"provider.NewManagedSlowRPCRuntime(",
+		"provider.NewRateLimitInterceptorProvider(",
+		"provider.NewRateRecoveryRuntime(",
+		"provider.NewManagedRateRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
@@ -193,6 +196,11 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 			t.Fatalf("generated injector constructs %q out of certification order", needle)
 		}
 		previous = index
+	}
+	for _, owner := range []string{"provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime("} {
+		if strings.Count(text, owner) != 1 {
+			t.Fatalf("generated injector does not construct exactly one %q", owner)
+		}
 	}
 	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")

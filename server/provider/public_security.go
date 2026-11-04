@@ -16,16 +16,18 @@ import (
 )
 
 type publicSecurityCertified struct {
-	runtime *SecurityRuntime
-	primary *dataruntime.Executor
-	slowRPC *SlowRPCInterceptor
+	runtime  *SecurityRuntime
+	primary  *dataruntime.Executor
+	slowRPC  *SlowRPCInterceptor
+	rate     *RateLimitInterceptor
+	recovery *rateRecoveryRuntime
 }
 
 func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified, operational managedOperationalCertified) (publicSecurityCertified, error) {
 	if logging.runtime != runtime || logging.owner == nil || logging.adapter == nil || runtime == nil || runtime.managedLog != logging.adapter || logging.adapter.owner != logging.owner {
 		return publicSecurityCertified{}, errors.New("public security requires the exact restored logging owner")
 	}
-	if operational.runtime != runtime || operational.manager == nil || runtime.managedOperational != operational.manager || operational.slowRPC == nil {
+	if operational.runtime != runtime || operational.manager == nil || runtime.managedOperational != operational.manager || operational.slowRPC == nil || operational.rate == nil || !operational.recovery.bound(runtime, operational.rate) {
 		return publicSecurityCertified{}, errors.New("public security requires the exact restored operational owners")
 	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
@@ -51,7 +53,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if err := runtime.protectDataService(primary); err != nil {
 		return publicSecurityCertified{}, err
 	}
-	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC}, nil
+	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery}, nil
 }
 
 func certifyEdgeCreateTopology(primary *dataruntime.Executor, mode string, voters int, peer *PeerIdentityRuntime) error {

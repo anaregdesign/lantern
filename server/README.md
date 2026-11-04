@@ -222,8 +222,17 @@ together per process, preserve existing credit while enabled, and cap credit
 when Burst shrinks. Explicitly enabling a disabled bucket grants one initial
 burst; reapplying an enabled policy does not. Nonfinite startup RPS is reported
 as an invalid policy and closes admission rather than silently disabling it.
-These runtime seams prepare managed settings; this change does not activate a
-management recovery reserve or expose new settings through Admin (#2006).
+OIDC public ingress retains a separate fixed recovery allowance of 4 requests
+per second with burst 8 per process. After ordinary admission is exhausted,
+only explicitly listed Security management RPCs and the exact browser
+login/session/logout/authorization/callback routes can use it. Authentication,
+current Roles, CSRF, native authority and output budgets still apply. Data,
+CDC, reflection, native registration and `/auth/operations` cannot borrow it.
+OFF has no recovery allowance. Operational updates and replay never reset its
+credit; this bounded extra admission cannot guarantee availability during an
+unlimited hostile flood. Nonfinite bootstrap admission can therefore remain
+closed while an authenticated administrator repairs it. Typed managed adoption
+and Admin integration retain their independent authority requirements (#1996).
 
 Public edge Put/Add RPCs accept only finite source weights, for both singular and
 plural calls. Peer mutations and restored Snapshot/archive contributions follow
