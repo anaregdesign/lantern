@@ -48,5 +48,6 @@ unless verified native desired state has already adopted the group.
 Native adoption, durable recovery, Admin review/apply and per-node observations
 use the existing typed operational control plane. A new committed generation
 is the rollback path. Source integration alone does not establish the final
-real Connect/Admin acceptance or Epic #1990 completion. Search and replication
-groups remain unavailable until their actual runtime owners are integrated.
+real Connect/Admin acceptance or Epic #1990 completion. The
+[operational composition](managed-operational-runtime.md) describes all eight
+installed groups and their independent application contracts.

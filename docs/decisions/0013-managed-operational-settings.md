@@ -1,8 +1,10 @@
 # ADR 0013: Managed operational settings
 
-Status: log-level pilot implemented; the closed operational authority foundation
-is extended in [Issue #2007](https://github.com/anaregdesign/lantern/issues/2007).
-Remaining runtime/API/Admin delivery is tracked by the definitive Epic scope.
+Status: log-level pilot implemented. The closed operational authority, API/Admin
+and eight runtime-owner contracts are implemented in staged source. Rollout,
+required CI and final acceptance status remain tracked by the definitive
+[Epic #1990](https://github.com/anaregdesign/lantern/issues/1990) and
+[Issue #2016](https://github.com/anaregdesign/lantern/issues/2016).
 Pilot qualification evidence is tracked in
 [Issue #1995](https://github.com/anaregdesign/lantern/issues/1995).
 Tracking: [Epic #1990](https://github.com/anaregdesign/lantern/issues/1990).
@@ -258,10 +260,12 @@ metadata rather than another setting. Its read-only preview resolves the actual
 excluded local baseline without creating an original, floor or policy. Actual
 owners recompute and compare the sealed fingerprint during candidate preparation
 on **every Search update**, including after adoption; every update requires the
-complete voter/origin certificate. Runtime delivery must still implement its
-engine/cursor transition and trusted RPC generation guard. Health readiness alone
-does not block direct data RPCs. The native projection reports desired policy
-only and never interprets a successful owner call as effective application.
+complete voter/origin certificate. The runtime implements the
+[versioned engine/cursor contract](../managed-search-request-policy.md) and
+trusted RPC generation guard; production installs a new engine on coordinated
+process restart. Health readiness alone does not block direct data RPCs. The native
+projection reports desired policy only and never interprets a successful owner
+call as effective application.
 Managed Search timeout milliseconds, query bytes and query terms also fit the
 existing unsigned 32-bit capability fields, so discovery cannot wrap an admitted
 value. This bounds managed candidates without changing legacy environment parsing.
@@ -272,10 +276,14 @@ acknowledgement in the immutable reviewed change/CAS. Review and Apply do not
 delete backup files. The backup owner's separately delivered consequence preview
 and bounded retention worker remain responsible for actual production behavior.
 
-These owners are installed after verified graph/native recovery and before public
-certification. This extension does not reorder authority opening or data restore,
-add a store, change bootstrap ownership, enable every runtime group, or complete
-the API/Admin/runtime delivery exits by itself.
+Operational owners recover verified native desired state during construction
+and register before public certification. Durable receipt-WAL restoration finishes
+before native authority opens. Graph-only startup restoration instead runs in
+`App.Run`, after native and owner construction and before public HTTP serving;
+the public socket may already be bound and the private control network running.
+Data restoration does not import native policy or change bootstrap ownership.
+The typed authority does not create runtime resources by itself: provider
+composition must install and certify each actual owner.
 
 The initial load also captures immutable provenance for these exact 43 inputs
 from its existing Reader snapshot and completed parser diagnostics. It retains
