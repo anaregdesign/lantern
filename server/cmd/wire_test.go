@@ -18,7 +18,10 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
+	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/replication"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -190,16 +193,16 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewServingReadinessGate(",
 		"provider.NewManagedLifecycleRuntime(",
 		"provider.NewManagedSearchRuntime(",
+		"provider.NewWorkloadPeerTransport(",
+		"provider.NewSnapshotInstallerSelection(",
+		"provider.NewManagedReplicationRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
 		"provider.NewListener(",
 		"provider.NewServingMetricsServer(",
-		"provider.NewWorkloadPeerTransport(",
-		"provider.NewSnapshotInstallerSelection(",
-		"provider.NewSearchCertifiedReplicationPump(",
-		"provider.NewSearchReplicationPump(",
-		"provider.NewSearchCertifiedAntiEntropyDriver(",
+		"provider.NewManagedReplicationPump(",
+		"provider.NewManagedAntiEntropyDriver(",
 	}
 	previous := -1
 	for _, needle := range ordered {
@@ -212,7 +215,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime(", "provider.NewServingReadinessGate(", "provider.NewManagedLifecycleRuntime(", "provider.NewManagedShutdownPlan(", "provider.NewManagedLifecycleConfig(", "provider.NewManagedSearchRuntime(", "provider.NewSearchCertifiedReplicationPump(", "provider.NewSearchReplicationPump(", "provider.NewSearchCertifiedAntiEntropyDriver("} {
+	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime(", "provider.NewServingReadinessGate(", "provider.NewManagedLifecycleRuntime(", "provider.NewManagedShutdownPlan(", "provider.NewManagedLifecycleConfig(", "provider.NewManagedSearchRuntime(", "provider.NewManagedReplicationRuntime(", "provider.NewManagedReplicationPump(", "provider.NewManagedAntiEntropyDriver("} {
 		if strings.Count(text, owner) != 1 {
 			t.Fatalf("generated injector does not construct exactly one %q", owner)
 		}
@@ -222,7 +225,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		!strings.Contains(text, "provider.NewGraphPolicyOwner(cacheConfig, servingRuntime, executor, runtimeCertified)") ||
 		!strings.Contains(text, "provider.NewManagedCapacityRuntime(ctx, managedOperationalRuntime, graphPolicyOwner)") ||
 		!strings.Contains(text, "provider.NewManagedSearchRuntime(ctx, managedOperationalRuntime, executor)") ||
-		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified, managedSearchCertified)") {
+		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified, managedSearchCertified, managedReplicationCertified)") {
 		t.Fatal("generated injector does not certify the actual Request executor and validator together")
 	}
 	if !strings.Contains(text, "service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphPolicyOwner, executor, replication)") ||
@@ -242,14 +245,16 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
 	}
-	if strings.Contains(text, "provider.NewReplicationPump(") || strings.Contains(text, "provider.NewAntiEntropyDriver(") || !strings.Contains(text, "provider.NewSearchReplicationPump(searchPumpCertified)") {
-		t.Fatal("generated injector can bypass final Search installation when constructing peer workers")
+	if strings.Contains(text, "provider.NewReplicationPump(") || strings.Contains(text, "provider.NewAntiEntropyDriver(") ||
+		strings.Contains(text, "provider.NewSearchCertifiedReplicationPump(") || strings.Contains(text, "provider.NewSearchCertifiedAntiEntropyDriver(") ||
+		!strings.Contains(text, "provider.NewManagedReplicationPump(managedReplicationCertified)") ||
+		!strings.Contains(text, "provider.NewManagedAntiEntropyDriver(managedReplicationCertified)") {
+		t.Fatal("generated injector can bypass the actual managed replication bundle")
 	}
 	if strings.Count(text, "provider.NewSnapshotInstallerSelection(") != 1 ||
 		strings.Count(text, "provider.NewWorkloadPeerTransport(") != 1 ||
-		!strings.Contains(text, "peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified, managedOperationalRuntime, managedSearchCertified)") ||
-		!strings.Contains(text, "peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection, runtimeCertified, managedOperationalRuntime, managedSearchCertified, searchPumpCertified)") {
-		t.Fatal("generated injector does not share the certified peer transport and Snapshot installer across Pump and anti-entropy")
+		!strings.Contains(text, "peerConfig, antiEntropyConfig, peerResolver, replicationConfig, peerTransport, executor, graphCache, metrics, antiEntropyMetrics, logger, snapshotInstallerSelection, runtimeCertified, managedSearchCertified)") {
+		t.Fatal("generated injector does not share the actual external bindings and final Search installation with the worker pair")
 	}
 }
 
@@ -279,8 +284,17 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 		t.Fatal("App GC watcher differs from the certified graph owner")
 	}
 	fingerprint := app.svc.SearchConfigFingerprint()
-	if fingerprint == "" || app.pump.SearchConfigFingerprint() != fingerprint || app.antiEntropy.SearchConfigFingerprint() != fingerprint || !app.antiEntropy.UsesPump(app.pump) {
+	if !app.security.(*provider.SecurityRuntime).UsesManagedReplicationWorkers(app.svc, app.pump, app.antiEntropy) || fingerprint == "" || app.pump.SearchConfigFingerprint() != fingerprint || app.antiEntropy.SearchConfigFingerprint() != fingerprint || !app.antiEntropy.UsesPump(app.pump) {
 		t.Fatal("App peer workers did not capture the final installed Search fingerprint together")
+	}
+	foreignPump := replication.NewPump(replication.Config{SearchConfigFingerprint: fingerprint}, nil, nil)
+	foreignAnti := replication.NewAntiEntropy(replication.AntiEntropyConfig{Pump: foreignPump, SearchConfigFingerprint: fingerprint}, nil, nil, nil)
+	if candidate, err := newApp(nil, nil, app.svc, app.server, app.shutdownPlan, app.graphPolicy,
+		nil, nil, nil, nil, foreignPump, foreignAnti, nil, provider.ShutdownConfig{},
+		nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
+		nil, app.runtime, nil, nil, app.security.(*provider.SecurityRuntime), nil, provider.PeerPlaneConfig{},
+		provider.DomainMetricsWired{}, provider.CacheGCHooksWired{}); err == nil || candidate != nil {
+		t.Fatal("App accepted equal-fingerprint foreign workers before other setup")
 	}
 
 	if !app.server.UsesShutdownPlan(app.shutdownPlan) || app.shutdownPlan.Current().Generation != 0 {

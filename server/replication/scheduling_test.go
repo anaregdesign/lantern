@@ -18,6 +18,9 @@ func TestSchedulingObservesActualConstructorValues(t *testing.T) {
 	anti := NewAntiEntropy(AntiEntropyConfig{Pump: pump, Interval: -time.Second, SearchConfigFingerprint: "engine"}, nil, nil, nil)
 	p, _ := pump.Scheduling()
 	a, _ := anti.Scheduling()
+	if p.SearchFingerprint != pump.SearchConfigFingerprint() || a.SearchFingerprint != anti.SearchConfigFingerprint() || !anti.UsesPump(pump) {
+		t.Fatal("Search binding observations disagree with actual scheduling")
+	}
 	if p.BackoffMin != 250*time.Millisecond || p.BackoffMax != 30*time.Second || p.SearchFingerprint != "engine" ||
 		a.Interval != 30*time.Second || a.SubscribeTimeout != 30*time.Second || a.Pump != pump || a.SearchFingerprint != "engine" {
 		t.Fatalf("constructor-resolved schedules = %+v / %+v", p, a)

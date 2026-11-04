@@ -22,6 +22,7 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/replication"
 )
 
 func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
@@ -119,7 +120,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, slog.New(slog.NewTextHandler(io.Discard, nil))), cert)
 	for _, mutate := range []func(*managedOperationalCertified){
 		func(c *managedOperationalCertified) { c.rate = nil },
 		func(c *managedOperationalCertified) { c.rate = NewRateLimitInterceptor(0, 0) },
@@ -133,6 +134,13 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		func(c *managedOperationalCertified) { c.capacity = nil },
 		func(c *managedOperationalCertified) { c.search = managedSearchCertified{} },
 		func(c *managedOperationalCertified) { c.capacity = &dataruntime.GraphPolicyOwner{} },
+		func(c *managedOperationalCertified) { c.pump = nil },
+		func(c *managedOperationalCertified) { c.anti = nil },
+		func(c *managedOperationalCertified) {
+			fingerprint := primary.SearchConfigFingerprint()
+			c.pump = replication.NewPump(replication.Config{SearchConfigFingerprint: fingerprint}, nil, nil)
+			c.anti = replication.NewAntiEntropy(replication.AntiEntropyConfig{Pump: c.pump, SearchConfigFingerprint: fingerprint}, nil, nil, nil)
+		},
 		func(c *managedOperationalCertified) {
 			c.backup = backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil)
 		},

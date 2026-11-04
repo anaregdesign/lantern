@@ -389,7 +389,16 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal("actual Search engine recovery", err)
 	}
-	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker, searchMarker)
+	replicationMarker, err := provider.NewManagedReplicationRuntime(t.Context(), operationalRuntime, startup.Peer, startup.AntiEntropy, nil, startup.Replication, nil, dataService, data.GraphCache(), nil, nil, servingLogger, nil, certified, searchMarker)
+	if err != nil {
+		t.Fatal("actual replication scheduling recovery", err)
+	}
+	schedulePump, pumpErr := provider.NewManagedReplicationPump(replicationMarker)
+	scheduleAnti, antiErr := provider.NewManagedAntiEntropyDriver(replicationMarker)
+	if pumpErr != nil || antiErr != nil || !runtime.UsesManagedReplicationWorkers(dataService, schedulePump, scheduleAnti) {
+		t.Fatal("actual registered replication worker pair", pumpErr, antiErr)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker, searchMarker, replicationMarker)
 	if err != nil {
 		t.Fatal("operational owner certification", err)
 	}

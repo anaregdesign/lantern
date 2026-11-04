@@ -49,6 +49,9 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if !operational.search.validFor(operational.manager, primary) {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed Search engine")
 	}
+	if !runtime.UsesManagedReplicationWorkers(primary, operational.pump, operational.anti) {
+		return publicSecurityCertified{}, errors.New("public security requires the exact installed replication workers")
+	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
 	}

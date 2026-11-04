@@ -25,6 +25,21 @@ type managedReplicationCertified struct {
 type managedReplicationOwner struct {
 	*replicationPolicyRuntime
 	sources map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource
+	binding searchPumpCertified
+}
+
+func (c managedReplicationCertified) validFor(manager *ManagedOperationalRuntime, primary *dataruntime.Executor, search managedSearchCertified) bool {
+	if manager == nil || c.manager != manager || c.primary != primary || c.owner == nil || c.owner.replicationPolicyRuntime == nil || c.owner.pump != c.pump || c.owner.anti != c.anti {
+		return false
+	}
+	binding := c.owner.binding
+	if !binding.validFor(binding.certified, manager, primary, binding.cache, search, c.pump) || c.anti == nil || !c.anti.UsesPump(c.pump) || c.anti.SearchConfigFingerprint() != binding.fingerprint {
+		return false
+	}
+	manager.mu.Lock()
+	entry := manager.replication
+	manager.mu.Unlock()
+	return entry != nil && entry.owner == c.owner && c.owner.AvailableOperationalPolicy(operationalpolicy.GroupReplication, operationalpolicy.Version) == nil
 }
 
 // NewManagedReplicationRuntime restores the selected schedule before creating
@@ -76,8 +91,20 @@ func NewManagedReplicationRuntime(
 	if fingerprint == "" {
 		return managedReplicationCertified{}, errManagedReplication
 	}
-	pump := NewReplicationPump(resolvedPeer, resolver, identity, transport, primary, cache, pumpMetrics, logger, installer, certified)
-	anti := NewAntiEntropyDriver(resolvedPeer, resolver, identity, resolvedAnti, transport, primary, cache, pump, antiMetrics, logger, installer)
+	// Reuse the concrete Search witnesses inside this one bundle. Only the
+	// managed selectors participate in Wire; no second worker pair is built.
+	binding, err := NewSearchCertifiedReplicationPump(resolvedPeer, resolver, identity, transport, primary, cache, pumpMetrics, logger, installer, certified, manager, search)
+	if err != nil {
+		return managedReplicationCertified{}, err
+	}
+	pump, err := NewSearchReplicationPump(binding)
+	if err != nil {
+		return managedReplicationCertified{}, err
+	}
+	anti, err := NewSearchCertifiedAntiEntropyDriver(resolvedPeer, resolver, identity, resolvedAnti, transport, primary, cache, pump, antiMetrics, logger, installer, certified, manager, search, binding)
+	if err != nil {
+		return managedReplicationCertified{}, err
+	}
 	pumpActual, pOK := pump.Scheduling()
 	antiActual, aOK := anti.Scheduling()
 	if !pOK || !aOK || pumpActual.SearchFingerprint != fingerprint || antiActual.SearchFingerprint != fingerprint || !search.validFor(manager, primary) {
@@ -90,11 +117,15 @@ func NewManagedReplicationRuntime(
 	if boot == nil {
 		markReplicationDerived(sources, peer, antiConfig, pumpActual, antiActual)
 	}
-	owner := &managedReplicationOwner{replicationPolicyRuntime: runtime, sources: sources}
+	owner := &managedReplicationOwner{replicationPolicyRuntime: runtime, sources: sources, binding: binding}
 	if err := manager.Register(ctx, operationalpolicy.GroupReplication, owner); err != nil {
 		return managedReplicationCertified{}, err
 	}
-	return managedReplicationCertified{manager, primary, owner, pump, anti}, nil
+	result := managedReplicationCertified{manager, primary, owner, pump, anti}
+	if !result.validFor(manager, primary, search) {
+		return managedReplicationCertified{}, errManagedReplication
+	}
+	return result, nil
 }
 
 func markReplicationDerived(sources map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource, peer PeerConfig, antiConfig AntiEntropyConfig, pump replication.PumpScheduling, anti replication.AntiEntropyScheduling) {
@@ -143,11 +174,39 @@ func (o *managedReplicationOwner) ObserveOperationalPolicy() (OperationalOwnerOb
 
 // NewManagedReplicationPump returns the exact constructed worker for App and
 // status without replacing it or resetting its resume state.
-func NewManagedReplicationPump(certified managedReplicationCertified) *replication.Pump {
-	return certified.pump
+func NewManagedReplicationPump(certified managedReplicationCertified) (*replication.Pump, error) {
+	if certified.owner == nil || !certified.validFor(certified.manager, certified.primary, certified.owner.binding.search) {
+		return nil, errManagedReplication
+	}
+	return certified.pump, nil
 }
 
 // NewManagedAntiEntropyDriver returns the actual companion of that same Pump.
-func NewManagedAntiEntropyDriver(certified managedReplicationCertified) *replication.AntiEntropy {
-	return certified.anti
+func NewManagedAntiEntropyDriver(certified managedReplicationCertified) (*replication.AntiEntropy, error) {
+	if certified.owner == nil || !certified.validFor(certified.manager, certified.primary, certified.owner.binding.search) {
+		return nil, errManagedReplication
+	}
+	return certified.anti, nil
+}
+
+// UsesManagedReplicationWorkers verifies the actual registered worker pair
+// before App binds status or starts workers. Equal fingerprints never replace
+// pointer identity, and the check performs no authority read or worker action.
+func (r *SecurityRuntime) UsesManagedReplicationWorkers(primary *dataruntime.Executor, pump *replication.Pump, anti *replication.AntiEntropy) bool {
+	if r == nil || r.managedOperational == nil || r.managedOperational.runtime != r {
+		return false
+	}
+	manager := r.managedOperational
+	manager.mu.Lock()
+	entry := manager.replication
+	manager.mu.Unlock()
+	if entry == nil {
+		return false
+	}
+	owner, ok := entry.owner.(*managedReplicationOwner)
+	if !ok || owner == nil {
+		return false
+	}
+	actual := managedReplicationCertified{manager, primary, owner, pump, anti}
+	return actual.validFor(manager, primary, owner.binding.search)
 }

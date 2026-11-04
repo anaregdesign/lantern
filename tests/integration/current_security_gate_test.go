@@ -318,7 +318,21 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual Search engine recovery", err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker, searchMarker)
+		scheduleTransport, err := provider.NewWorkloadPeerTransport(workload)
+		if err != nil {
+			t.Fatal("actual scheduling peer transport", err)
+		}
+		scheduleResolver := provider.NewWorkloadPeerResolver(workload)
+		replicationMarker, err := provider.NewManagedReplicationRuntime(t.Context(), operationalRuntime, startup.Peer, startup.AntiEntropy, scheduleResolver, startup.Replication, scheduleTransport, svc, data.GraphCache(), nil, nil, logger, nil, certified, searchMarker)
+		if err != nil {
+			t.Fatal("actual replication scheduling recovery", err)
+		}
+		schedulePump, pumpErr := provider.NewManagedReplicationPump(replicationMarker)
+		scheduleAnti, antiErr := provider.NewManagedAntiEntropyDriver(replicationMarker)
+		if pumpErr != nil || antiErr != nil || !runtime.UsesManagedReplicationWorkers(svc, schedulePump, scheduleAnti) {
+			t.Fatal("actual registered replication worker pair", pumpErr, antiErr)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker, searchMarker, replicationMarker)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -2266,7 +2280,11 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_BACKUP ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_CAPACITY ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_LIFECYCLE ||
-			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SEARCH {
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SEARCH ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REPLICATION {
+			if future.Application == pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error == pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE {
+				t.Fatal("an actual installed operational group is unavailable", future)
+			}
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {

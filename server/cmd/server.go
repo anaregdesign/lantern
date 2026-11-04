@@ -111,7 +111,7 @@ func newApp(
 		return nil, errors.New("app requires the exact managed lifecycle and graph owners")
 	}
 	fingerprint := svc.SearchConfigFingerprint()
-	if pump == nil || antiEntropy == nil || fingerprint == "" || pump.SearchConfigFingerprint() != fingerprint || antiEntropy.SearchConfigFingerprint() != fingerprint || !antiEntropy.UsesPump(pump) {
+	if !security.UsesManagedReplicationWorkers(svc, pump, antiEntropy) || fingerprint == "" || pump.SearchConfigFingerprint() != fingerprint || antiEntropy.SearchConfigFingerprint() != fingerprint || !antiEntropy.UsesPump(pump) {
 		return nil, errors.New("app requires the same replication pair with the final Search fingerprint")
 	}
 	// Wire the replication snapshotter onto svc here (rather than inside

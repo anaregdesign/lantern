@@ -62,7 +62,9 @@ func TestManagedReplicationBindingRestoresActualWorkersAndStagesOnly(t *testing.
 	if pump.BackoffMin != 17*time.Millisecond || pump.BackoffMax != 53*time.Millisecond || anti.Interval != 0 || anti.Pump != workers.pump || pump.SearchFingerprint != primary.SearchConfigFingerprint() || anti.SearchFingerprint != primary.SearchConfigFingerprint() {
 		t.Fatalf("actual restored worker pair = %+v / %+v", pump, anti)
 	}
-	if NewManagedReplicationPump(workers) != workers.pump || NewManagedAntiEntropyDriver(workers) != workers.anti {
+	selectedPump, pumpErr := NewManagedReplicationPump(workers)
+	selectedAnti, antiErr := NewManagedAntiEntropyDriver(workers)
+	if pumpErr != nil || antiErr != nil || selectedPump != workers.pump || selectedAnti != workers.anti {
 		t.Fatal("selectors replaced actual worker objects")
 	}
 	observations, err := manager.Observe(projection)
@@ -186,4 +188,77 @@ func TestManagedReplicationBindingIdentityAndInvalidBootstrap(t *testing.T) {
 			t.Fatalf("staged repair falsely applied: %+v", observed)
 		}
 	})
+}
+
+func TestManagedReplicationBindingSelectorsRequireExactRegisteredPair(t *testing.T) {
+	projection := operationalRuntimeTestProjection(1)
+	manager, _, config, primary, runtime, search := replicationBindingFixture(t, projection)
+	workers, err := constructReplicationBinding(t, manager, config, primary, runtime, search)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignManager, _, foreignConfig, foreignPrimary, foreignRuntime, foreignSearch := replicationBindingFixture(t, projection)
+	foreign, err := constructReplicationBinding(t, foreignManager, foreignConfig, foreignPrimary, foreignRuntime, foreignSearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workers.pump.SearchConfigFingerprint() != foreign.pump.SearchConfigFingerprint() {
+		t.Fatal("fixture must exercise equal-fingerprint foreign workers")
+	}
+	if !manager.runtime.UsesManagedReplicationWorkers(primary, workers.pump, workers.anti) ||
+		manager.runtime.UsesManagedReplicationWorkers(foreignPrimary, workers.pump, workers.anti) ||
+		manager.runtime.UsesManagedReplicationWorkers(primary, foreign.pump, workers.anti) ||
+		manager.runtime.UsesManagedReplicationWorkers(primary, workers.pump, foreign.anti) ||
+		manager.runtime.UsesManagedReplicationWorkers(primary, foreign.pump, foreign.anti) {
+		t.Fatal("registered worker identity accepted an equal-valued foreign pair")
+	}
+	var missing *SecurityRuntime
+	if missing.UsesManagedReplicationWorkers(primary, workers.pump, workers.anti) || (&SecurityRuntime{}).UsesManagedReplicationWorkers(primary, workers.pump, workers.anti) {
+		t.Fatal("missing management runtime advertised actual workers")
+	}
+	for name, mutate := range map[string]func(*managedReplicationCertified){
+		"missing manager": func(c *managedReplicationCertified) { c.manager = nil },
+		"foreign manager": func(c *managedReplicationCertified) { c.manager = foreignManager },
+		"foreign primary": func(c *managedReplicationCertified) { c.primary = foreignPrimary },
+		"missing owner": func(c *managedReplicationCertified) { c.owner = nil },
+		"foreign owner": func(c *managedReplicationCertified) { c.owner = foreign.owner },
+		"foreign Pump": func(c *managedReplicationCertified) { c.pump = foreign.pump },
+		"foreign anti-entropy": func(c *managedReplicationCertified) { c.anti = foreign.anti },
+		"foreign pair": func(c *managedReplicationCertified) { c.pump, c.anti = foreign.pump, foreign.anti },
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrong := workers
+			mutate(&wrong)
+			if _, err := NewManagedReplicationPump(wrong); err == nil {
+				t.Fatal("invalid actual Pump selector accepted")
+			}
+			if _, err := NewManagedAntiEntropyDriver(wrong); err == nil {
+				t.Fatal("invalid actual anti-entropy selector accepted")
+			}
+		})
+	}
+	registered := manager.replication
+	manager.replication = nil
+	if manager.runtime.UsesManagedReplicationWorkers(primary, workers.pump, workers.anti) {
+		t.Fatal("missing registration retained worker ownership")
+	}
+	if _, err := NewManagedReplicationPump(workers); err == nil {
+		t.Fatal("unregistered workers selected")
+	}
+	manager.replication = registered
+	// Desired Search staging leaves the installed engine and worker identities
+	// intact. A manual engine replacement invalidates that construction proof.
+	policy := managedSearchTestPolicy(t, primary, 1)
+	if err := search.runtime.ApplyOperationalPolicy(*policy); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.runtime.UsesManagedReplicationWorkers(primary, workers.pump, workers.anti) {
+		t.Fatal("pending Search policy replaced actual worker ownership")
+	}
+	if err := search.runtime.owner.Restart(search.runtime.owner.Status().Desired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewManagedAntiEntropyDriver(workers); err == nil {
+		t.Fatal("stale engine installation selected workers")
+	}
 }

@@ -31,6 +31,17 @@ values. Legacy invalid bootstrap values that cannot be represented as a valid
 managed policy remain an explicit unknown/error; no default is invented. A valid
 successor can be staged for restart without mutating those live workers.
 
-The runtime seams and tests in this package are preparation for native/provider
-and Admin integration. They do not by themselves activate managed adoption,
-provide a safe data-preserving restart procedure, or complete Issue #2015.
+Normal composition registers one concrete worker bundle before public
+certification. It reuses the Search-certified constructors internally and
+exposes checked selectors for that exact Pump and AntiEntropy. App and public
+certification check the registered pair and the original Search installation;
+an equal fingerprint on a foreign pair does not establish ownership. Workers
+are constructed without starting goroutines; App retains their Run and join
+ownership. There is no parallel legacy worker construction in normal Wire.
+
+All eight operational groups then have actual runtime owners; the log-level
+policy retains its separate existing owner. Native adoption, review/apply and
+observations use the existing typed control plane. This source integration does
+not by itself provide a data-preserving restart procedure or establish final
+real Connect/Admin, required CI or Issue #2015 acceptance. Search still requires
+coordinated process restart; this group does not make a rolling restart safe.
