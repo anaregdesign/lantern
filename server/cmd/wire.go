@@ -5,8 +5,7 @@ package main
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/core/graphcache"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -53,6 +52,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewManagedRateRuntime,
 		provider.NewManagedRequestRuntime,
 		provider.NewManagedBackupRuntime,
+		provider.NewManagedCapacityRuntime,
 		provider.NewManagedOperationalCertified,
 		provider.NewLogger,
 		provider.NewTracing,
@@ -60,6 +60,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewDomainMetrics,
 		provider.NewServingRuntime,
 		provider.NewRuntimeGraph,
+		provider.NewGraphPolicyOwner,
 		provider.NewRuntimeRestored,
 		provider.NewRuntimeCertified,
 		provider.NewOIDCPublicReceiptsCertified,
@@ -91,7 +92,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		service.NewLanternServer,
 		wire.Bind(new(service.Listener), new(*provider.LanternListener)),
 		wire.Bind(new(service.HealthSetter), new(*provider.HealthChecker)),
-		wire.Bind(new(service.Watcher), new(*graphcache.GraphCache[string, *pb.Vertex])),
+		wire.Bind(new(service.Watcher), new(*dataruntime.GraphPolicyOwner)),
 		newApp,
 	)
 	return nil, nil, nil

@@ -179,6 +179,8 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewValidationInterceptorProvider(",
 		"provider.NewManagedRequestRuntime(",
 		"provider.NewManagedBackupRuntime(",
+		"provider.NewGraphPolicyOwner(",
+		"provider.NewManagedCapacityRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
@@ -200,15 +202,21 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime("} {
+	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime("} {
 		if strings.Count(text, owner) != 1 {
 			t.Fatalf("generated injector does not construct exactly one %q", owner)
 		}
 	}
 	if !strings.Contains(text, "provider.NewManagedRequestRuntime(ctx, managedOperationalRuntime, executor, validationInterceptor)") ||
 		!strings.Contains(text, "provider.NewManagedBackupRuntime(ctx, managedOperationalRuntime, backupper)") ||
-		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified)") {
+		!strings.Contains(text, "provider.NewGraphPolicyOwner(cacheConfig, servingRuntime, executor, runtimeCertified)") ||
+		!strings.Contains(text, "provider.NewManagedCapacityRuntime(ctx, managedOperationalRuntime, graphPolicyOwner)") ||
+		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified)") {
 		t.Fatal("generated injector does not certify the actual Request executor and validator together")
+	}
+	if !strings.Contains(text, "service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphPolicyOwner, executor, replication)") ||
+		!strings.Contains(text, "newApp(config, logger, executor, lanternServer, graphPolicyOwner, metricsServer") {
+		t.Fatal("generated injector does not share one managed GC watcher with LanternServer and App")
 	}
 	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||
 		!strings.Contains(text, "gate, v8, backupper, backupConfig, peerConfig") {
@@ -246,6 +254,9 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	defer cleanup()
 	if !app.backupper.UsesExecutor(app.svc) {
 		t.Fatal("App backup producer differs from the certified primary")
+	}
+	if !app.graphPolicy.OwnsInstallation(app.runtime, app.svc) || !app.server.UsesWatcher(app.graphPolicy) {
+		t.Fatal("App GC watcher differs from the certified graph owner")
 	}
 	stats, err := app.backupper.BackupNow(t.Context())
 	if err != nil {
@@ -661,6 +672,10 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 			cleanup()
 		}
 		t.Fatalf("graph-only app = %p, cleanup %v, mode %q", app, cleanup != nil, app.cfg.ReceiptWAL.Mode)
+	}
+	if !app.graphPolicy.OwnsInstallation(app.runtime, app.svc) || !app.server.UsesWatcher(app.graphPolicy) {
+		cleanup()
+		t.Fatal("graph-only App does not share its exact installed graph owner")
 	}
 	graphOnlyReceipt := productionReceiptEdgeDeleteMutation(t, mutationreceipt.Config{
 		Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,

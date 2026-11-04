@@ -86,6 +86,11 @@ type GraphPolicyOwner struct {
 	stopped bool
 }
 
+// OwnsInstallation checks the exact restored runtime and primary resource.
+func (o *GraphPolicyOwner) OwnsInstallation(runtime *ServingRuntime, primary *Executor) bool {
+	return o != nil && runtime != nil && primary != nil && o.runtime == runtime && o.primary == primary && runtime.graphPolicy.Load() == o && o.AvailableGraphPolicy() == nil
+}
+
 // NewGraphPolicyOwner binds one owner to the exact restored serving runtime.
 // It does not start GC. Composition must pass this owner as the listener's
 // Watcher instead of starting an additional GraphCache.Watch goroutine.

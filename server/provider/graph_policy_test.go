@@ -32,6 +32,9 @@ func TestNewGraphPolicyOwnerRequiresRestoredCertifiedIdentity(t *testing.T) {
 	if got := owner.Snapshot(); got.Generation != 0 || got.Config != want {
 		t.Fatalf("bootstrap policy = %+v", got)
 	}
+	if !owner.OwnsInstallation(runtime, primary) || owner.OwnsInstallation(runtime, foreign) {
+		t.Fatal("graph policy owner did not retain its exact certified installation")
+	}
 }
 
 func TestNewGraphPolicyOwnerPreservesLegacyNonpositiveAggregateCaps(t *testing.T) {

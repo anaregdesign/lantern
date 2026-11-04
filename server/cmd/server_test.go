@@ -16,7 +16,36 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/service"
 )
+
+func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
+	data, err := dataruntime.NewGraphOnlyServingRuntime(
+		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
+		mutationlog.New(mutationlog.Options{}), hlc.New(hlc.NodeID{0x19}, hlc.Options{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = data.Close() })
+	primary := data.NewExecutor(nil)
+	owner, err := dataruntime.NewGraphPolicyOwner(data, primary, dataruntime.GraphPolicyConfig{GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A bare server has no watcher. The constructor must reject it before
+	// touching unrelated collaborators (which intentionally remain nil).
+	for _, candidate := range []*dataruntime.GraphPolicyOwner{nil, owner, {}} {
+		app, err := newApp(nil, nil, primary, &service.LanternServer{}, candidate,
+			nil, nil, nil, nil, nil, nil, nil, provider.ShutdownConfig{},
+			nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
+			nil, data, nil, nil, nil, nil, provider.PeerPlaneConfig{},
+			provider.DomainMetricsWired{}, provider.CacheGCHooksWired{})
+		if err == nil || app != nil {
+			t.Fatal("App accepted an absent or foreign graph watcher")
+		}
+	}
+}
 
 func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-a-directory")

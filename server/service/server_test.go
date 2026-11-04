@@ -10,7 +10,29 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
+
+func TestLanternServerUsesOnlyTheExactManagedWatcher(t *testing.T) {
+	owner, foreign := &dataruntime.GraphPolicyOwner{}, &dataruntime.GraphPolicyOwner{}
+	server := &LanternServer{watcher: owner}
+	var absent *LanternServer
+	if !server.UsesWatcher(owner) || server.UsesWatcher(foreign) || server.UsesWatcher(nil) || absent.UsesWatcher(owner) {
+		t.Fatal("server watcher identity is not exact")
+	}
+	var nilOwner *dataruntime.GraphPolicyOwner
+	server.watcher = nilOwner
+	if server.UsesWatcher(nilOwner) {
+		t.Fatal("typed nil watcher accepted")
+	}
+	// Generic Watcher implementations remain valid for isolated lifecycle
+	// tests, but cannot substitute for the installed production graph owner.
+	server.watcher = &serverJoinWatcher{}
+	if server.UsesWatcher(owner) {
+		t.Fatal("unmanaged watcher accepted as the managed owner")
+	}
+}
 
 // TestLanternServer_gracefulShutdown_TimeoutForcesClose pins an
 // in-flight HTTP request open so http.Server.Shutdown cannot drain,

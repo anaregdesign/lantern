@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T) {
@@ -63,6 +64,8 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	for name, mutate := range map[string]func(*publicSecurityCertified){
 		"Rate":     func(c *publicSecurityCertified) { c.rate = NewRateLimitInterceptor(0, 0) },
 		"recovery": func(c *publicSecurityCertified) { c.recovery = &foreignRecovery },
+		"missing Capacity": func(c *publicSecurityCertified) { c.capacity = nil },
+		"foreign Capacity": func(c *publicSecurityCertified) { c.capacity = &dataruntime.GraphPolicyOwner{} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			wrong := public

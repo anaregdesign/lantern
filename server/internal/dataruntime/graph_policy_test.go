@@ -78,6 +78,44 @@ func TestGraphPolicyValidationOwnershipAndGenerations(t *testing.T) {
 	}
 }
 
+func TestGraphPolicyOwnsOnlyItsAvailableInstalledRuntimeAndPrimary(t *testing.T) {
+	runtime, primary := newGraphPolicyTestRuntime(t)
+	owner, err := NewGraphPolicyOwner(runtime, primary, GraphPolicyConfig{GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRuntime, otherPrimary := newGraphPolicyTestRuntime(t)
+	for _, invalid := range []struct {
+		owner *GraphPolicyOwner
+		runtime *ServingRuntime
+		primary *Executor
+	}{
+		{nil, runtime, primary}, {&GraphPolicyOwner{}, runtime, primary},
+		{owner, nil, primary}, {owner, runtime, nil},
+		{owner, otherRuntime, otherPrimary}, {owner, runtime, runtime.NewExecutor(nil)},
+	} {
+		if invalid.owner.OwnsInstallation(invalid.runtime, invalid.primary) {
+			t.Fatal("unavailable or foreign graph installation accepted")
+		}
+	}
+	if !owner.OwnsInstallation(runtime, primary) {
+		t.Fatal("actual graph installation refused")
+	}
+	// An available resource alone is insufficient: the current runtime slot
+	// must still point to the exact owner named by certification.
+	runtime.graphPolicy.Store(nil)
+	if owner.OwnsInstallation(runtime, primary) {
+		t.Fatal("uninstalled owner accepted")
+	}
+	runtime.graphPolicy.Store(owner)
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if owner.OwnsInstallation(runtime, primary) {
+		t.Fatal("closed runtime owner accepted")
+	}
+}
+
 func TestGraphPolicyShrinkRetainsDataAndReplicationRestoreBypass(t *testing.T) {
 	runtime, primary := newGraphPolicyTestRuntime(t)
 	owner, err := NewGraphPolicyOwner(runtime, primary, GraphPolicyConfig{GCInterval: time.Hour})
