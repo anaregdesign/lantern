@@ -140,27 +140,42 @@ func TestManagedCapacityPrepareApplyDoesNotEvictAndReportsActualGeneration(t *te
 }
 
 func TestManagedCapacityRecoveredPolicyAndAuthorityFailureDoesNotFallback(t *testing.T) {
-	config, owner, _, _ := managedCapacityTestOwner(t, "LANTERN_MAX_VERTICES=7")
+	config, owner, _, _ := managedCapacityTestOwner(t, "LANTERN_MAX_VERTICES=-7", "LANTERN_MAX_EDGES=-9")
+	if config.Cache.MaxVertices != -7 || config.Cache.MaxEdges != -9 || owner.Snapshot().Config.MaxVertices != 0 || owner.Snapshot().Config.MaxEdges != 0 {
+		t.Fatal("legacy aggregate bootstrap was not preserved before recovery")
+	}
 	projection := operationalRuntimeTestPrepare(operationalRuntimeTestProjection(1), operationalpolicy.GroupCapacity)
-	policy := &operationalpolicy.Policy{Version: 1, Generation: 3, Values: operationalpolicy.Values{Capacity: &operationalpolicy.Capacity{GCIntervalSeconds: 3, MaxVertices: 1, MaxVertexCausalEntries: 1}}}
+	policy := &operationalpolicy.Policy{Version: 1, Generation: 3, Values: operationalpolicy.Values{Capacity: &operationalpolicy.Capacity{GCIntervalSeconds: 3, MaxVertices: 1, MaxEdges: 2, MaxVertexCausalEntries: 1}}}
 	if err := projection.Policies.Set(operationalpolicy.GroupCapacity, policy); err != nil {
 		t.Fatal(err)
 	}
 	manager, authority := operationalRuntimeTestManager(t, projection)
 	manager.bootstrap = NewOperationalBootstrapConfig(config)
+	authority.onBind = func() {
+		actual := owner.Snapshot()
+		if actual.Generation != 3 || actual.Config.MaxVertices != 1 || actual.Config.MaxEdges != 2 {
+			t.Errorf("native binding preceded desired capacity installation: %+v", actual)
+		}
+	}
 	certified, err := NewManagedCapacityRuntime(t.Context(), manager, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authority.binds != 1 || owner.Snapshot().Generation != 3 || owner.Snapshot().Config.MaxVertices != 1 {
+	if authority.binds != 1 || owner.Snapshot().Generation != 3 || owner.Snapshot().Config.MaxVertices != 1 || owner.Snapshot().Config.MaxEdges != 2 {
 		t.Fatal("recovered desired was not installed before binding")
 	}
 	reads := authority.reads
 	if err := certified.adapter.PrepareOperationalPolicy(operationalpolicy.Change{ExpectedGeneration: 3, Values: policy.Values}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := certified.adapter.ObserveOperationalPolicy(); err != nil {
-		t.Fatal(err)
+	actual, err := certified.adapter.ObserveOperationalPolicy()
+	if err != nil || actual.EffectiveGeneration != 3 || actual.Effective == nil || actual.Effective.Capacity.MaxVertices != 1 || actual.Effective.Capacity.MaxEdges != 2 {
+		t.Fatalf("recovered actual values = %+v, %v", actual, err)
+	}
+	for _, source := range actual.Sources {
+		if source != securitytransport.OperationalSourceManaged {
+			t.Fatal("recovered generation retained derived bootstrap provenance")
+		}
 	}
 	if authority.reads != reads {
 		t.Fatal("resource callback read authority recursively")
@@ -171,8 +186,44 @@ func TestManagedCapacityRecoveredPolicyAndAuthorityFailureDoesNotFallback(t *tes
 	if manager.Reconcile(t.Context()) == nil {
 		t.Fatal("failed authority read accepted")
 	}
-	if owner.Snapshot().Generation != 3 || owner.Snapshot().Config.MaxVertices != 1 {
+	if owner.Snapshot().Generation != 3 || owner.Snapshot().Config.MaxVertices != 1 || owner.Snapshot().Config.MaxEdges != 2 {
 		t.Fatal("authority error fell back to bootstrap cap")
+	}
+}
+
+func TestManagedCapacityLegacyNegativeCapsRemainUnlimitedAndManagedNegativesRefused(t *testing.T) {
+	config, owner, _, _ := managedCapacityTestOwner(t, "LANTERN_MAX_VERTICES=-1", "LANTERN_MAX_EDGES=-2")
+	certified, err := NewManagedCapacityRuntime(t.Context(), managedCapacityTestManager(t, config), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := certified.adapter.ObserveOperationalPolicy()
+	if err != nil || actual.Effective == nil || actual.EffectiveGeneration != 0 || actual.Error != securitytransport.OperationalErrorNone || actual.Effective.Capacity.MaxVertices != 0 || actual.Effective.Capacity.MaxEdges != 0 {
+		t.Fatalf("legacy aggregate observation = %+v, %v", actual, err)
+	}
+	for _, key := range []securitytransport.OperationalSetting{pb.OperationalSetting_OPERATIONAL_SETTING_CAPACITY_MAX_VERTICES, pb.OperationalSetting_OPERATIONAL_SETTING_CAPACITY_MAX_EDGES} {
+		if actual.Sources[key] != securitytransport.OperationalSourceDerived {
+			t.Fatal("normalized legacy aggregate lost derived provenance", key, actual.Sources[key])
+		}
+	}
+	for name, mutate := range map[string]func(*operationalpolicy.Capacity){
+		"vertices": func(c *operationalpolicy.Capacity) { c.MaxVertices = -1 },
+		"edges":    func(c *operationalpolicy.Capacity) { c.MaxEdges = -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			values, err := operationalpolicy.Defaults(operationalpolicy.GroupCapacity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(values.Capacity)
+			before := owner.Snapshot()
+			if certified.adapter.PrepareOperationalPolicy(operationalpolicy.Change{Values: values}) == nil || certified.adapter.ApplyOperationalPolicy(operationalpolicy.Policy{Version: 1, Generation: 1, Values: values}) == nil {
+				t.Fatal("negative managed aggregate cap accepted")
+			}
+			if owner.Snapshot() != before {
+				t.Fatal("negative managed aggregate cap changed effective state")
+			}
+		})
 	}
 }
 

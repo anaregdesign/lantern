@@ -14,7 +14,10 @@ func NewGraphPolicyOwner(cache CacheConfig, runtime *dataruntime.ServingRuntime,
 		return nil, errors.New("graph policy: requires the certified restored runtime")
 	}
 	return dataruntime.NewGraphPolicyOwner(runtime, primary, dataruntime.GraphPolicyConfig{
-		MaxVertices: cache.MaxVertices, MaxEdges: cache.MaxEdges,
+		// Legacy aggregate admission treats every nonpositive cap as unlimited.
+		// Canonicalize only that bootstrap representation; managed policy remains
+		// strictly nonnegative.
+		MaxVertices: max(cache.MaxVertices, 0), MaxEdges: max(cache.MaxEdges, 0),
 		MaxVertexCausalEntries: cache.MaxVertexCausalEntries,
 		MaxEdgeCausalEntries:   cache.MaxEdgeCausalEntries,
 		GCEdgeBudget:           cache.GCEdgeBudget, GCInterval: cache.GCInterval,
