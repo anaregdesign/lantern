@@ -246,8 +246,12 @@ every backend, and degrade cleanly to the single-instance case.
 
 Production and restoration have separate ownership. Environment or managed
 `BACKUP_ENABLED` controls production; the externally supplied directory and
-`LANTERN_BACKUP_RESTORE_ON_START` select restoration before native authority opens.
-Managed production enablement or disablement cannot change that selection.
+`LANTERN_BACKUP_RESTORE_ON_START` select restoration. Durable receipt recovery
+finishes during runtime construction before native authority opens. Graph-only
+restoration runs before public HTTP serving starts, after native construction;
+the public socket may already be bound and the private control network running.
+Managed production enablement or disablement cannot change that selection or
+those recovery boundaries.
 
 Migration for #2011: a configured `LANTERN_BACKUP_DIR` with production disabled
 now still selects startup restore when `LANTERN_BACKUP_RESTORE_ON_START` is true
