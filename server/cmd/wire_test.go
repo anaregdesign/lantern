@@ -163,6 +163,12 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
+	shutdownPlanName := ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, ":= provider.NewManagedShutdownPlan(managedLifecycleCertified)") {
+			shutdownPlanName = strings.TrimSpace(strings.SplitN(line, ",", 2)[0])
+		}
+	}
 	ordered := []string{
 		"provider.NewServingRuntime(",
 		"newLanternService(",
@@ -217,7 +223,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		t.Fatal("generated injector does not certify the actual Request executor and validator together")
 	}
 	if !strings.Contains(text, "service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphPolicyOwner, executor, replication)") ||
-		!strings.Contains(text, "newApp(config, logger, executor, lanternServer, shutdownPlan, graphPolicyOwner, metricsServer") {
+		shutdownPlanName == "" || !strings.Contains(text, "newApp(config, logger, executor, lanternServer, "+shutdownPlanName+", graphPolicyOwner, metricsServer") {
 		t.Fatal("generated injector does not share one managed GC watcher with LanternServer and App")
 	}
 	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||

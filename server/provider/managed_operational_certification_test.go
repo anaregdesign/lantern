@@ -278,7 +278,7 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 	}
 	manager.capacity = capacityEntry
 	for name, change := range map[string]func(*managedLifecycleCertified){
-		"manager": func(c *managedLifecycleCertified) { c.manager = &ManagedOperationalRuntime{} },
+		"manager":       func(c *managedLifecycleCertified) { c.manager = &ManagedOperationalRuntime{} },
 		"missing owner": func(c *managedLifecycleCertified) { c.owner = nil },
 		"foreign owner": func(c *managedLifecycleCertified) {
 			c.owner = service.NewBootstrapLifecyclePolicyOwner(c.owner.LifecycleSnapshot().Policy)
@@ -291,8 +291,8 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 				t.Fatal(planErr)
 			}
 		},
-		"missing gate": func(c *managedLifecycleCertified) { c.gate = nil },
-		"foreign gate": func(c *managedLifecycleCertified) { c.gate = readiness.NewGate(cfg.Readiness.MaxLag, false, nil) },
+		"missing gate":    func(c *managedLifecycleCertified) { c.gate = nil },
+		"foreign gate":    func(c *managedLifecycleCertified) { c.gate = readiness.NewGate(cfg.Readiness.MaxLag, false, nil) },
 		"missing adapter": func(c *managedLifecycleCertified) { c.adapter = nil },
 		"foreign adapter": func(c *managedLifecycleCertified) {
 			c.adapter = &managedLifecycleRuntime{owner: c.owner, plan: c.plan, gate: c.gate}

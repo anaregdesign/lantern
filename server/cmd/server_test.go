@@ -24,9 +24,9 @@ import (
 
 type appGuardTestListener struct{}
 
-func (appGuardTestListener) Server() *http.Server { return &http.Server{} }
+func (appGuardTestListener) Server() *http.Server   { return &http.Server{} }
 func (appGuardTestListener) Listener() net.Listener { return nil }
-func (appGuardTestListener) TLSEnabled() bool { return false }
+func (appGuardTestListener) TLSEnabled() bool       { return false }
 
 func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
 	data, err := dataruntime.NewGraphOnlyServingRuntime(
