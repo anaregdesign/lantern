@@ -8,6 +8,16 @@ Pilot qualification evidence is tracked in
 Tracking: [Epic #1990](https://github.com/anaregdesign/lantern/issues/1990).
 Baseline: `196dc9bcaf2f94ef3b94de6059367b2da8cf73de`.
 
+[Issue #2032](https://github.com/anaregdesign/lantern/issues/2032) prepares the typed
+Capacity usage preview contract, SDK validation and optional Admin display.
+Current production composition installs neither an operational settings observer
+nor a Capacity preview owner: the whole operational settings read remains
+Unavailable and this editor is inactive. Missing callbacks never synthesize
+usage. Actual registered-owner integration and final acceptance remain tracked by
+[Issue #2012](https://github.com/anaregdesign/lantern/issues/2012) and
+[Issue #2016](https://github.com/anaregdesign/lantern/issues/2016); preview adds no
+acknowledgement or commit condition.
+
 ## Problem and ownership
 
 Some operational values should be editable in Admin and survive restarts. Moving

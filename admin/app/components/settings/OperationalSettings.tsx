@@ -100,7 +100,9 @@ export function OperationalSettings({
               }
               retentionAcknowledged={state.retentionAcknowledged}
               backupPreview={state.backupPreview}
+              capacityPreview={state.capacityPreview}
               previewBackup={() => void controller?.previewBackup()}
+              previewCapacity={() => void controller?.previewCapacity()}
               select={(adopt) => controller?.select(definition.group, adopt)}
               edit={(key, value) => controller?.edit(key, value)}
               acknowledge={(value) => controller?.acknowledge(value)}

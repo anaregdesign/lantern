@@ -11,6 +11,7 @@ import {
   type GetOperationalSettingsResponse,
   type CurrentSecurityReview,
   type OperationalPolicyValues,
+  type PreviewOperationalPolicyResponse,
 } from "lantern-sdk/web";
 import {
   version,
@@ -77,6 +78,51 @@ function settings(): GetOperationalSettingsResponse {
       },
       ...groups.slice(1),
     ],
+  };
+}
+function capacitySettings(): GetOperationalSettingsResponse {
+  const response = settings(),
+    capacity = response.groups[4]!;
+  capacity.effective = {
+    $typeName: "graph.v1.OperationalPolicyValues",
+    group: {
+      case: "capacity",
+      value: {
+        $typeName: "graph.v1.OperationalCapacityValues",
+        gcEdgeBudget: 0n,
+        gcIntervalSeconds: 60n,
+        maxVertices: 1n,
+        maxEdges: 0n,
+        maxVertexCausalEntries: 1n,
+        maxEdgeCausalEntries: 0n,
+      },
+    },
+  };
+  capacity.changeMode = OperationalSettingsChangeMode.WORKER_RESTART;
+  capacity.application = OperationalSettingsApplicationState.APPLIED;
+  capacity.error = OperationalSettingsError.NONE;
+  return response;
+}
+function capacitySample(): PreviewOperationalPolicyResponse {
+  return {
+    $typeName: "graph.v1.PreviewOperationalPolicyResponse",
+    schemaVersion: 1,
+    group: OperationalGroup.CAPACITY,
+    version,
+    compatibilityFingerprint: "",
+    capacityUsage: {
+      $typeName: "graph.v1.OperationalCapacityPreview",
+      member: 1,
+      effectiveGeneration: 0n,
+      vertexFootprint: 3n,
+      edgeFootprint: 2n,
+      vertexCausalEntries: 3n,
+      edgeCausalEntries: 2n,
+      verticesOverLimit: true,
+      edgesOverLimit: false,
+      vertexCausalOverLimit: true,
+      edgeCausalOverLimit: false,
+    },
   };
 }
 function fixture(overrides: Partial<OperationalSettingsPort> = {}) {
@@ -415,4 +461,85 @@ test("operational invalid backup repair requires an explicit enabled choice", as
   c.edit("enabled", "false");
   await c.review();
   expect(f.prepares()).toBe(1);
+});
+
+test("operational capacity preview is optional and invalidated by draft, group, reload and version changes", async () => {
+  const f = fixture({
+      settings: async () => capacitySettings(),
+      preview: async () => capacitySample(),
+    }),
+    c = f.controller;
+  await c.load();
+  c.select(OperationalGroup.CAPACITY, true);
+  await c.review();
+  expect(f.prepares()).toBe(1);
+  await c.previewCapacity();
+  expect(c.getSnapshot().review).toBeUndefined();
+  expect(c.getSnapshot().capacityPreview?.vertexFootprint).toBe(3n);
+  expect(f.sends()).toBe(0);
+  c.edit("maxVertices", "2");
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+  await c.previewCapacity();
+  c.select(OperationalGroup.SLOW_RPC, true);
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+  c.select(OperationalGroup.CAPACITY, true);
+  await c.previewCapacity();
+  await c.load();
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+  c.select(OperationalGroup.CAPACITY, true);
+  await c.previewCapacity();
+  const changed = copySecurityContract(version);
+  changed.currentCut!.sequence++;
+  c.change.publish({ version: changed });
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+});
+
+test("operational capacity preview rejects another member and keeps review available after sample failure", async () => {
+  const sample = capacitySample();
+  sample.capacityUsage!.member = 2;
+  const f = fixture({
+      settings: async () => capacitySettings(),
+      preview: async () => sample,
+    }),
+    c = f.controller;
+  await c.load();
+  c.select(OperationalGroup.CAPACITY, true);
+  await c.previewCapacity();
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+  expect(operationalBlocked(c.getSnapshot(), true)).toBe(false);
+  await c.review();
+  expect(f.prepares()).toBe(1);
+  expect(f.sends()).toBe(0);
+});
+
+test("operational capacity preview rejects a changed cut and ignores a response superseded by reload", async () => {
+  const sample = capacitySample();
+  sample.version = copySecurityContract(version);
+  sample.version!.currentCut!.sequence++;
+  let resolve!: (value: PreviewOperationalPolicyResponse) => void;
+  let deferred = false;
+  const f = fixture({
+      settings: async () => capacitySettings(),
+      preview: async () =>
+        deferred
+          ? new Promise((done) => {
+              resolve = done;
+            })
+          : sample,
+    }),
+    c = f.controller;
+  await c.load();
+  c.select(OperationalGroup.CAPACITY, true);
+  await c.previewCapacity();
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+  expect(c.getSnapshot().stale).toBe(true);
+  await c.load();
+  c.select(OperationalGroup.CAPACITY, true);
+  deferred = true;
+  const pending = c.previewCapacity();
+  await c.load();
+  resolve(capacitySample());
+  await pending;
+  expect(c.getSnapshot().capacityPreview).toBeUndefined();
+  expect(c.getSnapshot().selected).toBeUndefined();
 });

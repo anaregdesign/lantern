@@ -701,6 +701,7 @@ message PreviewOperationalPolicyResponse {
   string compatibility_fingerprint = 3;
   SecurityVersion version = 4;
   OperationalBackupRetentionPreview backup_retention = 5;
+  OperationalCapacityPreview capacity_usage = 6;
 }
 
 message SecurityChange {
@@ -965,4 +966,21 @@ message CurrentSecurityInvocationRejected {
   CurrentSecurityChangeID change_id = 2;
   bytes intent_digest = 3;
   bool purpose_required = 4;
+}
+
+// Connected-member local-admission guidance. Counters are sampled separately;
+// footprints include retained Put barriers. This neither freezes usage nor
+// predicts admission or cluster-wide capacity. Existing data is not evicted.
+message OperationalCapacityPreview {
+  uint32 member = 1;
+  // Owner snapshot generation, not a native applied-cut certificate.
+  uint64 effective_generation = 2;
+  uint64 vertex_footprint = 3;
+  uint64 edge_footprint = 4;
+  uint64 vertex_causal_entries = 5;
+  uint64 edge_causal_entries = 6;
+  bool vertices_over_limit = 7;
+  bool edges_over_limit = 8;
+  bool vertex_causal_over_limit = 9;
+  bool edge_causal_over_limit = 10;
 }
