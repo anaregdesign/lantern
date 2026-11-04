@@ -2,6 +2,7 @@ package security
 
 import (
 	"errors"
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,24 @@ func TestS1ManagementTransitionMatrix(t *testing.T) {
 				t.Fatal("input changed")
 			}
 		})
+	}
+}
+
+func TestS1OperationalPolicyAlwaysUsesOrdinaryCapacity(t *testing.T) {
+	state := s1Fixture(t, s1Image())
+	bob := s1Bob()
+	for _, group := range operationalpolicy.Groups() {
+		policy := operationalPolicyRuntimeCommand(group).Changes[0]
+		for _, changes := range [][]Change{{policy}, {policy, {Kind: RevokeSessions, Identity: &bob}}} {
+			op := s1Operation(t, state.projection, testIdentity(), s1Changes(changes...))
+			assessment, err := AssessS1(state.projection, op)
+			if err != nil || assessment.ProvenNonexpanding || assessment.NeedsPurpose || assessment.Next.snapshot.OperationalPolicies().Get(group).Generation != 1 {
+				t.Fatal("operational write borrowed revocation classification", group, err)
+			}
+			if state.projection.snapshot.OperationalPolicies().Get(group) != nil {
+				t.Fatal("assessment changed predecessor")
+			}
+		}
 	}
 }
 

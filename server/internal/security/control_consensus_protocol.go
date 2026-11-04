@@ -78,6 +78,12 @@ func (o *s2cParticipant) beginAt(candidate [32]byte, expected *s2cBeginTarget) (
 		return nil, errS2CProtocol
 	}
 	if candidate != [32]byte{} {
+		if err := requireOperationalPolicyCandidate(o.trust, o.replayState, o.pending[candidate]); err != nil {
+			return nil, err
+		}
+		if err := o.requireLocalOperationalPolicyCandidate(o.pending[candidate]); err != nil {
+			return nil, err
+		}
 		if err := requireLogPolicyCandidate(o.trust, o.replayState, o.pending[candidate]); err != nil {
 			return nil, err
 		}
@@ -259,6 +265,9 @@ func (o *s2cParticipant) receivePromise(m *s2cMessage) ([]s2cOutbox, error) {
 }
 
 func (o *s2cParticipant) receiveAccept(m *s2cMessage) ([]s2cOutbox, error) {
+	if err := o.requireLocalOperationalPolicyCandidate(m.h); err != nil {
+		return nil, err
+	}
 	if err := o.requireLocalLogPolicyCandidate(m.h); err != nil {
 		return nil, err
 	}
@@ -368,6 +377,9 @@ func (o *s2cParticipant) learnChosen(m *s2cMessage) error {
 		return errS2CProtocol
 	}
 	if err := o.requireLocalLogPolicyCandidate(m.h); err != nil {
+		return err
+	}
+	if err := o.requireLocalOperationalPolicyCandidate(m.h); err != nil {
 		return err
 	}
 	preview, e := s2cPreviewCandidate(o.trust, o.b.state, o.trust.genesis.roots, o.config.BScope, o.b.receipt, m.h, next.certificate.commit)

@@ -3,6 +3,8 @@ package security
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 )
 
 // Bounds the still-variable sample and cryptographic commitments after all
@@ -115,6 +117,16 @@ func authorityOriginCapacity(o *s2cParticipant, h authorityHistoricalHeader, op 
 			return s2cCredit{}, 0, errS2CCapacity
 		}
 	}
+	_, operationalGroup, hasOperational := operationalPolicyChangeForH(&S1Handoff{operation: op})
+	operationalPreparation := hasOperational && (operationalGroup == operationalpolicy.GroupSearch || o.replayState.projection.snapshot.OperationalPolicies().Get(operationalGroup) == nil)
+	if operationalPreparation {
+		g := o.trust.genesis.state.projection.cut
+		profile := CurrentProfile{CurrentPublicVersion, g.Domain, g.Cohort, g.Generation, o.trust.scope, h.Time.Profile, h.Workloads, o.trust.genesis.state.configuration.Digest()}
+		candidateBytes, err = operationalPolicyCandidateBound(o.trust, profile, operationalGroup, hBytes)
+		if err != nil || candidateBytes > o.config.PendingBytes-o.pendingBytes {
+			return s2cCredit{}, 0, errS2CCapacity
+		}
+	}
 	chosen := s2cChosenSizeBound(o.trust, candidateBytes)
 	if chosen == 0 || chosen+uint64(len(authorityPMagic)+s2cPFixedBytes) > o.trust.bounds.PayloadBytes {
 		return s2cCredit{}, 0, errS2CCapacity
@@ -148,6 +160,29 @@ func authorityOriginCapacity(o *s2cParticipant, h authorityHistoricalHeader, op 
 			return s2cCredit{}, 0, errS2CCapacity
 		}
 		completion.PRecords += 2
+	}
+	if operationalPreparation {
+		candidateCharge, candidateErr := s2cPCharge(candidateBytes)
+		if candidateErr != nil || chosen > o.config.OutboxBytes/uint64(len(o.trust.members)) {
+			return s2cCredit{}, 0, errS2CCapacity
+		}
+		completion.PBytes, err = s2CheckedAdd(completion.PBytes, candidateCharge)
+		if err != nil || completion.PRecords == ^uint64(0) {
+			return s2cCredit{}, 0, errS2CCapacity
+		}
+		completion.PRecords++
+		if o.operationalFloors[operationalGroup] == nil {
+			floorBytes, floorErr := operationalPolicyFloorSizeBound(hBytes, operationalGroup)
+			floorCharge, chargeErr := s2cPCharge(floorBytes)
+			if floorErr != nil || chargeErr != nil || floorBytes+uint64(len(authorityPMagic)+s2cPFixedBytes) > o.trust.bounds.PayloadBytes {
+				return s2cCredit{}, 0, errS2CCapacity
+			}
+			completion.PBytes, err = s2CheckedAdd(completion.PBytes, floorCharge)
+			if err != nil || completion.PRecords == ^uint64(0) {
+				return s2cCredit{}, 0, errS2CCapacity
+			}
+			completion.PRecords++
+		}
 	}
 	return completion, hBytes, nil
 }

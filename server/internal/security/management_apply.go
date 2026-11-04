@@ -1,6 +1,9 @@
 package security
 
-import "math"
+import (
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
+	"math"
+)
 
 // applyManagementChanges edits a detached typed image. Final compilation checks
 // references and last-admin access after the entire batch, allowing explicit
@@ -8,6 +11,10 @@ import "math"
 func applyManagementChanges(image *Image, changes []Change) error {
 	for _, change := range changes {
 		switch change.Kind {
+		case PutOperationalPolicy:
+			if err := applyOperationalPolicy(image, change.OperationalPolicy); err != nil {
+				return err
+			}
 		case PutLogPolicy:
 			if !change.LogPolicy.valid() || !image.LogPolicy.valid() {
 				return ErrInvalidImage
@@ -155,6 +162,36 @@ func applyManagementChanges(image *Image, changes []Change) error {
 			return ErrInvalidImage
 		}
 	}
+	return nil
+}
+
+func applyOperationalPolicy(image *Image, change *operationalpolicy.Change) error {
+	if image == nil || change == nil || change.Validate() != nil {
+		return ErrInvalidImage
+	}
+	group, _ := change.Values.Group()
+	var policies operationalpolicy.Policies
+	if image.OperationalPolicies != nil {
+		policies = image.OperationalPolicies.Clone()
+	}
+	prior := policies.Get(group)
+	generation := uint64(0)
+	if prior != nil {
+		generation = prior.Generation
+	}
+	if generation != change.ExpectedGeneration {
+		return ErrRevisionConflict
+	}
+	if group == operationalpolicy.GroupBackup && change.Values.Backup.Retain != 0 &&
+		(prior == nil || prior.Values.Backup.Retain == 0 || change.Values.Backup.Retain < prior.Values.Backup.Retain) && !change.RetentionReductionAcknowledged {
+		return ErrInvalidImage
+	}
+	policy := &operationalpolicy.Policy{Version: operationalpolicy.Version, Generation: generation + 1,
+		Values: change.Values.Clone(), CompatibilityFingerprint: change.CompatibilityFingerprint}
+	if err := policies.Set(group, policy); err != nil {
+		return ErrInvalidImage
+	}
+	image.OperationalPolicies = &policies
 	return nil
 }
 

@@ -1,22 +1,26 @@
 package security
 
-import "slices"
+import (
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
+	"slices"
+)
 
 // Change is a typed security operation, never generic sys: Vertex CRUD. Exactly
 // the fields required by its Kind must be present. No Principal operation can
 // contain permissions; assignment operations refer only to registered Roles.
 type Change struct {
-	Kind                  string              `json:"kind"`
-	Issuer                *Issuer             `json:"issuer,omitempty"`
-	IssuerURL             string              `json:"issuer_url,omitempty"`
-	Role                  *Role               `json:"role,omitempty"`
-	RoleID                string              `json:"role_id,omitempty"`
-	Identity              *Identity           `json:"identity,omitempty"`
-	State                 PrincipalState      `json:"state,omitempty"`
-	PreserveSecret        bool                `json:"preserve_secret,omitempty"`
-	PreserveNativeSecrets []string            `json:"preserve_native_secrets,omitempty"`
-	RegistrationPolicy    *RegistrationPolicy `json:"registration_policy,omitempty"`
-	LogPolicy             *LogPolicyChange    `json:"log_policy,omitempty"`
+	Kind                  string                    `json:"kind"`
+	Issuer                *Issuer                   `json:"issuer,omitempty"`
+	IssuerURL             string                    `json:"issuer_url,omitempty"`
+	Role                  *Role                     `json:"role,omitempty"`
+	RoleID                string                    `json:"role_id,omitempty"`
+	Identity              *Identity                 `json:"identity,omitempty"`
+	State                 PrincipalState            `json:"state,omitempty"`
+	PreserveSecret        bool                      `json:"preserve_secret,omitempty"`
+	PreserveNativeSecrets []string                  `json:"preserve_native_secrets,omitempty"`
+	RegistrationPolicy    *RegistrationPolicy       `json:"registration_policy,omitempty"`
+	LogPolicy             *LogPolicyChange          `json:"log_policy,omitempty"`
+	OperationalPolicy     *operationalpolicy.Change `json:"operational_policy,omitempty"`
 }
 
 const (
@@ -32,10 +36,14 @@ const (
 	RevokeSessions        = "session.revoke_user"
 	PutRegistrationPolicy = "registration_policy.put"
 	PutLogPolicy          = "log_policy.put"
+	PutOperationalPolicy  = "operational_policy.put"
 	MaxTransactionChanges = 100
 )
 
 func (c Change) validate() error {
+	if c.OperationalPolicy != nil && c.Kind != PutOperationalPolicy {
+		return ErrInvalidImage
+	}
 	if c.LogPolicy != nil && c.Kind != PutLogPolicy {
 		return ErrInvalidImage
 	}
@@ -56,6 +64,10 @@ func (c Change) validate() error {
 	}
 	issuer, role, identity := c.Issuer != nil, c.Role != nil, c.Identity != nil
 	switch c.Kind {
+	case PutOperationalPolicy:
+		if c.OperationalPolicy == nil || c.OperationalPolicy.Validate() != nil || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" {
+			return ErrInvalidImage
+		}
 	case PutLogPolicy:
 		if !c.LogPolicy.valid() || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" {
 			return ErrInvalidImage
@@ -135,6 +147,9 @@ func (c Change) ResolveIssuerSecrets(prior Issuer) Issuer {
 
 func (c Change) target() string {
 	switch c.Kind {
+	case PutOperationalPolicy:
+		group, _ := c.OperationalPolicy.Values.Group()
+		return "operational_policy:" + string(group)
 	case PutLogPolicy:
 		return "log_policy"
 	case PutRegistrationPolicy:

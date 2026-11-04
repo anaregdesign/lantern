@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/anaregdesign/lantern/server/internal/authz"
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 )
 
 const (
@@ -28,19 +29,20 @@ var ErrLastAdministrator = errors.New("security image requires a usable OIDC adm
 // Image is one complete typed sys security revision, not independently merged
 // graph records. No Principal or Session can carry direct permission rules.
 type Image struct {
-	Version                 int                 `json:"version"`
-	BootstrapRevision       uint64              `json:"bootstrap_revision"`
-	BootstrapDigest         string              `json:"bootstrap_digest,omitempty"`
-	ConfiguredTrustRevision uint64              `json:"configured_trust_revision,omitempty"`
-	ConfiguredTrustDigest   string              `json:"configured_trust_digest,omitempty"`
-	Issuers                 []Issuer            `json:"issuers"`
-	Roles                   []Role              `json:"roles"`
-	Principals              []Principal         `json:"principals"`
-	Sessions                []Session           `json:"sessions"`
-	MachineCredentials      []MachineCredential `json:"machine_credentials,omitempty"`
-	Audit                   []AuditRecord       `json:"audit,omitempty"`
-	RegistrationPolicy      *RegistrationPolicy `json:"registration_policy,omitempty"`
-	LogPolicy               *LogPolicy          `json:"log_policy,omitempty"`
+	Version                 int                         `json:"version"`
+	BootstrapRevision       uint64                      `json:"bootstrap_revision"`
+	BootstrapDigest         string                      `json:"bootstrap_digest,omitempty"`
+	ConfiguredTrustRevision uint64                      `json:"configured_trust_revision,omitempty"`
+	ConfiguredTrustDigest   string                      `json:"configured_trust_digest,omitempty"`
+	Issuers                 []Issuer                    `json:"issuers"`
+	Roles                   []Role                      `json:"roles"`
+	Principals              []Principal                 `json:"principals"`
+	Sessions                []Session                   `json:"sessions"`
+	MachineCredentials      []MachineCredential         `json:"machine_credentials,omitempty"`
+	Audit                   []AuditRecord               `json:"audit,omitempty"`
+	RegistrationPolicy      *RegistrationPolicy         `json:"registration_policy,omitempty"`
+	LogPolicy               *LogPolicy                  `json:"log_policy,omitempty"`
+	OperationalPolicies     *operationalpolicy.Policies `json:"operational_policies,omitempty"`
 }
 
 // CompileImage validates the complete image before any durable commit. A
@@ -67,6 +69,9 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	if !image.RegistrationPolicy.valid() || !image.LogPolicy.valid() {
 		return nil, ErrInvalidImage
 	}
+	if image.OperationalPolicies != nil && image.OperationalPolicies.ValidateNilAllowed() != nil {
+		return nil, ErrInvalidImage
+	}
 	// Validate coarse lengths before marshaling untrusted input.
 	if err := validateRoleBounds(image.Roles, limits); err != nil {
 		return nil, err
@@ -89,6 +94,9 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	}
 	snapshot := &Snapshot{configuredTrustDigest: image.ConfiguredTrustDigest, logPolicy: image.LogPolicy.clone(), policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
 		principals: make(map[Identity]principalAccess, len(image.Principals)), sessions: make(map[string]Session, len(image.Sessions))}
+	if image.OperationalPolicies != nil {
+		snapshot.operationalPolicies = image.OperationalPolicies.Clone()
+	}
 	snapshot.accessSets = make(map[string]*Access)
 	snapshot.roleBytes = roleBytes
 	snapshot.limits = limits

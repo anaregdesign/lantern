@@ -33,6 +33,11 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if runtime.mode == "oidc" && (runtime.current == nil || runtime.data != data || tls.CertFile == "" && tls.CertPEM == "" && len(runtime.config.TrustedProxyIPs) == 0) {
 		return publicSecurityCertified{}, errors.New("OIDC requires its owned authority and TLS or an exact trusted HTTPS gateway")
 	}
+	if runtime.mode == "oidc" {
+		if err := runtime.current.RequireOperationalPolicyOwners(context.Background()); err != nil {
+			return publicSecurityCertified{}, err
+		}
+	}
 	if err := runtime.bindWorkload(peer); err != nil {
 		return publicSecurityCertified{}, err
 	}

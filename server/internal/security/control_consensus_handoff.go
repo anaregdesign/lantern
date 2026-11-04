@@ -79,12 +79,13 @@ type s2cHistoricalHeader struct {
 // bytes. Only verification of the complete exact immutable origin input creates
 // this capability; the only historical issuer lives in _test.go.
 type s2cHistoricalH struct {
-	scope          [32]byte
-	raw            string
-	handoff        *S1Handoff
-	originID       uint32
-	candidate      string
-	logCertificate *logPolicySupportCertificate
+	scope                  [32]byte
+	raw                    string
+	handoff                *S1Handoff
+	originID               uint32
+	candidate              string
+	logCertificate         *logPolicySupportCertificate
+	operationalCertificate *operationalPolicySupportCertificate
 }
 
 func (h *s2cHistoricalH) digest() [32]byte {
@@ -186,6 +187,9 @@ func s2cVerifyPurpose(h s2cHistoricalHeader, operation OperationIdentity) bool {
 // Parsing and signature validation never sample current time. Expiry governs
 // the original consume only, so an exact preexpiry H can finish after expiry.
 func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
+	if bytes.HasPrefix(encoded, []byte(operationalPolicyCandidateMagic)) {
+		return verifyOperationalPolicyCandidate(t, encoded)
+	}
 	if bytes.HasPrefix(encoded, []byte(logPolicyCandidateMagic)) {
 		return verifyLogPolicyCandidate(t, encoded)
 	}

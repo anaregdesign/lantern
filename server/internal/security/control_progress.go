@@ -106,6 +106,9 @@ func (o *s3aOwner) Drive(ctx context.Context, candidate [32]byte) (s2LocalReceip
 		if err := o.ensureLogPolicyCandidate(ctx, candidate); err != nil {
 			return s2LocalReceipt{}, err
 		}
+		if err := o.ensureOperationalPolicyCandidate(ctx, candidate); err != nil {
+			return s2LocalReceipt{}, err
+		}
 	}
 	return o.driveAt(ctx, candidate, nil)
 }

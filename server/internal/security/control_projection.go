@@ -124,7 +124,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		}
 		for _, change := range command.Changes {
 			switch change.Kind {
-			case PutLogPolicy:
+			case PutLogPolicy, PutOperationalPolicy:
 				operationalChange = true
 			case PutRegistrationPolicy:
 				expands := registrationPolicyExpands(p.Image().RegistrationPolicy, image.RegistrationPolicy)

@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 )
 
 type authorityOriginOwner struct {
@@ -326,6 +328,12 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 	}
 	if hasLogPolicyChange(&S1Handoff{operation: r.operation}) && (k.logRuntime == nil || k.logRuntime.PrepareLogPolicy() != nil) {
 		return result, ErrLogPolicyUnavailable
+	}
+	if change, group, ok := operationalPolicyChangeForH(&S1Handoff{operation: r.operation}); ok {
+		owner := k.operationalRuntimes[group]
+		if owner == nil || owner.AvailableOperationalPolicy(group, operationalpolicy.Version) != nil || owner.PrepareOperationalPolicy(change) != nil {
+			return result, ErrOperationalPolicyUnavailable
+		}
 	}
 	assessment, err := AssessS1(k.replayState.projection, r.operation)
 	if err != nil {

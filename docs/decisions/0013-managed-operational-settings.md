@@ -1,6 +1,9 @@
 # ADR 0013: Managed operational settings
 
-Status: log-level pilot implemented. Qualification evidence is tracked in
+Status: log-level pilot implemented; the closed operational authority foundation
+is extended in [Issue #2007](https://github.com/anaregdesign/lantern/issues/2007).
+Remaining runtime/API/Admin delivery is tracked by the definitive Epic scope.
+Pilot qualification evidence is tracked in
 [Issue #1995](https://github.com/anaregdesign/lantern/issues/1995).
 Tracking: [Epic #1990](https://github.com/anaregdesign/lantern/issues/1990).
 Baseline: `196dc9bcaf2f94ef3b94de6059367b2da8cf73de`.
@@ -23,9 +26,9 @@ management commands, certified current authority, audit, consensus and verified
 recovery. Never use ordinary graph writes, LWW, a generic configuration map or a
 parallel consensus/storage system for managed policy.
 
-## Initial catalog
+## Initial pilot catalog
 
-Only `logging.level` is selected for initial management. The remaining rows
+Only `logging.level` was selected for initial pilot management. The remaining rows
 classify inputs and candidates; they do not enable them.
 
 | Key / current input | Type and default | Scope / owner | Validation and change mode |
@@ -199,6 +202,81 @@ from the Role/Issuer editor. Display adoption, source and local application stat
 handle cancellation, stale review, conflict and reload recovery explicitly.
 
 ## Delivery and evidence
+
+### Closed operational authority extension (#2007)
+
+The revised Epic selects exactly 43 additional settings in eight atomic groups:
+Slow RPC, admission rate, request/scan/traversal, backup production, graph
+capacity/GC, lifecycle/readiness, Search request policy and replication scheduling.
+The complete key allowlist and delivery exits remain in
+[Epic #1990](https://github.com/anaregdesign/lantern/issues/1990); the wider
+environment inventory is not an editable namespace.
+
+`internal/operationalpolicy` defines their environment-independent closed values,
+defaults and validation. An Image has eight named optional policy slots. Each
+committed slot has its own schema version and monotonic generation; a reviewed
+change supplies the exact expected prior generation (`0` for explicit adoption).
+Related values commit atomically. Rollback is another successor generation. A
+command can contain at most one operational group and cannot combine it with
+the separate logging v1 policy. Security edits mixed with an operational change
+still consume ordinary capacity. The logging v1 hashes, envelope and absent-field
+canonical bytes remain unchanged.
+
+First adoption requires an actual installed application owner on every fixed
+voter and enrolled origin. Its three distinct operations are availability of the
+named application contract, candidate preparation without mutation, and
+application of committed desired state. Merely compiling a value schema does
+not supply an owner. Unimplemented groups have no production binding and cannot
+be adopted. Every prepared group has a durable, group-specific application-version
+floor bound to an authentic reviewed original. Startup requires the actual owner
+for **every** such floor, including a prepared original that never committed.
+The floor neither activates that candidate nor changes data admission. Missing,
+unknown or corrupt history cannot become an environment/default fallback.
+
+Before writing a floor, participants preflight the entire immutable original,
+all-participant certificate, candidate, chosen/outbox and materialized successor.
+The new closed P record kinds refuse preceding readers without changing the
+logging v1 record kinds. One bounded candidate envelope retains the original H
+and its business identity; credential consumption is never repeated. Complete
+native history restores all floors and mixed logging/operational commitments.
+Partial preparation leaves independently authorized security revocation usable.
+
+Search additionally commits a derived compatibility fingerprint, which is
+metadata rather than another setting. Its read-only preview resolves the actual
+excluded local baseline without creating an original, floor or policy. Actual
+owners recompute and compare the sealed fingerprint during candidate preparation
+on **every Search update**, including after adoption; every update requires the
+complete voter/origin certificate. Runtime delivery must still implement its
+engine/cursor transition and trusted RPC generation guard. Health readiness alone
+does not block direct data RPCs. The native projection reports desired policy
+only and never interprets a successful owner call as effective application.
+Managed Search timeout milliseconds, query bytes and query terms also fit the
+existing unsigned 32-bit capability fields, so discovery cannot wrap an admitted
+value. This bounds managed candidates without changing legacy environment parsing.
+
+Backup interval retains exact signed nanoseconds. Finite first adoption, keep-all
+(`retain=0`) to finite, and finite retention reduction require explicit
+acknowledgement in the immutable reviewed change/CAS. Review and Apply do not
+delete backup files. The backup owner's separately delivered consequence preview
+and bounded retention worker remain responsible for actual production behavior.
+
+These owners are installed after verified graph/native recovery and before public
+certification. This extension does not reorder authority opening or data restore,
+add a store, change bootstrap ownership, enable every runtime group, or complete
+the API/Admin/runtime delivery exits by itself.
+
+The initial load also captures immutable provenance for these exact 43 inputs
+from its existing Reader snapshot and completed parser diagnostics. It retains
+only default/environment/derived metadata, never raw values, findings or secret
+inputs. Empty or malformed primitive fallbacks report default; valid explicit
+zero/false report environment. Loader-derived Burst and path-disabled backup
+production report derived. An invalid parsed NaN RPS remains an environment input
+and an invalid runtime observation, never a fabricated default. Runtime owners
+can additionally mark their actual constructor normalization derived. Hand-built
+Configs without captured provenance report unknown. Settings observations never
+reread the process environment.
+
+### Pilot delivery history
 
 | Order | Issue | Cohesive outcome |
 | --- | --- | --- |

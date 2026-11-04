@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/authz"
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 )
 
 type principalAccess struct {
@@ -20,6 +21,7 @@ type principalAccess struct {
 type Snapshot struct {
 	configuredTrustDigest string
 	logPolicy             *LogPolicy
+	operationalPolicies   operationalpolicy.Policies
 	image                 []byte
 	roleBytes             []byte
 	limits                PolicyLimits
@@ -119,4 +121,13 @@ func (s *Snapshot) LogPolicy() *LogPolicy {
 		return nil
 	}
 	return s.logPolicy.clone()
+}
+
+// OperationalPolicies is a detached closed desired-policy projection. Only an
+// authenticated native snapshot can establish that an absent group is unadopted.
+func (s *Snapshot) OperationalPolicies() operationalpolicy.Policies {
+	if s == nil {
+		return operationalpolicy.Policies{}
+	}
+	return s.operationalPolicies.Clone()
 }
