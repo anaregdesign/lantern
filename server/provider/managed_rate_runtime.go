@@ -35,17 +35,6 @@ func NewManagedRateRuntime(ctx context.Context, manager *ManagedOperationalRunti
 	if adapter.AvailableOperationalPolicy(operationalpolicy.GroupRate, operationalpolicy.Version) != nil {
 		return managedRateCertified{}, errManagedOperational
 	}
-	actual := owner.Snapshot()
-	if actual.Error == nil && sources != nil {
-		// Constructor input is an immutable typed copy from the same initial
-		// load. No status or callback reads the process environment again.
-		if actual.Config.RPS != owner.bootstrap.RPS || math.Signbit(actual.Config.RPS) != math.Signbit(owner.bootstrap.RPS) {
-			sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_RPS] = securitytransport.OperationalSourceDerived
-		}
-		if actual.Config.Burst != owner.bootstrap.Burst {
-			sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_BURST] = securitytransport.OperationalSourceDerived
-		}
-	}
 	if err := manager.Register(ctx, operationalpolicy.GroupRate, adapter); err != nil {
 		return managedRateCertified{}, err
 	}
@@ -100,14 +89,8 @@ func (r *managedRateRuntime) ObserveOperationalPolicy() (OperationalOwnerObserva
 	}
 	actual := r.owner.Snapshot()
 	observation := OperationalOwnerObservation{
-		EffectiveGeneration: actual.Generation, Sources: cloneOperationalSources(r.bootstrapSources),
+		EffectiveGeneration: actual.Generation, Sources: r.sourcesFor(actual),
 		Mode: securitytransport.OperationalModeHot, Error: securitytransport.OperationalErrorNone,
-	}
-	if actual.Generation != 0 {
-		observation.Sources = map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource{
-			pb.OperationalSetting_OPERATIONAL_SETTING_RATE_RPS:   securitytransport.OperationalSourceManaged,
-			pb.OperationalSetting_OPERATIONAL_SETTING_RATE_BURST: securitytransport.OperationalSourceManaged,
-		}
 	}
 	if actual.Error != nil {
 		observation.Error = securitytransport.OperationalErrorInvalidPolicy
@@ -120,4 +103,27 @@ func (r *managedRateRuntime) ObserveOperationalPolicy() (OperationalOwnerObserva
 	}
 	observation.Effective = &values
 	return observation, nil
+}
+
+func (r *managedRateRuntime) sourcesFor(actual RateLimitSnapshot) map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource {
+	if actual.Generation != 0 {
+		return map[securitytransport.OperationalSetting]securitytransport.OperationalSettingsSource{
+			pb.OperationalSetting_OPERATIONAL_SETTING_RATE_RPS:   securitytransport.OperationalSourceManaged,
+			pb.OperationalSetting_OPERATIONAL_SETTING_RATE_BURST: securitytransport.OperationalSourceManaged,
+		}
+	}
+	sources := cloneOperationalSources(r.bootstrapSources)
+	if actual.Error != nil || sources == nil {
+		return sources
+	}
+	// Compare each observation against immutable typed constructor input and
+	// same-load provenance. A preadoption Configure can change actual values;
+	// it must not retain stale default/environment labels or mutate the baseline.
+	if actual.Config.RPS != r.owner.bootstrap.RPS || math.Signbit(actual.Config.RPS) != math.Signbit(r.owner.bootstrap.RPS) {
+		sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_RPS] = securitytransport.OperationalSourceDerived
+	}
+	if actual.Config.Burst != r.owner.bootstrap.Burst {
+		sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_BURST] = securitytransport.OperationalSourceDerived
+	}
+	return sources
 }

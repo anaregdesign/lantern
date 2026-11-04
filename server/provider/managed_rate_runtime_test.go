@@ -62,6 +62,75 @@ func TestManagedRateRuntimeBootstrapValuesAndSources(t *testing.T) {
 	}
 }
 
+func TestManagedRateRuntimePreAdoptionConfigureObservationSources(t *testing.T) {
+	for _, test := range []struct {
+		name                       string
+		input                      []string
+		change                     RateLimitConfig
+		baselineSource, changedRPS securitytransport.OperationalSettingsSource
+	}{
+		{"default", nil, RateLimitConfig{RPS: 2, Burst: 3}, securitytransport.OperationalSourceDefault, securitytransport.OperationalSourceDerived},
+		{"environment", []string{"LANTERN_RATE_LIMIT_RPS=2", "LANTERN_RATE_LIMIT_BURST=3"}, RateLimitConfig{RPS: 2, Burst: 4}, securitytransport.OperationalSourceEnvironment, securitytransport.OperationalSourceEnvironment},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := LoadConfig(envconfig.NewReader(test.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime := &SecurityRuntime{mode: "oidc", current: &security.CurrentAuthority{}}
+			projection := security.OperationalPolicyProjection{Member: 101, Cut: security.SemanticCut{Version: security.S1Version, Domain: [32]byte{1}, Cohort: [32]byte{2}, Generation: [16]byte{3}, Sequence: 1, Projection: [32]byte{4}, Frontier: [32]byte{5}, Fences: [32]byte{6}, Policy: [32]byte{7}}}
+			authority := &managedRateAuthorityTestFake{projection: projection}
+			manager := &ManagedOperationalRuntime{runtime: runtime, authority: authority, bootstrap: NewOperationalBootstrapConfig(cfg)}
+			owner := NewRateLimitInterceptor(cfg.RateLimit.RPS, cfg.RateLimit.Burst)
+			recovery, err := NewRateRecoveryRuntime(runtime, owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cert, err := NewManagedRateRuntime(t.Context(), manager, owner, recovery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority.mu.Lock()
+			reads := authority.reads
+			authority.mu.Unlock()
+			assertActual := func(want RateLimitConfig, rpsSource, burstSource securitytransport.OperationalSettingsSource) {
+				t.Helper()
+				stored, err := owner.Configuration()
+				if err != nil || stored != want {
+					t.Fatal("Get configuration differs from actual owner", stored, err)
+				}
+				actual, err := cert.adapter.ObserveOperationalPolicy()
+				if err != nil || actual.Effective == nil || actual.EffectiveGeneration != 0 || actual.Effective.Rate.RPS != want.RPS || actual.Effective.Rate.Burst != int64(want.Burst) ||
+					actual.Sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_RPS] != rpsSource || actual.Sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_BURST] != burstSource {
+					t.Fatal("current value/provenance differs from actual owner", actual, err)
+				}
+				view, err := manager.Observe(projection)
+				observed := view[operationalpolicy.GroupRate]
+				if err != nil || observed.Effective == nil || observed.Effective.Rate.RPS != want.RPS || observed.Effective.Rate.Burst != int64(want.Burst) ||
+					observed.Sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_RPS] != rpsSource || observed.Sources[pb.OperationalSetting_OPERATIONAL_SETTING_RATE_BURST] != burstSource {
+					t.Fatal("management observer retained stale bootstrap labels", observed, err)
+				}
+				authority.mu.Lock()
+				currentReads := authority.reads
+				authority.mu.Unlock()
+				if currentReads != reads {
+					t.Fatal("value/provenance observation read authority")
+				}
+			}
+			baseline := owner.Snapshot().Config
+			assertActual(baseline, test.baselineSource, test.baselineSource)
+			if err := owner.Configure(test.change.RPS, test.change.Burst); err != nil {
+				t.Fatal(err)
+			}
+			assertActual(test.change, test.changedRPS, securitytransport.OperationalSourceDerived)
+			if err := owner.Configure(baseline.RPS, baseline.Burst); err != nil {
+				t.Fatal(err)
+			}
+			assertActual(baseline, test.baselineSource, test.baselineSource)
+		})
+	}
+}
+
 func TestManagedRateRuntimeInvalidBootstrapRepairAndRecoveryIdentity(t *testing.T) {
 	for _, raw := range []string{"NaN", "+Inf", "-Inf"} {
 		t.Run(raw, func(t *testing.T) {
