@@ -13,6 +13,31 @@ type blockedLifecycleSource struct {
 	entered, release chan struct{}
 }
 
+func TestShutdownPlanUsesExactOwnerWithoutCapturing(t *testing.T) {
+	owner, err := NewOwner(Snapshot{Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewShutdownPlan(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := NewOwner(owner.LifecycleSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var absent *ShutdownPlan
+	if !plan.UsesOwner(owner) || plan.UsesOwner(foreign) || plan.UsesOwner(nil) || absent.UsesOwner(owner) {
+		t.Fatal("shutdown plan owner identity is not exact")
+	}
+	if err := owner.Apply(Snapshot{Generation: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Current().Generation != 2 || plan.Capture().Generation != 2 {
+		t.Fatal("owner verification captured the shutdown generation")
+	}
+}
+
 func (s *blockedLifecycleSource) LifecycleSnapshot() Snapshot {
 	if s.first.CompareAndSwap(false, true) {
 		close(s.entered)

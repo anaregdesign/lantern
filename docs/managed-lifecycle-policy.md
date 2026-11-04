@@ -38,7 +38,15 @@ does not reset bootstrap, search compatibility, native serving permission or
 the one-way drain latch. Lag updates must never write the native authority's
 independent serving-permission flag.
 
-This package supplies the runtime owner and composition seams. Native adoption,
-durable recovery, Admin review/apply and per-node operational observations are
-integrated separately through the typed control plane; these seams alone do
-not complete Epic #1990 or Issue #2013's full acceptance.
+Normal composition registers the actual readiness gate, lifecycle owner and
+shutdown plan before public certification. The concrete plan verifies its
+source owner without capturing a generation. The same plan pointer reaches
+App and the public HTTP server; the graph-policy GC watcher and backup producer
+retain their separate ownership checks. Startup uses one captured local input
+unless verified native desired state has already adopted the group.
+
+Native adoption, durable recovery, Admin review/apply and per-node observations
+use the existing typed operational control plane. A new committed generation
+is the rollback path. Source integration alone does not establish the final
+real Connect/Admin acceptance or Epic #1990 completion. Search and replication
+groups remain unavailable until their actual runtime owners are integrated.

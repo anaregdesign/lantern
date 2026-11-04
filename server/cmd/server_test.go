@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -19,6 +22,12 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 )
 
+type appGuardTestListener struct{}
+
+func (appGuardTestListener) Server() *http.Server { return &http.Server{} }
+func (appGuardTestListener) Listener() net.Listener { return nil }
+func (appGuardTestListener) TLSEnabled() bool { return false }
+
 func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
 	data, err := dataruntime.NewGraphOnlyServingRuntime(
 		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
@@ -33,16 +42,58 @@ func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lifecycleOwner := service.NewBootstrapLifecyclePolicyOwner(service.LifecyclePolicy{})
+	plan, err := service.NewShutdownPlan(lifecycleOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A bare server has no watcher. The constructor must reject it before
 	// touching unrelated collaborators (which intentionally remain nil).
 	for _, candidate := range []*dataruntime.GraphPolicyOwner{nil, owner, {}} {
-		app, err := newApp(nil, nil, primary, &service.LanternServer{}, candidate,
+		server := (&service.LanternServer{}).WithShutdownPlan(plan)
+		app, err := newApp(nil, nil, primary, server, plan, candidate,
 			nil, nil, nil, nil, nil, nil, nil, provider.ShutdownConfig{},
 			nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
 			nil, data, nil, nil, nil, nil, provider.PeerPlaneConfig{},
 			provider.DomainMetricsWired{}, provider.CacheGCHooksWired{})
 		if err == nil || app != nil {
 			t.Fatal("App accepted an absent or foreign graph watcher")
+		}
+	}
+}
+
+func TestNewAppRejectsMismatchedShutdownPlanBeforeOtherSetup(t *testing.T) {
+	data, err := dataruntime.NewGraphOnlyServingRuntime(
+		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
+		mutationlog.New(mutationlog.Options{}), hlc.New(hlc.NodeID{0x1a}, hlc.Options{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = data.Close() })
+	primary := data.NewExecutor(nil)
+	graphOwner, err := dataruntime.NewGraphPolicyOwner(data, primary, dataruntime.GraphPolicyConfig{GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := service.NewBootstrapLifecyclePolicyOwner(service.LifecyclePolicy{})
+	plan, err := service.NewShutdownPlan(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := service.NewShutdownPlan(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := service.NewLanternServer(appGuardTestListener{}, slog.New(slog.DiscardHandler), service.LifecycleConfig{ShutdownPlan: plan}, nil, graphOwner, nil, nil)
+	for _, candidate := range []*service.ShutdownPlan{nil, other} {
+		app, err := newApp(nil, nil, primary, server, candidate, graphOwner,
+			nil, nil, nil, nil, nil, nil, nil, provider.ShutdownConfig{},
+			nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
+			nil, data, nil, nil, nil, nil, provider.PeerPlaneConfig{},
+			provider.DomainMetricsWired{}, provider.CacheGCHooksWired{})
+		if err == nil || app != nil {
+			t.Fatal("App accepted an absent or foreign shared shutdown plan")
 		}
 	}
 }

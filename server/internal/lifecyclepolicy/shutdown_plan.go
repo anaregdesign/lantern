@@ -22,6 +22,15 @@ func NewShutdownPlan(source Source) (*ShutdownPlan, error) {
 	return &ShutdownPlan{source: source}, nil
 }
 
+// UsesOwner verifies the exact source without freezing a shutdown generation.
+func (p *ShutdownPlan) UsesOwner(owner *Owner) bool {
+	if p == nil || owner == nil {
+		return false
+	}
+	actual, ok := p.source.(*Owner)
+	return ok && actual == owner
+}
+
 // Capture is called only when shutdown begins. Status reads and construction
 // must not freeze future shutdown policy early.
 func (p *ShutdownPlan) Capture() Snapshot {

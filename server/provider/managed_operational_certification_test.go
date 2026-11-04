@@ -10,6 +10,8 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 	"github.com/anaregdesign/lantern/server/internal/securitytransport"
+	"github.com/anaregdesign/lantern/server/readiness"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 func operationalPublicTestRate(t *testing.T, manager *ManagedOperationalRuntime, config RateLimitConfig) managedRateCertified {
@@ -64,6 +66,16 @@ func operationalPublicTestCapacity(t *testing.T, manager *ManagedOperationalRunt
 	return marker
 }
 
+func operationalPublicTestLifecycle(t *testing.T, manager *ManagedOperationalRuntime, config *Config) managedLifecycleCertified {
+	t.Helper()
+	gate := readiness.NewGate(config.Readiness.MaxLag, false, nil)
+	marker, err := NewManagedLifecycleRuntime(t.Context(), manager, config.Shutdown, config.Readiness, gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
 func operationalPublicTestCertification(t *testing.T, runtime *SecurityRuntime, primary *dataruntime.Executor, slow *SlowRPCInterceptor) managedOperationalCertified {
 	t.Helper()
 	cfg, err := LoadConfig(envconfig.NewReader(nil))
@@ -82,7 +94,8 @@ func operationalPublicTestCertification(t *testing.T, runtime *SecurityRuntime, 
 	request := operationalPublicTestRequest(t, manager, primary, cfg)
 	backupMarker := operationalPublicTestBackup(t, manager, primary, cfg)
 	capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
-	certified, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker)
+	lifecycleMarker := operationalPublicTestLifecycle(t, manager, cfg)
+	certified, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +125,8 @@ func TestManagedOperationalCertificationRefusesUnsupportedPreparedGroup(t *testi
 	request := operationalPublicTestRequest(t, manager, primary, cfg)
 	backupMarker := operationalPublicTestBackup(t, manager, primary, cfg)
 	capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
-	if _, err := NewManagedOperationalCertified(t.Context(), manager.runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	lifecycleMarker := operationalPublicTestLifecycle(t, manager, cfg)
+	if _, err := NewManagedOperationalCertified(t.Context(), manager.runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("prepared-only future group bypassed public startup refusal")
 	}
 }
@@ -137,8 +151,9 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 	request := operationalPublicTestRequest(t, manager, primary, cfg)
 	backupMarker := operationalPublicTestBackup(t, manager, primary, cfg)
 	capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
-	actual, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker)
-	if err != nil || actual.slowRPC != slow || actual.rate != rate.owner || actual.recovery != rate.recovery || actual.primary != primary || actual.request != request || actual.validator != request.validator || actual.backup != backupMarker.owner || actual.capacity != capacityMarker.owner {
+	lifecycleMarker := operationalPublicTestLifecycle(t, manager, cfg)
+	actual, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker)
+	if err != nil || actual.slowRPC != slow || actual.rate != rate.owner || actual.recovery != rate.recovery || actual.primary != primary || actual.request != request || actual.validator != request.validator || actual.backup != backupMarker.owner || actual.capacity != capacityMarker.owner || actual.plan != lifecycleMarker.plan {
 		t.Fatal(err)
 	}
 	for _, change := range []func(*managedSlowRPCCertified){
@@ -149,7 +164,7 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 	} {
 		wrong := group
 		change(&wrong)
-		if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, wrong, rate, request, backupMarker, capacityMarker); err == nil {
+		if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, wrong, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 			t.Fatal("foreign or absent resource certified")
 		}
 	}
@@ -166,14 +181,14 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			wrong := rate
 			change(&wrong)
-			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, wrong, request, backupMarker, capacityMarker); err == nil {
+			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, wrong, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 				t.Fatal("foreign or absent Rate resource certified")
 			}
 		})
 	}
 	registered := manager.rate
 	manager.rate = nil
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("missing Rate registration certified")
 	}
 	manager.rate = registered
@@ -188,33 +203,33 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 		t.Run("Request/"+name, func(t *testing.T) {
 			original := *request
 			change(request)
-			_, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker)
+			_, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker)
 			*request = original
 			if err == nil {
 				t.Fatal("foreign Request resource certified")
 			}
 		})
 	}
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, runtime.data.NewExecutor(nil), group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, runtime.data.NewExecutor(nil), group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("equal-runtime foreign primary certified")
 	}
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, nil, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, nil, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("absent Request resource certified")
 	}
 	requestEntry := manager.request
 	manager.request = nil
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("missing Request registration certified")
 	}
 	manager.request = requestEntry
 	foreignOwner := dataruntime.NewBootstrapRequestPolicyOwner(request.owner.RequestPolicySnapshot().Policy)
 	request.validator.WithRequestPolicySource(foreignOwner)
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("substituted validator policy source certified")
 	}
 	request.validator.WithRequestPolicySource(request.owner)
 	primary.WithRequestPolicySource(foreignOwner)
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("substituted executor policy source certified")
 	}
 	primary.WithRequestPolicySource(request.owner)
@@ -230,14 +245,14 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 		t.Run("Backup/"+name, func(t *testing.T) {
 			wrong := backupMarker
 			change(&wrong)
-			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, wrong, capacityMarker); err == nil {
+			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, wrong, capacityMarker, lifecycleMarker); err == nil {
 				t.Fatal("foreign or absent Backup producer certified")
 			}
 		})
 	}
 	backupEntry := manager.backup
 	manager.backup = nil
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("missing Backup registration certified")
 	}
 	manager.backup = backupEntry
@@ -251,17 +266,52 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 		t.Run("Capacity/"+name, func(t *testing.T) {
 			wrong := capacityMarker
 			change(&wrong)
-			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, wrong); err == nil {
+			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, wrong, lifecycleMarker); err == nil {
 				t.Fatal("foreign or absent Capacity owner certified")
 			}
 		})
 	}
 	capacityEntry := manager.capacity
 	manager.capacity = nil
-	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker); err == nil {
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
 		t.Fatal("missing Capacity registration certified")
 	}
 	manager.capacity = capacityEntry
+	for name, change := range map[string]func(*managedLifecycleCertified){
+		"manager": func(c *managedLifecycleCertified) { c.manager = &ManagedOperationalRuntime{} },
+		"missing owner": func(c *managedLifecycleCertified) { c.owner = nil },
+		"foreign owner": func(c *managedLifecycleCertified) {
+			c.owner = service.NewBootstrapLifecyclePolicyOwner(c.owner.LifecycleSnapshot().Policy)
+		},
+		"missing plan": func(c *managedLifecycleCertified) { c.plan = nil },
+		"foreign plan": func(c *managedLifecycleCertified) {
+			var planErr error
+			c.plan, planErr = service.NewShutdownPlan(c.owner)
+			if planErr != nil {
+				t.Fatal(planErr)
+			}
+		},
+		"missing gate": func(c *managedLifecycleCertified) { c.gate = nil },
+		"foreign gate": func(c *managedLifecycleCertified) { c.gate = readiness.NewGate(cfg.Readiness.MaxLag, false, nil) },
+		"missing adapter": func(c *managedLifecycleCertified) { c.adapter = nil },
+		"foreign adapter": func(c *managedLifecycleCertified) {
+			c.adapter = &managedLifecycleRuntime{owner: c.owner, plan: c.plan, gate: c.gate}
+		},
+	} {
+		t.Run("Lifecycle/"+name, func(t *testing.T) {
+			wrong := lifecycleMarker
+			change(&wrong)
+			if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, wrong); err == nil {
+				t.Fatal("foreign or absent Lifecycle owner, gate or plan certified")
+			}
+		})
+	}
+	lifecycleEntry := manager.lifecycle
+	manager.lifecycle = nil
+	if _, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, group, rate, request, backupMarker, capacityMarker, lifecycleMarker); err == nil {
+		t.Fatal("missing Lifecycle registration certified")
+	}
+	manager.lifecycle = lifecycleEntry
 }
 
 func TestManagedOperationalCertificationKeepsInvalidRateAvailableForRepair(t *testing.T) {
@@ -286,7 +336,8 @@ func TestManagedOperationalCertificationKeepsInvalidRateAvailableForRepair(t *te
 			request := operationalPublicTestRequest(t, manager, primary, cfg)
 			backupMarker := operationalPublicTestBackup(t, manager, primary, cfg)
 			capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
-			certified, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, slowMarker, rate, request, backupMarker, capacityMarker)
+			lifecycleMarker := operationalPublicTestLifecycle(t, manager, cfg)
+			certified, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, slowMarker, rate, request, backupMarker, capacityMarker, lifecycleMarker)
 			if err != nil || certified.rate != rate.owner || certified.recovery != rate.recovery || rate.owner.Allow() {
 				t.Fatal("invalid bootstrap lost its installed repair owner", err)
 			}

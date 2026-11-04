@@ -105,7 +105,7 @@ func managedLifecycleSnapshot(policy operationalpolicy.Policy) (service.Lifecycl
 }
 
 func (a *managedLifecycleRuntime) AvailableOperationalPolicy(group operationalpolicy.Group, version uint32) error {
-	if a == nil || a.owner == nil || a.plan == nil || a.gate == nil || group != operationalpolicy.GroupLifecycle || version != operationalpolicy.Version {
+	if a == nil || a.owner == nil || !a.plan.UsesOwner(a.owner) || a.gate == nil || group != operationalpolicy.GroupLifecycle || version != operationalpolicy.Version {
 		return errManagedOperational
 	}
 	return nil
@@ -169,7 +169,7 @@ func (a *managedLifecycleRuntime) ObserveOperationalPolicy() (OperationalOwnerOb
 // NewManagedShutdownPlan selects the concrete shared plan without depending on
 // the HTTP server. It can therefore participate in pre-listener certification.
 func NewManagedShutdownPlan(lifecycle managedLifecycleCertified) (*service.ShutdownPlan, error) {
-	if lifecycle.manager == nil || lifecycle.adapter == nil || lifecycle.adapter.owner != lifecycle.owner || lifecycle.adapter.plan != lifecycle.plan || lifecycle.adapter.gate != lifecycle.gate ||
+	if lifecycle.manager == nil || lifecycle.adapter == nil || lifecycle.adapter.owner != lifecycle.owner || lifecycle.adapter.plan != lifecycle.plan || lifecycle.adapter.gate != lifecycle.gate || !lifecycle.plan.UsesOwner(lifecycle.owner) ||
 		lifecycle.adapter.AvailableOperationalPolicy(operationalpolicy.GroupLifecycle, operationalpolicy.Version) != nil {
 		return nil, errManagedOperational
 	}

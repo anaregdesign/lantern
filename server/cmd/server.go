@@ -83,6 +83,7 @@ func newApp(
 	logger *slog.Logger,
 	svc *dataruntime.Executor,
 	server *service.LanternServer,
+	shutdownPlan *service.ShutdownPlan,
 	graphPolicy *dataruntime.GraphPolicyOwner,
 	metricsServer provider.MetricsServer,
 	tracing *provider.Tracing,
@@ -106,8 +107,8 @@ func newApp(
 	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
 ) (*App, error) {
-	if !server.UsesWatcher(graphPolicy) || !graphPolicy.OwnsInstallation(runtime, svc) {
-		return nil, errors.New("app requires the exact managed graph owner")
+	if !server.UsesShutdownPlan(shutdownPlan) || !server.UsesWatcher(graphPolicy) || !graphPolicy.OwnsInstallation(runtime, svc) {
+		return nil, errors.New("app requires the exact managed lifecycle and graph owners")
 	}
 	// Wire the replication snapshotter onto svc here (rather than inside
 	// newLanternService) because pump itself depends on svc; that cycle
@@ -140,6 +141,7 @@ func newApp(
 		health:          hc,
 		gate:            gate,
 		drainDelay:      sc.DrainDelay,
+		shutdownPlan:    shutdownPlan,
 		backupper:       backupper,
 		restoreReq:      bcfg.RestoreRequired,
 		pump:            pump,

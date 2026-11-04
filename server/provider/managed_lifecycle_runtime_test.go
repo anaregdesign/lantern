@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/internal/securitytransport"
 	"github.com/anaregdesign/lantern/server/readiness"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 func lifecycleRuntimeTestProjection(t *testing.T, sequence, generation uint64, values operationalpolicy.Lifecycle) security.OperationalPolicyProjection {
@@ -233,6 +234,32 @@ func TestManagedLifecycleRuntimeConcurrentApplyAndBinding(t *testing.T) {
 	gate.UpdateMaxLag(999)
 	if _, err := cert.adapter.ObserveOperationalPolicy(); err == nil {
 		t.Fatal("out-of-band gate mutation claimed actual application")
+	}
+}
+
+func TestManagedLifecycleSelectorsRefuseSubstitutedPlanSource(t *testing.T) {
+	cfg, manager := lifecycleRuntimeTestBootstrap(t, nil)
+	gate := readiness.NewGate(cfg.Readiness.MaxLag, false, nil)
+	marker, err := NewManagedLifecycleRuntime(t.Context(), manager, cfg.Shutdown, cfg.Readiness, gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignOwner := service.NewBootstrapLifecyclePolicyOwner(marker.owner.LifecycleSnapshot().Policy)
+	foreignPlan, err := service.NewShutdownPlan(foreignOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both marker and adapter can agree on a substituted plan. The concrete
+	// source identity must still refuse it without capturing either plan.
+	marker.plan, marker.adapter.plan = foreignPlan, foreignPlan
+	if _, err := NewManagedShutdownPlan(marker); err == nil {
+		t.Fatal("plan bound to a foreign owner selected")
+	}
+	if _, err := NewManagedLifecycleConfig(cfg.Cache, marker); err == nil {
+		t.Fatal("HTTP configuration selected a foreign lifecycle source")
+	}
+	if marker.adapter.AvailableOperationalPolicy(operationalpolicy.GroupLifecycle, operationalpolicy.Version) == nil {
+		t.Fatal("substituted plan advertised actual availability")
 	}
 }
 
