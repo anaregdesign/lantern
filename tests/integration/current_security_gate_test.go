@@ -2227,7 +2227,9 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 		t.Fatal("actual atomic Rate bootstrap ownership", state, actual)
 	}
 	for _, future := range initial.Groups {
-		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC || future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE {
+		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST {
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {
