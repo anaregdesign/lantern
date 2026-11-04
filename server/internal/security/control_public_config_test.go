@@ -372,6 +372,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	for _, entry := range []struct{ subject, role string }{{"reader", reader.ID}, {"denied-manager", blocked.ID}} {
 		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuerURL, Subject: entry.subject}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: entry.role}}})
 	}
+	image = currentOperationalQueryFixtureImage(image, issuerURL)
 	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
 		blind := Role{ID: "wire_blind", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:blind:tail:"), dataRule(Allow, VertexWrite, "orders:blind:"), dataRule(Allow, ReceiptRead, "orders:blind:")}}
 		for i := range blind.Rules {
@@ -945,6 +946,53 @@ func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, co
 		t.Fatal(err)
 	}
 	write(filepath.Join(dir, "publisher.json"), raw)
+}
+
+// This ordinary query actor keeps the legacy reader's exact read/Deny role and
+// adds only Query. It cannot read settings, mutate policy or write graph data.
+// The separate query/bootstrap profiles below replace the complete seed as before.
+func currentOperationalQueryFixtureImage(image Image, issuer string) Image {
+	query := dataRule(Allow, Query, "orders:")
+	query.ID = "query"
+	image.Roles = append(image.Roles, Role{ID: "wire_operational_query", Rules: []PermissionRule{query}})
+	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "operational-query-reader"}, State: Active, HumanIssuerConfigRevision: 1,
+		Assignments: []RoleAssignment{{RoleID: "wire_reader"}, {RoleID: "wire_operational_query"}}})
+	return image
+}
+
+func TestCurrentOperationalQueryFixturePreservesLegacyReaderAndLeastPrivilege(t *testing.T) {
+	image := s1Image()
+	issuer := image.Issuers[0].URL
+	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:"), dataRule(Deny, VertexRead, "orders:private:")}}
+	reader.Rules[0].ID, reader.Rules[1].ID = "read", "deny"
+	legacy := Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "reader"}
+	image.Roles = append(image.Roles, reader)
+	image.Principals = append(image.Principals, Principal{Identity: legacy, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: reader.ID}}})
+	roleCount, principalCount := len(image.Roles), len(image.Principals)
+	beforeRoles, _ := json.Marshal(image.Roles)
+	beforePrincipals, _ := json.Marshal(image.Principals)
+	image = currentOperationalQueryFixtureImage(image, issuer)
+	afterRoles, _ := json.Marshal(image.Roles[:roleCount])
+	afterPrincipals, _ := json.Marshal(image.Principals[:principalCount])
+	if len(image.Roles) != roleCount+1 || len(image.Principals) != principalCount+1 || !bytes.Equal(beforeRoles, afterRoles) || !bytes.Equal(beforePrincipals, afterPrincipals) {
+		t.Fatal("query fixture changed an existing role or actor")
+	}
+	snapshot, err := CompileImage(image, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, active := snapshot.AccessFor(legacy)
+	if !active || !old.Allows(VertexRead, "orders:public:1") || old.Allows(VertexRead, "orders:private:1") || old.Allows(Query, "orders:public:1") || old.AllowsGlobal(SecurityManage) {
+		t.Fatal("legacy reader permissions changed")
+	}
+	identity := Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "operational-query-reader"}
+	access, active := snapshot.AccessFor(identity)
+	if !active || !access.Allows(VertexRead, "orders:public:1") || !access.Allows(Query, "orders:public:1") || access.Scope(VertexRead, Query).Within("orders:public:").Empty() || !access.Scope(VertexRead, Query).Within("orders:private:").Empty() || !access.Scope(VertexRead, Query).Within("other:").Empty() {
+		t.Fatal("dedicated query actor lost its exact scoped read/Deny intersection")
+	}
+	if access.Allows(VertexWrite, "orders:public:1") || access.Allows(VertexDelete, "orders:public:1") || access.AllowsGlobal(SecurityManage) || access.AllowsGlobal(OperationsRead) {
+		t.Fatal("dedicated query actor gained write or management authority")
+	}
 }
 
 func currentFixtureContainerHosts(t *testing.T) []string {

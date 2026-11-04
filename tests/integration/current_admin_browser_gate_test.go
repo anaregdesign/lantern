@@ -49,11 +49,32 @@ const currentAdminBrowserLimit = 1 << 20
 
 var errCurrentAdminBrowserResponseLost = errors.New("completed fixture Apply response withheld")
 
+type currentAdminBrowserScenario string
+
+const (
+	currentAdminBrowserLog             currentAdminBrowserScenario = "log"
+	currentAdminBrowserOperationalSlow currentAdminBrowserScenario = "operational-slow-rpc"
+)
+
+func parseCurrentAdminBrowserScenario(value string) (currentAdminBrowserScenario, error) {
+	switch value {
+	case "", string(currentAdminBrowserLog):
+		return currentAdminBrowserLog, nil
+	case string(currentAdminBrowserOperationalSlow):
+		return currentAdminBrowserOperationalSlow, nil
+	default:
+		return "", errors.New("unsupported additional Admin browser scenario")
+	}
+}
+
 type currentAdminBrowserEvidence struct {
 	Schema               int    `json:"schema"`
 	Status               string `json:"status"`
+	Scenario             string `json:"scenario"`
 	Generation           string `json:"generation"`
 	Level                int32  `json:"level"`
+	Group                int32  `json:"group"`
+	ThresholdMS          int64  `json:"thresholdMs"`
 	ApplyRequests        int    `json:"applyRequests"`
 	StatusRequests       int    `json:"statusRequests"`
 	RevokedReadStatus    int    `json:"revokedReadStatus"`
@@ -118,6 +139,7 @@ func currentAdminBrowserNode(t *testing.T) currentAdminBrowserNodeBinding {
 
 type currentAdminBrowserGateway struct {
 	mu             sync.Mutex
+	scenario       currentAdminBrowserScenario
 	applyRequests  int
 	prepareCount   int
 	statusRequests int
@@ -127,10 +149,59 @@ type currentAdminBrowserGateway struct {
 	review         *pb.CurrentSecurityReview
 	committed      bool
 	latest         *pb.GetLogSettingsResponse
+	operational    *pb.GetOperationalSettingsResponse
 	failed         bool
 	failureCodes   []string
 	readCanceled   int
 	highestDesired uint64
+}
+
+func (g *currentAdminBrowserGateway) operationalSlow() bool {
+	return g.scenario == currentAdminBrowserOperationalSlow
+}
+
+func (g *currentAdminBrowserGateway) originalKind() string {
+	if g.operationalSlow() {
+		return "operational_policy.put"
+	}
+	return "log_policy.put"
+}
+
+func (g *currentAdminBrowserGateway) acceptsReview(review *pb.CurrentSecurityReview) bool {
+	if review == nil || len(review.Changes) != 1 {
+		return false
+	}
+	if g.operationalSlow() {
+		change := review.Changes[0].GetPutOperationalPolicy()
+		return change != nil && change.Version == 1 && change.Values.GetSlowRpc() != nil && change.Values.GetSlowRpc().ThresholdMs >= 0
+	}
+	return review.Changes[0].GetPutLogPolicy() != nil
+}
+
+// desiredMatches binds the rendered result to this scenario's real native
+// response and retained review, rather than inferring application from commit.
+func (g *currentAdminBrowserGateway) desiredMatches(result currentAdminBrowserEvidence, generation uint64) bool {
+	if g.operationalSlow() {
+		if result.Group != int32(pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC) || g.operational == nil || !g.acceptsReview(g.review) {
+			return false
+		}
+		change := g.review.Changes[0].GetPutOperationalPolicy()
+		if change.ExpectedGeneration == ^uint64(0) || change.ExpectedGeneration+1 != generation || change.Values.GetSlowRpc().ThresholdMs != result.ThresholdMS {
+			return false
+		}
+		for _, state := range g.operational.Groups {
+			if state == nil || state.Group != pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC {
+				continue
+			}
+			return state.Desired != nil && state.Desired.Generation == generation && state.Desired.Values.GetSlowRpc() != nil && state.Desired.Values.GetSlowRpc().ThresholdMs == result.ThresholdMS &&
+				state.Effective.GetSlowRpc() != nil && state.Effective.GetSlowRpc().ThresholdMs == result.ThresholdMS && state.AppliedGeneration == generation && state.AppliedCut != nil &&
+				state.Adoption == pb.LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_MANAGED && state.Application == pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED &&
+				state.ChangeMode == pb.OperationalSettingsChangeMode_OPERATIONAL_SETTINGS_CHANGE_MODE_HOT && state.Error == pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_NONE && !state.RestartRequired &&
+				len(state.Provenance) == 1 && state.Provenance[0].GetSetting() == pb.OperationalSetting_OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS && state.Provenance[0].GetSource() == pb.OperationalSettingsSource_OPERATIONAL_SETTINGS_SOURCE_MANAGED
+		}
+		return false
+	}
+	return g.latest != nil && g.latest.Desired != nil && g.latest.DesiredGeneration == generation && int32(g.latest.Desired.Level) == result.Level && g.latest.Source == pb.LogSettingsSource_LOG_SETTINGS_SOURCE_MANAGED
 }
 
 func (g *currentAdminBrowserGateway) failLocked(code string) {
@@ -156,6 +227,7 @@ func currentAdminBrowserAPI(method, path string) bool {
 	case graphv1connect.LanternSecurityServiceGetAuthCapabilitiesProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceGetCurrentPrincipalProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure,
+		"/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure,
 		"/browser" + graphv1connect.LanternSecurityServicePrepareSecurityChangesProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceGetSecurityChangeStatusProcedure:
@@ -200,9 +272,9 @@ func (g *currentAdminBrowserGateway) request(req *http.Request) error {
 	case "/browser" + graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure:
 		g.applyRequests++
 		var message pb.ApplySecurityChangesRequest
-		if g.applyRequests != 1 || protojson.Unmarshal(raw, &message) != nil || message.CurrentReview == nil || len(message.CurrentReview.Changes) != 1 || message.CurrentReview.Changes[0].GetPutLogPolicy() == nil {
+		if g.applyRequests != 1 || protojson.Unmarshal(raw, &message) != nil || !g.acceptsReview(message.CurrentReview) {
 			g.failLocked("apply_request")
-			return errors.New("expected exactly one typed browser log Apply")
+			return errors.New("expected exactly one typed browser scenario Apply")
 		}
 		g.review = proto.Clone(message.CurrentReview).(*pb.CurrentSecurityReview)
 	case "/browser" + graphv1connect.LanternSecurityServiceGetSecurityChangeStatusProcedure:
@@ -219,7 +291,7 @@ func (g *currentAdminBrowserGateway) request(req *http.Request) error {
 func (g *currentAdminBrowserGateway) response(response *http.Response) error {
 	path := response.Request.URL.Path
 	drop := path == "/browser"+graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure
-	observe := drop || (response.StatusCode == http.StatusOK && (path == "/browser"+graphv1connect.LanternSecurityServiceGetLogSettingsProcedure || path == "/browser"+graphv1connect.LanternSecurityServiceGetSecurityChangeStatusProcedure))
+	observe := drop || (response.StatusCode == http.StatusOK && (path == "/browser"+graphv1connect.LanternSecurityServiceGetLogSettingsProcedure || path == "/browser"+graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure || path == "/browser"+graphv1connect.LanternSecurityServiceGetSecurityChangeStatusProcedure))
 	if !observe {
 		return nil
 	}
@@ -256,15 +328,36 @@ func (g *currentAdminBrowserGateway) response(response *http.Response) error {
 		// The gateway preserves headers, then closes before emitting its body.
 		return errCurrentAdminBrowserResponseLost
 	}
-	if path == "/browser"+graphv1connect.LanternSecurityServiceGetLogSettingsProcedure {
+	switch path {
+	case "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure:
 		var value pb.GetLogSettingsResponse
 		if protojson.Unmarshal(raw, &value) != nil {
 			g.failLocked("settings_response_json")
 			return errors.New("native settings JSON required")
 		}
 		g.latest = &value
-		g.highestDesired = max(g.highestDesired, value.DesiredGeneration)
-	} else {
+		if !g.operationalSlow() {
+			g.highestDesired = max(g.highestDesired, value.DesiredGeneration)
+		}
+	case "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure:
+		var value pb.GetOperationalSettingsResponse
+		if protojson.Unmarshal(raw, &value) != nil || value.SchemaVersion != 1 || len(value.Groups) != 8 {
+			g.failLocked("operational_response_json")
+			return errors.New("complete typed native operational settings required")
+		}
+		seen := make(map[pb.OperationalGroup]bool, 8)
+		for _, group := range value.Groups {
+			if group == nil || group.Group < pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC || group.Group > pb.OperationalGroup_OPERATIONAL_GROUP_REPLICATION || seen[group.Group] {
+				g.failLocked("operational_response_groups")
+				return errors.New("all eight native operational groups required")
+			}
+			seen[group.Group] = true
+			if g.operationalSlow() && group.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC {
+				g.highestDesired = max(g.highestDesired, group.GetDesired().GetGeneration())
+			}
+		}
+		g.operational = &value
+	default:
 		var value pb.GetSecurityChangeStatusResponse
 		if protojson.Unmarshal(raw, &value) != nil {
 			g.failLocked("status_response_json")
@@ -277,9 +370,9 @@ func (g *currentAdminBrowserGateway) response(response *http.Response) error {
 		}
 		original := result.GetOriginal()
 		if original != nil && original.Disposition == pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
-			if !proto.Equal(original.ChangeId, g.review.ChangeId) || !bytes.Equal(original.IntentDigest, g.review.IntentDigest) || original.Commit == nil || len(original.Items) != 1 || original.Items[0].Kind != "log_policy.put" || original.Items[0].Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+			if !proto.Equal(original.ChangeId, g.review.ChangeId) || !bytes.Equal(original.IntentDigest, g.review.IntentDigest) || original.Commit == nil || len(original.Items) != 1 || original.Items[0].Kind != g.originalKind() || original.Items[0].Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
 				g.failLocked("original_commit_metadata")
-				return errors.New("exact native committed log original required")
+				return errors.New("exact native committed scenario original required")
 			}
 			g.committed = true
 		}
@@ -451,6 +544,10 @@ func (w *currentAdminBrowserBoundedLog) Write(raw []byte) (int, error) {
 // exact-session logout body, invoked once while Chromium retains those cookies.
 func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptest.Server, transport http.RoundTripper, cookies []*http.Cookie, revoke func()) uint64 {
 	t.Helper()
+	scenario, err := parseCurrentAdminBrowserScenario(os.Getenv("LANTERN_CURRENT_ADMIN_BROWSER_MODE"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if os.Getenv("LANTERN_CURRENT_ADMIN_BROWSER") != "1" || os.Getenv("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION") != "0" {
 		t.Fatal("additional Admin browser proof requires explicit functional-validation opt-in; Q is forbidden")
 	}
@@ -479,7 +576,7 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 			_ = os.WriteFile(filepath.Join(evidence, "fixture-result.json"), []byte("{\"schema\":1,\"status\":\"FAIL\",\"proof\":\"additional-real-admin-browser\"}\n"), 0600)
 		}
 	}()
-	state := &currentAdminBrowserGateway{}
+	state := &currentAdminBrowserGateway{scenario: scenario}
 	target, err := url.Parse(upstream.URL)
 	if err != nil || (target.Scheme != "https" && target.Scheme != "http") || target.User != nil || target.Path != "" {
 		t.Fatal("fixed native upstream required", err)
@@ -540,7 +637,7 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 	if len(browserCookies) != 2 {
 		t.Fatal("exact Code-issued session and CSRF cookies required")
 	}
-	manifest, err := json.Marshal(map[string]any{"schema": 1, "origin": currentAdminBrowserOrigin, "proxy": tunnel.URL, "spki": spki, "cookies": browserCookies, "evidence": evidence})
+	manifest, err := json.Marshal(map[string]any{"schema": 1, "scenario": scenario, "origin": currentAdminBrowserOrigin, "proxy": tunnel.URL, "spki": spki, "cookies": browserCookies, "evidence": evidence})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,13 +747,13 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 	}
 	raw, err := os.ReadFile(filepath.Join(evidence, "result.json"))
 	var result currentAdminBrowserEvidence
-	if err != nil || len(raw) > 16<<10 || json.Unmarshal(raw, &result) != nil || result.Schema != 1 || result.Status != "PASS" || result.ApplyRequests != 1 || result.StatusRequests < 1 || !result.OriginalBindingSame || (result.RevokedReadStatus != http.StatusUnauthorized && result.RevokedReadStatus != http.StatusForbidden) || (result.RevokedPrepareStatus != http.StatusUnauthorized && result.RevokedPrepareStatus != http.StatusForbidden) {
+	if err != nil || len(raw) > 16<<10 || json.Unmarshal(raw, &result) != nil || result.Schema != 1 || result.Status != "PASS" || result.Scenario != string(scenario) || result.ApplyRequests != 1 || result.StatusRequests < 1 || !result.OriginalBindingSame || (result.RevokedReadStatus != http.StatusUnauthorized && result.RevokedReadStatus != http.StatusForbidden) || (result.RevokedPrepareStatus != http.StatusUnauthorized && result.RevokedPrepareStatus != http.StatusForbidden) {
 		t.Fatal("complete additional Admin browser evidence required", err)
 	}
 	generation, err := strconv.ParseUint(result.Generation, 10, 64)
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	observation := map[string]any{"schema": 1, "failed": state.failed, "failure_codes": append([]string(nil), state.failureCodes...), "read_context_canceled": state.readCanceled, "apply_requests": state.applyRequests, "prepare_requests": state.prepareCount, "status_requests": state.statusRequests, "dropped_status": state.droppedStatus, "dropped_bytes": state.droppedBytes, "committed": state.committed, "has_latest": state.latest != nil, "highest_desired_generation": state.highestDesired, "expected_generation": generation, "expected_level": result.Level, "generation_parse_ok": err == nil}
+	observation := map[string]any{"schema": 1, "scenario": scenario, "failed": state.failed, "failure_codes": append([]string(nil), state.failureCodes...), "read_context_canceled": state.readCanceled, "apply_requests": state.applyRequests, "prepare_requests": state.prepareCount, "status_requests": state.statusRequests, "dropped_status": state.droppedStatus, "dropped_bytes": state.droppedBytes, "committed": state.committed, "has_latest": state.latest != nil, "has_operational": state.operational != nil, "highest_desired_generation": state.highestDesired, "expected_generation": generation, "expected_level": result.Level, "expected_threshold_ms": result.ThresholdMS, "generation_parse_ok": err == nil}
 	if state.latest != nil {
 		observation["latest_member"] = state.latest.Member
 		observation["latest_generation"] = state.latest.DesiredGeneration
@@ -672,7 +769,7 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 	if observationErr := os.WriteFile(filepath.Join(evidence, "gateway-observation.json"), append(observed, '\n'), 0600); observationErr != nil {
 		t.Fatal("bounded gateway observation persistence", observationErr)
 	}
-	if err != nil || generation == 0 || state.failed || state.applyRequests != 1 || state.prepareCount != 2 || state.statusRequests < 1 || state.droppedStatus != http.StatusOK || state.droppedBytes == 0 || !state.committed || state.latest == nil || state.latest.Desired == nil || state.latest.DesiredGeneration != generation || int32(state.latest.Desired.Level) != result.Level || state.latest.Source != pb.LogSettingsSource_LOG_SETTINGS_SOURCE_MANAGED {
+	if err != nil || generation == 0 || state.failed || state.applyRequests != 1 || state.prepareCount != 2 || state.statusRequests < 1 || state.droppedStatus != http.StatusOK || state.droppedBytes == 0 || !state.committed || !state.desiredMatches(result, generation) {
 		t.Fatal("native browser proof did not preserve one committed original and current desired state", err)
 	}
 	finalHead, finalTree, finalAssets := currentAdminBrowserInputs(t, root, assets)
@@ -683,22 +780,22 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 	}
 	resultHash := sha256.Sum256(raw)
 	lifecycleHash := sha256.Sum256(lifecycleBytes)
-	proof, _ := json.Marshal(map[string]any{"schema": 1, "status": "PASS", "proof": "additional-real-admin-browser", "source_head": head, "source_tree": tree, "spa_files_sha256": assetHash, "chromium_sha256": lifecycle.Binary.SHA256, "node": node, "driver_bundle_sha256": hex.EncodeToString(bundleHash[:]), "browser_result_sha256": hex.EncodeToString(resultHash[:]), "browser_lifecycle_sha256": hex.EncodeToString(lifecycleHash[:]), "browser_owner": "playwright-new-root", "browser_root_exit_observed": true, "playwright_server_close_completed": true, "node_child_reaped": true, "apply_requests": state.applyRequests, "prepare_requests": state.prepareCount, "status_requests": state.statusRequests, "completed_response_lost": state.droppedStatus == http.StatusOK, "desired_generation": generation, "revocation_handoffs": 1, "ordinary_f_qualification": false, "configured_source_qualification": false})
+	proof, _ := json.Marshal(map[string]any{"schema": 1, "status": "PASS", "proof": "additional-real-admin-browser", "scenario": scenario, "source_head": head, "source_tree": tree, "spa_files_sha256": assetHash, "chromium_sha256": lifecycle.Binary.SHA256, "node": node, "driver_bundle_sha256": hex.EncodeToString(bundleHash[:]), "browser_result_sha256": hex.EncodeToString(resultHash[:]), "browser_lifecycle_sha256": hex.EncodeToString(lifecycleHash[:]), "browser_owner": "playwright-new-root", "browser_root_exit_observed": true, "playwright_server_close_completed": true, "node_child_reaped": true, "apply_requests": state.applyRequests, "prepare_requests": state.prepareCount, "status_requests": state.statusRequests, "completed_response_lost": state.droppedStatus == http.StatusOK, "desired_generation": generation, "revocation_handoffs": 1, "ordinary_f_qualification": false, "configured_source_qualification": false})
 	if err := os.WriteFile(filepath.Join(evidence, "fixture-result.json"), append(proof, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	passed = true
-	t.Logf("additional_real_admin_browser PASS apply_requests=1 status_requests=%d desired_generation=%d revoked_read=%d revoked_prepare=%d; separate opt-in proof, not ordinary F/Q", state.statusRequests, generation, result.RevokedReadStatus, result.RevokedPrepareStatus)
+	t.Logf("additional_real_admin_browser PASS scenario=%s apply_requests=1 status_requests=%d desired_generation=%d revoked_read=%d revoked_prepare=%d; separate opt-in proof, not ordinary F/Q", scenario, state.statusRequests, generation, result.RevokedReadStatus, result.RevokedPrepareStatus)
 	return generation
 }
 
 func TestCurrentAdminBrowserFixedTargets(t *testing.T) {
-	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/session"}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}} {
+	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/session"}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure}} {
 		if !currentAdminBrowserAPI(input.method, input.path) {
 			t.Fatal("required exact browser route missing")
 		}
 	}
-	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/logout"}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodPost, "/graph.v1.LanternService/PutVertices"}, {http.MethodPost, "/browser/graph.v1.LanternSecurityService/ListIssuers"}, {http.MethodPost, "https://other.example/auth/session"}} {
+	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/logout"}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure}, {http.MethodPost, "/graph.v1.LanternService/PutVertices"}, {http.MethodPost, "/browser/graph.v1.LanternSecurityService/ListIssuers"}, {http.MethodPost, "https://other.example/auth/session"}} {
 		if currentAdminBrowserAPI(input.method, input.path) {
 			t.Fatal("unexpected gateway route admitted", input)
 		}
@@ -710,6 +807,103 @@ func TestCurrentAdminBrowserFixedTargets(t *testing.T) {
 		currentAdminBrowserTunnel(response, request, "127.0.0.1:1")
 		if response.Code != http.StatusForbidden {
 			t.Fatal("unexpected CONNECT target admitted", target)
+		}
+	}
+}
+
+func TestCurrentAdminBrowserOperationalScenarioBinding(t *testing.T) {
+	for _, value := range []string{"", "log", "operational-slow-rpc"} {
+		mode, err := parseCurrentAdminBrowserScenario(value)
+		if err != nil || (value == "operational-slow-rpc") != (mode == currentAdminBrowserOperationalSlow) {
+			t.Fatal("closed browser scenario rejected", value, mode, err)
+		}
+	}
+	for _, value := range []string{"slow", "rate", "https://other.example", "../driver.ts"} {
+		if _, err := parseCurrentAdminBrowserScenario(value); err == nil {
+			t.Fatal("unknown browser scenario accepted", value)
+		}
+	}
+	values := &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_SlowRpc{SlowRpc: &pb.OperationalSlowRPCValues{ThresholdMs: 37}}}
+	review := &pb.CurrentSecurityReview{IntentDigest: bytes.Repeat([]byte{7}, 32), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutOperationalPolicy{PutOperationalPolicy: &pb.OperationalPolicyChange{Version: 1, ExpectedGeneration: 7, Values: values}}}}}
+	logReview := &pb.CurrentSecurityReview{Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutLogPolicy{PutLogPolicy: &pb.ManagedLogPolicy{Version: 1, Level: pb.ManagedLogLevel_MANAGED_LOG_LEVEL_INFO}}}}}
+	if (&currentAdminBrowserGateway{}).acceptsReview(review) || (&currentAdminBrowserGateway{scenario: currentAdminBrowserOperationalSlow}).acceptsReview(logReview) {
+		t.Fatal("browser scenario admitted the other policy type")
+	}
+	state := &currentAdminBrowserGateway{scenario: currentAdminBrowserOperationalSlow}
+	raw, err := protojson.Marshal(&pb.ApplySecurityChangesRequest{CurrentReview: review})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyPath := "/browser" + graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure
+	if err := state.request(httptest.NewRequest(http.MethodPost, applyPath, bytes.NewReader(raw))); err != nil || !proto.Equal(state.review, review) {
+		t.Fatal("typed original was not retained", err)
+	}
+	if err := state.request(httptest.NewRequest(http.MethodPost, applyPath, bytes.NewReader(raw))); err == nil {
+		t.Fatal("second Apply dispatch accepted")
+	}
+	settings := &pb.GetOperationalSettingsResponse{SchemaVersion: 1, Member: 1}
+	for group := pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC; group <= pb.OperationalGroup_OPERATIONAL_GROUP_REPLICATION; group++ {
+		settings.Groups = append(settings.Groups, &pb.OperationalGroupSettings{Group: group})
+	}
+	settings.Groups[0] = &pb.OperationalGroupSettings{Group: pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC,
+		Desired: &pb.ManagedOperationalPolicy{Version: 1, Generation: 8, Values: values}, Effective: values,
+		Provenance:        []*pb.OperationalSettingProvenance{{Setting: pb.OperationalSetting_OPERATIONAL_SETTING_SLOW_RPC_THRESHOLD_MS, Source: pb.OperationalSettingsSource_OPERATIONAL_SETTINGS_SOURCE_MANAGED}},
+		AppliedGeneration: 8, AppliedCut: &pb.CurrentSemanticCut{Sequence: 9}, ChangeMode: pb.OperationalSettingsChangeMode_OPERATIONAL_SETTINGS_CHANGE_MODE_HOT,
+		Adoption: pb.LogPolicyAdoptionState_LOG_POLICY_ADOPTION_STATE_MANAGED, Application: pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED, Error: pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_NONE}
+	result := currentAdminBrowserEvidence{Group: int32(pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC), ThresholdMS: 37}
+	settingsPath := "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure
+	response := func(value proto.Message, path string) *http.Response {
+		t.Helper()
+		raw, err := protojson.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(raw)), Request: httptest.NewRequest(http.MethodPost, path, nil)}
+	}
+	observed := &currentAdminBrowserGateway{scenario: currentAdminBrowserOperationalSlow, review: review}
+	if err := observed.response(response(settings, settingsPath)); err != nil || observed.operational == nil || observed.latest != nil || observed.highestDesired != 8 || !observed.desiredMatches(result, 8) {
+		t.Fatal("typed operational observation failed", err)
+	}
+	// The page also reads logging. That response must never settle the selected
+	// operational original or replace its typed effective observation.
+	logSettings := &pb.GetLogSettingsResponse{DesiredGeneration: 99, Desired: &pb.ManagedLogPolicy{Version: 1, Level: pb.ManagedLogLevel_MANAGED_LOG_LEVEL_WARN}}
+	if err := observed.response(response(logSettings, "/browser"+graphv1connect.LanternSecurityServiceGetLogSettingsProcedure)); err != nil || observed.highestDesired != 8 || !observed.desiredMatches(result, 8) {
+		t.Fatal("unselected logging response changed operational observation", err)
+	}
+	for name, change := range map[string]func(*pb.OperationalGroupSettings){
+		"pending": func(s *pb.OperationalGroupSettings) { s.AppliedGeneration-- },
+		"source": func(s *pb.OperationalGroupSettings) {
+			s.Provenance[0].Source = pb.OperationalSettingsSource_OPERATIONAL_SETTINGS_SOURCE_ENVIRONMENT
+		},
+		"no cut":      func(s *pb.OperationalGroupSettings) { s.AppliedCut = nil },
+		"restart":     func(s *pb.OperationalGroupSettings) { s.RestartRequired = true },
+		"wrong value": func(s *pb.OperationalGroupSettings) { s.Effective.GetSlowRpc().ThresholdMs++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrong := proto.Clone(settings).(*pb.GetOperationalSettingsResponse)
+			change(wrong.Groups[0])
+			probe := &currentAdminBrowserGateway{scenario: currentAdminBrowserOperationalSlow, review: review, operational: wrong}
+			if probe.desiredMatches(result, 8) {
+				t.Fatal("commit incorrectly implied actual application")
+			}
+		})
+	}
+	for _, kind := range []string{"operational_policy.put", "log_policy.put"} {
+		probe := &currentAdminBrowserGateway{scenario: currentAdminBrowserOperationalSlow, review: review}
+		status := &pb.GetSecurityChangeStatusResponse{CurrentResult: &pb.CurrentSecurityChangeResult{IntentDigest: review.IntentDigest, Original: &pb.CurrentSecurityOriginalOutcome{IntentDigest: review.IntentDigest, Commit: &pb.CurrentControlCommit{Slot: 1}, Disposition: pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED, Items: []*pb.CurrentSecurityItemOutcome{{Kind: kind, Disposition: pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED}}}}}
+		err := probe.response(response(status, "/browser"+graphv1connect.LanternSecurityServiceGetSecurityChangeStatusProcedure))
+		if (err == nil && probe.committed) != (kind == "operational_policy.put") {
+			t.Fatal("native original kind was not scenario-bound", kind, err)
+		}
+	}
+	for _, mutate := range []func(*pb.GetOperationalSettingsResponse){
+		func(s *pb.GetOperationalSettingsResponse) { s.Groups = s.Groups[:7] },
+		func(s *pb.GetOperationalSettingsResponse) { s.Groups[7].Group = s.Groups[0].Group },
+	} {
+		wrong := proto.Clone(settings).(*pb.GetOperationalSettingsResponse)
+		mutate(wrong)
+		if err := (&currentAdminBrowserGateway{}).response(response(wrong, settingsPath)); err == nil {
+			t.Fatal("incomplete operational catalog admitted")
 		}
 	}
 }

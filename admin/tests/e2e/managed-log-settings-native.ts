@@ -29,15 +29,24 @@ import {
   LogSettingsApplicationState,
   LogSettingsError,
   LogSettingsSource,
+  OperationalGroup,
+  OperationalSettingsApplicationState,
+  OperationalSettingsChangeMode,
+  OperationalSettingsError,
+  OperationalSettingsSource,
   parseBrowserSession,
   parseCurrentSecurityReview,
   validateCurrentReview,
   validateLogSettings,
+  validateOperationalSettings,
   type CurrentSecurityReview,
   type GetLogSettingsResponse,
+  type GetOperationalSettingsResponse,
+  type OperationalGroupSettings,
 } from "lantern-sdk/web";
 import {
   GetLogSettingsResponseSchema,
+  GetOperationalSettingsResponseSchema,
   GetSecurityChangeStatusRequestSchema,
 } from "../../../sdks/node/src/gen/graph/v1/security_pb";
 
@@ -52,6 +61,7 @@ type Cookie = {
 };
 type Manifest = {
   schema: 1;
+  scenario: "log" | "operational-slow-rpc";
   origin: "https://admin.example";
   proxy: string;
   spki: string;
@@ -62,13 +72,19 @@ type Result = {
   schema: 1;
   status: "PASS";
   generation: string;
-  level: number;
   applyRequests: 1;
   statusRequests: number;
   revokedReadStatus: number;
   revokedPrepareStatus: number;
   originalBindingSame: true;
-};
+} & (
+  | { scenario: "log"; level: number }
+  | {
+      scenario: "operational-slow-rpc";
+      group: OperationalGroup.SLOW_RPC;
+      thresholdMs: number;
+    }
+);
 type DiagnosticRow = {
   method: string;
   path: string;
@@ -130,6 +146,7 @@ function diagnosticPath(request: Request, origin: string): string | undefined {
     "/graph.v1.LanternSecurityService/GetAuthCapabilities",
     service + "GetCurrentPrincipal",
     service + "GetLogSettings",
+    service + "GetOperationalSettings",
     service + "PrepareSecurityChanges",
     service + "ApplySecurityChanges",
     service + "GetSecurityChangeStatus",
@@ -211,6 +228,8 @@ async function failureDiagnostics(error: unknown) {
     authUnavailable: null,
     logPanel: null,
     newLevel: null,
+    operationalPanel: null,
+    threshold: null,
     review: null,
     apply: null,
   };
@@ -234,6 +253,11 @@ async function failureDiagnostics(error: unknown) {
           exact: true,
         }),
         newLevel: currentPage.getByLabel("New log level", { exact: true }),
+        operationalPanel: currentPage.getByRole("region", {
+          name: "Operational policies",
+          exact: true,
+        }),
+        threshold: currentPage.getByLabel("Threshold (ms)", { exact: true }),
         review: currentPage.getByRole("region", {
           name: "Review log level change",
           exact: true,
@@ -313,12 +337,19 @@ function readManifest(): Manifest {
   const value = object(JSON.parse(readFileSync(path, "utf8")));
   assert(
     Object.keys(value).every((key) =>
-      ["schema", "origin", "proxy", "spki", "cookies", "evidence"].includes(
-        key,
-      ),
+      [
+        "schema",
+        "scenario",
+        "origin",
+        "proxy",
+        "spki",
+        "cookies",
+        "evidence",
+      ].includes(key),
     ),
   );
   assert(value.schema === 1 && value.origin === "https://admin.example");
+  assert(value.scenario === "log" || value.scenario === "operational-slow-rpc");
   assert(typeof value.proxy === "string" && typeof value.spki === "string");
   const proxy = new URL(value.proxy);
   assert(
@@ -492,13 +523,14 @@ async function deniedRead(
   currentPage: Page,
   origin: string,
   csrf: string,
+  method: "GetLogSettings" | "GetOperationalSettings",
 ): Promise<number> {
   const until = Date.now() + bounded(15_000);
   for (;;) {
     const response = await browserFetch(
       currentPage,
       origin,
-      service + "GetLogSettings",
+      service + method,
       csrf,
       {},
     );
@@ -547,6 +579,111 @@ function settingsResponse(response: unknown): GetLogSettingsResponse {
   const result = fromJson(GetLogSettingsResponseSchema, response as JsonValue);
   validateLogSettings(result);
   return result;
+}
+type SettingsObservation =
+  | { scenario: "log"; value: GetLogSettingsResponse }
+  | {
+      scenario: "operational-slow-rpc";
+      value: GetOperationalSettingsResponse;
+    };
+function scenarioSettings(
+  scenario: Manifest["scenario"],
+  response: unknown,
+): SettingsObservation {
+  if (scenario === "log")
+    return { scenario, value: settingsResponse(response) };
+  const value = fromJson(
+    GetOperationalSettingsResponseSchema,
+    response as JsonValue,
+  );
+  validateOperationalSettings(value);
+  return { scenario, value };
+}
+function slowSettings(
+  settings: GetOperationalSettingsResponse,
+): OperationalGroupSettings {
+  const state = settings.groups.find(
+    (group) => group.group === OperationalGroup.SLOW_RPC,
+  );
+  assert(state && state.effective?.group.case === "slowRpc");
+  assert(
+    state.error === OperationalSettingsError.NONE &&
+      state.application === OperationalSettingsApplicationState.APPLIED &&
+      state.changeMode === OperationalSettingsChangeMode.HOT &&
+      !state.restartRequired,
+  );
+  return state;
+}
+function slowThreshold(settings: GetOperationalSettingsResponse): bigint {
+  const group = slowSettings(settings).effective?.group;
+  assert(group?.case === "slowRpc");
+  return group.value.thresholdMs;
+}
+function observedGeneration(settings: SettingsObservation): bigint {
+  return settings.scenario === "log"
+    ? settings.value.desiredGeneration
+    : (slowSettings(settings.value).desired?.generation ?? 0n);
+}
+async function displayedScenario(
+  currentPage: Page,
+  settings: SettingsObservation,
+) {
+  if (settings.scenario === "log")
+    return displayedObservation(currentPage, settings.value);
+  const check = expect.configure({ timeout: bounded() });
+  for (const name of [
+    "Slow RPC diagnostics",
+    "Request admission",
+    "Request and traversal limits",
+    "Backup production",
+    "Graph capacity and garbage collection",
+    "Lifecycle and readiness",
+    "Search request policy",
+    "Replication scheduling",
+  ]) {
+    await check(
+      currentPage.getByRole("region", { name, exact: true }),
+    ).toHaveCount(1);
+  }
+  const state = slowSettings(settings.value);
+  const panel = currentPage.getByRole("region", {
+    name: "Slow RPC diagnostics",
+    exact: true,
+  });
+  const field = (name: string) =>
+    panel
+      .locator("dt")
+      .filter({ hasText: new RegExp("^" + name + "$") })
+      .locator("xpath=following-sibling::dd[1]");
+  await check(field("Desired / applied generation")).toHaveText(
+    `${state.desired?.generation ?? 0n} / ${state.appliedGeneration}`,
+  );
+  await check(field("Application")).toHaveText(
+    state.desired ? "Applied on this node" : "Startup values active",
+  );
+  await check(field("Ownership")).toHaveText(
+    state.desired ? "Managed policy" : "Not adopted",
+  );
+  await check(field("Change mode")).toHaveText("Applies to new work");
+  const sources = {
+    [OperationalSettingsSource.DEFAULT]: "Default",
+    [OperationalSettingsSource.ENVIRONMENT]: "Environment",
+    [OperationalSettingsSource.DERIVED]: "Derived startup value",
+    [OperationalSettingsSource.MANAGED]: "Managed policy",
+  };
+  const source = sources[state.provenance[0]?.source as keyof typeof sources];
+  assert(source && state.effective?.group.case === "slowRpc");
+  const desired = state.desired?.values?.group;
+  const row = panel
+    .getByRole("rowheader", { name: "Threshold (ms)", exact: true })
+    .locator("..");
+  await check(row.locator("td")).toHaveText([
+    String(state.effective.group.value.thresholdMs),
+    desired?.case === "slowRpc"
+      ? String(desired.value.thresholdMs)
+      : "Not adopted",
+    source,
+  ]);
 }
 function label(level: ManagedLogLevel): string {
   const values = {
@@ -690,6 +827,23 @@ async function closeOwnedBrowser() {
 }
 
 async function run(m: Manifest): Promise<Result> {
+  const operational = m.scenario === "operational-slow-rpc";
+  const settingsMethod = operational
+    ? "GetOperationalSettings"
+    : "GetLogSettings";
+  const reviewButton = operational
+    ? "Review slow rpc diagnostics change"
+    : "Review log level change";
+  const reviewRegion = operational
+    ? "Review operational policy change"
+    : "Review log level change";
+  const applyButton = operational
+    ? "Apply reviewed operational change"
+    : "Apply reviewed change";
+  const editor = operational ? "Threshold (ms)" : "New log level";
+  const statusLabel = operational
+    ? "Check original operational change status"
+    : "Check original change status";
   stage = "browser server launch";
   browserServer = await chromium.launchServer({
     headless: true,
@@ -751,7 +905,7 @@ async function run(m: Manifest): Promise<Result> {
   const csrf = session.principal!.csrfToken;
   const first = page.waitForResponse(
     (response) =>
-      requestMethod(response.request(), m.origin) === "GetLogSettings" &&
+      requestMethod(response.request(), m.origin) === settingsMethod &&
       response.status() === 200,
     { timeout: bounded(20_000) },
   );
@@ -765,22 +919,41 @@ async function run(m: Manifest): Promise<Result> {
   stage = "first 200 settings response";
   const firstResponse = await first;
   stage = "settings decode";
-  const before = settingsResponse(await firstResponse.json());
+  const before = scenarioSettings(m.scenario, await firstResponse.json());
   stage = "rendered observation";
-  await displayedObservation(page, before);
+  await displayedScenario(page, before);
   const target =
-    before.effectiveLevel === ManagedLogLevel.INFO
-      ? ManagedLogLevel.ERROR
-      : ManagedLogLevel.INFO;
+    before.scenario === "log"
+      ? before.value.effectiveLevel === ManagedLogLevel.INFO
+        ? ManagedLogLevel.ERROR
+        : ManagedLogLevel.INFO
+      : slowThreshold(before.value) === 0n
+        ? 37
+        : 0;
   stage = "explicit review and one Apply";
-  await page
-    .getByLabel("New log level", { exact: true })
-    .selectOption(String(target));
-  await page
-    .getByRole("button", { name: "Review log level change", exact: true })
-    .click();
+  if (before.scenario === "operational-slow-rpc") {
+    const card = page.getByRole("region", {
+      name: "Slow RPC diagnostics",
+      exact: true,
+    });
+    await card
+      .getByRole("button", { name: "Edit slow rpc diagnostics", exact: true })
+      .click();
+    if (!slowSettings(before.value).desired) {
+      await card
+        .getByRole("button", {
+          name: "Use this node’s values for adoption",
+          exact: true,
+        })
+        .click();
+    }
+    await card.getByLabel(editor, { exact: true }).fill(String(target));
+  } else {
+    await page.getByLabel(editor, { exact: true }).selectOption(String(target));
+  }
+  await page.getByRole("button", { name: reviewButton, exact: true }).click();
   const apply = page.getByRole("button", {
-    name: "Apply reviewed change",
+    name: applyButton,
     exact: true,
   });
   await check(apply).toBeEnabled();
@@ -794,11 +967,21 @@ async function run(m: Manifest): Promise<Result> {
   const originalJSON = requests.ApplySecurityChanges[0].currentReview;
   const original = parseCurrentSecurityReview(JSON.stringify(originalJSON));
   validateCurrentReview(original);
-  assert(
-    original.changes.length === 1 &&
-      original.changes[0].operation.case === "putLogPolicy" &&
-      original.changes[0].operation.value.level === target,
-  );
+  assert.equal(original.changes.length, 1);
+  const operation = original.changes[0].operation;
+  if (before.scenario === "operational-slow-rpc") {
+    assert(
+      operation.case === "putOperationalPolicy" &&
+        operation.value.version === 1 &&
+        operation.value.expectedGeneration === observedGeneration(before) &&
+        operation.value.values?.group.case === "slowRpc" &&
+        operation.value.values.group.value.thresholdMs === BigInt(target),
+    );
+  } else {
+    assert(
+      operation.case === "putLogPolicy" && operation.value.level === target,
+    );
+  }
   const savedReview = await storedReview(page, original);
   stage = "reload original recovery";
   await qualifiedSession(page, m.origin);
@@ -807,15 +990,23 @@ async function run(m: Manifest): Promise<Result> {
     timeout: bounded(20_000),
   });
   const statusButton = page.getByRole("button", {
-    name: "Check original change status",
+    name: statusLabel,
     exact: true,
   });
   await check(statusButton).toBeVisible();
   await check(
-    page.getByRole("button", { name: "Review log level change", exact: true }),
+    page.getByRole("button", {
+      name: operational ? "Edit slow rpc diagnostics" : reviewButton,
+      exact: true,
+    }),
   ).toBeDisabled();
   await check(
-    page.getByText("The original change is not confirmed.", { exact: false }),
+    page.getByText(
+      operational
+        ? "The original outcome is not confirmed."
+        : "The original change is not confirmed.",
+      { exact: false },
+    ),
   ).toBeVisible();
   assert.equal(await storedReview(page, original), savedReview);
   assert.equal(requests.ApplySecurityChanges.length, 1);
@@ -823,7 +1014,12 @@ async function run(m: Manifest): Promise<Result> {
   stage = "explicit original status";
   await statusButton.click();
   await check(
-    page.getByText("The log policy was committed.", { exact: false }),
+    page.getByText(
+      operational
+        ? "The operational policy was committed."
+        : "The log policy was committed.",
+      { exact: false },
+    ),
   ).toBeVisible();
   assert(requests.GetSecurityChangeStatus.length >= 1);
   for (const request of requests.GetSecurityChangeStatus) {
@@ -843,20 +1039,29 @@ async function run(m: Manifest): Promise<Result> {
   assert.equal(await storedReview(page, original), savedReview);
   const observed = page.waitForResponse(
     (response) =>
-      requestMethod(response.request(), m.origin) === "GetLogSettings" &&
+      requestMethod(response.request(), m.origin) === settingsMethod &&
       response.status() === 200,
     { timeout: bounded(20_000) },
   );
   void observed.catch(() => undefined);
   await page
-    .getByRole("button", { name: "Reload settings", exact: true })
+    .getByRole("button", {
+      name: operational ? "Reload operational settings" : "Reload settings",
+      exact: true,
+    })
     .click();
-  const after = settingsResponse(await (await observed).json());
-  assert(
-    after.desired?.level === target &&
-      after.desiredGeneration === before.desiredGeneration + 1n,
-  );
-  await displayedObservation(page, after);
+  const after = scenarioSettings(m.scenario, await (await observed).json());
+  assert.equal(observedGeneration(after), observedGeneration(before) + 1n);
+  if (after.scenario === "operational-slow-rpc") {
+    const state = slowSettings(after.value);
+    assert(
+      state.desired?.values?.group.case === "slowRpc" &&
+        state.desired.values.group.value.thresholdMs === BigInt(target),
+    );
+  } else {
+    assert.equal(after.value.desired?.level, target);
+  }
+  await displayedScenario(page, after);
   assert.equal(requests.ApplySecurityChanges.length, 1);
   stage = "rendered evidence";
   await page.screenshot({
@@ -882,7 +1087,12 @@ async function run(m: Manifest): Promise<Result> {
   process.stdout.write("current_admin_browser ready-for-revocation\n");
   await waitForRevocation();
   stage = "revoked read and preparation";
-  const revokedReadStatus = await deniedRead(page, m.origin, csrf);
+  const revokedReadStatus = await deniedRead(
+    page,
+    m.origin,
+    csrf,
+    settingsMethod,
+  );
   const denied = await browserFetch(
     page,
     m.origin,
@@ -911,12 +1121,12 @@ async function run(m: Manifest): Promise<Result> {
     authentication.getByText("Sign in to Lantern", { exact: true }),
   ).toBeVisible();
   await check(
-    page.getByRole("region", { name: "Review log level change", exact: true }),
+    page.getByRole("region", { name: reviewRegion, exact: true }),
   ).toHaveCount(0);
   await check(
-    page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    page.getByRole("button", { name: applyButton, exact: true }),
   ).toHaveCount(0);
-  await check(page.getByLabel("New log level", { exact: true })).toHaveCount(0);
+  await check(page.getByLabel(editor, { exact: true })).toHaveCount(0);
   assert.equal(await storedReview(page, original), savedReview);
   assert.equal(requests.ApplySecurityChanges.length, 1);
   await page.screenshot({
@@ -928,13 +1138,19 @@ async function run(m: Manifest): Promise<Result> {
   return {
     schema: 1,
     status: "PASS",
-    generation: String(after.desiredGeneration),
-    level: target,
+    generation: String(observedGeneration(after)),
     applyRequests: 1,
     statusRequests: requests.GetSecurityChangeStatus.length,
     revokedReadStatus,
     revokedPrepareStatus: denied.status,
     originalBindingSame: true,
+    ...(after.scenario === "log"
+      ? { scenario: "log" as const, level: target }
+      : {
+          scenario: "operational-slow-rpc" as const,
+          group: OperationalGroup.SLOW_RPC as const,
+          thresholdMs: target,
+        }),
   };
 }
 

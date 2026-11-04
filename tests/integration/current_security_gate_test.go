@@ -73,6 +73,17 @@ func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.Res
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	configuredSourceIntegration := os.Getenv("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION") == "1"
 	adminBrowser := os.Getenv("LANTERN_CURRENT_ADMIN_BROWSER") == "1"
+	adminScenario := currentAdminBrowserLog
+	if adminBrowser {
+		var scenarioErr error
+		adminScenario, scenarioErr = parseCurrentAdminBrowserScenario(os.Getenv("LANTERN_CURRENT_ADMIN_BROWSER_MODE"))
+		if scenarioErr != nil {
+			t.Fatal(scenarioErr)
+		}
+	}
+	// The expanded matrix is additional component evidence only. Ordinary F/Q
+	// and the completed Log browser profile keep their original operation count.
+	expandedOperationalProof := adminBrowser && adminScenario == currentAdminBrowserOperationalSlow
 	if adminBrowser && configuredSourceIntegration {
 		t.Fatal("managed Admin browser proof requires controlled functional validation")
 	}
@@ -133,6 +144,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var managedSlowGeneration uint64
 	var managedRateGeneration uint64
 	var rateOwners []*provider.RateLimitInterceptor
+	var operationalNodes []*currentOperationalFixture
 	previousDefaultLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousDefaultLogger) })
 	var initializationCounts []decisiontrace.AcquisitionCounts
@@ -142,13 +154,31 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	transport := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
 	futureIssuer := f.provider.URL + "/unregistered-after-initialization"
 	startNode := func(id int, mode string) {
+		startup, err := provider.NewConfig()
+		if err != nil {
+			t.Fatal("captured operational startup values", id, err)
+		}
+		if expandedOperationalProof {
+			// This excluded bootstrap flag builds a real index before any replay;
+			// the eleven selected values retain their original captured sources.
+			startup.Search.Enabled = true
+		}
 		graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-		graph.EnablePrefixIndex(func(key string) string { return key })
+		if expandedOperationalProof {
+			provider.ConfigureGraphCache(graph, startup.Cache, startup.Search)
+		} else {
+			graph.EnablePrefixIndex(func(key string) string { return key })
+		}
 		var data *service.ServingRuntime
-		var err error
 		if id == 1 {
 			config := durableReceiptWireConfig(filepath.Join(dir, "data-receipts.wal"), hlc.NodeID{byte(id)})
 			config.NamespaceFormat = "namespaced-v1"
+			if expandedOperationalProof {
+				config.ConfigureGraph = func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+					provider.ConfigureGraphCache(graph, startup.Cache, startup.Search)
+					return nil
+				}
+			}
 			if physicalServing {
 				config.Receipt.Retention = 6 * time.Hour
 				config.Receipt.MaxEntries, config.Receipt.MaxBytes = 1024, 32<<20
@@ -204,12 +234,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		servingLoggers = append(servingLoggers, logger)
 		runtimes = append(runtimes, runtime)
 		stops = append(stops, closeRuntime)
-		startup, err := provider.NewConfig()
-		if err != nil {
-			t.Fatal("captured operational startup values", id, err)
-		}
 		lifecycleGate := readiness.NewGate(startup.Readiness.MaxLag, false, nil)
 		var workload *provider.PeerIdentityRuntime
+		var closeWorkload func()
 		if renewal {
 			if securityConfig.ProvisionedPeer == nil {
 				t.Fatal("signed data workload input missing")
@@ -221,28 +248,19 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			if err != nil {
 				t.Fatal("native data workload", err)
 			}
-			t.Cleanup(closePeer)
-			worker := provider.NewSecurityWorkers(runtime, workload, lifecycleGate, logger)
-			workerCtx, stopWorker := context.WithCancel(t.Context())
-			done := make(chan error, 1)
-			go func() { done <- worker.Run(workerCtx) }()
-			var once sync.Once
-			stop := func() {
-				once.Do(func() {
-					stopWorker()
-					if err := <-done; err != nil {
-						t.Error(err)
-					}
-					closePeer()
-				})
-			}
-			workerStops = append(workerStops, stop)
-			t.Cleanup(stop)
+			closeWorkload = sync.OnceFunc(closePeer)
+			t.Cleanup(closeWorkload)
+
 		}
 		svc := data.NewExecutor(nil).
 			WithScanLimits(service.ScanLimits(startup.Scan)).
 			WithTraversalTimeout(startup.Traversal.Timeout).
 			WithTraversalLimits(service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: startup.Traversal.MaxPushes, MaxTouchedEdges: startup.Traversal.MaxTouchedEdges}, MaxResults: startup.Traversal.MaxResults})
+		if expandedOperationalProof {
+			svc.WithSearchLimits(service.SearchLimits{Enabled: startup.Search.Enabled, PositionsEnabled: startup.Search.Positions,
+				MaxInFlight: startup.Search.MaxInFlight, CursorTTL: startup.Search.CursorTTL, MaxSessions: startup.Search.MaxSessions,
+				MaxSessionHits: startup.Search.MaxSessionHits, MaxSessionBytes: startup.Search.MaxSessionBytes, AnalysisLimits: startup.Search.AnalysisLimits})
+		}
 		svc.WithSearchLimits(capturedOperationalSearchLimits(t, startup.Search, svc.SearchPolicyBaseline()))
 		if id == 1 {
 			svc.WithTombstoneTTL(time.Hour)
@@ -311,7 +329,8 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual lifecycle owner recovery", err)
 		}
-		if _, err := provider.NewManagedShutdownPlan(lifecycleMarker); err != nil {
+		shutdownPlan, err := provider.NewManagedShutdownPlan(lifecycleMarker)
+		if err != nil {
 			t.Fatal("actual shared shutdown plan", err)
 		}
 		searchMarker, err := provider.NewManagedSearchRuntime(t.Context(), operationalRuntime, svc)
@@ -344,6 +363,57 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if _, err := provider.NewOIDCPublicReceiptsCertified(receiptConfig, runtime, data, svc, producer, certified, public); err != nil {
 			t.Fatal("actual backup and public receipt activation", id, err)
 		}
+		// These are the same strong constructor results certified above; the
+		// additional matrix observes and runs them without replacing any owner.
+		operational := &currentOperationalFixture{Runtime: runtime, Primary: svc, Slow: slowOwner, Rate: rateOwner,
+			Backupper: producer, ShutdownPlan: shutdownPlan, Pump: schedulePump, Anti: scheduleAnti, Gate: lifecycleGate,
+			RequestObserve: requestRuntime.ObserveOperationalPolicy}
+		operational.CapacitySnapshot = func() (*pb.OperationalCapacityValues, uint64) {
+			actual := graphPolicy.Snapshot()
+			return &pb.OperationalCapacityValues{GcEdgeBudget: int64(actual.Config.GCEdgeBudget), GcIntervalSeconds: int64(actual.Config.GCInterval / time.Second),
+				MaxEdges: int64(actual.Config.MaxEdges), MaxEdgeCausalEntries: int64(actual.Config.MaxEdgeCausalEntries), MaxVertexCausalEntries: int64(actual.Config.MaxVertexCausalEntries), MaxVertices: int64(actual.Config.MaxVertices)}, actual.Generation
+		}
+		workers := provider.NewSecurityWorkers(runtime, workload, lifecycleGate, logger)
+		owned, cancelOwned := context.WithCancel(t.Context())
+		var lifecycleMu sync.Mutex
+		var joins []<-chan error
+		stopped := false
+		launchOwned := func(run func(context.Context) error) {
+			lifecycleMu.Lock()
+			defer lifecycleMu.Unlock()
+			if stopped {
+				t.Error("cannot start a stopped operational fixture")
+				return
+			}
+			done := make(chan error, 1)
+			joins = append(joins, done)
+			go func() { done <- run(owned) }()
+		}
+		operational.start = sync.OnceFunc(func() {
+			launchOwned(graphPolicy.RunGC)
+			launchOwned(schedulePump.Run)
+			launchOwned(scheduleAnti.Run)
+			launchOwned(producer.Run)
+		})
+		operational.startSecurity = sync.OnceFunc(func() { launchOwned(workers.Run) })
+		operational.stop = sync.OnceFunc(func() {
+			lifecycleMu.Lock()
+			stopped = true
+			cancelOwned()
+			pending := append([]<-chan error(nil), joins...)
+			lifecycleMu.Unlock()
+			for _, done := range pending {
+				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+					t.Error("owned operational fixture worker", err)
+				}
+			}
+			if closeWorkload != nil {
+				closeWorkload()
+			}
+		})
+		operationalNodes = append(operationalNodes, operational)
+		workerStops = append(workerStops, operational.stop)
+		t.Cleanup(operational.stop)
 		s := httptest.NewUnstartedServer(nil)
 		if serving != nil && id == 1 {
 			if err := s.Listener.Close(); err != nil {
@@ -403,6 +473,12 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			s.Start()
 		}
 		t.Cleanup(s.Close)
+		if expandedOperationalProof {
+			operational.start()
+		}
+		if renewal || expandedOperationalProof && managedSlowGeneration != 0 {
+			operational.startSecurity()
+		}
 		if serving != nil {
 			t.Cleanup(s.CloseClientConnections)
 		}
@@ -624,6 +700,22 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("no qualified principal", err)
 		}
 		principal = current.Msg
+	}
+	var operationalAcceptance *currentOperationalAcceptance
+	if expandedOperationalProof {
+		reader := f.token(t, "reader", func(claims map[string]any) {
+			claims["iat"] = time.Now().Add(-time.Minute).Unix()
+			delete(claims, "auth_time")
+		})
+		queryReader := f.token(t, "operational-query-reader", func(claims map[string]any) {
+			claims["iat"] = time.Now().Add(-time.Minute).Unix()
+			delete(claims, "auth_time")
+		})
+		machine, readErr := os.ReadFile(filepath.Join(dir, "machine.token"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		operationalAcceptance = beginCurrentOperationalAcceptance(t, ctx, controls, operationalNodes, transport, servers, token, reader, queryReader, string(machine))
 	}
 	runCase("ordinary review apply foreign status", func(t *testing.T) {
 		before := principal.Version
@@ -863,7 +955,12 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			delete(claims, "auth_time")
 		})
 		managedSlowGeneration = exerciseCurrentSlowRPCPolicy(t, ctx, controls, runtimes, slowOwners, ordinaryToken, readerToken)
-		if !configuredSourceIntegration {
+		if expandedOperationalProof {
+			for _, node := range operationalNodes {
+				node.startSecurity()
+			}
+		}
+		if !configuredSourceIntegration && operationalAcceptance == nil {
 			managedRateGeneration = exerciseCurrentRatePolicy(t, ctx, controls, runtimes, rateOwners, ordinaryToken)
 		}
 	})
@@ -1120,6 +1217,10 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		runActiveExport()
 	}
 
+	if operationalAcceptance != nil {
+		operationalAcceptance.Adopt(t)
+	}
+
 	runCase("operation-bound real Code approval", func(t *testing.T) {
 		current, e := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if e != nil {
@@ -1321,7 +1422,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		f.server = servers[1]
 		pending := browserLoginStart(t, nil)
 		oldAttempt := f.browserCallbackPath(t, pending, "admin", false)
+		if operationalAcceptance != nil {
+			operationalAcceptance.StageSearch(t)
+		}
 		servers[1].Close()
+		workerStops[1]()
 		if e := runtimes[1].Shutdown(); e != nil {
 			t.Fatal("orderly floor custody", e)
 		}
@@ -1352,6 +1457,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		servingLoggers[1] = servingLoggers[last]
 		slowOwners[1] = slowOwners[last]
 		rateOwners[1] = rateOwners[last]
+		operationalNodes[1], workerStops[1] = operationalNodes[last], workerStops[last]
 		deadline = time.Now().Add(60 * time.Second)
 		for !runtimes[1].Ready(ctx) {
 			if time.Now().After(deadline) || ctx.Err() != nil {
@@ -1362,6 +1468,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(ctx.Err())
 			case <-time.After(100 * time.Millisecond):
 			}
+		}
+		if operationalAcceptance != nil {
+			operationalAcceptance.AfterRestart(t, controls[1], operationalNodes[1], servers[1])
 		}
 		if managedLogGeneration != 0 {
 			t.Run("managed log restart ignores conflicting environment", func(t *testing.T) {
@@ -1508,9 +1617,17 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		if adminBrowser {
 			beforeGeneration := managedLogGeneration
-			managedLogGeneration = runCurrentAdminBrowser(t, ctx, servers[0], http1Transport, cookies, revoke)
-			if revocationCalls != 1 || managedLogGeneration != beforeGeneration+1 {
-				t.Fatal("browser proof did not perform exactly one log update and the existing logout", revocationCalls, beforeGeneration, managedLogGeneration)
+			if adminScenario == currentAdminBrowserOperationalSlow {
+				beforeGeneration = managedSlowGeneration
+			}
+			generation := runCurrentAdminBrowser(t, ctx, servers[0], http1Transport, cookies, revoke)
+			if revocationCalls != 1 || generation != beforeGeneration+1 {
+				t.Fatal("browser proof did not perform exactly one selected settings update and the existing logout", revocationCalls, beforeGeneration, generation)
+			}
+			if adminScenario == currentAdminBrowserOperationalSlow {
+				managedSlowGeneration = generation
+			} else {
+				managedLogGeneration = generation
 			}
 		} else {
 			revoke()
