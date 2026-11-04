@@ -377,11 +377,11 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 	}
 	manager.search = searchEntry
 	for name, change := range map[string]func(*managedReplicationCertified){
-		"manager": func(c *managedReplicationCertified) { c.manager = &ManagedOperationalRuntime{} },
-		"primary": func(c *managedReplicationCertified) { c.primary = runtime.data.NewExecutor(nil) },
-		"missing owner": func(c *managedReplicationCertified) { c.owner = nil },
-		"foreign owner": func(c *managedReplicationCertified) { copied := *c.owner; c.owner = &copied },
-		"missing Pump": func(c *managedReplicationCertified) { c.pump = nil },
+		"manager":              func(c *managedReplicationCertified) { c.manager = &ManagedOperationalRuntime{} },
+		"primary":              func(c *managedReplicationCertified) { c.primary = runtime.data.NewExecutor(nil) },
+		"missing owner":        func(c *managedReplicationCertified) { c.owner = nil },
+		"foreign owner":        func(c *managedReplicationCertified) { copied := *c.owner; c.owner = &copied },
+		"missing Pump":         func(c *managedReplicationCertified) { c.pump = nil },
 		"missing anti-entropy": func(c *managedReplicationCertified) { c.anti = nil },
 		"equal fingerprint foreign pair": func(c *managedReplicationCertified) {
 			fingerprint := primary.SearchConfigFingerprint()

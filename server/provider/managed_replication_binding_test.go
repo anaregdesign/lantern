@@ -217,14 +217,14 @@ func TestManagedReplicationBindingSelectorsRequireExactRegisteredPair(t *testing
 		t.Fatal("missing management runtime advertised actual workers")
 	}
 	for name, mutate := range map[string]func(*managedReplicationCertified){
-		"missing manager": func(c *managedReplicationCertified) { c.manager = nil },
-		"foreign manager": func(c *managedReplicationCertified) { c.manager = foreignManager },
-		"foreign primary": func(c *managedReplicationCertified) { c.primary = foreignPrimary },
-		"missing owner": func(c *managedReplicationCertified) { c.owner = nil },
-		"foreign owner": func(c *managedReplicationCertified) { c.owner = foreign.owner },
-		"foreign Pump": func(c *managedReplicationCertified) { c.pump = foreign.pump },
+		"missing manager":      func(c *managedReplicationCertified) { c.manager = nil },
+		"foreign manager":      func(c *managedReplicationCertified) { c.manager = foreignManager },
+		"foreign primary":      func(c *managedReplicationCertified) { c.primary = foreignPrimary },
+		"missing owner":        func(c *managedReplicationCertified) { c.owner = nil },
+		"foreign owner":        func(c *managedReplicationCertified) { c.owner = foreign.owner },
+		"foreign Pump":         func(c *managedReplicationCertified) { c.pump = foreign.pump },
 		"foreign anti-entropy": func(c *managedReplicationCertified) { c.anti = foreign.anti },
-		"foreign pair": func(c *managedReplicationCertified) { c.pump, c.anti = foreign.pump, foreign.anti },
+		"foreign pair":         func(c *managedReplicationCertified) { c.pump, c.anti = foreign.pump, foreign.anti },
 	} {
 		t.Run(name, func(t *testing.T) {
 			wrong := workers
