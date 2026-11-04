@@ -19,6 +19,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
@@ -128,6 +129,10 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		func(c *managedOperationalCertified) { c.request = nil },
 		func(c *managedOperationalCertified) { c.validator = nil },
 		func(c *managedOperationalCertified) { c.validator = NewValidationInterceptor(c.validator.limits) },
+		func(c *managedOperationalCertified) { c.backup = nil },
+		func(c *managedOperationalCertified) {
+			c.backup = backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil)
+		},
 	} {
 		wrong := operational
 		mutate(&wrong)
@@ -154,7 +159,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		t.Fatal("unbound workload certified")
 	}
 	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational)
-	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery || public.request != operational.request || public.validator != operational.validator {
+	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery || public.request != operational.request || public.validator != operational.validator || public.backup != operational.backup {
 		t.Fatal(err)
 	}
 	runtime.mode = "oidc"

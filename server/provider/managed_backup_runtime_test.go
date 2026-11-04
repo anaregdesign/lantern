@@ -371,3 +371,41 @@ func TestManagedBackupEnvironmentDisabledProductionRestoresOnNextBoot(t *testing
 		})
 	}
 }
+
+func TestManagedBackupDeferredPreviewRequiresActualRegistration(t *testing.T) {
+	config, owner, _ := managedBackupTestOwner(t, "LANTERN_BACKUP_DIR="+t.TempDir(), "LANTERN_BACKUP_ENABLED=true", "LANTERN_BACKUP_RETAIN=0")
+	runtime := &SecurityRuntime{mode: "off"}
+	preview := runtime.operationalBackupPreview
+	if _, err := preview(t.Context(), 0); err == nil {
+		t.Fatal("preview fabricated inventory before manager construction")
+	}
+	manager, err := NewManagedOperationalRuntime(t.Context(), runtime, NewOperationalBootstrapConfig(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := preview(t.Context(), 0); err == nil {
+		t.Fatal("preview fabricated inventory before producer registration")
+	}
+	if _, err := NewManagedBackupRuntime(t.Context(), manager, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.BackupNow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := preview(t.Context(), 0)
+	if err != nil || !actual.Complete || actual.ValidBackups != 1 || actual.ValidBytes == 0 || actual.PruneBackups != 0 || actual.PruneBytes != 0 || len(actual.Fingerprint) != 64 {
+		t.Fatalf("registered connected-node preview = %+v, %v", actual, err)
+	}
+	entry := manager.backup
+	manager.backup = nil
+	if _, err := preview(t.Context(), 0); err == nil {
+		t.Fatal("removed producer registration returned a stale inventory")
+	}
+	wrong := *entry
+	wrong.owner = newOperationalOwnerTestFake(t, operationalpolicy.GroupBackup, securitytransport.OperationalModeHot)
+	manager.backup = &wrong
+	if _, err := preview(t.Context(), 0); err == nil {
+		t.Fatal("foreign owner implementation returned a backup inventory")
+	}
+	manager.backup = entry
+}

@@ -178,6 +178,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewManagedRateRuntime(",
 		"provider.NewValidationInterceptorProvider(",
 		"provider.NewManagedRequestRuntime(",
+		"provider.NewManagedBackupRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
@@ -199,14 +200,19 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, owner := range []string{"provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime("} {
+	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime("} {
 		if strings.Count(text, owner) != 1 {
 			t.Fatalf("generated injector does not construct exactly one %q", owner)
 		}
 	}
 	if !strings.Contains(text, "provider.NewManagedRequestRuntime(ctx, managedOperationalRuntime, executor, validationInterceptor)") ||
-		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime)") {
+		!strings.Contains(text, "provider.NewManagedBackupRuntime(ctx, managedOperationalRuntime, backupper)") ||
+		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified)") {
 		t.Fatal("generated injector does not certify the actual Request executor and validator together")
+	}
+	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||
+		!strings.Contains(text, "gate, v8, backupper, backupConfig, peerConfig") {
+		t.Fatal("generated injector does not share the certified Backup producer with App")
 	}
 	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
@@ -238,6 +244,9 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer cleanup()
+	if !app.backupper.UsesExecutor(app.svc) {
+		t.Fatal("App backup producer differs from the certified primary")
+	}
 	stats, err := app.backupper.BackupNow(t.Context())
 	if err != nil {
 		t.Fatal(err)

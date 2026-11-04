@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
@@ -24,6 +25,7 @@ type publicSecurityCertified struct {
 	recovery  *rateRecoveryRuntime
 	request   *ManagedRequestRuntime
 	validator *ValidationInterceptor
+	backup    *backup.Backupper
 }
 
 func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified, operational managedOperationalCertified) (publicSecurityCertified, error) {
@@ -35,6 +37,9 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	}
 	if primary == nil || operational.primary != primary || operational.request == nil || operational.request.manager != operational.manager || operational.request.executor != primary || operational.validator == nil || operational.validator != operational.request.validator || operational.request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed request owner and validator")
+	}
+	if operational.backup == nil || !operational.backup.UsesExecutor(primary) || operational.backup.AvailableProduction() != nil {
+		return publicSecurityCertified{}, errors.New("public security requires the exact installed backup producer")
 	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
@@ -59,7 +64,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if err := runtime.protectDataService(primary); err != nil {
 		return publicSecurityCertified{}, err
 	}
-	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery, request: operational.request, validator: operational.validator}, nil
+	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery, request: operational.request, validator: operational.validator, backup: operational.backup}, nil
 }
 
 func certifyEdgeCreateTopology(primary *dataruntime.Executor, mode string, voters int, peer *PeerIdentityRuntime) error {

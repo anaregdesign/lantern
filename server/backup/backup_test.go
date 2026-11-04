@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/prometheus/client_golang/prometheus"
@@ -82,6 +83,19 @@ func eFrame(tail, head string, w float32) *pb.BackupSnapshotResponse {
 
 func testConfig(dir string) Config {
 	return Config{Enabled: true, Dir: dir, Interval: time.Hour, Retain: 3, InstanceID: "node-a", RestoreOnStart: true}
+}
+
+func TestBackupperUsesExactExecutorIdentity(t *testing.T) {
+	primary := dataruntime.NewExecutor(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
+	owner := New(primary, Config{Interval: time.Hour}, nil, nil)
+	var absent *Backupper
+	if !owner.UsesExecutor(primary) || owner.UsesExecutor(nil) || absent.UsesExecutor(primary) {
+		t.Fatal("backup executor identity was not retained")
+	}
+	foreign := dataruntime.NewExecutor(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
+	if owner.UsesExecutor(foreign) || New(&fakeService{}, Config{}, nil, nil).UsesExecutor(primary) {
+		t.Fatal("foreign backup service certified as the mounted executor")
+	}
 }
 
 func TestBackupper_RoundTrip(t *testing.T) {

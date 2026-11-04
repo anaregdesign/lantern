@@ -350,9 +350,12 @@ func NewPublicReceiptsCertified(
 
 // NewOIDCPublicReceiptsCertified activates receipts only after the exact data
 // service has its native Principal/Role boundary installed.
-func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, _ *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
+func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, backupper *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
 	if security == nil || public.runtime != security || security.data != runtime {
 		return publicReceiptsCertified{}, errors.New("receipt activation requires the exact public security runtime")
+	}
+	if public.backup != backupper || backupper == nil || !backupper.UsesExecutor(primary) {
+		return publicReceiptsCertified{}, errors.New("receipt activation requires the exact managed backup producer")
 	}
 	return certifyPublicReceipts(config, security.mode == "oidc", runtime, primary, certified)
 }

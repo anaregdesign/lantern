@@ -257,13 +257,17 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		receiptConfig := provider.ReceiptWALConfig{Mode: provider.ReceiptWALModeGraphOnly}
 		if id == 1 {
-			if err := data.CertifyReceiptBackup(svc, peer); err != nil {
-				t.Fatal(err)
-			}
-			if err := data.ActivatePublicReceipts(svc, peer); err != nil {
-				t.Fatal(err)
-			}
+			receiptConfig.Mode = provider.ReceiptWALModeFresh
+		}
+		backupConfig := startup.Backup
+		backupConfig.Dir, backupConfig.InstanceID = t.TempDir(), "managed-backup-fixture"
+		backupConfig.NamespaceFormat = data.DataNamespaceFormat()
+		backupConfig.RestoreOnStart, backupConfig.RestoreRequired = false, false
+		producer, err := provider.NewBackupper(backupConfig, receiptConfig, data, svc, certified, nil, logger)
+		if err != nil {
+			t.Fatal("actual backup producer", id, err)
 		}
 		operationalRuntime, err := provider.NewManagedOperationalRuntime(t.Context(), runtime, provider.NewOperationalBootstrapConfig(startup))
 		if err != nil {
@@ -288,7 +292,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual request owner recovery", id, err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime)
+		backupMarker, err := provider.NewManagedBackupRuntime(t.Context(), operationalRuntime, producer)
+		if err != nil {
+			t.Fatal("actual backup owner recovery", id, err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -296,6 +304,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, data, svc, certified, logging, operationalCertified)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if _, err := provider.NewOIDCPublicReceiptsCertified(receiptConfig, runtime, data, svc, producer, certified, public); err != nil {
+			t.Fatal("actual backup and public receipt activation", id, err)
 		}
 		s := httptest.NewUnstartedServer(nil)
 		if serving != nil && id == 1 {
@@ -2229,7 +2240,8 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 	for _, future := range initial.Groups {
 		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE ||
-			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST {
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_BACKUP {
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {

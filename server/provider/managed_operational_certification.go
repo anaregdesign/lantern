@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 )
@@ -19,9 +20,10 @@ type managedOperationalCertified struct {
 	primary   *dataruntime.Executor
 	request   *ManagedRequestRuntime
 	validator *ValidationInterceptor
+	backup    *backup.Backupper
 }
 
-func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntime, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, slow managedSlowRPCCertified, rate managedRateCertified, request *ManagedRequestRuntime) (managedOperationalCertified, error) {
+func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntime, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, slow managedSlowRPCCertified, rate managedRateCertified, request *ManagedRequestRuntime, backup managedBackupCertified) (managedOperationalCertified, error) {
 	if runtime == nil || manager == nil || manager.runtime != runtime || runtime.managedOperational != manager || slow.manager != manager || slow.owner == nil || slow.adapter == nil || slow.adapter.owner != slow.owner {
 		return managedOperationalCertified{}, errManagedOperational
 	}
@@ -31,16 +33,19 @@ func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntim
 	if primary == nil || !primary.SharesServingRuntime(runtime.data) || request == nil || request.manager != manager || request.executor != primary || request.owner == nil || request.validator == nil || request.validator.policies != request.owner || !primary.UsesRequestPolicyOwner(request.owner) {
 		return managedOperationalCertified{}, errManagedOperational
 	}
+	if backup.manager != manager || backup.owner == nil || backup.adapter == nil || backup.adapter.owner != backup.owner || !backup.owner.UsesExecutor(primary) {
+		return managedOperationalCertified{}, errManagedOperational
+	}
 	manager.mu.Lock()
-	slowEntry, rateEntry, requestEntry := manager.slowRPC, manager.rate, manager.request
+	slowEntry, rateEntry, requestEntry, backupEntry := manager.slowRPC, manager.rate, manager.request, manager.backup
 	manager.mu.Unlock()
-	if slowEntry == nil || slowEntry.owner != slow.adapter || rateEntry == nil || rateEntry.owner != rate.adapter || requestEntry == nil || requestEntry.owner != request {
+	if slowEntry == nil || slowEntry.owner != slow.adapter || rateEntry == nil || rateEntry.owner != rate.adapter || requestEntry == nil || requestEntry.owner != request || backupEntry == nil || backupEntry.owner != backup.adapter {
 		return managedOperationalCertified{}, errManagedOperational
 	}
 	// Availability proves installed owners, including the fixed recovery pair.
 	// Invalid bootstrap values must remain repairable, so no value validation or
 	// owner callback runs while holding the manager lock.
-	if slow.adapter.AvailableOperationalPolicy(operationalpolicy.GroupSlowRPC, operationalpolicy.Version) != nil || rate.adapter.AvailableOperationalPolicy(operationalpolicy.GroupRate, operationalpolicy.Version) != nil || request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil {
+	if slow.adapter.AvailableOperationalPolicy(operationalpolicy.GroupSlowRPC, operationalpolicy.Version) != nil || rate.adapter.AvailableOperationalPolicy(operationalpolicy.GroupRate, operationalpolicy.Version) != nil || request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil || backup.adapter.AvailableOperationalPolicy(operationalpolicy.GroupBackup, operationalpolicy.Version) != nil {
 		return managedOperationalCertified{}, errManagedOperational
 	}
 	if err := manager.Reconcile(ctx); err != nil {
@@ -58,5 +63,5 @@ func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntim
 			return managedOperationalCertified{}, err
 		}
 	}
-	return managedOperationalCertified{runtime: runtime, manager: manager, slowRPC: slow.owner, rate: rate.owner, recovery: rate.recovery, primary: primary, request: request, validator: request.validator}, nil
+	return managedOperationalCertified{runtime: runtime, manager: manager, slowRPC: slow.owner, rate: rate.owner, recovery: rate.recovery, primary: primary, request: request, validator: request.validator, backup: backup.owner}, nil
 }

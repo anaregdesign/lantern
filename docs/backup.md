@@ -244,6 +244,30 @@ every backend, and degrade cleanly to the single-instance case.
 | `LANTERN_BACKUP_RESTORE_ON_START` | `true` | With a configured directory, select startup restore independently of production enablement. Graph-only: replay the newest valid dump. Durable `fresh`: restore the strict newest receipt set or, only when optional and absent, start empty. Durable `restart`: use a set only for eligible current-baseline damage. |
 | `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Graph-only: fail boot when restore errors. Durable `fresh`: require a valid newest set. Durable `restart`: restore failure is always terminal when the current runtime is incomplete; a valid current runtime remains authoritative. |
 
+The managed production group contains only `LANTERN_BACKUP_ENABLED`,
+`LANTERN_BACKUP_INTERVAL` and `LANTERN_BACKUP_RETAIN`. They are reviewed and
+committed atomically through native management. After explicit adoption,
+verified committed policy is authoritative on restart; environment values do
+not overwrite it. Desired and applied generations are reported separately for
+each member. The directory, instance identity and restoration flags remain
+externally supplied.
+
+One resident scheduler supports enabling and disabling periodic production.
+Each serialized periodic, manual or shutdown attempt captures one effective
+generation, including retention, so an update cannot change an attempt already
+in progress. The interval must be positive, and retain zero keeps every valid
+owned recovery point. Enabled production requires a configured destination.
+
+Retention reduction uses a bounded preview of the connected producer's valid
+owned files and an explicit acknowledgement bound to the reviewed intent and
+CAS. The preview describes that node's observed catalog; it does not freeze
+external filesystem writers or inventory other nodes. Applying policy performs
+no filesystem writes or deletion. Future successful backup attempts use the
+captured retention policy. Graph-only pruning stops if its bounded catalog is
+incomplete or invalid. Receipt retention preserves its existing bounded
+two-pass scan: directory scan errors stop pruning, invalid sets are ignored,
+and each deletion candidate is revalidated.
+
 Production and restoration have separate ownership. Environment or managed
 `BACKUP_ENABLED` controls production; the externally supplied directory and
 `LANTERN_BACKUP_RESTORE_ON_START` select restoration. Durable receipt recovery

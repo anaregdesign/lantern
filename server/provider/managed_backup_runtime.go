@@ -130,3 +130,24 @@ func NewManagedBackupPreviewer(certified managedBackupCertified) securitytranspo
 		return securitytransport.OperationalBackupRetentionPreview{ValidBackups: uint64(preview.ValidBackups), ValidBytes: uint64(preview.ValidBytes), PruneBackups: uint64(preview.PruneBackups), PruneBytes: uint64(preview.PruneBytes), Complete: preview.Complete, Fingerprint: preview.Fingerprint}, nil
 	}
 }
+
+// operationalBackupPreview is deferred until the real producer is registered.
+// Authority can install this callback before the Backupper and management
+// runtime exist without adding a construction cycle or guessing an inventory.
+func (r *SecurityRuntime) operationalBackupPreview(ctx context.Context, retain int64) (securitytransport.OperationalBackupRetentionPreview, error) {
+	if r == nil || r.managedOperational == nil {
+		return securitytransport.OperationalBackupRetentionPreview{}, errManagedOperational
+	}
+	manager := r.managedOperational
+	manager.mu.Lock()
+	entry := manager.backup
+	manager.mu.Unlock()
+	if entry == nil {
+		return securitytransport.OperationalBackupRetentionPreview{}, errManagedOperational
+	}
+	owner, ok := entry.owner.(*managedBackupRuntime)
+	if !ok || owner == nil {
+		return securitytransport.OperationalBackupRetentionPreview{}, errManagedOperational
+	}
+	return NewManagedBackupPreviewer(managedBackupCertified{manager, owner.owner, owner})(ctx, retain)
+}

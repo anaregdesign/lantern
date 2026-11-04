@@ -302,13 +302,19 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal(err)
 	}
+	receiptConfig := provider.ReceiptWALConfig{Mode: provider.ReceiptWALModeGraphOnly}
 	if durableReceipts {
-		if err := data.CertifyReceiptBackup(dataService, peer); err != nil {
-			t.Fatal(err)
-		}
-		if err := data.ActivatePublicReceipts(dataService, peer); err != nil {
-			t.Fatal(err)
-		}
+		receiptConfig.Mode = provider.ReceiptWALModeFresh
+	}
+	// Destination and restore selection are isolated external fixture inputs.
+	// The production values retain the same captured startup provenance.
+	backupConfig := startup.Backup
+	backupConfig.Dir, backupConfig.InstanceID = t.TempDir(), "managed-backup-fixture"
+	backupConfig.NamespaceFormat = data.DataNamespaceFormat()
+	backupConfig.RestoreOnStart, backupConfig.RestoreRequired = false, false
+	producer, err := provider.NewBackupper(backupConfig, receiptConfig, data, dataService, certified, nil, servingLogger)
+	if err != nil {
+		t.Fatal("actual backup producer", err)
 	}
 	operationalRuntime, err := provider.NewManagedOperationalRuntime(t.Context(), runtime, provider.NewOperationalBootstrapConfig(startup))
 	if err != nil {
@@ -333,13 +339,20 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal("actual request owner recovery", err)
 	}
-	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime)
+	backupMarker, err := provider.NewManagedBackupRuntime(t.Context(), operationalRuntime, producer)
+	if err != nil {
+		t.Fatal("actual backup owner recovery", err)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker)
 	if err != nil {
 		t.Fatal("operational owner certification", err)
 	}
 	publicCertified, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, data, dataService, certified, logging, operationalCertified)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := provider.NewOIDCPublicReceiptsCertified(receiptConfig, runtime, data, dataService, producer, certified, publicCertified); err != nil {
+		t.Fatal("actual backup and public receipt activation", err)
 	}
 	f.server = httptest.NewUnstartedServer(nil)
 	listener, err := provider.NewPublicLanternListener(f.server.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{EnableReflection: true}, provider.CORSConfig{}, dataService, runtime,

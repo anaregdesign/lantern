@@ -130,6 +130,15 @@ type Backupper struct {
 	productionStopped bool
 }
 
+// UsesExecutor checks exact composition identity without running a backup.
+func (b *Backupper) UsesExecutor(primary *dataruntime.Executor) bool {
+	if b == nil || primary == nil {
+		return false
+	}
+	actual, ok := b.svc.(*dataruntime.Executor)
+	return ok && actual == primary
+}
+
 // New constructs a Backupper. reg may be nil (metrics unregistered but the
 // gauges still function). Disabled production remains resident in Run so a
 // later managed policy can enable it. Startup restoration is independent.

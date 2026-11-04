@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,53 @@ func validReceiptWALProviderConfig(path string, mode ReceiptWALMode) ReceiptWALC
 		Retention:  time.Hour,
 		MaxEntries: 32,
 		MaxBytes:   1 << 20,
+	}
+}
+
+func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing.T) {
+	data := securityDataFixture(t)
+	primary := data.NewExecutor(nil)
+	peer, err := data.NewReplication(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewRuntimeRestored(data, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := NewRuntimeCertified(data, primary, peer, restored, NetConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, cleanup, err := NewSecurityRuntime(t.Context(), SecurityConfig{Mode: "off"}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	logOwner := newServingLogger(ObservabilityConfig{}, io.Discard)
+	logging, err := NewManagedLogRuntime(t.Context(), runtime, logOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, logOwner.logger))
+	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, certified, logging, operational)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+	if _, err := NewOIDCPublicReceiptsCertified(config, runtime, data, primary, operational.backup, certified, public); err != nil {
+		t.Fatal("exact certified producer refused", err)
+	}
+	for name, owner := range map[string]*backup.Backupper{
+		"absent":                            nil,
+		"same executor, different producer": backup.New(primary, backup.Config{Interval: time.Hour}, nil, nil),
+		"foreign executor":                  backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewOIDCPublicReceiptsCertified(config, runtime, data, primary, owner, certified, public); err == nil {
+				t.Fatal("uncertified producer reached receipt activation")
+			}
+		})
 	}
 }
 
