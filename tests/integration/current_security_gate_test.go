@@ -130,6 +130,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
 	var managedLogGeneration uint64
 	var managedSlowGeneration uint64
+	var managedRateGeneration uint64
 	var rateOwners []*provider.RateLimitInterceptor
 	previousDefaultLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousDefaultLogger) })
@@ -270,7 +271,16 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual slow RPC owner recovery", id, err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, slowCertified)
+		rateOwner := provider.NewRateLimitInterceptorProvider(startup.RateLimit, nil)
+		rateRecovery, err := provider.NewRateRecoveryRuntime(runtime, rateOwner)
+		if err != nil {
+			t.Fatal("rate recovery owner", err)
+		}
+		rateCertified, err := provider.NewManagedRateRuntime(t.Context(), operationalRuntime, rateOwner, rateRecovery)
+		if err != nil {
+			t.Fatal("actual rate owner recovery", id, err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, slowCertified, rateCertified)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -288,11 +298,6 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			if err != nil {
 				t.Fatal("selected native TLS listener unavailable", err)
 			}
-		}
-		rateOwner := provider.NewRateLimitInterceptor(0, 0)
-		rateRecovery, err := provider.NewRateRecoveryRuntime(runtime, rateOwner)
-		if err != nil {
-			t.Fatal("rate recovery owner", err)
 		}
 		rateOwners = append(rateOwners, rateOwner)
 		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public, rateRecovery)
@@ -530,11 +535,12 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		t.Run("bounded management recovery while data admission is exhausted", func(t *testing.T) {
 			owner := rateOwners[0]
+			before := owner.Snapshot()
 			if err := owner.Configure(0.000001, 1); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if err := owner.Configure(0, 0); err != nil {
+				if err := owner.Configure(before.Config.RPS, before.Config.Burst); err != nil {
 					t.Error("restore isolated fixture admission", err)
 				}
 			})
@@ -802,6 +808,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			delete(claims, "auth_time")
 		})
 		managedSlowGeneration = exerciseCurrentSlowRPCPolicy(t, ctx, controls, runtimes, slowOwners, ordinaryToken, readerToken)
+		if !configuredSourceIntegration {
+			managedRateGeneration = exerciseCurrentRatePolicy(t, ctx, controls, runtimes, rateOwners, ordinaryToken)
+		}
 	})
 	runCase("full-cut and profile mismatch refuse before dispatch", func(t *testing.T) {
 		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
@@ -1274,11 +1283,20 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if managedSlowGeneration != 0 {
 			t.Setenv("LANTERN_SLOW_RPC_THRESHOLD_MS", "9999")
 		}
+		if managedRateGeneration != 0 {
+			t.Setenv("LANTERN_RATE_LIMIT_RPS", "42")
+			t.Setenv("LANTERN_RATE_LIMIT_BURST", "64")
+			startup, err := provider.NewConfig()
+			if err != nil || startup.RateLimit.RPS != 42 || startup.RateLimit.Burst != 64 {
+				t.Fatal("conflicting startup rate environment was not loaded", err)
+			}
+		}
 		startNode(2, "resume")
 		last := len(runtimes) - 1
 		runtimes[1], stops[1], servers[1], controls[1] = runtimes[last], stops[last], servers[last], controls[last]
 		servingLoggers[1] = servingLoggers[last]
 		slowOwners[1] = slowOwners[last]
+		rateOwners[1] = rateOwners[last]
 		deadline = time.Now().Add(60 * time.Second)
 		for !runtimes[1].Ready(ctx) {
 			if time.Now().After(deadline) || ctx.Err() != nil {
@@ -1304,6 +1322,15 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				actual := slowOwners[1].Snapshot()
 				if state.AppliedGeneration != managedSlowGeneration || state.Effective.GetSlowRpc().GetThresholdMs() != 0 || actual.Generation != managedSlowGeneration || actual.Threshold != 0 {
 					t.Fatal("restart replaced sys threshold with conflicting environment", state, actual)
+				}
+			})
+		}
+		if managedRateGeneration != 0 {
+			t.Run("managed rate restart ignores conflicting environment", func(t *testing.T) {
+				_, state := awaitCurrentOperationalRateSettings(t, ctx, controls[1], token, managedRateGeneration)
+				actual := rateOwners[1].Snapshot()
+				if state.AppliedGeneration != managedRateGeneration || state.Effective.GetRate().GetRps() != 0 || state.Effective.GetRate().GetBurst() != 0 || actual.Generation != managedRateGeneration || actual.Config.RPS != 0 || actual.Config.Burst != 0 || actual.Error != nil {
+					t.Fatal("restart replaced sys rate pair with conflicting environment", state, actual)
 				}
 			})
 		}
@@ -2141,6 +2168,109 @@ func exerciseCurrentSlowRPCPolicy(t *testing.T, ctx context.Context, controls []
 			actual := owners[member].Snapshot()
 			if state.AppliedGeneration != generation+1 || state.AppliedCut == nil || state.Effective.GetSlowRpc().GetThresholdMs() != threshold || state.Desired.Values.GetSlowRpc().GetThresholdMs() != threshold || state.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED || state.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_NONE || state.RestartRequired || len(state.Provenance) != 1 || state.Provenance[0].Source != pb.OperationalSettingsSource_OPERATIONAL_SETTINGS_SOURCE_MANAGED || actual.Generation != generation+1 || actual.Threshold.Milliseconds() != threshold {
 				t.Fatal("committed Slow RPC did not match actual member owner", member+1, state, actual)
+			}
+		}
+	}
+	return 2
+}
+
+func awaitCurrentOperationalRateSettings(t *testing.T, ctx context.Context, control graphv1connect.LanternSecurityServiceClient, token string, generation uint64) (*pb.GetOperationalSettingsResponse, *pb.OperationalGroupSettings) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		response, err := control.GetOperationalSettings(ctx, securityWireRequest(token, &pb.GetOperationalSettingsRequest{}))
+		if err == nil {
+			if response.Msg.SchemaVersion != 1 || len(response.Msg.Groups) != 8 {
+				t.Fatal("closed operational status schema", response.Msg)
+			}
+			for _, state := range response.Msg.Groups {
+				if state.Group != pb.OperationalGroup_OPERATIONAL_GROUP_RATE {
+					continue
+				}
+				desired := state.GetDesired().GetGeneration()
+				if desired == generation {
+					return response.Msg, state
+				}
+				if desired > generation {
+					t.Fatal("Rate policy passed expected generation", desired, generation)
+				}
+			}
+		} else if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatal("Rate settings failed outside current renewal", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Rate committed generation not observed", generation, err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// This adds two Rate originals to the existing controlled functional cohort.
+// Configured-source qualification keeps its existing finite mutation budget.
+func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []graphv1connect.LanternSecurityServiceClient, runtimes []*provider.SecurityRuntime, owners []*provider.RateLimitInterceptor, token string) uint64 {
+	t.Helper()
+	initial, state := awaitCurrentOperationalRateSettings(t, ctx, controls[0], token, 0)
+	actual := owners[0].Snapshot()
+	if state.Desired != nil || state.AppliedGeneration != 0 || actual.Error != nil || state.Effective.GetRate().GetRps() != actual.Config.RPS || state.Effective.GetRate().GetBurst() != int64(actual.Config.Burst) || state.ChangeMode != pb.OperationalSettingsChangeMode_OPERATIONAL_SETTINGS_CHANGE_MODE_HOT || len(state.Provenance) != 2 {
+		t.Fatal("actual atomic Rate bootstrap ownership", state, actual)
+	}
+	for _, future := range initial.Groups {
+		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC || future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE {
+			continue
+		}
+		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {
+			t.Fatal("uninstalled future owner fabricated availability", future)
+		}
+	}
+	bad := &pb.OperationalPolicyChange{Version: 1, Values: &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_Rate{Rate: &pb.OperationalRateValues{Rps: 1, Burst: 0}}}}
+	if _, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: initial.Version.CurrentProfile, ExpectedCut: initial.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutOperationalPolicy{PutOperationalPolicy: bad}}}}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal("partial Rate pair prepared", err)
+	}
+	unchanged, refused := awaitCurrentOperationalRateSettings(t, ctx, controls[0], token, 0)
+	if !proto.Equal(unchanged.Version.CurrentCut, initial.Version.CurrentCut) || refused.Preparation != nil || owners[0].Snapshot().Generation != 0 {
+		t.Fatal("invalid pair changed native or applied state")
+	}
+	var firstReview *pb.CurrentSecurityReview
+	var firstOriginal *pb.CurrentSecurityOriginalOutcome
+	for index, pair := range []*pb.OperationalRateValues{{Rps: 1e6, Burst: 1000000}, {Rps: 0, Burst: 0}} {
+		generation := uint64(index)
+		current, _ := awaitCurrentOperationalRateSettings(t, ctx, controls[0], token, generation)
+		change := &pb.OperationalPolicyChange{Version: 1, ExpectedGeneration: generation, Values: &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_Rate{Rate: pair}}}
+		prepared, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Version.CurrentProfile, ExpectedCut: current.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutOperationalPolicy{PutOperationalPolicy: change}}}}}))
+		if err != nil || prepared.Msg.CurrentReview == nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+			t.Fatal("ordinary atomic Rate review", err)
+		}
+		review := prepared.Msg.CurrentReview
+		_, _ = controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: review}))
+		original := awaitCurrentPublicOriginal(t, ctx, controls[0], token, review)
+		if original.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+			t.Fatal("Rate desired policy did not commit", original)
+		}
+		if index == 0 {
+			firstReview, firstOriginal = review, original
+		} else if proto.Equal(firstReview.ChangeId, review.ChangeId) || proto.Equal(firstOriginal.ResultingCut, original.ResultingCut) {
+			t.Fatal("Rate rollback reused the original instead of a new committed generation")
+		}
+		replay, err := controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: review}))
+		if err != nil || !proto.Equal(replay.Msg.GetCurrentResult().GetOriginal(), original) {
+			t.Fatal("Rate replay changed the known original", err)
+		}
+		for member, control := range controls {
+			_, _ = awaitCurrentOperationalRateSettings(t, ctx, control, token, generation+1)
+			awaitCurrentLogOwnerReady(t, ctx, runtimes[member])
+			_, state := awaitCurrentOperationalRateSettings(t, ctx, control, token, generation+1)
+			actual := owners[member].Snapshot()
+			if state.AppliedGeneration != generation+1 || state.AppliedCut == nil || state.Effective.GetRate().GetRps() != pair.Rps || state.Effective.GetRate().GetBurst() != pair.Burst || !proto.Equal(state.Desired.Values.GetRate(), pair) || state.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_APPLIED || state.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_NONE || state.RestartRequired || len(state.Provenance) != 2 || actual.Generation != generation+1 || actual.Config.RPS != pair.Rps || int64(actual.Config.Burst) != pair.Burst || actual.Error != nil {
+				t.Fatal("committed Rate pair did not match the actual member owner", member+1, state, actual)
+			}
+			for _, source := range state.Provenance {
+				if source.Source != pb.OperationalSettingsSource_OPERATIONAL_SETTINGS_SOURCE_MANAGED {
+					t.Fatal("managed Rate pair lost its source", member+1, state)
+				}
 			}
 		}
 	}

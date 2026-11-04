@@ -119,6 +119,18 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		t.Fatal(err)
 	}
 	operational := operationalPublicTestCertification(t, runtime, NewSlowRPCInterceptor(0, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	for _, mutate := range []func(*managedOperationalCertified){
+		func(c *managedOperationalCertified) { c.rate = nil },
+		func(c *managedOperationalCertified) { c.rate = NewRateLimitInterceptor(0, 0) },
+		func(c *managedOperationalCertified) { c.recovery = nil },
+		func(c *managedOperationalCertified) { copied := *c.recovery; c.recovery = &copied },
+	} {
+		wrong := operational
+		mutate(&wrong)
+		if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, wrong); err == nil {
+			t.Fatal("foreign or absent managed Rate binding certified")
+		}
+	}
 	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, managedLogCertified{}, operational); err == nil {
 		t.Fatal("missing logger certification accepted")
 	}
@@ -137,7 +149,8 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, data, primary, cert, logging, operational); err == nil {
 		t.Fatal("unbound workload certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational); err != nil {
+	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational)
+	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery {
 		t.Fatal(err)
 	}
 	runtime.mode = "oidc"

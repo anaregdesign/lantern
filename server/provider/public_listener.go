@@ -23,7 +23,7 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 	if slow == nil || certified.slowRPC != slow {
 		return nil, errors.New("public listener requires the exact certified slow RPC owner")
 	}
-	if !recovery.bound(runtime, rl) {
+	if certified.rate != rl || certified.recovery != recovery || !recovery.bound(runtime, rl) {
 		return nil, errRateRecoveryBinding
 	}
 	// Reuse message/TLS/protocol configuration before installing the certified
