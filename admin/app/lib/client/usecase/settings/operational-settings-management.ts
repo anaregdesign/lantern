@@ -10,6 +10,7 @@ import {
   type OperationalPolicyValues,
   type OperationalGroupSettings,
   type OperationalBackupRetentionPreview,
+  type OperationalCapacityPreview,
 } from "lantern-sdk/web";
 import {
   CurrentChangeController,
@@ -36,6 +37,7 @@ export type OperationalSettingsState = CurrentChangeState & {
   draft?: OperationalDraft;
   retentionAcknowledged: boolean;
   backupPreview?: OperationalBackupRetentionPreview;
+  capacityPreview?: OperationalCapacityPreview;
   stale: boolean;
   originalId: string;
 };
@@ -83,6 +85,8 @@ export class OperationalSettingsController {
   private draft?: OperationalDraft;
   private retentionAcknowledged = false;
   private backupPreview?: OperationalBackupRetentionPreview;
+  private capacityPreview?: OperationalCapacityPreview;
+  private capacityPreviewVersion?: string;
   private stale = false;
   private disposed = false;
   private state: OperationalSettingsState;
@@ -117,12 +121,20 @@ export class OperationalSettingsController {
       draft: this.draft,
       retentionAcknowledged: this.retentionAcknowledged,
       backupPreview: this.backupPreview,
+      capacityPreview: this.capacityPreview,
       stale: this.stale || (!!this.settings && !change.version),
       originalId: this.change.changeId(),
     };
   }
   private publish() {
     if (this.disposed) return;
+    const version = this.change.getSnapshot().version;
+    if (
+      this.capacityPreview &&
+      (!version ||
+        currentSecurityVersionBinding(version) !== this.capacityPreviewVersion)
+    )
+      this.capacityPreview = undefined;
     this.state = this.snapshot();
     this.listeners.forEach((listener) => listener());
   }
@@ -151,6 +163,7 @@ export class OperationalSettingsController {
     this.selected = group;
     this.retentionAcknowledged = false;
     this.backupPreview = undefined;
+    this.capacityPreview = undefined;
     const values =
       setting.desired?.values ??
       (useNodeValues ? setting.effective : undefined);
@@ -176,6 +189,7 @@ export class OperationalSettingsController {
     this.draft = { ...this.draft, [key]: value };
     this.retentionAcknowledged = false;
     this.backupPreview = undefined;
+    this.capacityPreview = undefined;
     this.publish();
   }
   acknowledge(value: boolean) {
@@ -188,6 +202,7 @@ export class OperationalSettingsController {
     if (this.change.getSnapshot().mutation === "sending") return;
     this.change.cancelReview();
     const { ticket, signal } = this.change.operation();
+    this.capacityPreview = undefined;
     this.stale = !!this.settings;
     this.change.publish({ phase: "loading", review: undefined, message: "" });
     try {
@@ -268,6 +283,63 @@ export class OperationalSettingsController {
           phase: "ready",
           message:
             "The connected-node retention preview is unavailable. No change was sent. Keep-all adoption remains available.",
+        });
+    }
+  }
+  async previewCapacity() {
+    if (
+      operationalBlocked(this.state, this.canMutate) ||
+      this.selected !== OperationalGroup.CAPACITY ||
+      !this.draft
+    )
+      return;
+    let values: OperationalPolicyValues;
+    try {
+      values = operationalValues(this.selected, this.draft);
+    } catch {
+      this.change.publish({
+        message: "Enter valid capacity values before previewing usage.",
+      });
+      return;
+    }
+    this.change.cancelReview();
+    const { ticket, signal } = this.change.operation();
+    this.capacityPreview = undefined;
+    this.change.publish({
+      phase: "loading",
+      message: "Sampling capacity on this connected node.",
+    });
+    try {
+      const preview = await this.port.preview(values, signal);
+      if (!this.change.current(ticket)) return;
+      if (
+        currentSecurityVersionBinding(preview.version) !==
+        currentSecurityVersionBinding(this.state.version)
+      ) {
+        this.change.publish({
+          phase: "ready",
+          version: undefined,
+          message:
+            "Settings changed during capacity preview. Reload and review again.",
+        });
+        return;
+      }
+      if (
+        !preview.capacityUsage ||
+        preview.capacityUsage.member !== this.settings?.member
+      )
+        throw new Error("Capacity preview member mismatch.");
+      this.capacityPreviewVersion = currentSecurityVersionBinding(
+        preview.version,
+      );
+      this.capacityPreview = copySecurityContract(preview.capacityUsage);
+      this.change.publish({ phase: "ready", message: "" });
+    } catch {
+      if (this.change.current(ticket))
+        this.change.publish({
+          phase: "ready",
+          message:
+            "The connected-node capacity preview is unavailable. No change was sent. You can still review the policy.",
         });
     }
   }

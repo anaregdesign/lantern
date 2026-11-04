@@ -1,12 +1,14 @@
 package securitytransport
 
 import (
+	"context"
 	"testing"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"google.golang.org/protobuf/proto"
 )
 
 func operationalProjection() security.OperationalPolicyProjection {
@@ -293,5 +295,87 @@ func TestOperationalUnknownEffectiveFingerprintStaysSearchOnlyAndCanonical(t *te
 	observations[operationalpolicy.GroupRate] = rate
 	if _, err := encodeOperationalSettings(p, observations); err == nil {
 		t.Fatal("non-Search fingerprint accepted with unknown values")
+	}
+}
+
+func TestOperationalCapacityPreviewPayloadPreservesSampleLabelsAndCounts(t *testing.T) {
+	preview := OperationalCapacityPreview{
+		Member: 7, EffectiveGeneration: 19,
+		VertexFootprint: ^uint64(0), EdgeFootprint: uint64(1) << 40,
+		VertexCausalEntries: uint64(1) << 41, EdgeCausalEntries: uint64(1) << 42,
+		VerticesOverLimit: true, EdgesOverLimit: false,
+		VertexCausalOverLimit: false, EdgeCausalOverLimit: true,
+	}
+	actual, err := encodeOperationalCapacityPreview(preview)
+	want := &pb.OperationalCapacityPreview{
+		Member: 7, EffectiveGeneration: 19,
+		VertexFootprint: ^uint64(0), EdgeFootprint: uint64(1) << 40,
+		VertexCausalEntries: uint64(1) << 41, EdgeCausalEntries: uint64(1) << 42,
+		VerticesOverLimit: true, EdgesOverLimit: false,
+		VertexCausalOverLimit: false, EdgeCausalOverLimit: true,
+	}
+	if err != nil || !proto.Equal(actual, want) {
+		t.Fatalf("capacity sample payload = %v, %v", actual, err)
+	}
+	preview.EffectiveGeneration = 0
+	if actual, err := encodeOperationalCapacityPreview(preview); err != nil || actual.EffectiveGeneration != 0 {
+		t.Fatal("bootstrap sample invented a managed generation", actual, err)
+	}
+	preview.Member = 0
+	if _, err := encodeOperationalCapacityPreview(preview); err == nil {
+		t.Fatal("capacity sample without a verified member accepted")
+	}
+}
+
+func TestOperationalCapacityPreviewRequiresCurrentManagementBeforeSampling(t *testing.T) {
+	called := 0
+	newHandler := func(current bool) *SecurityConnectHandler {
+		h, err := NewSecurityConnectHandler(SecurityServiceOptions{OperationalCapacityPreviewer: func(context.Context, operationalpolicy.Capacity) (OperationalCapacityPreview, error) {
+			called++
+			return OperationalCapacityPreview{Member: 1}, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.operationalCapacityPreviewer == nil {
+			t.Fatal("capacity callback was not installed")
+		}
+		if current {
+			// This uninstalled facade only exercises refusal before any native
+			// read. It cannot create an authenticated management admission.
+			h.current = &security.CurrentAuthority{}
+		}
+		return h
+	}
+	values, err := operationalpolicy.Defaults(operationalpolicy.GroupCapacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		current bool
+		ctx     context.Context
+		code    connect.Code
+	}{
+		{"off", false, t.Context(), connect.CodeFailedPrecondition},
+		{"unauthenticated", true, t.Context(), connect.CodeUnauthenticated},
+		{"uninstalled admission", true, security.WithAdmission(t.Context(), &security.Admission{}), connect.CodeUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := newHandler(test.current).PreviewOperationalPolicy(test.ctx, connect.NewRequest(&pb.PreviewOperationalPolicyRequest{Values: encodeOperationalValues(values)}))
+			if connect.CodeOf(err) != test.code || response != nil || called != 0 {
+				t.Fatal("capacity usage escaped management admission", response, err, called)
+			}
+		})
+	}
+	h := newHandler(true)
+	unknown := &pb.PreviewOperationalPolicyRequest{Values: encodeOperationalValues(values)}
+	unknown.ProtoReflect().SetUnknown([]byte{0x08, 0x01})
+	if response, err := h.PreviewOperationalPolicy(t.Context(), connect.NewRequest(unknown)); connect.CodeOf(err) != connect.CodeInvalidArgument || response != nil || called != 0 {
+		t.Fatal("unknown preview request reached capacity sampling", response, err, called)
+	}
+	values.Capacity.GCIntervalSeconds = 0
+	if response, err := h.PreviewOperationalPolicy(t.Context(), connect.NewRequest(&pb.PreviewOperationalPolicyRequest{Values: encodeOperationalValues(values)})); connect.CodeOf(err) != connect.CodeInvalidArgument || response != nil || called != 0 {
+		t.Fatal("invalid capacity candidate reached sampling", response, err, called)
 	}
 }

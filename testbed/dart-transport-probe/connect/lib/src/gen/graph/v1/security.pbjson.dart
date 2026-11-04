@@ -2956,6 +2956,14 @@ const PreviewOperationalPolicyResponse$json = {
       '6': '.graph.v1.OperationalBackupRetentionPreview',
       '10': 'backupRetention'
     },
+    {
+      '1': 'capacity_usage',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.OperationalCapacityPreview',
+      '10': 'capacityUsage'
+    },
   ],
 };
 
@@ -2966,7 +2974,9 @@ final $typed_data.Uint8List previewOperationalPolicyResponseDescriptor = $conver
     'R3JvdXBSBWdyb3VwEjsKGWNvbXBhdGliaWxpdHlfZmluZ2VycHJpbnQYAyABKAlSGGNvbXBhdG'
     'liaWxpdHlGaW5nZXJwcmludBIzCgd2ZXJzaW9uGAQgASgLMhkuZ3JhcGgudjEuU2VjdXJpdHlW'
     'ZXJzaW9uUgd2ZXJzaW9uElYKEGJhY2t1cF9yZXRlbnRpb24YBSABKAsyKy5ncmFwaC52MS5PcG'
-    'VyYXRpb25hbEJhY2t1cFJldGVudGlvblByZXZpZXdSD2JhY2t1cFJldGVudGlvbg==');
+    'VyYXRpb25hbEJhY2t1cFJldGVudGlvblByZXZpZXdSD2JhY2t1cFJldGVudGlvbhJLCg5jYXBh'
+    'Y2l0eV91c2FnZRgGIAEoCzIkLmdyYXBoLnYxLk9wZXJhdGlvbmFsQ2FwYWNpdHlQcmV2aWV3Ug'
+    '1jYXBhY2l0eVVzYWdl');
 
 @$core.Deprecated('Use securityChangeDescriptor instead')
 const SecurityChange$json = {
@@ -4037,6 +4047,71 @@ final $typed_data.Uint8List currentSecurityInvocationRejectedDescriptor = $conve
     'RlbnRfZGlnZXN0GAMgASgMUgxpbnRlbnREaWdlc3QSKQoQcHVycG9zZV9yZXF1aXJlZBgEIAEo'
     'CFIPcHVycG9zZVJlcXVpcmVk');
 
+@$core.Deprecated('Use operationalCapacityPreviewDescriptor instead')
+const OperationalCapacityPreview$json = {
+  '1': 'OperationalCapacityPreview',
+  '2': [
+    {'1': 'member', '3': 1, '4': 1, '5': 13, '10': 'member'},
+    {
+      '1': 'effective_generation',
+      '3': 2,
+      '4': 1,
+      '5': 4,
+      '10': 'effectiveGeneration'
+    },
+    {'1': 'vertex_footprint', '3': 3, '4': 1, '5': 4, '10': 'vertexFootprint'},
+    {'1': 'edge_footprint', '3': 4, '4': 1, '5': 4, '10': 'edgeFootprint'},
+    {
+      '1': 'vertex_causal_entries',
+      '3': 5,
+      '4': 1,
+      '5': 4,
+      '10': 'vertexCausalEntries'
+    },
+    {
+      '1': 'edge_causal_entries',
+      '3': 6,
+      '4': 1,
+      '5': 4,
+      '10': 'edgeCausalEntries'
+    },
+    {
+      '1': 'vertices_over_limit',
+      '3': 7,
+      '4': 1,
+      '5': 8,
+      '10': 'verticesOverLimit'
+    },
+    {'1': 'edges_over_limit', '3': 8, '4': 1, '5': 8, '10': 'edgesOverLimit'},
+    {
+      '1': 'vertex_causal_over_limit',
+      '3': 9,
+      '4': 1,
+      '5': 8,
+      '10': 'vertexCausalOverLimit'
+    },
+    {
+      '1': 'edge_causal_over_limit',
+      '3': 10,
+      '4': 1,
+      '5': 8,
+      '10': 'edgeCausalOverLimit'
+    },
+  ],
+};
+
+/// Descriptor for `OperationalCapacityPreview`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List operationalCapacityPreviewDescriptor = $convert.base64Decode(
+    'ChpPcGVyYXRpb25hbENhcGFjaXR5UHJldmlldxIWCgZtZW1iZXIYASABKA1SBm1lbWJlchIxCh'
+    'RlZmZlY3RpdmVfZ2VuZXJhdGlvbhgCIAEoBFITZWZmZWN0aXZlR2VuZXJhdGlvbhIpChB2ZXJ0'
+    'ZXhfZm9vdHByaW50GAMgASgEUg92ZXJ0ZXhGb290cHJpbnQSJQoOZWRnZV9mb290cHJpbnQYBC'
+    'ABKARSDWVkZ2VGb290cHJpbnQSMgoVdmVydGV4X2NhdXNhbF9lbnRyaWVzGAUgASgEUhN2ZXJ0'
+    'ZXhDYXVzYWxFbnRyaWVzEi4KE2VkZ2VfY2F1c2FsX2VudHJpZXMYBiABKARSEWVkZ2VDYXVzYW'
+    'xFbnRyaWVzEi4KE3ZlcnRpY2VzX292ZXJfbGltaXQYByABKAhSEXZlcnRpY2VzT3ZlckxpbWl0'
+    'EigKEGVkZ2VzX292ZXJfbGltaXQYCCABKAhSDmVkZ2VzT3ZlckxpbWl0EjcKGHZlcnRleF9jYX'
+    'VzYWxfb3Zlcl9saW1pdBgJIAEoCFIVdmVydGV4Q2F1c2FsT3ZlckxpbWl0EjMKFmVkZ2VfY2F1'
+    'c2FsX292ZXJfbGltaXQYCiABKAhSE2VkZ2VDYXVzYWxPdmVyTGltaXQ=');
+
 const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
   '1': 'LanternSecurityService',
   '2': [
@@ -4221,6 +4296,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
       PreviewOperationalPolicyResponse$json,
   '.graph.v1.OperationalBackupRetentionPreview':
       OperationalBackupRetentionPreview$json,
+  '.graph.v1.OperationalCapacityPreview': OperationalCapacityPreview$json,
   '.graph.v1.ListRoleAssignmentsRequest': ListRoleAssignmentsRequest$json,
   '.graph.v1.ListRoleAssignmentsResponse': ListRoleAssignmentsResponse$json,
   '.graph.v1.ListSecurityAuditRequest': ListSecurityAuditRequest$json,

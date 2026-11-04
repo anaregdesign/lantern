@@ -15,6 +15,7 @@ import {
   OperationalPolicyChangeSchema,
   OperationalPolicyValuesSchema,
   GetOperationalSettingsResponseSchema,
+  PreviewOperationalPolicyResponseSchema,
   LogPolicyAdoptionState,
   OperationalGroup,
   OperationalSettingsApplicationState,
@@ -246,6 +247,70 @@ test("backup preview is a bounded connected-node sample, not a frozen deletion c
   preview.backupRetention.complete = false;
   preview.backupRetention.fingerprint = "";
   expect(() => validateOperationalPreview(preview, values)).not.toThrow();
+});
+
+test("capacity preview binds typed candidate caps without rounding or clamping local counters", () => {
+  const values = create(OperationalPolicyValuesSchema, {
+    group: {
+      case: "capacity",
+      value: {
+        gcEdgeBudget: 0n,
+        gcIntervalSeconds: 1n,
+        maxVertices: 9007199254740998n,
+        maxEdges: 0n,
+        maxVertexCausalEntries: 3n,
+        maxEdgeCausalEntries: 2n,
+      },
+    },
+  });
+  const preview = create(PreviewOperationalPolicyResponseSchema, {
+    schemaVersion: 1,
+    group: OperationalGroup.CAPACITY,
+    version: settings().version,
+    capacityUsage: {
+      member: 1,
+      effectiveGeneration: 9n,
+      vertexFootprint: 9007199254740999n,
+      edgeFootprint: 7n,
+      vertexCausalEntries: 3n,
+      edgeCausalEntries: 4n,
+      verticesOverLimit: true,
+      edgesOverLimit: false,
+      vertexCausalOverLimit: false,
+      edgeCausalOverLimit: true,
+    },
+  });
+  expect(() => validateOperationalPreview(preview, values)).not.toThrow();
+  for (const change of [
+    { member: 0 },
+    { member: 1.5 },
+    { effectiveGeneration: -1n },
+    { vertexFootprint: -1n },
+    { edgeFootprint: 0x10000000000000000n },
+    { vertexCausalEntries: -1n },
+    { edgeCausalEntries: -1n },
+    { verticesOverLimit: false },
+    { edgesOverLimit: true },
+    { vertexCausalOverLimit: true },
+    { edgeCausalOverLimit: false },
+  ]) {
+    const forged = structuredClone(preview);
+    Object.assign(forged.capacityUsage!, change);
+    expect(() => validateOperationalPreview(forged, values)).toThrow();
+  }
+  const missing = structuredClone(preview);
+  missing.capacityUsage = undefined;
+  expect(() => validateOperationalPreview(missing, values)).toThrow();
+  const foreign = structuredClone(preview);
+  foreign.backupRetention = create(PreviewOperationalPolicyResponseSchema, {
+    backupRetention: { complete: true, fingerprint: "a".repeat(64) },
+  }).backupRetention;
+  expect(() => validateOperationalPreview(foreign, values)).toThrow();
+  const slow = create(OperationalPolicyValuesSchema, {
+    group: { case: "slowRpc", value: { thresholdMs: 1n } },
+  });
+  preview.group = OperationalGroup.SLOW_RPC;
+  expect(() => validateOperationalPreview(preview, slow)).toThrow();
 });
 
 test("invalid bootstrap retains its owner and bounded sources without encoding nonfinite effective values", () => {

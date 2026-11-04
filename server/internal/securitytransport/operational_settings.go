@@ -215,7 +215,33 @@ func (h *SecurityConnectHandler) PreviewOperationalPolicy(ctx context.Context, r
 		}
 		response.BackupRetention = &pb.OperationalBackupRetentionPreview{ValidBackups: preview.ValidBackups, ValidBytes: preview.ValidBytes, PruneBackups: preview.PruneBackups, PruneBytes: preview.PruneBytes, Complete: preview.Complete, Fingerprint: preview.Fingerprint}
 	}
+	if group == operationalpolicy.GroupCapacity {
+		if h.operationalCapacityPreviewer == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
+		}
+		preview, previewErr := h.operationalCapacityPreviewer(ctx, *values.Capacity)
+		if previewErr != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
+		}
+		response.CapacityUsage, err = encodeOperationalCapacityPreview(preview)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
+		}
+	}
 	return securityReadResponse(ctx, a, h.now(), response)
+}
+
+func encodeOperationalCapacityPreview(preview OperationalCapacityPreview) (*pb.OperationalCapacityPreview, error) {
+	if preview.Member == 0 {
+		return nil, security.ErrAuthorityUnavailable
+	}
+	return &pb.OperationalCapacityPreview{
+		Member: preview.Member, EffectiveGeneration: preview.EffectiveGeneration,
+		VertexFootprint: preview.VertexFootprint, EdgeFootprint: preview.EdgeFootprint,
+		VertexCausalEntries: preview.VertexCausalEntries, EdgeCausalEntries: preview.EdgeCausalEntries,
+		VerticesOverLimit: preview.VerticesOverLimit, EdgesOverLimit: preview.EdgesOverLimit,
+		VertexCausalOverLimit: preview.VertexCausalOverLimit, EdgeCausalOverLimit: preview.EdgeCausalOverLimit,
+	}, nil
 }
 
 func validOperationalPreviewFingerprint(value string, required bool) bool {

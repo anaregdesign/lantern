@@ -21,28 +21,30 @@ import (
 // SecurityServiceOptions comes from certified Server composition, never clients.
 // A nil authority means explicitly OFF; unavailable OIDC never becomes OFF.
 type SecurityServiceOptions struct {
-	Current                     *security.CurrentAuthority
-	CurrentBeginAuthorization   func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
-	CurrentReadAuthorization    func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
-	ValidateIssuer              func(context.Context, security.Issuer) error
-	Now                         func() time.Time
-	Ready                       func(context.Context) bool
-	LogSettingsObserver         LogSettingsObserver
-	OperationalSettingsObserver OperationalSettingsObserver
-	OperationalBackupPreviewer  OperationalBackupPreviewer
+	Current                      *security.CurrentAuthority
+	CurrentBeginAuthorization    func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
+	CurrentReadAuthorization     func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
+	ValidateIssuer               func(context.Context, security.Issuer) error
+	Now                          func() time.Time
+	Ready                        func(context.Context) bool
+	LogSettingsObserver          LogSettingsObserver
+	OperationalSettingsObserver  OperationalSettingsObserver
+	OperationalBackupPreviewer   OperationalBackupPreviewer
+	OperationalCapacityPreviewer OperationalCapacityPreviewer
 }
 
 type SecurityConnectHandler struct {
-	current                     *security.CurrentAuthority
-	currentBeginAuthorization   func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
-	currentReadAuthorization    func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
-	validateIssuer              func(context.Context, security.Issuer) error
-	cursors                     cipher.AEAD
-	now                         func() time.Time
-	ready                       func(context.Context) bool
-	logSettingsObserver         LogSettingsObserver
-	operationalSettingsObserver OperationalSettingsObserver
-	operationalBackupPreviewer  OperationalBackupPreviewer
+	current                      *security.CurrentAuthority
+	currentBeginAuthorization    func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
+	currentReadAuthorization     func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
+	validateIssuer               func(context.Context, security.Issuer) error
+	cursors                      cipher.AEAD
+	now                          func() time.Time
+	ready                        func(context.Context) bool
+	logSettingsObserver          LogSettingsObserver
+	operationalSettingsObserver  OperationalSettingsObserver
+	operationalBackupPreviewer   OperationalBackupPreviewer
+	operationalCapacityPreviewer OperationalCapacityPreviewer
 }
 
 var _ graphv1connect.LanternSecurityServiceHandler = (*SecurityConnectHandler)(nil)
@@ -56,6 +58,7 @@ func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnect
 	handler.logSettingsObserver = options.LogSettingsObserver
 	handler.operationalSettingsObserver = options.OperationalSettingsObserver
 	handler.operationalBackupPreviewer = options.OperationalBackupPreviewer
+	handler.operationalCapacityPreviewer = options.OperationalCapacityPreviewer
 	handler.currentBeginAuthorization, handler.currentReadAuthorization = options.CurrentBeginAuthorization, options.CurrentReadAuthorization
 	if options.Now != nil {
 		handler.now = options.Now
