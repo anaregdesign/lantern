@@ -62,6 +62,14 @@ trusted direct-RPC generation guard rejects pending transitions independently of
 health/readiness. Search and replication workers share the sealed effective
 fingerprint; mixed-fingerprint rolling restart is not a general supported guarantee.
 
+Capacity's optional Admin preview samples the connected member's actual admission
+footprints and causal-identity counts against the proposed caps. Footprints include
+retained Put barriers; counters are sampled separately and can change. The owner
+generation labels the sample, without certifying a native applied cut. This is
+local guidance, not a cluster-wide measurement or an admission prediction. A cap
+of zero is unlimited; a count equal to its cap is not over it. Preview neither
+commits policy nor evicts data; replication and restore may exceed local caps.
+
 A missing owner still reports unavailable, and recovered unsupported
 prepared/adopted state refuses public startup. Source composition and component
 checks do not establish integrated delivery or final real-server acceptance.

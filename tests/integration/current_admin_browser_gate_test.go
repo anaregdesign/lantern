@@ -228,6 +228,7 @@ func currentAdminBrowserAPI(method, path string) bool {
 		"/browser" + graphv1connect.LanternSecurityServiceGetCurrentPrincipalProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure,
+		"/browser" + graphv1connect.LanternSecurityServicePreviewOperationalPolicyProcedure,
 		"/browser" + graphv1connect.LanternSecurityServicePrepareSecurityChangesProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure,
 		"/browser" + graphv1connect.LanternSecurityServiceGetSecurityChangeStatusProcedure:
@@ -790,12 +791,12 @@ func runCurrentAdminBrowser(t *testing.T, ctx context.Context, upstream *httptes
 }
 
 func TestCurrentAdminBrowserFixedTargets(t *testing.T) {
-	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/session"}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure}} {
+	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/session"}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure}, {http.MethodPost, "/browser" + graphv1connect.LanternSecurityServicePreviewOperationalPolicyProcedure}} {
 		if !currentAdminBrowserAPI(input.method, input.path) {
 			t.Fatal("required exact browser route missing")
 		}
 	}
-	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/logout"}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure}, {http.MethodPost, "/graph.v1.LanternService/PutVertices"}, {http.MethodPost, "/browser/graph.v1.LanternSecurityService/ListIssuers"}, {http.MethodPost, "https://other.example/auth/session"}} {
+	for _, input := range []struct{ method, path string }{{http.MethodGet, "/auth/logout"}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetLogSettingsProcedure}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServiceGetOperationalSettingsProcedure}, {http.MethodGet, "/browser" + graphv1connect.LanternSecurityServicePreviewOperationalPolicyProcedure}, {http.MethodPost, graphv1connect.LanternSecurityServicePreviewOperationalPolicyProcedure}, {http.MethodPost, "/graph.v1.LanternService/PutVertices"}, {http.MethodPost, "/browser/graph.v1.LanternSecurityService/ListIssuers"}, {http.MethodPost, "https://other.example/auth/session"}} {
 		if currentAdminBrowserAPI(input.method, input.path) {
 			t.Fatal("unexpected gateway route admitted", input)
 		}

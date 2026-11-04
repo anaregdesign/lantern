@@ -238,6 +238,22 @@ func (a *currentOperationalAcceptance) Adopt(t *testing.T) {
 		t.Fatal("managed production did not create an actual backup", produced, err)
 	}
 	capacity := &pb.OperationalCapacityValues{GcEdgeBudget: 7, GcIntervalSeconds: 3600, MaxVertices: 1, MaxEdges: 1, MaxVertexCausalEntries: 1, MaxEdgeCausalEntries: 1}
+	capacityValues := &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_Capacity{Capacity: capacity}}
+	beforePreview := a.read(t, 0)
+	preview, previewErr := a.controls[0].PreviewOperationalPolicy(a.ctx, securityWireRequest(a.token, &pb.PreviewOperationalPolicyRequest{Values: capacityValues}))
+	if previewErr != nil {
+		t.Fatal("actual connected capacity preview", previewErr)
+	}
+	usage := preview.Msg.CapacityUsage
+	if usage == nil || usage.Member != beforePreview.Member || usage.EffectiveGeneration != beforePreview.Groups[4].AppliedGeneration || usage.VertexFootprint < uint64(len(a.keys)) || usage.VerticesOverLimit != (usage.VertexFootprint > 1) || usage.EdgesOverLimit != (usage.EdgeFootprint > 1) || usage.VertexCausalOverLimit != (usage.VertexCausalEntries > 1) || usage.EdgeCausalOverLimit != (usage.EdgeCausalEntries > 1) || preview.Msg.BackupRetention != nil || preview.Msg.CompatibilityFingerprint != "" || !proto.Equal(preview.Msg.Version, beforePreview.Version) || !strings.Contains(preview.Header().Get("Cache-Control"), "no-store") {
+		t.Fatal("capacity preview lacks actual local usage or read-only response guards", preview.Msg)
+	}
+	if denied, err := a.controls[0].PreviewOperationalPolicy(a.ctx, securityWireRequest(a.reader, &pb.PreviewOperationalPolicyRequest{Values: capacityValues})); err == nil || denied != nil {
+		t.Fatal("non-management actor sampled operational capacity", denied, err)
+	}
+	if afterPreview := a.read(t, 0); !proto.Equal(beforePreview, afterPreview) {
+		t.Fatal("capacity preview changed operational policy or native state")
+	}
 	a.commit(t, 5, &pb.OperationalPolicyValues{Group: &pb.OperationalPolicyValues_Capacity{Capacity: capacity}}, false)
 	retained, err := a.data(0).GetVertices(a.ctx, securityWireRequest(a.token, &pb.GetVerticesRequest{Keys: a.keys}))
 	if err != nil || len(retained.Msg.Vertices) != len(a.keys) || len(retained.Msg.Missing) != 0 {

@@ -48,6 +48,7 @@ import {
   GetLogSettingsResponseSchema,
   GetOperationalSettingsResponseSchema,
   GetSecurityChangeStatusRequestSchema,
+  PreviewOperationalPolicyResponseSchema,
 } from "../../../sdks/node/src/gen/graph/v1/security_pb";
 
 type Cookie = {
@@ -922,6 +923,60 @@ async function run(m: Manifest): Promise<Result> {
   const before = scenarioSettings(m.scenario, await firstResponse.json());
   stage = "rendered observation";
   await displayedScenario(page, before);
+  if (before.scenario === "operational-slow-rpc") {
+    stage = "read-only connected capacity preview";
+    const capacity = page.getByRole("region", {
+      name: "Graph capacity and garbage collection",
+      exact: true,
+    });
+    await capacity
+      .getByRole("button", {
+        name: "Edit graph capacity and garbage collection",
+        exact: true,
+      })
+      .click();
+    if (
+      !before.value.groups.find((g) => g.group === OperationalGroup.CAPACITY)
+        ?.desired
+    )
+      await capacity
+        .getByRole("button", {
+          name: "Use this node’s values for adoption",
+          exact: true,
+        })
+        .click();
+    await capacity.getByLabel("Max vertices", { exact: true }).fill("1");
+    const response = page.waitForResponse(
+      (r) =>
+        requestMethod(r.request(), m.origin) === "PreviewOperationalPolicy" &&
+        r.status() === 200,
+      { timeout: bounded(20_000) },
+    );
+    void response.catch(() => undefined);
+    await capacity
+      .getByRole("button", {
+        name: "Preview connected-node capacity",
+        exact: true,
+      })
+      .click();
+    const sampled = fromJson(
+      PreviewOperationalPolicyResponseSchema,
+      await (await response).json(),
+    );
+    assert.equal(sampled.capacityUsage?.member, before.value.member);
+    const sample = capacity.getByRole("table", {
+      name: "Capacity usage sample",
+      exact: true,
+    });
+    await check(sample.getByRole("row")).toHaveCount(5);
+    await check(
+      sample.getByRole("row").filter({ hasText: "Vertex admission footprint" }),
+    ).toContainText(sampled.capacityUsage!.vertexFootprint.toString());
+    await capacity.getByLabel("Max vertices", { exact: true }).fill("2");
+    await check(sample).toHaveCount(0);
+    assert.equal(requests.ApplySecurityChanges.length, 0);
+    assert.equal(requests.PrepareSecurityChanges.length, 0);
+  }
   const target =
     before.scenario === "log"
       ? before.value.effectiveLevel === ManagedLogLevel.INFO
