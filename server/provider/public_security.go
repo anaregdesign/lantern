@@ -11,16 +11,19 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/readiness"
 )
 
 type publicSecurityCertified struct {
-	runtime  *SecurityRuntime
-	primary  *dataruntime.Executor
-	slowRPC  *SlowRPCInterceptor
-	rate     *RateLimitInterceptor
-	recovery *rateRecoveryRuntime
+	runtime   *SecurityRuntime
+	primary   *dataruntime.Executor
+	slowRPC   *SlowRPCInterceptor
+	rate      *RateLimitInterceptor
+	recovery  *rateRecoveryRuntime
+	request   *ManagedRequestRuntime
+	validator *ValidationInterceptor
 }
 
 func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified, operational managedOperationalCertified) (publicSecurityCertified, error) {
@@ -29,6 +32,9 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	}
 	if operational.runtime != runtime || operational.manager == nil || runtime.managedOperational != operational.manager || operational.slowRPC == nil || operational.rate == nil || !operational.recovery.bound(runtime, operational.rate) {
 		return publicSecurityCertified{}, errors.New("public security requires the exact restored operational owners")
+	}
+	if primary == nil || operational.primary != primary || operational.request == nil || operational.request.manager != operational.manager || operational.request.executor != primary || operational.validator == nil || operational.validator != operational.request.validator || operational.request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil {
+		return publicSecurityCertified{}, errors.New("public security requires the exact installed request owner and validator")
 	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
@@ -53,7 +59,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if err := runtime.protectDataService(primary); err != nil {
 		return publicSecurityCertified{}, err
 	}
-	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery}, nil
+	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery, request: operational.request, validator: operational.validator}, nil
 }
 
 func certifyEdgeCreateTopology(primary *dataruntime.Executor, mode string, voters int, peer *PeerIdentityRuntime) error {

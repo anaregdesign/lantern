@@ -32,7 +32,15 @@ order, RPC and authorization binding. Changing the page size or operational
 generation alone does not invalidate that cursor. Authorization and final
 output admission remain current independently of the operational snapshot.
 
-The runtime seam is covered by paired owner/interceptor tests and
-`tests/integration/request_policy_gate_test.go` over Connect. It does not itself
-implement persistence, adoption or management RPCs; those use the native typed
-control plane in the later integration package.
+The native typed control plane owns adoption, review/CAS, audit, persistence and
+recovery. Before public certification, the managed adapter restores the Request
+group into the actual primary Executor and its actual validator through one
+registered owner. Public composition requires those same concrete owners;
+substituting an equal-valued validator or another Executor is refused. OFF keeps
+its environment-owned startup values. Other operational groups gain support only
+when their own real runtime owners are installed.
+
+Paired owner/interceptor tests and
+`tests/integration/request_policy_gate_test.go` cover Connect request snapshots,
+concurrent changes and existing cursor semantics. Those checks do not substitute
+for exact-source native adoption, management UI or final integration acceptance.

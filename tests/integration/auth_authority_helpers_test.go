@@ -159,6 +159,52 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
 		t.Skip("current-authority wire case requires the coordinated functional-validation/configured-source-integration campaign")
 	}
+	// Capture explicit fixture overrides in the same input load as every
+	// operational value. Restore process input before composing any runtime.
+	startup, err := func() (config *provider.Config, err error) {
+		type priorValue struct {
+			key, value string
+			present    bool
+		}
+		var prior []priorValue
+		defer func() {
+			for i := len(prior) - 1; i >= 0; i-- {
+				value := prior[i]
+				var restoreErr error
+				if value.present {
+					restoreErr = os.Setenv(value.key, value.value)
+				} else {
+					restoreErr = os.Unsetenv(value.key)
+				}
+				if restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore fixture startup input %s: %w", value.key, restoreErr))
+				}
+			}
+		}()
+		if len(traversalLimits) > 0 {
+			limits := traversalLimits[0]
+			for _, override := range []struct {
+				key   string
+				value int
+			}{
+				{"LANTERN_TRAVERSAL_MAX_PUSHES", limits.WorkBudget.MaxPushes},
+				{"LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES", limits.WorkBudget.MaxTouchedEdges},
+				{"LANTERN_TRAVERSAL_MAX_RESULTS", limits.MaxResults},
+			} {
+				// WithTraversalLimits historically ignores nonpositive fields.
+				if override.value <= 0 {
+					continue
+				}
+				value, present := os.LookupEnv(override.key)
+				t.Setenv(override.key, strconv.Itoa(override.value))
+				prior = append(prior, priorValue{override.key, value, present})
+			}
+		}
+		return provider.NewConfig()
+	}()
+	if err != nil {
+		t.Fatal("captured operational startup values", err)
+	}
 	previousLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	f := newOIDCWireIssuer(t)
@@ -199,7 +245,6 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 		return nil
 	}
 	var data *service.ServingRuntime
-	var err error
 	if durableReceipts {
 		durable := durableReceiptWireConfig(filepath.Join(dir, "receipts.wal"), hlc.NodeID{8})
 		durable.NamespaceFormat = "namespaced-v1"
@@ -237,12 +282,12 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal("verified log-policy recovery", err)
 	}
-	dataService := data.NewExecutor(nil).WithLogger(servingLogger).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
+	dataService := data.NewExecutor(nil).WithLogger(servingLogger).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true}).
+		WithScanLimits(service.ScanLimits(startup.Scan)).
+		WithTraversalTimeout(startup.Traversal.Timeout).
+		WithTraversalLimits(service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: startup.Traversal.MaxPushes, MaxTouchedEdges: startup.Traversal.MaxTouchedEdges}, MaxResults: startup.Traversal.MaxResults})
 	if durableReceipts {
 		dataService.WithTombstoneTTL(time.Hour)
-	}
-	if len(traversalLimits) > 0 {
-		dataService.WithTraversalLimits(traversalLimits[0])
 	}
 	peer, err := data.NewReplication(dataService)
 	if err != nil {
@@ -265,10 +310,6 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 			t.Fatal(err)
 		}
 	}
-	startup, err := provider.NewConfig()
-	if err != nil {
-		t.Fatal("captured operational startup values", err)
-	}
 	operationalRuntime, err := provider.NewManagedOperationalRuntime(t.Context(), runtime, provider.NewOperationalBootstrapConfig(startup))
 	if err != nil {
 		t.Fatal("verified operational policy recovery", err)
@@ -287,7 +328,12 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal("actual rate owner recovery", err)
 	}
-	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, slowCertified, rateCertified)
+	validator := provider.NewValidationInterceptor(startup.Validation)
+	requestRuntime, err := provider.NewManagedRequestRuntime(t.Context(), operationalRuntime, dataService, validator)
+	if err != nil {
+		t.Fatal("actual request owner recovery", err)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime)
 	if err != nil {
 		t.Fatal("operational owner certification", err)
 	}
@@ -298,7 +344,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	f.server = httptest.NewUnstartedServer(nil)
 	listener, err := provider.NewPublicLanternListener(f.server.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{EnableReflection: true}, provider.CORSConfig{}, dataService, runtime,
 		provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}},
-		nil, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), servingLogger, publicCertified, rateRecovery)
+		validator, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), servingLogger, publicCertified, rateRecovery)
 	if err != nil {
 		t.Fatal(err)
 	}

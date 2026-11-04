@@ -176,6 +176,8 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewRateLimitInterceptorProvider(",
 		"provider.NewRateRecoveryRuntime(",
 		"provider.NewManagedRateRuntime(",
+		"provider.NewValidationInterceptorProvider(",
+		"provider.NewManagedRequestRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
@@ -197,10 +199,14 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, owner := range []string{"provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime("} {
+	for _, owner := range []string{"provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime("} {
 		if strings.Count(text, owner) != 1 {
 			t.Fatalf("generated injector does not construct exactly one %q", owner)
 		}
+	}
+	if !strings.Contains(text, "provider.NewManagedRequestRuntime(ctx, managedOperationalRuntime, executor, validationInterceptor)") ||
+		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime)") {
+		t.Fatal("generated injector does not certify the actual Request executor and validator together")
 	}
 	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
