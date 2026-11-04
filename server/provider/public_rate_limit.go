@@ -2,7 +2,7 @@ package provider
 
 import (
 	"connectrpc.com/connect"
-	"errors"
+	"github.com/anaregdesign/lantern/server/internal/security"
 	"net/http"
 	"strings"
 )
@@ -17,7 +17,6 @@ func publicRateLimitWithRecovery(handler http.Handler, limiter *RateLimitInterce
 	if limiter == nil {
 		return handler
 	}
-	writer := connect.NewErrorWriter()
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/grpc.health.v1.Health/Check" || limiter.Allow() || recovery.allow(req) {
 			handler.ServeHTTP(w, req)
@@ -25,9 +24,10 @@ func publicRateLimitWithRecovery(handler http.Handler, limiter *RateLimitInterce
 		}
 		limiter.rejected()
 		if strings.HasPrefix(req.URL.Path, "/auth/") {
+			security.BindCurrentFailure(w)
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}
-		_ = writer.Write(w, req, connect.NewError(connect.CodeResourceExhausted, errors.New("rate limit exceeded")))
+		publicRPCError(w, req, connect.CodeResourceExhausted)
 	})
 }
