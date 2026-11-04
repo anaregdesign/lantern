@@ -148,7 +148,27 @@ func TestGraphMutationReceiverScratchStallKeepsPrefixAndWholeGraph(t *testing.T)
 }
 
 func TestGraphMutationSubscribeRequiresExplicitAcceptance(t *testing.T) {
-	runtime, svc, original := graphMutationCommittedFixture(t)
+	// Seed validated wire input for capability negotiation, without claiming
+	// that it proves a live receipt-safe commit.
+	original, err := decodeGraphMutation(graphMutationEnvelopeFixture(t).Mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := hlcFromProto(original.Mutation.GetHlc())
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 2})
+	runtime, err := NewGraphOnlyServingRuntime(
+		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour), log,
+		hlc.New(stamp.NodeID, hlc.Options{}),
+	)
+	if err != nil {
+		_ = log.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc := runtime.NewExecutor(nil)
+	if _, err := log.Append(original, stamp); err != nil {
+		t.Fatal(err)
+	}
 	peer, err := runtime.NewReplication(svc)
 	if err != nil {
 		t.Fatal(err)
