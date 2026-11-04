@@ -60,7 +60,7 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 			return oidc.ErrInvalidDocument
 		}
 		return r.fetcher.ValidateIssuer(ctx, i, r.secrets)
-	}, CurrentBeginAuthorization: r.authentication.BeginCurrentManagementAuthorization, CurrentReadAuthorization: r.authentication.ReadCurrentManagementAuthorization, LogSettingsObserver: r.logSettingsObservation})
+	}, CurrentBeginAuthorization: r.authentication.BeginCurrentManagementAuthorization, CurrentReadAuthorization: r.authentication.ReadCurrentManagementAuthorization, LogSettingsObserver: r.logSettingsObservation, OperationalSettingsObserver: r.operationalSettingsObservation})
 	return err
 }
 

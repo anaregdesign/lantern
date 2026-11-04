@@ -41,7 +41,8 @@ import (
 
 // ConnectInterceptor returns a connect.UnaryInterceptorFunc that emits
 // the warn-level "slow rpc" slog channel. Threshold of 0 disables
-// emission. The resident owner captures its threshold at each request entry.
+// emission. The resident owner captures its threshold/generation tuple once at
+// each request entry.
 //
 // Fields:
 //
@@ -50,10 +51,12 @@ import (
 //   - code          Connect status code string (e.g. "not_found", "ok")
 //   - duration_ms   handler wall-clock in milliseconds
 //   - threshold_ms  the configured threshold in milliseconds
+//   - policy_generation the captured generation, zero for bootstrap
 func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			threshold := s.Threshold()
+			policy := s.Snapshot()
+			threshold := policy.Threshold
 			if s == nil || s.logger == nil || threshold <= 0 {
 				return next(ctx, req)
 			}
@@ -78,6 +81,7 @@ func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 					slog.String("code", connectCodeString(err)),
 					slog.Int64("duration_ms", d.Milliseconds()),
 					slog.Int64("threshold_ms", threshold.Milliseconds()),
+					slog.Uint64("policy_generation", policy.Generation),
 				}
 				if hasIlluminateLabels {
 					attrs = append(attrs, illuminateLabels.slogAttrs()...)

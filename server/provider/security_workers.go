@@ -41,6 +41,12 @@ func (r *SecurityRuntime) readyObserved(ctx context.Context) (bool, string) {
 			if r.managedLog == nil || r.managedLog.reconcile(ctx) != nil {
 				return false, "unavailable"
 			}
+			// Application/pending status is independent from authentication
+			// authority. Actual missing owners already fail native Ready; a
+			// failed hot application must leave management recovery usable.
+			if r.managedOperational != nil {
+				_ = r.managedOperational.Reconcile(ctx)
+			}
 			return true, "ready"
 		}
 		return false, "unavailable"

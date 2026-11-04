@@ -18,11 +18,15 @@ import (
 type publicSecurityCertified struct {
 	runtime *SecurityRuntime
 	primary *dataruntime.Executor
+	slowRPC *SlowRPCInterceptor
 }
 
-func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified) (publicSecurityCertified, error) {
+func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified, operational managedOperationalCertified) (publicSecurityCertified, error) {
 	if logging.runtime != runtime || logging.owner == nil || logging.adapter == nil || runtime == nil || runtime.managedLog != logging.adapter || logging.adapter.owner != logging.owner {
 		return publicSecurityCertified{}, errors.New("public security requires the exact restored logging owner")
+	}
+	if operational.runtime != runtime || operational.manager == nil || runtime.managedOperational != operational.manager || operational.slowRPC == nil {
+		return publicSecurityCertified{}, errors.New("public security requires the exact restored operational owners")
 	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
@@ -47,7 +51,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if err := runtime.protectDataService(primary); err != nil {
 		return publicSecurityCertified{}, err
 	}
-	return publicSecurityCertified{runtime: runtime, primary: primary}, nil
+	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC}, nil
 }
 
 func certifyEdgeCreateTopology(primary *dataruntime.Executor, mode string, voters int, peer *PeerIdentityRuntime) error {

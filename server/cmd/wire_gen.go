@@ -82,7 +82,30 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, executor, runtimeCertified, managedLogCertified)
+	operationalBootstrapConfig := provider.NewOperationalBootstrapConfig(config)
+	managedOperationalRuntime, err := provider.NewManagedOperationalRuntime(ctx, securityRuntime, operationalBootstrapConfig)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(v, logger)
+	managedSlowRPCCertified, err := provider.NewManagedSlowRPCRuntime(ctx, managedOperationalRuntime, slowRPCInterceptor, v)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	managedOperationalCertified, err := provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, managedSlowRPCCertified)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, executor, runtimeCertified, managedLogCertified, managedOperationalCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -110,7 +133,6 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(v7, domainMetrics)
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
-	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(v, logger)
 	healthChecker := provider.NewHealthChecker()
 	lanternListener, err := provider.NewPublicLanternListener(listener, v6, tlsConfig, v, corsConfig, executor, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
 	if err != nil {
