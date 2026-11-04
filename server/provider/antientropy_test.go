@@ -52,15 +52,15 @@ func TestSearchCertifiedAntiEntropyRefusesEqualFingerprintForeignPump(t *testing
 	}
 	for name, tc := range map[string]struct {
 		fixture searchPeerTestFixture
-		pump *replication.Pump
+		pump    *replication.Pump
 		witness searchPumpCertified
 	}{
-		"missing Pump": {f, nil, witness},
-		"foreign Pump": {f, foreignPump, witness},
-		"missing witness": {f, pump, searchPumpCertified{}},
-		"foreign witness": {f, pump, foreignWitness},
-		"foreign graph": {searchPeerTestFixture{manager: f.manager, primary: f.primary, cache: foreign.cache, certified: f.certified, search: f.search}, pump, witness},
-		"foreign Search": {searchPeerTestFixture{manager: f.manager, primary: f.primary, cache: f.cache, certified: f.certified, search: foreign.search}, pump, witness},
+		"missing Pump":        {f, nil, witness},
+		"foreign Pump":        {f, foreignPump, witness},
+		"missing witness":     {f, pump, searchPumpCertified{}},
+		"foreign witness":     {f, pump, foreignWitness},
+		"foreign graph":       {searchPeerTestFixture{manager: f.manager, primary: f.primary, cache: foreign.cache, certified: f.certified, search: f.search}, pump, witness},
+		"foreign Search":      {searchPeerTestFixture{manager: f.manager, primary: f.primary, cache: f.cache, certified: f.certified, search: foreign.search}, pump, witness},
 		"foreign certificate": {searchPeerTestFixture{manager: f.manager, primary: f.primary, cache: f.cache, certified: foreign.certified, search: f.search}, pump, witness},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -325,10 +325,10 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 	}
 	manager.lifecycle = lifecycleEntry
 	for name, change := range map[string]func(*managedSearchCertified){
-		"manager": func(c *managedSearchCertified) { c.manager = &ManagedOperationalRuntime{} },
-		"primary": func(c *managedSearchCertified) { c.primary = runtime.data.NewExecutor(nil) },
-		"missing runtime": func(c *managedSearchCertified) { c.runtime = nil },
-		"foreign runtime": func(c *managedSearchCertified) { c.runtime = &ManagedSearchRuntime{manager: manager, primary: primary} },
+		"manager":              func(c *managedSearchCertified) { c.manager = &ManagedOperationalRuntime{} },
+		"primary":              func(c *managedSearchCertified) { c.primary = runtime.data.NewExecutor(nil) },
+		"missing runtime":      func(c *managedSearchCertified) { c.runtime = nil },
+		"foreign runtime":      func(c *managedSearchCertified) { c.runtime = &ManagedSearchRuntime{manager: manager, primary: primary} },
 		"missing installation": func(c *managedSearchCertified) { c.installation = dataruntime.SearchPolicyInstallation{} },
 	} {
 		t.Run("Search/"+name, func(t *testing.T) {
@@ -370,7 +370,7 @@ func TestManagedOperationalCertificationKeepsInvalidRateAvailableForRepair(t *te
 			backupMarker := operationalPublicTestBackup(t, manager, primary, cfg)
 			capacityMarker := operationalPublicTestCapacity(t, manager, primary, cfg)
 			lifecycleMarker := operationalPublicTestLifecycle(t, manager, cfg)
-	searchMarker := operationalPublicTestSearch(t, manager, primary)
+			searchMarker := operationalPublicTestSearch(t, manager, primary)
 			certified, err := NewManagedOperationalCertified(t.Context(), runtime, manager, primary, slowMarker, rate, request, backupMarker, capacityMarker, lifecycleMarker, searchMarker)
 			if err != nil || certified.rate != rate.owner || certified.recovery != rate.recovery || rate.owner.Allow() {
 				t.Fatal("invalid bootstrap lost its installed repair owner", err)

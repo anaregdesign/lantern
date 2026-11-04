@@ -156,7 +156,14 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	managedOperationalCertified, err := provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified)
+	managedSearchCertified, err := provider.NewManagedSearchRuntime(ctx, managedOperationalRuntime, executor)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	managedOperationalCertified, err := provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified, managedSearchCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -249,10 +256,32 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)
+	searchPumpCertified, err := provider.NewSearchCertifiedReplicationPump(peerConfig, peerResolver, replicationConfig, peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified, managedOperationalRuntime, managedSearchCertified)
+	if err != nil {
+		cleanup4()
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	pump, err := provider.NewSearchReplicationPump(searchPumpCertified)
+	if err != nil {
+		cleanup4()
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
+	antiEntropy, err := provider.NewSearchCertifiedAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection, runtimeCertified, managedOperationalRuntime, managedSearchCertified, searchPumpCertified)
+	if err != nil {
+		cleanup4()
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {

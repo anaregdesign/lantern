@@ -112,16 +112,16 @@ func TestSearchCertifiedPumpRefusesForeignComposition(t *testing.T) {
 		t.Fatal("fixture must exercise equal-valued foreign resources")
 	}
 	for name, mutate := range map[string]func(*searchPeerTestFixture){
-		"missing manager": func(f *searchPeerTestFixture) { f.manager = nil },
-		"foreign manager": func(f *searchPeerTestFixture) { f.manager = foreign.manager },
-		"missing primary": func(f *searchPeerTestFixture) { f.primary = nil },
-		"foreign primary": func(f *searchPeerTestFixture) { f.primary = foreign.primary },
-		"missing graph": func(f *searchPeerTestFixture) { f.cache = nil },
-		"foreign graph": func(f *searchPeerTestFixture) { f.cache = foreign.cache },
+		"missing manager":             func(f *searchPeerTestFixture) { f.manager = nil },
+		"foreign manager":             func(f *searchPeerTestFixture) { f.manager = foreign.manager },
+		"missing primary":             func(f *searchPeerTestFixture) { f.primary = nil },
+		"foreign primary":             func(f *searchPeerTestFixture) { f.primary = foreign.primary },
+		"missing graph":               func(f *searchPeerTestFixture) { f.cache = nil },
+		"foreign graph":               func(f *searchPeerTestFixture) { f.cache = foreign.cache },
 		"invalid runtime certificate": func(f *searchPeerTestFixture) { f.certified.valid = false },
 		"foreign runtime certificate": func(f *searchPeerTestFixture) { f.certified = foreign.certified },
-		"missing Search": func(f *searchPeerTestFixture) { f.search = managedSearchCertified{} },
-		"foreign Search": func(f *searchPeerTestFixture) { f.search = foreign.search },
+		"missing Search":              func(f *searchPeerTestFixture) { f.search = managedSearchCertified{} },
+		"foreign Search":              func(f *searchPeerTestFixture) { f.search = foreign.search },
 	} {
 		t.Run(name, func(t *testing.T) {
 			wrong := f
