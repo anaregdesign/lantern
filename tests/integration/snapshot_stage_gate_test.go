@@ -98,11 +98,13 @@ type snapshotStageGateResult struct {
 
 type snapshotStageGateInstaller struct {
 	replication.SnapshotInstaller
-	limits   replication.SnapshotTransportLimits
-	afterEOF func()
-	stop     context.CancelFunc
-	headers  chan struct{}
-	results  chan snapshotStageGateResult
+	limits          replication.SnapshotTransportLimits
+	onInstallEntry  func()
+	afterEOF        func()
+	onInstallReturn func()
+	stop            context.CancelFunc
+	headers         chan struct{}
+	results         chan snapshotStageGateResult
 }
 
 func (i *snapshotStageGateInstaller) SnapshotTransportLimits() replication.SnapshotTransportLimits {
@@ -110,9 +112,15 @@ func (i *snapshotStageGateInstaller) SnapshotTransportLimits() replication.Snaps
 }
 
 func (i *snapshotStageGateInstaller) Install(ctx context.Context, stream replication.SnapshotStream) (replication.SnapshotInstallResult, error) {
+	if i.onInstallEntry != nil {
+		i.onInstallEntry()
+	}
 	observed := &snapshotStageGateStream{SnapshotStream: stream, afterEOF: i.afterEOF, headers: i.headers}
 	result, err := i.SnapshotInstaller.Install(ctx, observed)
 	observed.result.err, observed.result.contextErr = err, ctx.Err()
+	if i.onInstallReturn != nil {
+		i.onInstallReturn()
+	}
 	// Stop after this one attempt, without renewing its context or opening a
 	// second Snapshot whose admission could hide the first request's expiry.
 	i.stop()
@@ -546,8 +554,13 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 	}
 	// Source preparation is outside this bounded native transfer. Its
 	// admission is minted by the ordinary transport and is never extended.
+	callerBegan := time.Now()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
+	var pumpStart, installEntry, wireEOF, installReturn atomic.Int64
+	for _, mark := range []*atomic.Int64{&pumpStart, &installEntry, &wireEOF, &installReturn} {
+		mark.Store(-1)
+	}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	apply := &snapshotStageGateApply{LanternService: fixture.primary[1]}
@@ -559,7 +572,10 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 	})
 	installer := &snapshotStageGateInstaller{
 		SnapshotInstaller: delegate, limits: bounded.SnapshotTransportLimits(), stop: stop,
-		headers: make(chan struct{}, 1), results: make(chan snapshotStageGateResult, 1),
+		onInstallEntry:  func() { installEntry.Store(int64(time.Since(callerBegan))) },
+		afterEOF:        func() { wireEOF.Store(int64(time.Since(callerBegan))) },
+		onInstallReturn: func() { installReturn.Store(int64(time.Since(callerBegan))) },
+		headers:         make(chan struct{}, 1), results: make(chan snapshotStageGateResult, 1),
 	}
 	transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
 	if err != nil {
@@ -570,17 +586,25 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 		PeerTransport: transport, SnapshotInstaller: installer, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
 	}, apply, graph)
 	done := make(chan error, 1)
-	go func() { done <- pump.Run(runCtx) }()
+	go func() {
+		pumpStart.Store(int64(time.Since(callerBegan)))
+		done <- pump.Run(runCtx)
+	}()
 	joined := false
 	defer func() {
 		stop()
 		if !joined {
+			// This observer only waits after stop. It never replaces or
+			// extends the original context passed to Pump or Snapshot.
 			select {
 			case <-done:
-			case <-ctx.Done():
-				t.Error("large native spool Pump did not join during cleanup", ctx.Err())
+				joined = true
+			case <-time.After(time.Second):
+				t.Error("large native spool Pump did not join within the post-stop observer budget")
 			}
 		}
+		t.Logf("large native spool timing: pump_start_ns=%d install_entry_ns=%d wire_eof_ns=%d install_return_ns=%d observed_total_ns=%d caller_error=%v post_stop_joined=%t",
+			pumpStart.Load(), installEntry.Load(), wireEOF.Load(), installReturn.Load(), time.Since(callerBegan).Nanoseconds(), ctx.Err(), joined)
 	}()
 	var observed snapshotStageGateResult
 	select {
