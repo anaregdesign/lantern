@@ -35,6 +35,7 @@ import (
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // This fixture exercises the certified production public handler composition
@@ -312,7 +313,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	backupConfig.Dir, backupConfig.InstanceID = t.TempDir(), "managed-backup-fixture"
 	backupConfig.NamespaceFormat = data.DataNamespaceFormat()
 	backupConfig.RestoreOnStart, backupConfig.RestoreRequired = false, false
-	producer, err := provider.NewBackupper(backupConfig, receiptConfig, data, dataService, certified, nil, servingLogger)
+	producer, err := provider.NewBackupper(backupConfig, receiptConfig, data, dataService, certified, prometheus.NewRegistry(), servingLogger)
 	if err != nil {
 		t.Fatal("actual backup producer", err)
 	}

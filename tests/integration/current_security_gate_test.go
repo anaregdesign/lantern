@@ -41,6 +41,7 @@ import (
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -265,7 +266,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		backupConfig.Dir, backupConfig.InstanceID = t.TempDir(), "managed-backup-fixture"
 		backupConfig.NamespaceFormat = data.DataNamespaceFormat()
 		backupConfig.RestoreOnStart, backupConfig.RestoreRequired = false, false
-		producer, err := provider.NewBackupper(backupConfig, receiptConfig, data, svc, certified, nil, logger)
+		producer, err := provider.NewBackupper(backupConfig, receiptConfig, data, svc, certified, prometheus.NewRegistry(), logger)
 		if err != nil {
 			t.Fatal("actual backup producer", id, err)
 		}
