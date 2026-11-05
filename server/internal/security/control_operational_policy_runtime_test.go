@@ -101,12 +101,13 @@ func operationalPolicyApplyFixture(t *testing.T, public *CurrentAuthority, comma
 		t.Fatal(err)
 	}
 	result, err := public.Apply(ctx, review, producer, [32]byte{})
+	initialProgress, initialErr := result.Progress, err
 	result, err = operationalPolicyCompleteFixture(ctx, review, result, err, public.Lookup,
 		operationalPolicyRetainedFixture(public, review), func(ctx context.Context) bool {
 			return s3aPause(ctx, public.origin.network.limits.Backoff)
 		})
 	if err != nil {
-		t.Fatal("reviewed native commit failed", result.Progress, err)
+		t.Fatal("reviewed native commit failed", "initial", initialProgress, initialErr, "final", result.Progress, err)
 	}
 	return result
 }
@@ -119,6 +120,12 @@ func operationalPolicyCompleteFixture(ctx context.Context, review CurrentReview,
 	retained func(CurrentChangeResult) error, pause func(context.Context) bool,
 ) (CurrentChangeResult, error) {
 	for {
+		if ctx.Err() != nil {
+			return result, errors.Join(err, ctx.Err())
+		}
+		if _, bounded := ctx.Deadline(); !bounded {
+			return result, errors.Join(err, ErrS1Contract)
+		}
 		if result.Profile != review.Profile || result.ID != review.ID || result.Intent != review.Operation.Digest() {
 			return result, errors.Join(err, ErrS1Contract)
 		}
@@ -131,12 +138,6 @@ func operationalPolicyCompleteFixture(ctx context.Context, review CurrentReview,
 		if !operationalPolicyCreditOnlyFixture(err) || result.Original != nil || result.Progress != CurrentOriginDurable && result.Progress != CurrentChosen {
 			return result, errors.Join(err, ErrS1Contract)
 		}
-		if ctx.Err() != nil {
-			return result, ctx.Err()
-		}
-		if _, bounded := ctx.Deadline(); !bounded {
-			return result, ErrS1Contract
-		}
 		if checkErr := retained(result); checkErr != nil {
 			return result, checkErr
 		}
@@ -144,7 +145,7 @@ func operationalPolicyCompleteFixture(ctx context.Context, review CurrentReview,
 			return result, errors.Join(err, ctx.Err())
 		}
 		if ctx.Err() != nil {
-			return result, ctx.Err()
+			return result, errors.Join(err, ctx.Err())
 		}
 		result, err = lookup(ctx, review.Profile, review.ID, review.Operation.Digest())
 	}

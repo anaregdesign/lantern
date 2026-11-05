@@ -87,7 +87,7 @@ func TestOperationalPolicyFixtureContinuation(t *testing.T) {
 			}
 		})
 	}
-	for _, phase := range []string{"lookup mismatch", "lookup mixed error", "retained mismatch", "cancelled", "cancel while waiting", "cancel in lookup", "expired", "unbounded", "backoff exhausted"} {
+	for _, phase := range []string{"lookup mismatch", "lookup mixed error", "retained mismatch", "cancelled", "cancel while waiting", "cancel in lookup", "late applied cancellation", "expired", "unbounded", "backoff exhausted"} {
 		t.Run(phase, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(s3aTestContext(t))
 			defer cancel()
@@ -104,7 +104,7 @@ func TestOperationalPolicyFixtureContinuation(t *testing.T) {
 				input = context.Background()
 			}
 			lookups, pauses := 0, 0
-			_, err := operationalPolicyCompleteFixture(input, review, pending, errS3ACredit,
+			gotResult, err := operationalPolicyCompleteFixture(input, review, pending, errS3ACredit,
 				func(context.Context, CurrentProfile, FullChangeID, [32]byte) (CurrentChangeResult, error) {
 					lookups++
 					if phase == "lookup mismatch" {
@@ -112,8 +112,11 @@ func TestOperationalPolicyFixtureContinuation(t *testing.T) {
 						wrong.ID.Nonce[0]++
 						return wrong, nil
 					}
-					if phase == "cancel in lookup" {
+					if phase == "cancel in lookup" || phase == "late applied cancellation" {
 						cancel()
+						if phase == "late applied cancellation" {
+							return applied, nil
+						}
 						return pending, errS3ACredit
 					}
 					return pending, errors.Join(errS3ACredit, ErrAuthorityUnavailable)
@@ -130,7 +133,7 @@ func TestOperationalPolicyFixtureContinuation(t *testing.T) {
 					return phase != "backoff exhausted"
 				})
 			wantLookups, wantPauses := 0, 0
-			if phase == "lookup mismatch" || phase == "lookup mixed error" || phase == "cancel in lookup" {
+			if phase == "lookup mismatch" || phase == "lookup mixed error" || phase == "cancel in lookup" || phase == "late applied cancellation" {
 				wantLookups, wantPauses = 1, 1
 			}
 			if phase == "backoff exhausted" || phase == "cancel while waiting" {
@@ -139,8 +142,11 @@ func TestOperationalPolicyFixtureContinuation(t *testing.T) {
 			if err == nil || lookups != wantLookups || pauses != wantPauses {
 				t.Fatal("refusal did not stay bounded", err, lookups, pauses)
 			}
-			if (phase == "cancelled" || phase == "cancel while waiting" || phase == "cancel in lookup") && !errors.Is(err, context.Canceled) || phase == "expired" && !errors.Is(err, context.DeadlineExceeded) {
+			if (phase == "cancelled" || phase == "cancel while waiting" || phase == "cancel in lookup" || phase == "late applied cancellation") && !errors.Is(err, context.Canceled) || phase == "expired" && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal("original context failure changed", err)
+			}
+			if phase == "late applied cancellation" && gotResult != applied {
+				t.Fatal("cancellation erased the actual applied proof")
 			}
 		})
 	}
