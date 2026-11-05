@@ -357,6 +357,8 @@ func TestBackupper_GraphRetentionBoundsPreserveRecoveryPoints(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.Retain = 0
 	b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("bounded")}}, cfg, nil, nil)
+	var n int64
+	b.now = func() time.Time { n++; return time.Unix(0, n) } // strictly increasing stamps
 	for range 2 {
 		if _, err := b.BackupNow(t.Context()); err != nil {
 			t.Fatal(err)
