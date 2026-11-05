@@ -118,17 +118,21 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	operational := operationalPublicTestCertification(t, runtime, NewSlowRPCInterceptor(0, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	for _, mutate := range []func(*managedOperationalCertified){
 		func(c *managedOperationalCertified) { c.rate = nil },
 		func(c *managedOperationalCertified) { c.rate = NewRateLimitInterceptor(0, 0) },
 		func(c *managedOperationalCertified) { c.recovery = nil },
 		func(c *managedOperationalCertified) { copied := *c.recovery; c.recovery = &copied },
+		func(c *managedOperationalCertified) { c.primary = data.NewExecutor(nil) },
+		func(c *managedOperationalCertified) { c.request = nil },
+		func(c *managedOperationalCertified) { c.validator = nil },
+		func(c *managedOperationalCertified) { c.validator = NewValidationInterceptor(c.validator.limits) },
 	} {
 		wrong := operational
 		mutate(&wrong)
 		if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, wrong); err == nil {
-			t.Fatal("foreign or absent managed Rate binding certified")
+			t.Fatal("foreign or absent operational resource certified")
 		}
 	}
 	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, managedLogCertified{}, operational); err == nil {
@@ -150,7 +154,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		t.Fatal("unbound workload certified")
 	}
 	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational)
-	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery {
+	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery || public.request != operational.request || public.validator != operational.validator {
 		t.Fatal(err)
 	}
 	runtime.mode = "oidc"

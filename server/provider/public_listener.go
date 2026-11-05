@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"log/slog"
@@ -25,6 +26,9 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 	}
 	if certified.rate != rl || certified.recovery != recovery || !recovery.bound(runtime, rl) {
 		return nil, errRateRecoveryBinding
+	}
+	if val == nil || certified.validator != val || certified.request == nil || certified.request.executor != svc || certified.request.validator != val || certified.request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil {
+		return nil, errors.New("public listener requires the exact certified request owner and validator")
 	}
 	// Reuse message/TLS/protocol configuration before installing the certified
 	// mux. The listener is not serving during construction.

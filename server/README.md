@@ -209,7 +209,7 @@ failure (#847). The most common knobs:
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Delete-by-prefix caps. |
 | `LANTERN_MAX_KEY_LEN` / `LANTERN_MAX_BATCH_SIZE` | `1024` / `10000` | Validation limits. |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Validation limits. |
-| `LANTERN_TRAVERSAL_TIMEOUT_MS` | `0` | Server-side wall-clock budget for `Illuminate` (#842); `0` = client-owned deadline. |
+| `LANTERN_TRAVERSAL_TIMEOUT_MS` | `5000` | Server-side wall-clock budget for `Illuminate` (#842); `0` = client-owned deadline. |
 | `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` / `0` | Conservative graph-admission soft caps (#848) over live entries plus retained Put barriers. A coexisting live additive edge and Put barrier may count twice; this keeps born-expired Put charged. Replication apply / restore remain exempt. |
 | `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` / `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | `0` / `0` | Separate atomic local-origin budgets over the exact retained causal-identity union (live HLC floor, Put barrier, or Delete tombstone); `0` = unlimited. Replication apply remains exempt for convergence and may take a node over-limit. |
 | `LANTERN_AUTH_MODE` | `off` | Default-off OIDC and Role-only prefix RBAC. OIDC requires complete native security storage, pinned authority and Issuer/admin configuration. Unknown, partial, empty or retired auth settings fail startup. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md) and the [full environment reference](../docs/env.md). |

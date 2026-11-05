@@ -59,6 +59,7 @@ type Executor struct {
 	cache                     Backend
 	runtime                   *ServingRuntime
 	scan                      ScanLimits
+	requestPolicies           RequestPolicySource
 	search                    *query.Engine
 	log                       *mutationlog.Log
 	clock                     *hlc.Clock
@@ -475,12 +476,12 @@ func (s *Executor) WithTraversalLimits(l TraversalLimits) *Executor {
 	return s
 }
 
-func (s *Executor) effectiveTraversalResultLimit(requested int, field string) (int, error) {
+func effectiveTraversalResultLimit(requested, maxResults int, field string) (int, error) {
 	if requested == 0 {
-		return s.traversalMaxResults, nil
+		return maxResults, nil
 	}
-	if requested > s.traversalMaxResults {
-		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s %d exceeds traversal result cap %d", field, requested, s.traversalMaxResults))
+	if requested > maxResults {
+		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s %d exceeds traversal result cap %d", field, requested, maxResults))
 	}
 	return requested, nil
 }
@@ -740,6 +741,8 @@ func (s *Executor) appendPreparedLocalMutationLocked(effect mutationlog.Mutation
 // therefore feeds into both the frontier ranking and any subsequent
 // reduction. See #410, #963.
 func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (_ *pb.IlluminateResponse, retErr error) {
+	ctx = s.captureRequestPolicy(ctx)
+	policy := s.requestPolicy(ctx)
 	algoLabel, redLabel, objLabel, weightLabel := illuminateMetricLabels(request)
 	phase := "validation"
 	defer func() {
@@ -757,9 +760,9 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 	// PPR) at the top so the whole handler — walk plus any post-traversal
 	// reduction — shares one deadline. WithTimeout only ever tightens, so a
 	// client deadline shorter than the budget is unaffected.
-	if s.traversalTimeout > 0 {
+	if policy.TraversalTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.traversalTimeout)
+		ctx, cancel = context.WithTimeout(ctx, policy.TraversalTimeout)
 		defer cancel()
 	}
 
@@ -813,7 +816,7 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		// the star by mass. There is no expirations map because the star
 		// edges are synthetic.
 		ppr := params.Ppr
-		topN, limitErr := s.effectiveTraversalResultLimit(int(ppr.GetTopN()), "ppr.top_n")
+		topN, limitErr := effectiveTraversalResultLimit(int(ppr.GetTopN()), policy.Traversal.MaxResults, "ppr.top_n")
 		if limitErr != nil {
 			return nil, limitErr
 		}
@@ -821,7 +824,7 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		phase = "traversal"
 		traversalStart := time.Now()
 		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
-			g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
+			g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, policy.Traversal.WorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
@@ -850,7 +853,7 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		// seed within the community stay as ISOLATED vertices rather than
 		// being dropped or wired up artificially.
 		comm := params.Community
-		maxSize, limitErr := s.effectiveTraversalResultLimit(int(comm.GetMaxSize()), "community.max_size")
+		maxSize, limitErr := effectiveTraversalResultLimit(int(comm.GetMaxSize()), policy.Traversal.MaxResults, "community.max_size")
 		if limitErr != nil {
 			return nil, limitErr
 		}
@@ -858,7 +861,7 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		phase = "traversal"
 		traversalStart := time.Now()
 		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
-			g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
+			g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, policy.Traversal.WorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}

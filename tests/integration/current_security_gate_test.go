@@ -233,7 +233,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			workerStops = append(workerStops, stop)
 			t.Cleanup(stop)
 		}
-		svc := data.NewExecutor(nil)
+		startup, err := provider.NewConfig()
+		if err != nil {
+			t.Fatal("captured operational startup values", id, err)
+		}
+		svc := data.NewExecutor(nil).
+			WithScanLimits(service.ScanLimits(startup.Scan)).
+			WithTraversalTimeout(startup.Traversal.Timeout).
+			WithTraversalLimits(service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: startup.Traversal.MaxPushes, MaxTouchedEdges: startup.Traversal.MaxTouchedEdges}, MaxResults: startup.Traversal.MaxResults})
 		if id == 1 {
 			svc.WithTombstoneTTL(time.Hour)
 		}
@@ -258,10 +265,6 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		startup, err := provider.NewConfig()
-		if err != nil {
-			t.Fatal("captured operational startup values", id, err)
-		}
 		operationalRuntime, err := provider.NewManagedOperationalRuntime(t.Context(), runtime, provider.NewOperationalBootstrapConfig(startup))
 		if err != nil {
 			t.Fatal("verified operational policy recovery", id, err)
@@ -280,7 +283,12 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual rate owner recovery", id, err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, slowCertified, rateCertified)
+		validator := provider.NewValidationInterceptor(startup.Validation)
+		requestRuntime, err := provider.NewManagedRequestRuntime(t.Context(), operationalRuntime, svc, validator)
+		if err != nil {
+			t.Fatal("actual request owner recovery", id, err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -300,7 +308,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 		}
 		rateOwners = append(rateOwners, rateOwner)
-		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public, rateRecovery)
+		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, validator, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public, rateRecovery)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2219,7 +2227,9 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 		t.Fatal("actual atomic Rate bootstrap ownership", state, actual)
 	}
 	for _, future := range initial.Groups {
-		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC || future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE {
+		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST {
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {

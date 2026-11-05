@@ -34,6 +34,11 @@ type (
 	OriginStatesProvider            = dataruntime.OriginStatesProvider
 	SearchConfigFingerprintProvider = dataruntime.SearchConfigFingerprintProvider
 	HotPathMetrics                  = dataruntime.HotPathMetrics
+	RequestPolicy                   = dataruntime.RequestPolicy
+	RequestValidationLimits         = dataruntime.RequestValidationLimits
+	RequestPolicySnapshot           = dataruntime.RequestPolicySnapshot
+	RequestPolicySource             = dataruntime.RequestPolicySource
+	RequestPolicyOwner              = dataruntime.RequestPolicyOwner
 	ScanLimits                      = dataruntime.ScanLimits
 	SearchLimits                    = dataruntime.SearchLimits
 	SearchObservation               = dataruntime.SearchObservation
@@ -106,4 +111,15 @@ func ValidateDataSnapshotNamespace(frames []*pb.SnapshotResponse, expected strin
 
 func WithReplicationTailMetadata(ctx context.Context, values []string, header http.Header) context.Context {
 	return dataruntime.WithReplicationTailMetadata(ctx, values, header)
+}
+
+// NewRequestPolicyOwner constructs the locally effective request policy owner.
+func NewRequestPolicyOwner(initial RequestPolicySnapshot) (*RequestPolicyOwner, error) {
+	return dataruntime.NewRequestPolicyOwner(initial)
+}
+
+// RequestPolicyFromContext observes the captured operational generation. This
+// value conveys no authentication or authorization capability.
+func RequestPolicyFromContext(ctx context.Context) (RequestPolicySnapshot, bool) {
+	return dataruntime.RequestPolicyFromContext(ctx)
 }

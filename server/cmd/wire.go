@@ -51,6 +51,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewManagedOperationalRuntime,
 		provider.NewManagedSlowRPCRuntime,
 		provider.NewManagedRateRuntime,
+		provider.NewManagedRequestRuntime,
 		provider.NewManagedOperationalCertified,
 		provider.NewLogger,
 		provider.NewTracing,

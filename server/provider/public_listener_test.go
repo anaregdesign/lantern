@@ -40,7 +40,7 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	slowOwner := NewSlowRPCInterceptor(0, logger)
-	operational := operationalPublicTestCertification(t, runtime, slowOwner)
+	operational := operationalPublicTestCertification(t, runtime, primary, slowOwner)
 	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational)
 	if err != nil {
 		t.Fatal(err)
@@ -48,15 +48,16 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	server := httptest.NewUnstartedServer(nil)
 	defer server.Close()
 	rateOwner, recovery := operational.rate, operational.recovery
-	listener, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{EnableReflection: true}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery)
+	validator := operational.validator
+	listener, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{EnableReflection: true}, CORSConfig{}, primary, runtime, ChangeConfig{}, validator, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, NewRateLimitInterceptor(0, 0), nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, validator, NewRateLimitInterceptor(0, 0), nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
 		t.Fatal("different rate owner accepted recovery certification")
 	}
 	foreignRecovery := *recovery
-	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, &foreignRecovery); err == nil {
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, validator, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, &foreignRecovery); err == nil {
 		t.Fatal("equal-valued foreign recovery accepted certification")
 	}
 	for name, mutate := range map[string]func(*publicSecurityCertified){
@@ -68,17 +69,22 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 			mutate(&wrong)
 			// The mounted pair is still genuinely bound. Certification must
 			// attest that same pair rather than accepting binding alone.
-			if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, wrong, recovery); err == nil {
+			if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, validator, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, wrong, recovery); err == nil {
 				t.Fatal("foreign certified identity accepted the actual mounted pair")
 			}
 		})
 	}
 	foreign := data.NewExecutor(nil)
-	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, foreign, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, foreign, runtime, ChangeConfig{}, validator, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
 		t.Fatal("different service accepted certification")
 	}
-	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, nil, rateOwner, nil, nil, NewSlowRPCInterceptor(0, logger), NewHealthChecker(), logger, public, recovery); err == nil {
+	if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, validator, rateOwner, nil, nil, NewSlowRPCInterceptor(0, logger), NewHealthChecker(), logger, public, recovery); err == nil {
 		t.Fatal("equal-valued foreign Slow RPC owner accepted certification")
+	}
+	for _, wrong := range []*ValidationInterceptor{nil, NewValidationInterceptor(validator.limits)} {
+		if _, err := NewPublicLanternListener(server.Listener, limits, TLSConfig{}, ObservabilityConfig{}, CORSConfig{}, primary, runtime, ChangeConfig{}, wrong, rateOwner, nil, nil, slowOwner, NewHealthChecker(), logger, public, recovery); err == nil {
+			t.Fatal("absent or equal-valued foreign validator accepted certification")
+		}
 	}
 	server.Config.Handler = listener.Server().Handler
 	server.Start()

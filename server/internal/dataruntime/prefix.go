@@ -27,11 +27,13 @@ import (
 // The vertices slice preserves the requested order — clients that need a
 // different order must sort downstream.
 func (s *Executor) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest) (*pb.ScanVerticesResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
+	scan := s.requestPolicy(ctx).Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
-	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
+	limit := clampLimit(in.GetLimit(), scan.ScanDefaultLimit, scan.ScanMaxLimit)
 
 	cursor, err := decodeCursor(in.GetCursor())
 	if err != nil {
@@ -101,6 +103,8 @@ func (s *Executor) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest)
 // ScanMaxLimit). Only the key string is collected, so vertex values are never
 // materialised onto the wire.
 func (s *Executor) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKeysRequest) (*pb.ScanVertexKeysResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
+	scan := s.requestPolicy(ctx).Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -111,7 +115,7 @@ func (s *Executor) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKeysRequ
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("prefix is required"))
 	}
 	start := time.Now()
-	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
+	limit := clampLimit(in.GetLimit(), scan.ScanDefaultLimit, scan.ScanMaxLimit)
 
 	cursor, err := decodeKeysCursor(in.GetCursor())
 	if err != nil {
@@ -183,11 +187,13 @@ func (s *Executor) CountVerticesByPrefix(ctx context.Context, in *pb.CountVertic
 // vertices *would* be deleted, capped at the same effective limit. The dry
 // run uses CountByPrefix and so inherits its bounded-skew semantics.
 func (s *Executor) DeleteVerticesByPrefix(ctx context.Context, in *pb.DeleteVerticesByPrefixRequest) (*pb.DeleteVerticesByPrefixResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
+	scan := s.requestPolicy(ctx).Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
-	limit := clampLimit(in.GetLimit(), s.scan.DeleteByPrefixDefaultLimit, s.scan.DeleteByPrefixMaxLimit)
+	limit := clampLimit(in.GetLimit(), scan.DeleteByPrefixDefaultLimit, scan.DeleteByPrefixMaxLimit)
 
 	if in.GetDryRun() {
 		var n uint64
@@ -260,6 +266,8 @@ func (s *Executor) DeleteVerticesByPrefix(ctx context.Context, in *pb.DeleteVert
 // edges *would* be deleted, bounded by the same effective limit and the same
 // live-visibility rules as the real delete.
 func (s *Executor) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteEdgesByPrefixRequest) (*pb.DeleteEdgesByPrefixResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
+	scan := s.requestPolicy(ctx).Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -271,7 +279,7 @@ func (s *Executor) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteEdgesBy
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("delete edges by prefix: at least one of tail_prefix / head_prefix must be non-empty"))
 	}
-	limit := clampLimit(in.GetLimit(), s.scan.DeleteByPrefixDefaultLimit, s.scan.DeleteByPrefixMaxLimit)
+	limit := clampLimit(in.GetLimit(), scan.DeleteByPrefixDefaultLimit, scan.DeleteByPrefixMaxLimit)
 
 	if in.GetDryRun() {
 		// Count would-be deletions by walking the same bounded edge scan
@@ -411,11 +419,13 @@ func cursorOrder(o uint8) uint8 {
 // PutEdge auto-create both endpoints as vertices, so the radix already
 // covers every live tail; no parallel edge index exists today.
 func (s *Executor) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest) (*pb.ScanEdgesResponse, error) {
+	ctx = s.captureRequestPolicy(ctx)
+	scan := s.requestPolicy(ctx).Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
-	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
+	limit := clampLimit(in.GetLimit(), scan.ScanDefaultLimit, scan.ScanMaxLimit)
 
 	cursor, err := decodeEdgesCursor(in.GetCursor())
 	if err != nil {
