@@ -39,6 +39,7 @@ type ServingRuntime struct {
 	closed                    atomic.Bool
 	close                     sync.Once
 	closeErr                  error
+	graphPolicy               atomic.Pointer[GraphPolicyOwner]
 }
 
 type receiptServingRuntime struct {

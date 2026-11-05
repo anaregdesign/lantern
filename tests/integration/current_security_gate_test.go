@@ -297,7 +297,15 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual backup owner recovery", id, err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker)
+		graphPolicy, err := provider.NewGraphPolicyOwner(startup.Cache, data, svc, certified)
+		if err != nil {
+			t.Fatal("actual graph policy owner", err)
+		}
+		capacityMarker, err := provider.NewManagedCapacityRuntime(t.Context(), operationalRuntime, graphPolicy)
+		if err != nil {
+			t.Fatal("actual capacity owner recovery", err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -2242,7 +2250,8 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 		if future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SLOW_RPC ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST ||
-			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_BACKUP {
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_BACKUP ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_CAPACITY {
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {

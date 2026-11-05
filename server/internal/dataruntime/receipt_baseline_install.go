@@ -80,7 +80,7 @@ func (s *Executor) installReceiptBaseline(
 		incomingRaw,
 		receiptRuntime.policy,
 		receiptRuntime.defaultTTL,
-		receiptRuntime.configureGraph,
+		s.runtime.configureGraphCandidate,
 	)
 	if err != nil {
 		return fmt.Errorf("service: validate receipt baseline: %w", err)
@@ -417,6 +417,10 @@ func (s *Executor) commitReceiptBaselineAttempt(
 			return fmt.Errorf("service: stage retired receipt catalog baseline: %w", err)
 		}
 		defer retiredStage.Abort()
+		// A managed operational generation may have changed while this
+		// detached candidate was decoded. Rebind only local admission/GC
+		// policy under the final cut; graph, receipts and indexes stay intact.
+		s.runtime.configureCandidateOperationalPolicy(candidate.Graph)
 		graphStage, err := s.runtime.graph.BeginWholeStateInstall(candidate.Graph)
 		if err != nil {
 			return fmt.Errorf("service: stage graph baseline: %w", err)

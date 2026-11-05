@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/grpchealth"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 // LanternServer owns the lifecycle of the primary listener: starts the
@@ -31,6 +32,16 @@ type LanternServer struct {
 	shutdownTimeout time.Duration
 	health          HealthSetter
 	watcher         Watcher
+}
+
+// UsesWatcher verifies the installed GC owner before any lifecycle starts.
+func (s *LanternServer) UsesWatcher(watcher Watcher) bool {
+	if s == nil {
+		return false
+	}
+	owner, ok := watcher.(*dataruntime.GraphPolicyOwner)
+	installed, installedOK := s.watcher.(*dataruntime.GraphPolicyOwner)
+	return ok && installedOK && owner != nil && installed == owner
 }
 
 // Watcher is the lifecycle hook LanternServer uses to drive the cache GC

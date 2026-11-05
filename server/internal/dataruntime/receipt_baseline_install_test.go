@@ -381,6 +381,82 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	}
 }
 
+func TestInstallReceiptBaselineRebindsManagedGraphPolicyAtFinalCut(t *testing.T) {
+	config := baselineRuntimeTestConfig(filepath.Join(t.TempDir(), "managed-policy.wal"))
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
+	owner, err := NewGraphPolicyOwner(runtime, primary, GraphPolicyConfig{GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := GraphPolicyConfig{GCInterval: time.Hour, GCEdgeBudget: 3, MaxVertices: 1, MaxVertexCausalEntries: 10, MaxEdgeCausalEntries: 10}
+	if err := owner.Apply(GraphPolicySnapshot{Generation: 1, Config: initial}); err != nil {
+		t.Fatal(err)
+	}
+	final := initial
+	final.GCEdgeBudget, final.MaxVertexCausalEntries, final.MaxEdgeCausalEntries = 0, 1, 1
+	changed := false
+	runtime.receipt.installFault = func(point receiptBaselineInstallFaultPoint) error {
+		if point == receiptBaselineAfterSidecarBeforeFinalCut && !changed {
+			changed = true
+			return owner.Apply(GraphPolicySnapshot{Generation: 2, Config: final})
+		}
+		return nil
+	}
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatalf("policy change stranded detached baseline: %v", err)
+	}
+	if !changed || owner.Snapshot().Generation != 2 {
+		t.Fatal("mid-install policy generation was not applied")
+	}
+	stats := runtime.graph.CausalMetadataStats()
+	if stats.MaxVertexEntries != 1 || stats.MaxEdgeEntries != 1 {
+		t.Fatalf("installed candidate reverted managed policy: %+v", stats)
+	}
+	if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
+		t.Fatal("managed capacity evicted restored graph")
+	}
+	if hits := runtime.graph.SearchVertices("baseline", 10, ""); len(hits) == 0 {
+		t.Fatal("operational overlay changed the search index")
+	}
+	candidate := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](config.DefaultTTL)
+	if err := runtime.configureGraphCandidate(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if candidate.CausalMetadataStats().MaxVertexEntries != 1 {
+		t.Fatal("future configurator retained old bootstrap causal limits")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	// Durable graph/index restoration remains before native policy adoption;
+	// installing the verified managed generation afterwards must retain data.
+	if _, ok := restarted.graph.GetVertex("baseline-searchable"); !ok {
+		t.Fatal("ordinary restart lost baseline data")
+	}
+	restartedOwner, err := NewGraphPolicyOwner(restarted, restarted.NewExecutor(nil), GraphPolicyConfig{GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restartedOwner.Apply(GraphPolicySnapshot{Generation: 2, Config: final}); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.graph.CausalMetadataStats().MaxVertexEntries != 1 || restartedOwner.Snapshot().Generation != 2 {
+		t.Fatal("post-restore managed policy was not effective")
+	}
+}
+
 func TestInstallReceiptBaselinePristineReceiverClockRebase(t *testing.T) {
 	t.Run("keeps source cut and replays intervening suffix after restart", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "receipts.wal")

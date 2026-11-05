@@ -30,6 +30,9 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 	if val == nil || certified.validator != val || certified.request == nil || certified.request.executor != svc || certified.request.validator != val || certified.request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil {
 		return nil, errors.New("public listener requires the exact certified request owner and validator")
 	}
+	if !certified.capacity.OwnsInstallation(runtime.data, svc) {
+		return nil, errors.New("public listener requires the exact certified graph policy owner")
+	}
 	// Reuse message/TLS/protocol configuration before installing the certified
 	// mux. The listener is not serving during construction.
 	withoutReflection := obs

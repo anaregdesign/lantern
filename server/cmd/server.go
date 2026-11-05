@@ -48,6 +48,7 @@ type App struct {
 	llm             *provider.LLMEngine
 	antiEntropy     *replication.AntiEntropy
 	runtime         *dataruntime.ServingRuntime
+	graphPolicy     *dataruntime.GraphPolicyOwner
 	peerServer      *provider.PeerPlaneServer
 	securityWorkers *provider.SecurityWorkers
 	security        securityLifecycle
@@ -64,6 +65,7 @@ func newApp(
 	logger *slog.Logger,
 	svc *dataruntime.Executor,
 	server *service.LanternServer,
+	graphPolicy *dataruntime.GraphPolicyOwner,
 	metricsServer provider.MetricsServer,
 	tracing *provider.Tracing,
 	domain *domainmetrics.DomainMetrics,
@@ -85,7 +87,10 @@ func newApp(
 	peerPlane provider.PeerPlaneConfig,
 	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
-) *App {
+) (*App, error) {
+	if !server.UsesWatcher(graphPolicy) || !graphPolicy.OwnsInstallation(runtime, svc) {
+		return nil, errors.New("app requires the exact managed graph owner")
+	}
 	// Wire the replication snapshotter onto svc here (rather than inside
 	// newLanternService) because pump itself depends on svc; that cycle
 	// is broken by deferring the binding until after both have been
@@ -122,11 +127,12 @@ func newApp(
 		pump:            pump,
 		antiEntropy:     antiEntropy,
 		runtime:         runtime,
+		graphPolicy:     graphPolicy,
 		peerServer:      peerServer,
 		securityWorkers: securityWorkers,
 		security:        security,
 		peerIdentity:    peerIdentity,
-	}
+	}, nil
 }
 
 // clampU32 safely narrows an arbitrary platform-sized int (e.g. a value

@@ -70,6 +70,14 @@ func TestOperationalBootstrapParserAndDerivedSources(t *testing.T) {
 		{"valid-false", []string{"LANTERN_BACKUP_ENABLED=false"}, "LANTERN_BACKUP_ENABLED", OperationalBootstrapEnvironment},
 		{"backup-path-disable", []string{"LANTERN_BACKUP_ENABLED=true"}, "LANTERN_BACKUP_ENABLED", OperationalBootstrapDerived},
 		{"backup-valid-true", []string{"LANTERN_BACKUP_ENABLED=true", "LANTERN_BACKUP_DIR=/fixture/backups"}, "LANTERN_BACKUP_ENABLED", OperationalBootstrapEnvironment},
+		{"unset-vertices", nil, "LANTERN_MAX_VERTICES", OperationalBootstrapDefault},
+		{"empty-vertices", []string{"LANTERN_MAX_VERTICES= \t "}, "LANTERN_MAX_VERTICES", OperationalBootstrapDefault},
+		{"malformed-vertices", []string{"LANTERN_MAX_VERTICES=bad"}, "LANTERN_MAX_VERTICES", OperationalBootstrapDefault},
+		{"overflowed-vertices", []string{"LANTERN_MAX_VERTICES=-999999999999999999999999"}, "LANTERN_MAX_VERTICES", OperationalBootstrapDefault},
+		{"negative-vertices", []string{"LANTERN_MAX_VERTICES= -1 "}, "LANTERN_MAX_VERTICES", OperationalBootstrapDerived},
+		{"negative-edges", []string{"LANTERN_MAX_EDGES=-2"}, "LANTERN_MAX_EDGES", OperationalBootstrapDerived},
+		{"zero-vertices", []string{"LANTERN_MAX_VERTICES=0"}, "LANTERN_MAX_VERTICES", OperationalBootstrapEnvironment},
+		{"positive-edges", []string{"LANTERN_MAX_EDGES=7"}, "LANTERN_MAX_EDGES", OperationalBootstrapEnvironment},
 		{"derived-burst", []string{"LANTERN_RATE_LIMIT_RPS=2.5"}, "LANTERN_RATE_LIMIT_BURST", OperationalBootstrapDerived},
 		{"malformed-derived-burst", []string{"LANTERN_RATE_LIMIT_RPS=2.5", "LANTERN_RATE_LIMIT_BURST=bad"}, "LANTERN_RATE_LIMIT_BURST", OperationalBootstrapDerived},
 		{"empty-derived-burst", []string{"LANTERN_RATE_LIMIT_RPS=2.5", "LANTERN_RATE_LIMIT_BURST="}, "LANTERN_RATE_LIMIT_BURST", OperationalBootstrapDerived},
@@ -95,6 +103,9 @@ func TestOperationalBootstrapParserAndDerivedSources(t *testing.T) {
 			}
 			if strings.Contains(fmt.Sprintf("%#v", metadata), "private-malformed-input") {
 				t.Fatal("raw finding retained in provenance")
+			}
+			if test.name == "negative-vertices" && cfg.Cache.MaxVertices != -1 || test.name == "negative-edges" && cfg.Cache.MaxEdges != -2 {
+				t.Fatal("source capture changed the loaded legacy aggregate cap", cfg.Cache)
 			}
 			if test.name == "nan-rps" {
 				values := operationalpolicy.Values{Rate: &operationalpolicy.Rate{RPS: cfg.RateLimit.RPS, Burst: int64(cfg.RateLimit.Burst)}}

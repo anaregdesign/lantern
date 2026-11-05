@@ -163,6 +163,15 @@ func captureOperationalBootstrap(reader *envconfig.Reader, rate RateLimitConfig,
 					source = OperationalBootstrapDerived
 				}
 			}
+		case "LANTERN_MAX_VERTICES", "LANTERN_MAX_EDGES":
+			// The owner preserves legacy nonpositive aggregate admission as
+			// unlimited, represented by canonical zero. Keep the original load
+			// untouched and expose that constructor normalization as derived.
+			if source == OperationalBootstrapEnvironment {
+				if explicit, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && explicit < 0 {
+					source = OperationalBootstrapDerived
+				}
+			}
 		}
 		result.sources[index] = source
 	}

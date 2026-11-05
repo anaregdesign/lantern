@@ -344,7 +344,15 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal("actual backup owner recovery", err)
 	}
-	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker)
+	graphPolicy, err := provider.NewGraphPolicyOwner(startup.Cache, data, dataService, certified)
+	if err != nil {
+		t.Fatal("actual graph policy owner", err)
+	}
+	capacityMarker, err := provider.NewManagedCapacityRuntime(t.Context(), operationalRuntime, graphPolicy)
+	if err != nil {
+		t.Fatal("actual capacity owner recovery", err)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker)
 	if err != nil {
 		t.Fatal("operational owner certification", err)
 	}
