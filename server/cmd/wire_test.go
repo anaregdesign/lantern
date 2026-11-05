@@ -163,6 +163,12 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
+	shutdownPlanName := ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, ":= provider.NewManagedShutdownPlan(managedLifecycleCertified)") {
+			shutdownPlanName = strings.TrimSpace(strings.SplitN(line, ",", 2)[0])
+		}
+	}
 	ordered := []string{
 		"provider.NewServingRuntime(",
 		"newLanternService(",
@@ -181,6 +187,8 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewManagedBackupRuntime(",
 		"provider.NewGraphPolicyOwner(",
 		"provider.NewManagedCapacityRuntime(",
+		"provider.NewServingReadinessGate(",
+		"provider.NewManagedLifecycleRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
@@ -202,7 +210,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime("} {
+	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime(", "provider.NewServingReadinessGate(", "provider.NewManagedLifecycleRuntime(", "provider.NewManagedShutdownPlan(", "provider.NewManagedLifecycleConfig("} {
 		if strings.Count(text, owner) != 1 {
 			t.Fatalf("generated injector does not construct exactly one %q", owner)
 		}
@@ -211,16 +219,22 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		!strings.Contains(text, "provider.NewManagedBackupRuntime(ctx, managedOperationalRuntime, backupper)") ||
 		!strings.Contains(text, "provider.NewGraphPolicyOwner(cacheConfig, servingRuntime, executor, runtimeCertified)") ||
 		!strings.Contains(text, "provider.NewManagedCapacityRuntime(ctx, managedOperationalRuntime, graphPolicyOwner)") ||
-		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified)") {
+		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified)") {
 		t.Fatal("generated injector does not certify the actual Request executor and validator together")
 	}
 	if !strings.Contains(text, "service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphPolicyOwner, executor, replication)") ||
-		!strings.Contains(text, "newApp(config, logger, executor, lanternServer, graphPolicyOwner, metricsServer") {
+		shutdownPlanName == "" || !strings.Contains(text, "newApp(config, logger, executor, lanternServer, "+shutdownPlanName+", graphPolicyOwner, metricsServer") {
 		t.Fatal("generated injector does not share one managed GC watcher with LanternServer and App")
 	}
 	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||
-		!strings.Contains(text, "gate, v8, backupper, backupConfig, peerConfig") {
+		!strings.Contains(text, "backupper, backupConfig, peerConfig") {
 		t.Fatal("generated injector does not share the certified Backup producer with App")
+	}
+	if strings.Contains(text, "provider.NewLifecycleConfig(") ||
+		!strings.Contains(text, "provider.NewManagedLifecycleConfig(cacheConfig, managedLifecycleCertified)") ||
+		!strings.Contains(text, "provider.NewManagedShutdownPlan(managedLifecycleCertified)") ||
+		!strings.Contains(text, "readinessConfig, gate)") {
+		t.Fatal("generated injector does not share the actual readiness gate and shutdown plan")
 	}
 	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
@@ -257,6 +271,9 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	}
 	if !app.graphPolicy.OwnsInstallation(app.runtime, app.svc) || !app.server.UsesWatcher(app.graphPolicy) {
 		t.Fatal("App GC watcher differs from the certified graph owner")
+	}
+	if !app.server.UsesShutdownPlan(app.shutdownPlan) || app.shutdownPlan.Current().Generation != 0 {
+		t.Fatal("App and public HTTP server do not share the bootstrap shutdown plan")
 	}
 	stats, err := app.backupper.BackupNow(t.Context())
 	if err != nil {

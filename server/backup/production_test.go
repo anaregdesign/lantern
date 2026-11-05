@@ -226,6 +226,8 @@ func TestProductionAttemptPinsRetentionAndWaiterCapturesLatest(t *testing.T) {
 				}
 			} else {
 				b = New(&productionTestService{calls: make(chan struct{}, 4), hook: hook}, cfg, nil, nil)
+				var stamp int64
+				b.now = func() time.Time { stamp++; return time.Unix(0, stamp) }
 			}
 			for range 3 {
 				if _, err := b.BackupNow(t.Context()); err != nil {

@@ -27,6 +27,8 @@ func TestRetentionPreviewOwnedValidCatalogAndNoMutation(t *testing.T) {
 				}
 			} else {
 				b = New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("test")}}, cfg, nil, nil)
+				var stamp int64
+				b.now = func() time.Time { stamp++; return time.Unix(0, stamp) }
 			}
 			for range 3 {
 				if _, err := b.BackupNow(t.Context()); err != nil {

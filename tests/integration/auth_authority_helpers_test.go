@@ -34,6 +34,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -352,7 +353,15 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err != nil {
 		t.Fatal("actual capacity owner recovery", err)
 	}
-	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker)
+	lifecycleGate := readiness.NewGate(startup.Readiness.MaxLag, false, nil)
+	lifecycleMarker, err := provider.NewManagedLifecycleRuntime(t.Context(), operationalRuntime, startup.Shutdown, startup.Readiness, lifecycleGate)
+	if err != nil {
+		t.Fatal("actual lifecycle owner recovery", err)
+	}
+	if _, err := provider.NewManagedShutdownPlan(lifecycleMarker); err != nil {
+		t.Fatal("actual shared shutdown plan", err)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker)
 	if err != nil {
 		t.Fatal("operational owner certification", err)
 	}

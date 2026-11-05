@@ -204,6 +204,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		servingLoggers = append(servingLoggers, logger)
 		runtimes = append(runtimes, runtime)
 		stops = append(stops, closeRuntime)
+		startup, err := provider.NewConfig()
+		if err != nil {
+			t.Fatal("captured operational startup values", id, err)
+		}
+		lifecycleGate := readiness.NewGate(startup.Readiness.MaxLag, false, nil)
 		var workload *provider.PeerIdentityRuntime
 		if renewal {
 			if securityConfig.ProvisionedPeer == nil {
@@ -217,7 +222,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("native data workload", err)
 			}
 			t.Cleanup(closePeer)
-			worker := provider.NewSecurityWorkers(runtime, workload, readiness.NewGate(100, false, nil), logger)
+			worker := provider.NewSecurityWorkers(runtime, workload, lifecycleGate, logger)
 			workerCtx, stopWorker := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- worker.Run(workerCtx) }()
@@ -233,10 +238,6 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 			workerStops = append(workerStops, stop)
 			t.Cleanup(stop)
-		}
-		startup, err := provider.NewConfig()
-		if err != nil {
-			t.Fatal("captured operational startup values", id, err)
 		}
 		svc := data.NewExecutor(nil).
 			WithScanLimits(service.ScanLimits(startup.Scan)).
@@ -305,7 +306,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal("actual capacity owner recovery", err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker)
+		lifecycleMarker, err := provider.NewManagedLifecycleRuntime(t.Context(), operationalRuntime, startup.Shutdown, startup.Readiness, lifecycleGate)
+		if err != nil {
+			t.Fatal("actual lifecycle owner recovery", err)
+		}
+		if _, err := provider.NewManagedShutdownPlan(lifecycleMarker); err != nil {
+			t.Fatal("actual shared shutdown plan", err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -2251,7 +2259,8 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_RATE ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_BACKUP ||
-			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_CAPACITY {
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_CAPACITY ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_LIFECYCLE {
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {

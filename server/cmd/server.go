@@ -42,6 +42,7 @@ type App struct {
 	health          *provider.HealthChecker
 	gate            *readiness.Gate
 	drainDelay      time.Duration
+	shutdownPlan    *service.ShutdownPlan
 	backupper       *backup.Backupper
 	restoreReq      bool
 	pump            *replication.Pump
@@ -55,6 +56,23 @@ type App struct {
 	peerIdentity    interface{ Close() error }
 }
 
+// WithShutdownPlan installs one composition-owned latch in both consumers
+// before Run. Native desired-state application binds this seam separately.
+func (a *App) WithShutdownPlan(plan *service.ShutdownPlan) *App {
+	a.shutdownPlan = plan
+	if a.server != nil {
+		a.server.WithShutdownPlan(plan)
+	}
+	return a
+}
+
+func (a *App) shutdownDrainDelay() time.Duration {
+	if a.shutdownPlan != nil {
+		return a.shutdownPlan.Capture().Policy.DrainDelay
+	}
+	return a.drainDelay
+}
+
 type securityLifecycle interface {
 	Close() error
 	Shutdown() error
@@ -65,6 +83,7 @@ func newApp(
 	logger *slog.Logger,
 	svc *dataruntime.Executor,
 	server *service.LanternServer,
+	shutdownPlan *service.ShutdownPlan,
 	graphPolicy *dataruntime.GraphPolicyOwner,
 	metricsServer provider.MetricsServer,
 	tracing *provider.Tracing,
@@ -88,8 +107,8 @@ func newApp(
 	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
 ) (*App, error) {
-	if !server.UsesWatcher(graphPolicy) || !graphPolicy.OwnsInstallation(runtime, svc) {
-		return nil, errors.New("app requires the exact managed graph owner")
+	if !server.UsesShutdownPlan(shutdownPlan) || !server.UsesWatcher(graphPolicy) || !graphPolicy.OwnsInstallation(runtime, svc) {
+		return nil, errors.New("app requires the exact managed lifecycle and graph owners")
 	}
 	// Wire the replication snapshotter onto svc here (rather than inside
 	// newLanternService) because pump itself depends on svc; that cycle
@@ -122,6 +141,7 @@ func newApp(
 		health:          hc,
 		gate:            gate,
 		drainDelay:      sc.DrainDelay,
+		shutdownPlan:    shutdownPlan,
 		backupper:       backupper,
 		restoreReq:      bcfg.RestoreRequired,
 		pump:            pump,
@@ -349,7 +369,7 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	g.Go(func() error { return a.backupper.Run(gctx) })
 	drained := false // Read only after errgroup has joined the coordinator.
 	g.Go(func() error {
-		drained = drainPhase(ctx, gctx.Done(), a.drainDelay, a.beginDrain)
+		drained = drainPhaseWithPlan(ctx, gctx.Done(), a.shutdownDrainDelay, a.beginDrain)
 		cancelServe()
 		return nil
 	})
@@ -386,7 +406,7 @@ func (a *App) beginDrain() {
 		return
 	}
 	a.logger.Info("draining: readiness NOT_SERVING, holding listeners for drain window",
-		slog.Duration("drain_delay", a.drainDelay))
+		slog.Duration("drain_delay", a.shutdownDrainDelay()))
 	a.gate.BeginDrain()
 }
 
@@ -399,11 +419,18 @@ func (a *App) beginDrain() {
 // fires first it returns immediately without draining: an already-failing
 // server should shut down without an artificial delay.
 func drainPhase(parent context.Context, serveDone <-chan struct{}, drainDelay time.Duration, begin func()) bool {
+	return drainPhaseWithPlan(parent, serveDone, func() time.Duration { return drainDelay }, begin)
+}
+
+func drainPhaseWithPlan(parent context.Context, serveDone <-chan struct{}, plan func() time.Duration, begin func()) bool {
 	select {
 	case <-parent.Done():
 	case <-serveDone:
 		return false
 	}
+	// Capture immediately before the first shutdown action, not when the
+	// coordinator starts. HTTP shutdown will reuse this generation later.
+	drainDelay := plan()
 	if begin != nil {
 		begin()
 	}
