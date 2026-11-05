@@ -241,8 +241,52 @@ every backend, and degrade cleanly to the single-instance case.
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Backup cadence (`time.ParseDuration`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N valid own dumps/sets; `0` keeps all. |
 | `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance ownership token used to derive safe filenames. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Graph-only: replay the newest valid dump. Durable `fresh`: restore the strict newest receipt set or, only when optional and absent, start empty. Durable `restart`: use a set only for eligible current-baseline damage. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | With a configured directory, select startup restore independently of production enablement. Graph-only: replay the newest valid dump. Durable `fresh`: restore the strict newest receipt set or, only when optional and absent, start empty. Durable `restart`: use a set only for eligible current-baseline damage. |
 | `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Graph-only: fail boot when restore errors. Durable `fresh`: require a valid newest set. Durable `restart`: restore failure is always terminal when the current runtime is incomplete; a valid current runtime remains authoritative. |
+
+The managed production group contains only `LANTERN_BACKUP_ENABLED`,
+`LANTERN_BACKUP_INTERVAL` and `LANTERN_BACKUP_RETAIN`. They are reviewed and
+committed atomically through native management. After explicit adoption,
+verified committed policy is authoritative on restart; environment values do
+not overwrite it. Desired and applied generations are reported separately for
+each member. The directory, instance identity and restoration flags remain
+externally supplied.
+
+One resident scheduler supports enabling and disabling periodic production.
+Each serialized periodic, manual or shutdown attempt captures one effective
+generation, including retention, so an update cannot change an attempt already
+in progress. The interval must be positive, and retain zero keeps every valid
+owned recovery point. Enabled production requires a configured destination.
+
+Retention reduction uses a bounded preview of the connected producer's valid
+owned files and an explicit acknowledgement bound to the reviewed intent and
+CAS. The preview describes that node's observed catalog; it does not freeze
+external filesystem writers or inventory other nodes. Applying policy performs
+no filesystem writes or deletion. Future successful backup attempts use the
+captured retention policy. Graph-only pruning stops if its bounded catalog is
+incomplete or invalid. Receipt retention preserves its existing bounded
+two-pass scan: directory scan errors stop pruning, invalid sets are ignored,
+and each deletion candidate is revalidated.
+
+Production and restoration have separate ownership. Environment or managed
+`BACKUP_ENABLED` controls production; the externally supplied directory and
+`LANTERN_BACKUP_RESTORE_ON_START` select restoration. Durable receipt recovery
+finishes during runtime construction before native authority opens. Graph-only
+restoration runs before public HTTP serving starts, after native construction;
+the public socket may already be bound and the private control network running.
+Managed production enablement or disablement cannot change that selection or
+those recovery boundaries.
+
+Migration for #2011: a configured `LANTERN_BACKUP_DIR` with production disabled
+now still selects startup restore when `LANTERN_BACKUP_RESTORE_ON_START` is true
+or omitted. Previously production disablement also suppressed restoration. To
+intentionally start without importing a backup, explicitly set the existing
+`LANTERN_BACKUP_RESTORE_ON_START=false`. An absent directory remains a no-op;
+existing `RESTORE_REQUIRED` constraints remain. Healthy durable WAL restarts
+still take precedence, and fallback remains limited to its existing eligible
+damage cases. Backup formats and recovery order do not change. These data and
+receipt backups do not import native `sys:` authority or rejoin a node that lost
+its native state.
 
 > **TTL-vs-interval caveat.** Entries decay, so a dump is only as useful as its
 > data is still live at restore time. Keep `LANTERN_DEFAULT_TTL_SECONDS`

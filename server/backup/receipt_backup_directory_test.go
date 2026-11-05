@@ -280,7 +280,7 @@ func TestReceiptBackupDirectoryScansAreBounded(t *testing.T) {
 		},
 		{
 			name: "retention",
-			run:  func(b *Backupper) error { return b.pruneReceiptBackupSets() },
+			run:  func(b *Backupper) error { return b.pruneReceiptBackupSets(1) },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

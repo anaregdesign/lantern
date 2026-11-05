@@ -148,11 +148,11 @@ func (b *Backupper) collectReceiptBackupSets() ([]receiptBackupSet, error) {
 	return sets, nil
 }
 
-func (b *Backupper) pruneReceiptBackupSets() error {
-	if b.cfg.Retain <= 0 || b.cfg.Retain >= receiptBackupDirectoryMaxEntries {
+func (b *Backupper) pruneReceiptBackupSets(retain int) error {
+	if retain <= 0 || retain >= receiptBackupDirectoryMaxEntries {
 		return nil
 	}
-	newest := make(receiptBackupSetMinHeap, 0, b.cfg.Retain)
+	newest := make(receiptBackupSetMinHeap, 0, retain)
 	err := b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
 		if entry.IsDir() {
 			return nil
@@ -165,7 +165,7 @@ func (b *Backupper) pruneReceiptBackupSets() error {
 		if !ok {
 			return nil
 		}
-		if len(newest) < b.cfg.Retain {
+		if len(newest) < retain {
 			heap.Push(&newest, set)
 		} else if set.id > newest[0].id {
 			heap.Pop(&newest)
@@ -176,7 +176,7 @@ func (b *Backupper) pruneReceiptBackupSets() error {
 	if err != nil {
 		return fmt.Errorf("backup: scan receipt backup directory %s for retention: %w", b.cfg.Dir, err)
 	}
-	if len(newest) < b.cfg.Retain {
+	if len(newest) < retain {
 		return nil
 	}
 	keepFromID := newest[0].id

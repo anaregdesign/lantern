@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -27,6 +29,66 @@ func validReceiptWALProviderConfig(path string, mode ReceiptWALMode) ReceiptWALC
 		MaxEntries: 32,
 		MaxBytes:   1 << 20,
 	}
+}
+
+func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing.T) {
+	data := securityDataFixture(t)
+	primary := data.NewExecutor(nil)
+	peer, err := data.NewReplication(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewRuntimeRestored(data, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := NewRuntimeCertified(data, primary, peer, restored, NetConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, cleanup, err := NewSecurityRuntime(t.Context(), SecurityConfig{Mode: "off"}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	logOwner := newServingLogger(ObservabilityConfig{}, io.Discard)
+	logging, err := NewManagedLogRuntime(t.Context(), runtime, logOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, logOwner.logger))
+	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, certified, logging, operational)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+	if _, err := NewOIDCPublicReceiptsCertified(config, runtime, data, primary, operational.backup, certified, public); err != nil {
+		t.Fatal("exact certified producer refused", err)
+	}
+	for name, owner := range map[string]*backup.Backupper{
+		"absent":                            nil,
+		"same executor, different producer": backup.New(primary, backup.Config{Interval: time.Hour}, nil, nil),
+		"foreign executor":                  backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewOIDCPublicReceiptsCertified(config, runtime, data, primary, owner, certified, public); err == nil {
+				t.Fatal("uncertified producer reached receipt activation")
+			}
+		})
+	}
+}
+
+func restoreOnlyBackupTestConfig(t *testing.T, dir, instance string) backup.Config {
+	t.Helper()
+	input := []string{
+		"LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_DIR=" + dir,
+		"LANTERN_BACKUP_INSTANCE_ID=" + instance, "LANTERN_BACKUP_RESTORE_REQUIRED=true",
+	}
+	config := loadBackupConfig(envconfig.NewReader(input))
+	if config.Enabled {
+		t.Fatal("fixture unexpectedly enabled production")
+	}
+	return config
 }
 
 func TestValidateReceiptWALConfig(t *testing.T) {
@@ -252,9 +314,9 @@ func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
 		ReceiptWALModeFresh,
 	)
 	targetConfig.Epoch[0] ^= 1
-	restoreConfig := backup.Config{
-		Enabled: true, Dir: backupDir, Interval: time.Hour,
-		Retain: 1, InstanceID: instance, RestoreOnStart: true, RestoreRequired: true,
+	restoreConfig := restoreOnlyBackupTestConfig(t, backupDir, instance)
+	if !restoreConfig.RestoreOnStart {
+		t.Fatal("production-disabled fresh restore was suppressed")
 	}
 	interruptedConfig := targetConfig
 	interruptedConfig.Path = filepath.Join(t.TempDir(), "interrupted-fresh.wal")
@@ -319,6 +381,28 @@ func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
 		len(matches) != 1 {
 		t.Fatalf("fresh restore baseline sidecars = %v, %v; want one", matches, err)
 	}
+	optOut := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "explicit-empty.wal"), ReceiptWALModeFresh)
+	optOut.Epoch[0] ^= 3
+	optOutBackup := loadBackupConfig(envconfig.NewReader([]string{
+		"LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_DIR=" + backupDir,
+		"LANTERN_BACKUP_INSTANCE_ID=" + instance, "LANTERN_BACKUP_RESTORE_ON_START=false",
+	}))
+	optOutRuntime, optOutCleanup, err := NewServingRuntime(
+		optOut, cacheConfig, searchConfig, logConfig, node,
+		optOutBackup, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRuntimeRestored(optOutRuntime, optOutRuntime.NewExecutor(nil).WithTombstoneTTL(time.Hour)); err != nil {
+		optOutCleanup()
+		t.Fatal(err)
+	}
+	if _, ok := optOutRuntime.GraphCache().GetVertex("startup-restored"); ok {
+		optOutCleanup()
+		t.Fatal("explicit restore opt-out imported backup data")
+	}
+	optOutCleanup()
 
 	optional := validReceiptWALProviderConfig(
 		filepath.Join(t.TempDir(), "optional-empty.wal"),
@@ -450,9 +534,9 @@ func TestNewServingRuntimeRestartFallsBackOnlyForMissingBaseline(t *testing.T) {
 		}
 		t.Fatalf("optional missing restart backup = %p, %v, %v", runtime, cleanup != nil, err)
 	}
-	restoreConfig := backup.Config{
-		Enabled: true, Dir: backupDir, Interval: time.Hour,
-		Retain: 1, InstanceID: instance, RestoreOnStart: true, RestoreRequired: true,
+	restoreConfig := restoreOnlyBackupTestConfig(t, backupDir, instance)
+	if !restoreConfig.RestoreOnStart {
+		t.Fatal("production-disabled eligible fallback was suppressed")
 	}
 	runtime, cleanup, err := NewServingRuntime(
 		restart,
@@ -530,10 +614,7 @@ func TestNewServingRuntimePrefersValidRestartOverInvalidBackup(t *testing.T) {
 		searchConfig,
 		logConfig,
 		node,
-		backup.Config{
-			Enabled: true, Dir: backupDir, InstanceID: instance,
-			RestoreOnStart: true, RestoreRequired: true,
-		},
+		restoreOnlyBackupTestConfig(t, backupDir, instance),
 		nil,
 	)
 	if err != nil {

@@ -140,7 +140,7 @@ var descriptions = map[string]string{
 	"LANTERN_BACKUP_INTERVAL":         "Backup production cadence (Go duration).",
 	"LANTERN_BACKUP_RETAIN":           "How many valid backups owned by this instance to keep, newest first (0 keeps all).",
 	"LANTERN_BACKUP_INSTANCE_ID":      "Per-instance ownership token used to derive safe backup filenames; defaults to the hostname.",
-	"LANTERN_BACKUP_RESTORE_ON_START": "Graph-only: replay the newest valid dump. Durable fresh: restore the strict newest receipt set, with optional absence starting empty. Durable restart: use a set only for eligible current-baseline damage.",
+	"LANTERN_BACKUP_RESTORE_ON_START": "With BACKUP_DIR configured, select startup restore independently of periodic production enablement. Graph-only: replay the newest valid dump. Durable fresh: restore the strict newest receipt set, with optional absence starting empty. Durable restart: use a set only for eligible current-baseline damage.",
 	"LANTERN_BACKUP_RESTORE_REQUIRED": "Require a startup backup when durable fresh restore is selected; graph-only restore errors also fail boot. An incomplete durable restart always fails when it cannot be repaired.",
 
 	"LANTERN_STRICT_CONFIG": "Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set.",

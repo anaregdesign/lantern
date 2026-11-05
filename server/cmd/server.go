@@ -279,8 +279,8 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	// overlays this baseline via HLC ordering (newer peer state wins per key,
 	// so replicas take priority); a solo instance or a whole-cluster cold
 	// start keeps the restored baseline as the recovered state. The Backupper
-	// no-ops when backups are disabled or LANTERN_BACKUP_RESTORE_ON_START is
-	// false. A restore failure fails boot only when
+	// no-ops when no directory is configured or
+	// LANTERN_BACKUP_RESTORE_ON_START is false. A restore failure fails boot only when
 	// LANTERN_BACKUP_RESTORE_REQUIRED is set.
 	if !a.runtime.DurableReceiptWAL() {
 		if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {

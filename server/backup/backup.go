@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -113,22 +114,34 @@ type Stats struct {
 
 // Backupper owns periodic/manual/final production and graph-only startup restore.
 type Backupper struct {
-	svc           Service
-	receiptSource ReceiptSource
-	receiptPolicy mutationreceipt.Config
-	cfg           Config
-	logger        *slog.Logger
-	metrics       *metrics
-	now           func() time.Time
-	attempt       chan struct{}
-	fs            receiptBackupFS
-	lastSetID     uint64
+	svc               Service
+	receiptSource     ReceiptSource
+	receiptPolicy     mutationreceipt.Config
+	cfg               Config
+	logger            *slog.Logger
+	metrics           *metrics
+	now               func() time.Time
+	attempt           chan struct{}
+	fs                receiptBackupFS
+	lastSetID         uint64
+	productionMu      sync.Mutex
+	production        ProductionSnapshot
+	productionTicker  productionTimer
+	productionStopped bool
+}
+
+// UsesExecutor checks exact composition identity without running a backup.
+func (b *Backupper) UsesExecutor(primary *dataruntime.Executor) bool {
+	if b == nil || primary == nil {
+		return false
+	}
+	actual, ok := b.svc.(*dataruntime.Executor)
+	return ok && actual == primary
 }
 
 // New constructs a Backupper. reg may be nil (metrics unregistered but the
-// gauges still function). A disabled config (Enabled=false) yields a
-// Backupper whose Run / RestoreOnStartup are no-ops, so callers never have
-// to nil-check.
+// gauges still function). Disabled production remains resident in Run so a
+// later managed policy can enable it. Startup restoration is independent.
 func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger) *Backupper {
 	if logger == nil {
 		logger = slog.Default()
@@ -136,6 +149,7 @@ func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger
 	return &Backupper{
 		svc: svc, cfg: cfg, metrics: newMetrics(reg), logger: logger, now: time.Now,
 		attempt: make(chan struct{}, 1), fs: newReceiptBackupFS(),
+		production: ProductionSnapshot{Config: ProductionConfig{Enabled: cfg.Enabled, Interval: cfg.Interval, Retain: cfg.Retain}},
 	}
 }
 
@@ -216,24 +230,26 @@ func (b *Backupper) RestoreOnStartup(ctx context.Context) (Stats, error) {
 		len(candidates), b.cfg.Dir, lastErr)
 }
 
-// Run drives the periodic backup loop until ctx is cancelled. It is a no-op
-// when backups are disabled. On graceful cancellation it takes one final
-// best-effort dump so the latest state is captured before exit.
+// Run keeps one scheduler resident until cancellation, including while
+// production is disabled. Graceful cancellation takes a final best-effort dump
+// only when the production policy captured by that attempt is enabled.
 func (b *Backupper) Run(ctx context.Context) error {
-	if !b.cfg.Enabled || b.cfg.Interval <= 0 {
-		return nil
+	ticker, err := b.startProduction()
+	if err != nil {
+		return err
 	}
+	defer b.stopProduction()
+	policy := b.Production()
 	b.logger.Info("backup: periodic dump loop started",
 		slog.String("dir", b.cfg.Dir),
-		slog.Duration("interval", b.cfg.Interval),
-		slog.Int("retain", b.cfg.Retain),
+		slog.Duration("interval", policy.Config.Interval),
+		slog.Int("retain", policy.Config.Retain),
 		slog.String("instance", b.cfg.InstanceID))
 
-	ticker := time.NewTicker(b.cfg.Interval)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			b.stopProduction()
 			// Final best-effort dump on graceful shutdown, bounded so it
 			// never blocks the drain budget.
 			finalCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -270,13 +286,17 @@ func (b *Backupper) backupOnceWithSource(ctx context.Context, source string) (St
 	case b.attempt <- struct{}{}:
 	}
 	defer func() { <-b.attempt }()
-	if b.receiptSource != nil {
-		return b.backupReceiptSetWithSource(ctx, source)
+	policy := b.Production()
+	if source != "manual" && (!policy.Config.Enabled || policy.Config.Interval <= 0) {
+		return Stats{}, nil
 	}
-	return b.backupGraphOnceWithSource(ctx, source)
+	if b.receiptSource != nil {
+		return b.backupReceiptSetWithSource(ctx, source, policy)
+	}
+	return b.backupGraphOnceWithSource(ctx, source, policy)
 }
 
-func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string) (Stats, error) {
+func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string, policy ProductionSnapshot) (Stats, error) {
 	if err := keyspace.ValidateFormat(b.cfg.NamespaceFormat); err != nil {
 		return Stats{}, err
 	}
@@ -287,6 +307,7 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 	tickID := strconv.FormatInt(start.UnixNano(), 10)
 	b.logger.Info("backup: dump started",
 		slog.String("source", source),
+		slog.Uint64("production_generation", policy.Generation),
 		slog.String("tick_id", tickID),
 		slog.Int64("started_unix_ns", start.UnixNano()))
 	if err := os.MkdirAll(b.cfg.Dir, 0o755); err != nil {
@@ -345,6 +366,7 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 	}
 	b.logger.Info("backup: wrote dump",
 		slog.String("source", source),
+		slog.Uint64("production_generation", policy.Generation),
 		slog.String("tick_id", tickID),
 		slog.Int64("started_unix_ns", start.UnixNano()),
 		slog.Int64("finished_unix_ns", finished.UnixNano()),
@@ -355,7 +377,10 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 		slog.Int("vertices", stats.Vertices),
 		slog.Int("edges", stats.Edges),
 		slog.Duration("took", finished.Sub(start)))
-	b.prune()
+	if err := b.prune(ctx, policy.Config.Retain); err != nil {
+		b.failed()
+		return stats, err
+	}
 	return stats, nil
 }
 
@@ -458,19 +483,27 @@ func (b *Backupper) listBackups() ([]string, error) {
 // prune deletes this instance's own dumps beyond Retain (newest kept). Only
 // files carrying this instance's token are eligible, so concurrent writers
 // on shared storage never race to delete each other's dumps.
-func (b *Backupper) prune() {
-	if b.cfg.Retain <= 0 {
-		return
+func (b *Backupper) prune(ctx context.Context, retain int) error {
+	if retain <= 0 || retain >= receiptBackupDirectoryMaxEntries {
+		return nil
 	}
-	own, err := b.collect(b.ownPrefix())
-	if err != nil || len(own) <= b.cfg.Retain {
-		return
+	preview, candidates, err := b.retentionCatalog(ctx, retain, productionPreviewMaxBytes, productionPreviewMaxCandidates)
+	if err != nil {
+		return fmt.Errorf("backup: graph retention catalog incomplete; no pruning performed: %w", err)
 	}
-	for _, f := range own[b.cfg.Retain:] {
-		if rerr := os.Remove(f.path); rerr != nil {
-			b.logger.Warn("backup: prune failed", slog.String("file", f.path), slog.Any("err", rerr))
+	if !preview.Complete || len(candidates) <= retain {
+		return nil
+	}
+	for _, candidate := range candidates[retain:] {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		path := filepath.Join(b.cfg.Dir, candidate.name)
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("backup: prune graph dump: %w", err)
 		}
 	}
+	return nil
 }
 
 // backupFile is a finalised dump plus its sort keys.
@@ -587,33 +620,60 @@ func decodeFile(path string, expectedFormat ...string) (vertices []*pb.Vertex, e
 	defer func() { _ = f.Close() }()
 
 	r := bufio.NewReader(f)
+	return decodeGraph(r, format)
+}
+
+func decodeGraph(r *bufio.Reader, format string) (vertices []*pb.Vertex, edges []*pb.Edge, err error) {
+	err = scanGraph(context.Background(), r, format, func(rec *pb.BackupSnapshotResponse) {
+		switch record := rec.GetRecord().(type) {
+		case *pb.BackupSnapshotResponse_Vertex:
+			vertices = append(vertices, record.Vertex)
+		case *pb.BackupSnapshotResponse_Edge:
+			edges = append(edges, record.Edge)
+		}
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return vertices, edges, nil
+}
+
+// scanGraph validates one bounded frame at a time. Retention does not retain a
+// decoded graph, and checks cancellation between frames as well as files.
+func scanGraph(ctx context.Context, r *bufio.Reader, format string, consume func(*pb.BackupSnapshotResponse)) error {
+	if err := keyspace.ValidateFormat(format); err != nil {
+		return err
+	}
 	if format != "" {
 		magic := make([]byte, len(graphDataBackupMagic))
 		if _, err := io.ReadFull(r, magic); err != nil || string(magic) != graphDataBackupMagic {
-			return nil, nil, fmt.Errorf("%w: explicit logical-key migration required", keyspace.ErrNamespaceFormat)
+			return fmt.Errorf("%w: explicit logical-key migration required", keyspace.ErrNamespaceFormat)
 		}
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		rec := &pb.BackupSnapshotResponse{}
 		if uerr := protodelim.UnmarshalFrom(r, rec); uerr != nil {
 			if errors.Is(uerr, io.EOF) {
 				break
 			}
-			return nil, nil, uerr
+			return uerr
 		}
 		if format != "" {
 			if err := keyspace.ValidatePhysicalGraphMessage(rec.ProtoReflect()); err != nil {
-				return nil, nil, err
+				return err
 			}
 		}
-		switch x := rec.GetRecord().(type) {
-		case *pb.BackupSnapshotResponse_Vertex:
-			vertices = append(vertices, x.Vertex)
-		case *pb.BackupSnapshotResponse_Edge:
-			edges = append(edges, x.Edge)
+		switch rec.GetRecord().(type) {
+		case *pb.BackupSnapshotResponse_Vertex, *pb.BackupSnapshotResponse_Edge:
 		default:
-			return nil, nil, errors.New("backup: missing or unknown graph record")
+			return errors.New("backup: missing or unknown graph record")
+		}
+		if consume != nil {
+			consume(rec)
 		}
 	}
-	return vertices, edges, nil
+	return nil
 }

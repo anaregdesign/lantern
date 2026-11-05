@@ -17,8 +17,9 @@ import (
 
 // loadBackupConfig reads the LANTERN_BACKUP_* contract (#770, #779).
 //
-// In graph-only mode, restore-on-start is unconditional: the newest valid dump
-// is replayed on boot as a baseline, independent of replication topology.
+// With a configured directory and external restore-on-start selection, the
+// newest valid dump is replayed on boot as a graph-only baseline, independent
+// of production enablement and replication topology.
 // When peers exist the subsequent peer bootstrap overlays that baseline
 // through the normal write path, so HLC ordering lets newer peer state win per
 // key. Durable receipt mode restores only at NewServingRuntime, under the WAL
@@ -35,7 +36,8 @@ import (
 //   - LANTERN_BACKUP_INSTANCE_ID      (default hostname) per-instance file
 //     token so shared-storage writes never collide.
 //   - LANTERN_BACKUP_RESTORE_ON_START (default true) startup restore of the
-//     newest graph dump or canonical receipt backup set before serving.
+//     newest graph dump or canonical receipt backup set before serving whenever
+//     the directory is configured, independent of production enablement.
 //   - LANTERN_BACKUP_RESTORE_REQUIRED (default false) fail boot when a
 //     restore errors instead of warning and continuing.
 func loadBackupConfig(reader *envconfig.Reader) backup.Config {
@@ -52,7 +54,7 @@ func loadBackupConfig(reader *envconfig.Reader) backup.Config {
 		}
 	}
 
-	// Read unconditionally (not short-circuited behind `active &&`) so the
+	// Read unconditionally (not short-circuited behind directory selection) so the
 	// variable always lands in the envconfig registry — the generated env
 	// reference and the unknown-variable sweep depend on every loader
 	// registering its keys on every boot (#847).
@@ -64,7 +66,7 @@ func loadBackupConfig(reader *envconfig.Reader) backup.Config {
 		Interval:        reader.Duration("LANTERN_BACKUP_INTERVAL", 5*time.Minute),
 		Retain:          reader.Int("LANTERN_BACKUP_RETAIN", 3),
 		InstanceID:      sanitizeInstanceID(instance),
-		RestoreOnStart:  active && restoreOnStart,
+		RestoreOnStart:  dir != "" && restoreOnStart,
 		RestoreRequired: reader.Bool("LANTERN_BACKUP_RESTORE_REQUIRED", false),
 		NamespaceFormat: keyspace.Version,
 	}

@@ -9,13 +9,14 @@ import (
 
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TestLoadBackupConfig covers the LANTERN_BACKUP_* resolution. The headline
-// invariant (#779) is that restore-on-start selection is independent of
-// replication topology. Graph-only mode restores its baseline before peer
+// invariant (#779/#2011) is that restore-on-start selection is independent of
+// production enablement and replication topology. Graph-only restores before peer
 // overlay; durable mode applies its stricter fresh/restart policy at the
 // runtime construction boundary rather than suppressing restore here.
 func TestLoadBackupConfig(t *testing.T) {
@@ -25,13 +26,32 @@ func TestLoadBackupConfig(t *testing.T) {
 			t.Errorf("Enabled = true, want false with no LANTERN_BACKUP_ENABLED")
 		}
 		if cfg.RestoreOnStart {
-			t.Errorf("RestoreOnStart = true, want false when inactive")
+			t.Errorf("RestoreOnStart = true, want false without a directory")
 		}
 	})
 
+	for _, test := range []struct {
+		name    string
+		input   []string
+		restore bool
+	}{
+		{"ProductionUnsetRestoreDefault", nil, true},
+		{"ProductionFalseRestoreDefault", []string{"LANTERN_BACKUP_ENABLED=false"}, true},
+		{"ProductionFalseRestoreTrue", []string{"LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=true"}, true},
+		{"ProductionFalseRestoreFalse", []string{"LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=false"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := append([]string{"LANTERN_BACKUP_DIR=" + t.TempDir()}, test.input...)
+			config := loadBackupConfig(envconfig.NewReader(input))
+			if config.Enabled || config.RestoreOnStart != test.restore {
+				t.Fatalf("independent production/restore = %+v", config)
+			}
+		})
+	}
+
 	t.Run("EnabledRequiresDir", func(t *testing.T) {
 		t.Setenv("LANTERN_BACKUP_ENABLED", "true")
-		// No LANTERN_BACKUP_DIR ⇒ not active ⇒ restore off.
+		// No directory disables both production and startup restoration.
 		cfg := loadBackupConfig(testEnvironmentReader())
 		if cfg.Enabled {
 			t.Errorf("Enabled = true, want false without LANTERN_BACKUP_DIR")
