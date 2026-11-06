@@ -152,14 +152,14 @@ func newPumpNodeWithWAL(t *testing.T, nodeID hlc.NodeID, logCapacity int, positi
 }
 
 func newPumpNodeWithWALAndMetrics(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL, metrics service.SubscribeMetrics) *pumpNode {
-	return newPumpNodeWithToken(t, nodeID, logCapacity, positions, wal, metrics, "")
+	return newPumpNodeWithValidation(t, nodeID, logCapacity, positions, wal, metrics, false)
 }
 
-func newAuthedPumpNode(t *testing.T, nodeID hlc.NodeID, logCapacity int) *pumpNode {
-	return newPumpNodeWithToken(t, nodeID, logCapacity, true, nil, nil, testToken)
+func newValidatedPumpNode(t *testing.T, nodeID hlc.NodeID, logCapacity int) *pumpNode {
+	return newPumpNodeWithValidation(t, nodeID, logCapacity, true, nil, nil, true)
 }
 
-func newPumpNodeWithToken(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL, metrics service.SubscribeMetrics, token string) *pumpNode {
+func newPumpNodeWithValidation(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL, metrics service.SubscribeMetrics, validate bool) *pumpNode {
 	t.Helper()
 	log := mutationlog.New(mutationlog.Options{Capacity: logCapacity, SubscriberBuffer: 1024, WAL: wal})
 	t.Cleanup(func() { _ = log.Close() })
@@ -180,13 +180,10 @@ func newPumpNodeWithToken(t *testing.T, nodeID hlc.NodeID, logCapacity int, posi
 	// consumes directly (replication.peerBaseURL accepts both
 	// "host:port" and "http://host:port" forms).
 	var interceptors []connect.Interceptor
-	var sdkOptions []client.Option
-	if token != "" {
+	if validate {
 		interceptors = []connect.Interceptor{
-			provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{token}}),
 			provider.NewValidationInterceptor(defaultIntegrationValidationLimits()).ConnectInterceptor(),
 		}
-		sdkOptions = append(sdkOptions, client.WithAuthToken(token))
 	}
 	srv := newConnectTestServer(t, svc, rep, interceptors...)
 
@@ -197,7 +194,7 @@ func newPumpNodeWithToken(t *testing.T, nodeID hlc.NodeID, logCapacity int, posi
 		clock:  clock,
 		log:    log,
 		svc:    svc,
-		sdk:    newConnectClientFor(t, srv.url, sdkOptions...),
+		sdk:    newConnectClientFor(t, srv.url),
 		raw:    graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
 		nodeID: nodeID,
 	}
@@ -3333,11 +3330,11 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		t.Fatalf("finite sources did not fold into the graph-only backup: %+v", folded)
 	}
 
-	// Public data requests retain their Bearer fixture. Private replication
-	// uses separately signed workload membership and mutual TLS, because a
-	// public-token TLS client cannot reserve a native Snapshot tail.
+	// These data adapters test restore and derived-aggregate mechanics.
+	// Every private replication request uses separately signed workload
+	// membership and mutual TLS; current public auth has independent coverage.
 	newNode := func(id hlc.NodeID) *pumpNode {
-		n := newAuthedPumpNode(t, id, 2)
+		n := newValidatedPumpNode(t, id, 2)
 		n.svc.WithDataNamespace()
 		n.server.rep.WithOriginStates(n.svc)
 		t.Cleanup(n.server.rep.CloseSnapshotTails)
@@ -3416,30 +3413,13 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		t.Fatalf("startup restore lost derived provenance: %+v", restored)
 	}
 	put := connect.NewRequest(&pb.PutEdgeRequest{Edge: folded})
-	put.Header().Set("Authorization", "Bearer "+testToken)
 	if _, err := a.raw.PutEdge(ctx, put); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("public PutEdge of folded aggregate = %v, want InvalidArgument", err)
-	}
-
-	unauthenticated := newReplicationRawClient(t, a.url)
-	stream, err := unauthenticated.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, NamespaceFormat: a.svc.DataNamespaceFormat(),
-	}))
-	if err == nil {
-		if stream.Receive() {
-			t.Fatal("tokenless Snapshot exposed the restored graph")
-		}
-		err = stream.Err()
-		_ = stream.Close()
-	}
-	if connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("tokenless Snapshot = %v, want Unauthenticated", err)
 	}
 
 	add := connect.NewRequest(&pb.AddEdgeRequest{Edge: &pb.Edge{
 		Tail: "tail", Head: "head", Weight: 7, Expiration: timestamppb.New(addExpiration),
 	}})
-	add.Header().Set("Authorization", "Bearer "+testToken)
 	result, err := a.raw.AddEdge(ctx, add)
 	if err != nil || !math.IsInf(float64(result.Msg.GetEffectiveWeight()), 1) {
 		t.Fatalf("finite Add to restored aggregate = (%+v, %v), want effective +Inf", result, err)
@@ -3458,7 +3438,7 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		})
 		stream, err := nativeClients[n].Snapshot(ctx, req)
 		if err != nil {
-			t.Fatalf("authenticated Snapshot from %x: %v", n.nodeID[:1], err)
+			t.Fatalf("native workload Snapshot from %x: %v", n.nodeID[:1], err)
 		}
 		defer func() { _ = stream.Close() }()
 		var edge *pb.SnapshotEdge
@@ -3498,7 +3478,6 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 	assertLive := func(n *pumpNode) {
 		t.Helper()
 		req := connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"})
-		req.Header().Set("Authorization", "Bearer "+testToken)
 		got, err := n.raw.GetEdge(ctx, req)
 		if err != nil || !math.IsInf(float64(got.Msg.GetEdge().GetWeight()), 1) ||
 			!got.Msg.GetEdge().GetExpiration().AsTime().Equal(baseExpiration) {
@@ -3548,7 +3527,6 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		Tail: "tail", Head: "head", Weight: 9,
 		Expiration: timestamppb.New(addExpiration.Add(-time.Minute)),
 	}})
-	later.Header().Set("Authorization", "Bearer "+testToken)
 	if result, err := a.raw.AddEdge(ctx, later); err != nil || !math.IsInf(float64(result.Msg.GetEffectiveWeight()), 1) {
 		t.Fatalf("post-Snapshot Add = (%+v, %v), want effective +Inf", result, err)
 	}
@@ -3566,7 +3544,6 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 	invalid := connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
 		Tail: "tail", Head: "head", Weight: float32(math.NaN()),
 	}})
-	invalid.Header().Set("Authorization", "Bearer "+testToken)
 	if _, err := c.raw.PutEdge(ctx, invalid); connect.CodeOf(err) != connect.CodeInvalidArgument ||
 		c.svc.LocalSeq(c.nodeID) != beforeLocalSeq || c.log.Len() != beforeLog {
 		t.Fatalf("non-finite source reached relay graph/log: %v, seq=%d log=%d", err, c.svc.LocalSeq(c.nodeID), c.log.Len())
@@ -3576,7 +3553,6 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 	finite := connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
 		Tail: "tail", Head: "head", Weight: 11, Expiration: timestamppb.New(baseExpiration),
 	}})
-	finite.Header().Set("Authorization", "Bearer "+testToken)
 	if _, err := c.raw.PutEdge(ctx, finite); err != nil {
 		t.Fatalf("finite Put after relayed aggregate: %v", err)
 	}

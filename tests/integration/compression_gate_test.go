@@ -5,10 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -22,93 +19,43 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func newProviderReceiptWireServer(
-	t *testing.T,
-	nodeID hlc.NodeID,
-	netCfg provider.NetConfig,
-	token string,
-) publicReceiptWireServer {
+// This is a protocol-only HTTP/2 Connect mount over the certified receipt
+// runtime, not a production public listener or authentication fixture.
+func newCompressedReceiptProtocolWireServer(t *testing.T, nodeID hlc.NodeID, netCfg provider.NetConfig) receiptProtocolWireServer {
 	t.Helper()
-	wire := newPublicReceiptWireServerWithNet(t, nodeID, 32, netCfg, token)
-	socket, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	listener, err := provider.NewLanternListener(
-		socket,
-		netCfg,
-		provider.TLSConfig{},
-		provider.ObservabilityConfig{},
-		provider.CORSConfig{},
-		wire.server.svc,
-		wire.server.rep,
-		provider.NewValidationInterceptor(defaultIntegrationValidationLimits()),
-		nil,
-		provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{token}}),
-		nil,
-		nil,
-		provider.NewSlowRPCInterceptor(0, logger),
-		provider.NewHealthChecker(),
-		logger,
-	)
-	if err != nil {
-		if closeErr := socket.Close(); closeErr != nil {
-			t.Errorf("close failed receipt socket: %v", closeErr)
-		}
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- listener.Server().Serve(listener.Listener()) }()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := listener.Server().Shutdown(ctx); err != nil {
-			t.Errorf("shutdown receipt listener: %v", err)
-		}
-		if err := <-done; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			t.Errorf("serve receipt listener: %v", err)
-		}
-	})
-	url := "http://" + listener.Addr()
-	wire.server = &connectTestServer{
-		svc: wire.server.svc, rep: wire.server.rep,
-		handler: listener.Server().Handler, url: url,
-	}
-	wire.raw = graphv1connect.NewLanternServiceClient(h2cClient(), url)
+	wire := newReceiptProtocolWireServerWithNet(t, nodeID, 32, netCfg)
+	server := newConnectTestServerWithOptions(t, wire.server.svc, wire.server.rep,
+		connect.WithReadMaxBytes(netCfg.MaxRecvMsgBytes),
+		connect.WithSendMaxBytes(netCfg.MaxSendMsgBytes),
+		connect.WithCompressMinBytes(1024),
+		connect.WithInterceptors(provider.NewValidationInterceptor(defaultIntegrationValidationLimits()).ConnectInterceptor()))
+	wire.server = server
+	wire.raw = graphv1connect.NewLanternServiceClient(h2cClient(), server.url)
 	return wire
 }
 
-func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testing.T) {
-	const token = "receipt-compression-test-token"
+func TestCompressionPreservesReceiptProtocolAndPeerRelay_RealWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	netCfg := provider.NetConfig{MaxRecvMsgBytes: 8 << 10, MaxSendMsgBytes: 4 << 10}
-	origin := newProviderReceiptWireServer(t, hlc.NodeID{0xa1}, netCfg, token)
-	follower := newProviderReceiptWireServer(t, hlc.NodeID{0xb2}, netCfg, token)
+	origin := newCompressedReceiptProtocolWireServer(t, hlc.NodeID{0xa1}, netCfg)
+	follower := newCompressedReceiptProtocolWireServer(t, hlc.NodeID{0xb2}, netCfg)
 
-	if _, err := origin.raw.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("tokenless capability = %v, want Unauthenticated", err)
-	}
-	capability := publicReceiptCapability(t, origin, token)
-	receiptContext := publicReceiptWireContext(t, capability, 0xc3, 1,
+	capability := receiptProtocolCapability(t, origin)
+	receiptContext := receiptProtocolContext(t, capability, 0xc3, 1,
 		time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second))
 	small := &pb.Vertex{Key: "compression/small", Value: &pb.Vertex_String_{String_: "s"}}
-	if result, err := origin.raw.PutVertex(ctx, receiptRequestWithToken(
-		&pb.PutVertexRequest{Vertex: small}, token,
-	)); err != nil || result.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+	if result, err := origin.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: small})); err != nil || result.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
 		t.Fatalf("small PutVertex = (%v, %v)", result, err)
 	}
 	large := &pb.Vertex{Key: "compression/large", Value: &pb.Vertex_Bytes{
 		Bytes: bytes.Repeat([]byte{'a'}, 1500),
 	}}
-	if result, err := origin.raw.PutVertex(ctx, receiptRequestWithToken(
-		&pb.PutVertexRequest{Vertex: large, ReceiptContext: receiptContext}, token,
-	)); err != nil || result.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+	if result, err := origin.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: large, ReceiptContext: receiptContext})); err != nil || result.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
 		t.Fatalf("receipt PutVertex = (%v, %v)", result, err)
 	}
 
-	statuses := receiptWireStatuses(t, ctx, origin, token, receiptContext.GetOperationIds())
+	statuses := receiptProtocolStatuses(t, ctx, origin, receiptContext.GetOperationIds())
 	original := statuses[0].GetReceipt()
 	if statuses[0].GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
 		original == nil ||
@@ -135,7 +82,6 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 	request.Header.Set("Content-Type", "application/proto")
 	request.Header.Set("Connect-Protocol-Version", "1")
 	request.Header.Set("Accept-Encoding", "gzip")
-	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := httpClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +96,7 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Encoding") != "" {
-		t.Fatalf("small authenticated status HTTP %d, encoding %q: %s",
+		t.Fatalf("small protocol status HTTP %d, encoding %q: %s",
 			response.StatusCode, response.Header.Get("Content-Encoding"), body)
 	}
 	var rawStatus pb.GetReceiptStatusesResponse
@@ -159,24 +105,12 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 	}
 	if proto.Size(&rawStatus) >= 1024 ||
 		!proto.Equal(&rawStatus, &pb.GetReceiptStatusesResponse{Statuses: statuses}) {
-		t.Fatalf("small authenticated status = %v, want original receipt under 1024 bytes", &rawStatus)
+		t.Fatalf("small protocol status = %v, want original receipt under 1024 bytes", &rawStatus)
 	}
 
 	replicationClient := graphv1connect.NewLanternReplicationServiceClient(h2cClient(), origin.server.url)
 	subscribe := &pb.SubscribeRequest{FromLocalSeq: 1, AcceptReceiptEnvelopes: true}
-	unauthenticated, err := replicationClient.Subscribe(ctx, connect.NewRequest(subscribe))
-	if err == nil {
-		_ = unauthenticated.Receive()
-		err = unauthenticated.Err()
-		if closeErr := unauthenticated.Close(); closeErr != nil &&
-			connect.CodeOf(closeErr) != connect.CodeUnauthenticated {
-			t.Errorf("close unauthenticated Subscribe stream: %v", closeErr)
-		}
-	}
-	if connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("tokenless Subscribe = %v, want Unauthenticated", err)
-	}
-	stream, err := replicationClient.Subscribe(ctx, receiptRequestWithToken(subscribe, token))
+	stream, err := replicationClient.Subscribe(ctx, connect.NewRequest(subscribe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,34 +141,28 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 		}
 	}
 
-	stopPump := startPublicReceiptPump(t, ctx, "compressed provider relay", follower, origin, token)
+	stopPump := startReceiptProtocolPump(t, ctx, "compressed protocol relay", follower, origin)
 	defer stopPump()
 	wantCut := map[string]uint64{hex.EncodeToString(origin.config.NodeID[:]): 2}
-	requireExactReceiptCut(t, "compressed provider relay", waitForPublicReceiptCut(
-		t, ctx, "compressed provider relay", follower, token, wantCut, 5*time.Second,
-	), wantCut)
-	relayed := receiptWireStatuses(t, ctx, follower, token, receiptContext.GetOperationIds())
+	requireExactReceiptCut(t, "compressed protocol relay", waitForReceiptProtocolCut(t, ctx, "compressed protocol relay", follower, wantCut, 5*time.Second), wantCut)
+	relayed := receiptProtocolStatuses(t, ctx, follower, receiptContext.GetOperationIds())
 	if relayed[0].GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
 		!bytes.Equal(relayed[0].GetOperationId(), original.GetOperationId()) ||
 		!bytes.Equal(relayed[0].GetReceipt().GetIntentSha256(), original.GetIntentSha256()) ||
 		!proto.Equal(relayed[0].GetReceipt(), original) {
 		t.Fatalf("relayed receipt = %+v, want %+v", relayed[0], original)
 	}
-	readBack, err := follower.raw.GetVertex(ctx, receiptRequestWithToken(
-		&pb.GetVertexRequest{Key: large.GetKey()}, token,
-	))
+	readBack, err := follower.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: large.GetKey()}))
 	if err != nil || !bytes.Equal(readBack.Msg.GetVertex().GetBytes(), large.GetBytes()) {
 		t.Fatalf("relayed large vertex = (%v, %v)", readBack, err)
 	}
 
 	boundedCfg := provider.NetConfig{MaxRecvMsgBytes: 8 << 10, MaxSendMsgBytes: 1024}
-	bounded := newProviderReceiptWireServer(t, hlc.NodeID{0xd4}, boundedCfg, token)
-	boundedCapability := publicReceiptCapability(t, bounded, token)
-	boundedContext := publicReceiptWireContext(t, boundedCapability, 0xe5, 1,
+	bounded := newCompressedReceiptProtocolWireServer(t, hlc.NodeID{0xd4}, boundedCfg)
+	boundedCapability := receiptProtocolCapability(t, bounded)
+	boundedContext := receiptProtocolContext(t, boundedCapability, 0xe5, 1,
 		time.UnixMilli(int64(boundedCapability.GetServerNowUnixMs())).Add(-time.Second))
-	_, err = bounded.raw.PutVertex(ctx, receiptRequestWithToken(
-		&pb.PutVertexRequest{Vertex: large, ReceiptContext: boundedContext}, token,
-	))
+	_, err = bounded.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: large, ReceiptContext: boundedContext}))
 	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
 		!strings.Contains(err.Error(), "LANTERN_MAX_SEND_MSG_BYTES=1024") {
 		t.Fatalf("oversized full receipt frame = %v, want pre-publication ResourceExhausted", err)
@@ -245,9 +173,7 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 	if length, _, _ := bounded.runtime.MutationLogStats(); length != 0 {
 		t.Fatalf("rejected receipt left %d log entries", length)
 	}
-	if _, err := bounded.raw.GetVertex(ctx, receiptRequestWithToken(
-		&pb.GetVertexRequest{Key: large.GetKey()}, token,
-	)); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := bounded.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: large.GetKey()})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("rejected receipt left vertex: %v", err)
 	}
 }

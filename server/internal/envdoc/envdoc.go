@@ -1,10 +1,12 @@
 // Package envdoc renders the generated operator-facing reference of every
-// LANTERN_* environment variable the server reads (docs/env.md). The variable
-// set itself comes from the envconfig registry — populated as a side effect of
+// live LANTERN_* environment variable the server parses (docs/env.md). The live
+// variable set comes from the envconfig registry — populated as a side effect of
 // provider.LoadConfig(reader) — so the reference cannot silently drift from the code:
 // a variable added without a description here, or a description left behind
 // after a variable is removed, fails Render (and with it `go generate` and the
-// generated-code CI check). See #847.
+// generated-code CI check). Retired authentication settings have separate
+// documentation-only metadata; they are rejected by presence, never parsed.
+// See #847.
 package envdoc
 
 import (
@@ -24,7 +26,7 @@ var descriptions = map[string]string{
 	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message (0 = unlimited); certified before publication against both actual binary SubscribeResponse frames and maximal receiver-local receipt relays.",
 	"LANTERN_MAX_CONCURRENT_STREAMS": "HTTP/2 max concurrent streams per connection (0 = unlimited).",
 
-	"LANTERN_TLS_CERT_FILE":      "PEM certificate path; setting cert + key enables TLS on the primary listener and is required for bearer-enabled HA.",
+	"LANTERN_TLS_CERT_FILE":      "PEM certificate path; setting cert + key enables TLS on the public primary listener. Private workload mTLS uses its separate identity and trust settings.",
 	"LANTERN_TLS_KEY_FILE":       "PEM private-key path; pairs with LANTERN_TLS_CERT_FILE.",
 	"LANTERN_TLS_CLIENT_CA_FILE": "PEM client-CA bundle path; setting it additionally enables mTLS client verification.",
 
@@ -51,8 +53,6 @@ var descriptions = map[string]string{
 
 	"LANTERN_MAX_KEY_LEN":                 "Maximum accepted vertex-key length in bytes.",
 	"LANTERN_MAX_BATCH_SIZE":              "Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms and receipt status lookups). Receipt status lookups retain a hard 10,000-item ceiling when this value is higher or unlimited.",
-	"LANTERN_AUTH_TOKENS":                 "Retired. Any explicit value, including empty, is rejected; use OIDC and named machine identities or schema.read Roles.",
-	"LANTERN_AUTH_EXEMPT_REFLECTION":      "Retired. Any explicit value, including empty, is rejected; use OIDC and named machine identities or schema.read Roles.",
 	"LANTERN_LLM_PROVIDER":                "LLM backend for server-side features (#828): disabled (default) | openai | anthropic | gemini. disabled composes the server without any LLM.",
 	"LANTERN_LLM_MODEL":                   "Provider model id (required unless provider=disabled).",
 	"LANTERN_LLM_API_KEY":                 "Secret for LANTERN_LLM_AUTH=api-key; leave empty for the token auth modes.",
@@ -164,9 +164,17 @@ var descriptions = map[string]string{
 	"LANTERN_CDC_CURSOR_KEY_RING_FILE":      "Absolute private JSON key ring with current_version and up to four versioned 32-byte lowercase-hex AEAD keys. Required for protected or HA CDC and shared across its replicas.",
 }
 
+// retiredAuthDescriptions is documentation-only metadata, separate from the
+// live parsed registry. Never register these keys as runtime settings or defaults.
+var retiredAuthDescriptions = map[string]string{
+	"LANTERN_AUTH_TOKENS":            "Static token lists are unsupported. Use current OIDC API or named machine credentials.",
+	"LANTERN_AUTH_EXEMPT_REFLECTION": "The static-token reflection exemption is unsupported. OIDC reflection requires current schema.read authority.",
+}
+
 // Render produces the docs/env.md markdown for the given registry specs. It
-// returns an error when the description table and the registry disagree in
-// either direction, so the generated reference can never drift from the code.
+// returns an error when the live description table and the registry disagree
+// in either direction. Retired settings are rendered separately without adding
+// them to or relaxing the exact live-registry drift check.
 func Render(specs []envconfig.Spec) (string, error) {
 	var missing, extra []string
 	seen := map[string]bool{}
@@ -193,7 +201,7 @@ func Render(specs []envconfig.Spec) (string, error) {
 	var b strings.Builder
 	b.WriteString("# Lantern server environment variables\n\n")
 	b.WriteString("<!-- GENERATED FILE - do not edit. Regenerate with `make envdoc` (or `go generate ./...`). -->\n\n")
-	b.WriteString("Every `LANTERN_*` variable the server reads, generated from the envconfig\n")
+	b.WriteString("Live `LANTERN_*` settings are generated from the envconfig\n")
 	b.WriteString("registry (#847). A set-but-malformed value logs a startup warning and falls\n")
 	b.WriteString("back to its default; an unknown `LANTERN_*` name logs a typo warning; with\n")
 	b.WriteString("`LANTERN_STRICT_CONFIG=true` either condition fails boot. An explicitly empty\n")
@@ -230,6 +238,21 @@ func Render(specs []envconfig.Spec) (string, error) {
 			def = "`" + def + "`"
 		}
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", s.Key, s.Kind, def, descriptions[s.Key])
+	}
+	b.WriteString("\n## Retired authentication settings\n\n")
+	b.WriteString("These names are documentation-only metadata, not live parsed settings or defaults.\n")
+	b.WriteString("Any explicit retired authentication key, including an empty value, is rejected\n")
+	b.WriteString("before configuration is published in both OFF and OIDC, even when general strict mode is off.\n")
+	b.WriteString("Unknown or case-variant `LANTERN_AUTH_*` keys are also rejected. Remove these settings.\n\n")
+	b.WriteString("| Retired variable | Guidance |\n")
+	b.WriteString("|---|---|\n")
+	retiredKeys := make([]string, 0, len(retiredAuthDescriptions))
+	for key := range retiredAuthDescriptions {
+		retiredKeys = append(retiredKeys, key)
+	}
+	sort.Strings(retiredKeys)
+	for _, key := range retiredKeys {
+		fmt.Fprintf(&b, "| `%s` | %s |\n", key, retiredAuthDescriptions[key])
 	}
 	return b.String(), nil
 }

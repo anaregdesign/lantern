@@ -29,11 +29,11 @@ func wireContributionKey(tail, head string, id []byte) *pb.EdgeContributionKey {
 func TestContributionDelete_ExactOutcomesAndAdmissionRealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	node := newAuthedPumpNode(t, hlc.NodeID{0xe1}, 32)
+	node := newValidatedPumpNode(t, hlc.NodeID{0xe1}, 32)
 	first := bytes.Repeat([]byte{0x11}, 24)
 	second := bytes.Repeat([]byte{0x22}, 24)
 	absent := bytes.Repeat([]byte{0x33}, 24)
-	if _, err := node.raw.AddEdges(ctx, authedReceiptRequest(&pb.AddEdgesRequest{
+	if _, err := node.raw.AddEdges(ctx, connect.NewRequest(&pb.AddEdgesRequest{
 		Edges: []*pb.Edge{
 			{Tail: "tail", Head: "head", Weight: 3},
 			{Tail: "tail", Head: "head", Weight: 5},
@@ -47,19 +47,15 @@ func TestContributionDelete_ExactOutcomesAndAdmissionRealConnectWire(t *testing.
 		wireContributionKey("tail", "head", absent),
 		wireContributionKey("tail", "head", first),
 	}
-	resp, err := node.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(
-		&pb.DeleteEdgeContributionsRequest{Contributions: keys},
-	))
+	resp, err := node.raw.DeleteEdgeContributions(ctx, connect.NewRequest(&pb.DeleteEdgeContributionsRequest{Contributions: keys}))
 	if err != nil || resp.Msg.GetDeleted() != 1 ||
 		!slices.Equal(resp.Msg.GetExisted(), []bool{true, false, false}) {
 		t.Fatalf("plural contribution Delete = (%+v, %v)", resp, err)
 	}
-	if edge, err := node.raw.GetEdge(ctx, authedReceiptRequest(
-		&pb.GetEdgeRequest{Tail: "tail", Head: "head"},
-	)); err != nil || edge.Msg.GetEdge().GetWeight() != 5 {
+	if edge, err := node.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 5 {
 		t.Fatalf("surviving contribution = (%+v, %v), want weight 5", edge, err)
 	}
-	if _, err := node.raw.AddEdge(ctx, authedReceiptRequest(&pb.AddEdgeRequest{
+	if _, err := node.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
 		Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 7}, ContribId: absent,
 	})); err != nil {
 		t.Fatal(err)
@@ -67,15 +63,11 @@ func TestContributionDelete_ExactOutcomesAndAdmissionRealConnectWire(t *testing.
 	if weight, ok := node.cache.GetWeight("tail", "head"); !ok || weight != 5 {
 		t.Fatalf("absent ID resurrected after targeted Delete: weight=%g live=%t", weight, ok)
 	}
-	one, err := node.raw.DeleteEdgeContribution(ctx, authedReceiptRequest(
-		&pb.DeleteEdgeContributionRequest{Tail: "tail", Head: "head", ContribId: second},
-	))
+	one, err := node.raw.DeleteEdgeContribution(ctx, connect.NewRequest(&pb.DeleteEdgeContributionRequest{Tail: "tail", Head: "head", ContribId: second}))
 	if err != nil || !one.Msg.GetExisted() {
 		t.Fatalf("singular contribution Delete = (%+v, %v)", one, err)
 	}
-	if _, err := node.raw.GetEdge(ctx, authedReceiptRequest(
-		&pb.GetEdgeRequest{Tail: "tail", Head: "head"},
-	)); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := node.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("last contribution still visible: %v", err)
 	}
 
@@ -87,16 +79,12 @@ func TestContributionDelete_ExactOutcomesAndAdmissionRealConnectWire(t *testing.
 		} else {
 			id = make([]byte, 24)
 		}
-		_, err := node.raw.DeleteEdgeContribution(ctx, authedReceiptRequest(
-			&pb.DeleteEdgeContributionRequest{Tail: "tail", Head: "head", ContribId: id},
-		))
+		_, err := node.raw.DeleteEdgeContribution(ctx, connect.NewRequest(&pb.DeleteEdgeContributionRequest{Tail: "tail", Head: "head", ContribId: id}))
 		if connect.CodeOf(err) != connect.CodeInvalidArgument {
 			t.Fatalf("invalid contribution ID %x accepted: %v", id, err)
 		}
 	}
-	if _, err := node.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(
-		&pb.DeleteEdgeContributionsRequest{Contributions: keys[:1]},
-	)); err != nil {
+	if _, err := node.raw.DeleteEdgeContributions(ctx, connect.NewRequest(&pb.DeleteEdgeContributionsRequest{Contributions: keys[:1]})); err != nil {
 		t.Fatalf("valid repeated Delete: %v", err)
 	}
 	if got := node.svc.LocalSeq(node.nodeID); got != before+1 {
@@ -107,22 +95,20 @@ func TestContributionDelete_ExactOutcomesAndAdmissionRealConnectWire(t *testing.
 func TestContributionDelete_AtomicCausalCapacityRealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	node := newAuthedPumpNode(t, hlc.NodeID{0xe2}, 32)
+	node := newValidatedPumpNode(t, hlc.NodeID{0xe2}, 32)
 	id := bytes.Repeat([]byte{0x11}, 24)
 	absent := bytes.Repeat([]byte{0x33}, 24)
-	if _, err := node.raw.AddEdge(ctx, authedReceiptRequest(&pb.AddEdgeRequest{
+	if _, err := node.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
 		Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 3}, ContribId: id,
 	})); err != nil {
 		t.Fatal(err)
 	}
 	node.cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
 	before := node.svc.LocalSeq(node.nodeID)
-	resp, err := node.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(
-		&pb.DeleteEdgeContributionsRequest{Contributions: []*pb.EdgeContributionKey{
-			wireContributionKey("tail", "head", id),
-			wireContributionKey("tail", "head", absent),
-		}},
-	))
+	resp, err := node.raw.DeleteEdgeContributions(ctx, connect.NewRequest(&pb.DeleteEdgeContributionsRequest{Contributions: []*pb.EdgeContributionKey{
+		wireContributionKey("tail", "head", id),
+		wireContributionKey("tail", "head", absent),
+	}}))
 	if resp != nil || connect.CodeOf(err) != connect.CodeResourceExhausted {
 		t.Fatalf("over-capacity Delete = (%+v, %v), want nil/ResourceExhausted", resp, err)
 	}
@@ -306,13 +292,13 @@ func TestContributionDelete_GapSnapshotFencesDelayedAddRealConnectWire(t *testin
 	}
 }
 
-func TestContributionDelete_ReceiptAuthDisabledRealConnectWire(t *testing.T) {
+func TestContributionDelete_ReceiptUnactivatedRealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	wire := newPublicReceiptWireServer(t, hlc.NodeID{0xef}, 8)
+	wire := newUnactivatedReceiptProtocolWireServer(t, hlc.NodeID{0xef}, 8)
 	id := bytes.Repeat([]byte{0x71}, 24)
 	if _, err := wire.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
-		Edge: &pb.Edge{Tail: "auth-disabled", Head: "head", Weight: 3}, ContribId: id,
+		Edge: &pb.Edge{Tail: "unactivated", Head: "head", Weight: 3}, ContribId: id,
 	})); err != nil {
 		t.Fatal(err)
 	}
@@ -320,41 +306,41 @@ func TestContributionDelete_ReceiptAuthDisabledRealConnectWire(t *testing.T) {
 	beforeSeq := wire.server.svc.LocalSeq(hlc.NodeID{0xef})
 	_, err := wire.raw.DeleteEdgeContribution(ctx, connect.NewRequest(
 		&pb.DeleteEdgeContributionRequest{
-			Tail: "auth-disabled", Head: "head", ContribId: id,
+			Tail: "unactivated", Head: "head", ContribId: id,
 			ReceiptContext: &pb.MutationReceiptContext{},
 		},
 	))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("auth-disabled receipt Delete = %v, want FailedPrecondition", err)
+		t.Fatalf("unactivated receipt Delete = %v, want FailedPrecondition", err)
 	}
 	if afterStore := wire.runtime.ReceiptStats(); afterStore != beforeStore ||
 		wire.server.svc.LocalSeq(hlc.NodeID{0xef}) != beforeSeq {
-		t.Fatalf("auth-disabled receipt Delete changed Store/origin: before=%+v/%d", beforeStore, beforeSeq)
+		t.Fatalf("unactivated receipt Delete changed Store/origin: before=%+v/%d", beforeStore, beforeSeq)
 	}
 	if edge, err := wire.raw.GetEdge(ctx, connect.NewRequest(
-		&pb.GetEdgeRequest{Tail: "auth-disabled", Head: "head"},
+		&pb.GetEdgeRequest{Tail: "unactivated", Head: "head"},
 	)); err != nil || edge.Msg.GetEdge().GetWeight() != 3 {
-		t.Fatalf("auth-disabled receipt Delete changed graph: (%+v, %v)", edge, err)
+		t.Fatalf("unactivated receipt Delete changed graph: (%+v, %v)", edge, err)
 	}
 }
 
 func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	wire := newPublicReceiptWireServer(t, hlc.NodeID{0xe5}, 32, testToken)
-	capability := publicReceiptCapability(t, wire, testToken)
+	wire := newReceiptProtocolWireServer(t, hlc.NodeID{0xe5}, 32)
+	capability := receiptProtocolCapability(t, wire)
 	if !slices.Contains(capability.GetSupportedMutations(),
 		pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION) {
 		t.Fatalf("contribution Delete was not advertised by certified runtime: %+v", capability)
 	}
 	first := bytes.Repeat([]byte{0x11}, 24)
 	absent := bytes.Repeat([]byte{0x33}, 24)
-	if _, err := wire.raw.AddEdge(ctx, authedReceiptRequest(&pb.AddEdgeRequest{
+	if _, err := wire.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
 		Edge: &pb.Edge{Tail: "receipt", Head: "head", Weight: 3}, ContribId: first,
 	})); err != nil {
 		t.Fatal(err)
 	}
-	receipt := publicReceiptWireContext(t, capability, 0x62, 2, time.Now())
+	receipt := receiptProtocolContext(t, capability, 0x62, 2, time.Now())
 	request := &pb.DeleteEdgeContributionsRequest{
 		Contributions: []*pb.EdgeContributionKey{
 			wireContributionKey("receipt", "head", first),
@@ -362,29 +348,27 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 		},
 		ReceiptContext: receipt,
 	}
-	got, err := wire.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(request))
+	got, err := wire.raw.DeleteEdgeContributions(ctx, connect.NewRequest(request))
 	if err != nil || got.Msg.GetDeleted() != 1 ||
 		!slices.Equal(got.Msg.GetExisted(), []bool{true, false}) {
 		t.Fatalf("initial receipt Delete = (%+v, %v)", got, err)
 	}
 	// Simulate a response lost at the caller, then mutate the edge. The exact
 	// same logical call must report the original result, not re-run the Delete.
-	if _, err := wire.raw.PutEdge(ctx, authedReceiptRequest(&pb.PutEdgeRequest{
+	if _, err := wire.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{
 		Edge: &pb.Edge{Tail: "receipt", Head: "head", Weight: 9},
 	})); err != nil {
 		t.Fatal(err)
 	}
-	retry, err := wire.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(request))
+	retry, err := wire.raw.DeleteEdgeContributions(ctx, connect.NewRequest(request))
 	if err != nil || retry.Msg.GetDeleted() != 1 ||
 		!slices.Equal(retry.Msg.GetExisted(), []bool{true, false}) {
 		t.Fatalf("same-operation receipt retry = (%+v, %v)", retry, err)
 	}
-	if edge, err := wire.raw.GetEdge(ctx, authedReceiptRequest(
-		&pb.GetEdgeRequest{Tail: "receipt", Head: "head"},
-	)); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
+	if edge, err := wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "receipt", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
 		t.Fatalf("receipt retry changed later Put base: (%+v, %v)", edge, err)
 	}
-	statuses := receiptWireStatuses(t, ctx, wire, testToken, receipt.GetOperationIds())
+	statuses := receiptProtocolStatuses(t, ctx, wire, receipt.GetOperationIds())
 	for i, status := range statuses {
 		result, ok := status.GetReceipt().GetOriginalResult().GetResult().(*pb.ReceiptResult_DeleteEdgeContributionExisted)
 		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
@@ -407,33 +391,28 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountPublicReceiptWireRuntime(
-		t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour,
-		provider.ReceiptWALModeRestart, testToken,
-	)
-	if current := publicReceiptCapability(t, restarted, testToken); !proto.Equal(current.GetEndpoint(), endpoint) {
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	if current := receiptProtocolCapability(t, restarted); !proto.Equal(current.GetEndpoint(), endpoint) {
 		t.Fatalf("receipt endpoint changed across clean WAL restart: before=%+v after=%+v", endpoint, current.GetEndpoint())
 	}
-	restoredStatuses := receiptWireStatuses(t, ctx, restarted, testToken, receipt.GetOperationIds())
+	restoredStatuses := receiptProtocolStatuses(t, ctx, restarted, receipt.GetOperationIds())
 	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: statuses},
 		&pb.GetReceiptStatusesResponse{Statuses: restoredStatuses}) {
 		t.Fatalf("original per-ID results changed after WAL restart: before=%+v after=%+v", statuses, restoredStatuses)
 	}
-	again, err := restarted.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(request))
+	again, err := restarted.raw.DeleteEdgeContributions(ctx, connect.NewRequest(request))
 	if err != nil || again.Msg.GetDeleted() != 1 ||
 		!slices.Equal(again.Msg.GetExisted(), []bool{true, false}) {
 		t.Fatalf("same-operation retry after WAL restart = (%+v, %v)", again, err)
 	}
 	for _, id := range [][]byte{first, absent} {
-		if _, err := restarted.raw.AddEdge(ctx, authedReceiptRequest(&pb.AddEdgeRequest{
+		if _, err := restarted.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
 			Edge: &pb.Edge{Tail: "receipt", Head: "head", Weight: 4}, ContribId: id,
 		})); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if edge, err := restarted.raw.GetEdge(ctx, authedReceiptRequest(
-		&pb.GetEdgeRequest{Tail: "receipt", Head: "head"},
-	)); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
+	if edge, err := restarted.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "receipt", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
 		t.Fatalf("WAL restart lost contribution tombstones: (%+v, %v)", edge, err)
 	}
 
@@ -465,22 +444,20 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	freshConfig.StartupRestore = &restore
-	fresh := newClusterRecoveryPublicReceiptServer(t, freshConfig, testToken)
-	freshStatuses := receiptWireStatuses(t, ctx, fresh, testToken, receipt.GetOperationIds())
+	fresh := newClusterRecoveryReceiptProtocolServer(t, freshConfig)
+	freshStatuses := receiptProtocolStatuses(t, ctx, fresh, receipt.GetOperationIds())
 	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: statuses},
 		&pb.GetReceiptStatusesResponse{Statuses: freshStatuses}) {
 		t.Fatalf("certified backup lost original results: before=%+v after=%+v", statuses, freshStatuses)
 	}
 	for _, id := range [][]byte{first, absent} {
-		if _, err := fresh.raw.AddEdge(ctx, authedReceiptRequest(&pb.AddEdgeRequest{
+		if _, err := fresh.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
 			Edge: &pb.Edge{Tail: "receipt", Head: "head", Weight: 4}, ContribId: id,
 		})); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if edge, err := fresh.raw.GetEdge(ctx, authedReceiptRequest(
-		&pb.GetEdgeRequest{Tail: "receipt", Head: "head"},
-	)); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
+	if edge, err := fresh.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "receipt", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
 		t.Fatalf("certified backup lost contribution tombstones: (%+v, %v)", edge, err)
 	}
 }
@@ -496,15 +473,15 @@ func TestContributionDelete_ReceiptCapacityFailureAtomicRealConnectWire(t *testi
 		}}, provider.SearchConfig{})
 		return nil
 	}
-	wire := newClusterRecoveryPublicReceiptServer(t, config, testToken)
+	wire := newClusterRecoveryReceiptProtocolServer(t, config)
 	first, absent := bytes.Repeat([]byte{0x39}, 24), bytes.Repeat([]byte{0x3a}, 24)
-	if _, err := wire.raw.AddEdge(ctx, authedReceiptRequest(&pb.AddEdgeRequest{
+	if _, err := wire.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
 		Edge: &pb.Edge{Tail: "bounded", Head: "head", Weight: 5}, ContribId: first,
 	})); err != nil {
 		t.Fatal(err)
 	}
-	capability := publicReceiptCapability(t, wire, testToken)
-	receipt := publicReceiptWireContext(
+	capability := receiptProtocolCapability(t, wire)
+	receipt := receiptProtocolContext(
 		t, capability, 0xe9, 2,
 		time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
 	)
@@ -515,15 +492,13 @@ func TestContributionDelete_ReceiptCapacityFailureAtomicRealConnectWire(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = wire.raw.DeleteEdgeContributions(ctx, authedReceiptRequest(
-		&pb.DeleteEdgeContributionsRequest{
-			Contributions: []*pb.EdgeContributionKey{
-				{Tail: "bounded", Head: "head", ContribId: first},
-				{Tail: "bounded", Head: "head", ContribId: absent},
-			},
-			ReceiptContext: receipt,
+	_, err = wire.raw.DeleteEdgeContributions(ctx, connect.NewRequest(&pb.DeleteEdgeContributionsRequest{
+		Contributions: []*pb.EdgeContributionKey{
+			{Tail: "bounded", Head: "head", ContribId: first},
+			{Tail: "bounded", Head: "head", ContribId: absent},
 		},
-	))
+		ReceiptContext: receipt,
+	}))
 	if connect.CodeOf(err) != connect.CodeResourceExhausted {
 		t.Fatalf("batch exceeding edge/tombstone capacity = %v, want ResourceExhausted", err)
 	}
@@ -539,12 +514,10 @@ func TestContributionDelete_ReceiptCapacityFailureAtomicRealConnectWire(t *testi
 			beforeStore, beforeLog, beforeSeq, beforeWAL.Size(),
 			afterStore, afterLog, wire.server.svc.LocalSeq(node), afterWAL.Size())
 	}
-	if edge, err := wire.raw.GetEdge(ctx, authedReceiptRequest(
-		&pb.GetEdgeRequest{Tail: "bounded", Head: "head"},
-	)); err != nil || edge.Msg.GetEdge().GetWeight() != 5 {
+	if edge, err := wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "bounded", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 5 {
 		t.Fatalf("rejected batch changed graph: (%+v, %v)", edge, err)
 	}
-	for i, status := range receiptWireStatuses(t, ctx, wire, testToken, receipt.GetOperationIds()) {
+	for i, status := range receiptProtocolStatuses(t, ctx, wire, receipt.GetOperationIds()) {
 		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
 			status.GetReceipt() != nil {
 			t.Fatalf("rejected batch receipt status[%d] = %+v", i, status)

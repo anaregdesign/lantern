@@ -97,7 +97,7 @@ type LifecycleConfig struct {
 // server exits with an error.
 //
 // svc and rep are unused inside LanternServer (the Connect handlers
-// are mounted by NewLanternListener) but accepted as parameters so
+// are mounted during listener construction) but accepted as parameters so
 // wire enforces construction order: both services must be wired before
 // the listener is created.
 func NewLanternServer(
@@ -154,7 +154,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 	var err error
 	if s.useTLS {
 		// TLS cert/key are already loaded into s.server.TLSConfig by
-		// NewLanternListener; ServeTLS with empty filenames falls
+		// the listener provider; ServeTLS with empty filenames falls
 		// through to that.
 		err = s.server.ServeTLS(s.listener, "", "")
 	} else {

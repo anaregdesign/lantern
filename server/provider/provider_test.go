@@ -385,6 +385,31 @@ func TestLoadConfigOwnsOneEnvironmentSnapshot(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAuthRegistry(t *testing.T) {
+	reader := envconfig.NewReader([]string{"LANTERN_LLM_AUTH=google-adc", "LANTERN_STRICT_CONFIG=true"})
+	cfg, err := LoadConfig(reader)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if NewLLMConfig(cfg).Auth != LLMAuthGoogleADC {
+		t.Fatal("unrelated LLM authentication setting was lost")
+	}
+	var foundMode, foundLLMAuth bool
+	for _, spec := range reader.Known() {
+		switch spec.Key {
+		case "LANTERN_AUTH_TOKENS", "LANTERN_AUTH_EXEMPT_REFLECTION":
+			t.Fatalf("retired auth setting %s remains in the live parsed registry", spec.Key)
+		case "LANTERN_AUTH_MODE":
+			foundMode = true
+		case "LANTERN_LLM_AUTH":
+			foundLLMAuth = true
+		}
+	}
+	if !foundMode || !foundLLMAuth {
+		t.Fatal("current server or LLM authentication setting missing from live registry")
+	}
+}
+
 func TestLoadConfigIndependentContexts(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

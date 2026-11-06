@@ -85,7 +85,15 @@ Flutter/Dart versions and framework revision, device model/OS without device
 IDs, and the checked-in application package IDs. Build/test artifacts must be
 from this checkout. If code changes, start the matrix again with a new SHA.
 
-## Disposable authenticated HTTPS fixture
+## Obsolete static-token HTTPS fixture (unsupported)
+
+This historical `LANTERN_AUTH_TOKENS` recipe is unsupported by the current
+Server: any present static-auth setting, including an empty value, fails
+startup in both OFF and OIDC. The recipe below is unqualified history and
+cannot qualify current Dart, provider or physical-device acceptance. Its
+replacement and qualification remain a separate held documentation exit
+under #1843. Provider, physical-device and tunnel runs remain held; this
+cleanup does not resume them. Do not execute the obsolete recipe below.
 
 Use fresh random synthetic tokens and a task-owned Lantern server. The server
 listens on all interfaces inside its runtime, so build a static Linux binary

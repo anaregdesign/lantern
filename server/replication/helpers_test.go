@@ -2,16 +2,25 @@ package replication
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
@@ -19,6 +28,8 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
 func snapshotScratchTestConfig(t *testing.T, maxBytes uint64) GraphSnapshotSpoolConfig {
@@ -336,20 +347,138 @@ func (s *cursorTestState) SubscribeResumeCursor() (map[string]uint64, error) {
 
 func (*cursorTestState) ApplyMutation(context.Context, *pb.Mutation) error { return nil }
 
-// This fixture exercises outbound metadata over HTTP/2 TLS; its synthetic
-// handler is not a native membership or mTLS acceptance fixture.
+// This fixture exercises outbound tail metadata with test-owned signed OFF
+// membership and verified workload TLS. Its synthetic handler does not perform
+// inbound membership admission or qualify a native environment or time provider.
 func startTailMetadataPeer(t *testing.T, peer *installerTestPeer) (*httptest.Server, *PeerTransport) {
 	t.Helper()
+	now := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	sample := snapshotAdmissionObservation{owner: new(byte), now: now}
+	caPublic, caPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(10 * time.Minute),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, caPublic, caPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err = x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	serverCertificate, serverLeaf := tailMetadataWorkloadCertificate(t, ca, caPrivate, 2, "spiffe://lantern.test/tail-peer", x509.ExtKeyUsageServerAuth)
+	clientCertificate, clientLeaf := tailMetadataWorkloadCertificate(t, ca, caPrivate, 3, "spiffe://lantern.test/tail-client", x509.ExtKeyUsageClientAuth)
+	clientChains, err := clientLeaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientWindow, err := peerauth.SelectCertificateWindow(clientChains, clientLeaf, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	membershipPath := filepath.Join(t.TempDir(), "membership")
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
 	server := httptest.NewUnstartedServer(mux)
-	server.EnableHTTP2 = true
+	var store *peerauth.Store
+	t.Cleanup(func() {
+		server.Close()
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	server.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{serverCertificate},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    roots,
+		Time:         func() time.Time { return now },
+	}
 	server.StartTLS()
-	t.Cleanup(server.Close)
-	// This test-owned adapter approves only its TLS endpoint. It does not
-	// classify the synthetic response as certified workload admission.
-	transport := &PeerTransport{client: server.Client(), staticPeers: map[string]struct{}{server.URL: {}}}
+
+	self := peerauth.Member{ID: [16]byte{1}, Identity: clientLeaf.URIs[0].String(), SPKI: sha256.Sum256(clientLeaf.RawSubjectPublicKeyInfo), Origin: "https://localhost:1"}
+	remote := peerauth.Member{ID: [16]byte{2}, Identity: serverLeaf.URIs[0].String(), SPKI: sha256.Sum256(serverLeaf.RawSubjectPublicKeyInfo), Origin: server.URL}
+	domain := peerauth.Domain{Deployment: [16]byte{1}, NamespaceFormat: keyspace.Version, AuthMode: "off", TrustDigest: sha256.Sum256(caDER)}
+	manifest := peerauth.Manifest{Version: 1, Domain: domain, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), Members: []peerauth.Member{self, remote}}
+	operatorPublic, operatorPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := peerauth.SignManifest(manifest, operatorPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err = peerauth.CreateStore(peerauth.StoreOptions{
+		Path:             membershipPath,
+		Key:              operatorPublic,
+		Domain:           domain,
+		Self:             self,
+		Now:              func() time.Time { return now },
+		Time:             func() (peerauth.TimeObservation, error) { return sample, nil },
+		SelfCertificates: []peerauth.CertificateWindow{clientWindow},
+	}, signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, err := NewVerifiedPeerTransport(peerauth.NewHTTPClient(store, clientCertificate, roots), func(origin string) bool {
+		origins, err := store.Origins()
+		if err != nil || origin != server.URL {
+			return false
+		}
+		for _, current := range origins {
+			if current == origin {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return server, transport
+}
+
+func tailMetadataWorkloadCertificate(t *testing.T, ca *x509.Certificate, caPrivate ed25519.PrivateKey, serial int64, identity string, usage x509.ExtKeyUsage) (tls.Certificate, *x509.Certificate) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := url.Parse(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := &x509.Certificate{
+		SerialNumber: big.NewInt(serial),
+		NotBefore:    ca.NotBefore,
+		NotAfter:     ca.NotAfter,
+		URIs:         []*url.URL{uri},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{usage},
+	}
+	if usage == x509.ExtKeyUsageServerAuth {
+		certificate.IPAddresses = []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, certificate, ca, public, caPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(certificateDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{certificateDER}, PrivateKey: private, Leaf: leaf}, leaf
 }
 
 type tailAppliedState struct {

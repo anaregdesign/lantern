@@ -333,21 +333,6 @@ func NewRuntimeCertified(
 	}, nil
 }
 
-// NewPublicReceiptsCertified enables the public receipt surface only for a
-// durable runtime with configured bearer auth. Graph-only and auth-disabled
-// deployments remain valid serving configurations but do not advertise or
-// accept receipt-bearing requests.
-func NewPublicReceiptsCertified(
-	config ReceiptWALConfig,
-	auth AuthConfig,
-	runtime *dataruntime.ServingRuntime,
-	primary *dataruntime.Executor,
-	_ *backup.Backupper,
-	certified runtimeCertified,
-) (publicReceiptsCertified, error) {
-	return certifyPublicReceipts(config, auth.Enabled(), runtime, primary, certified)
-}
-
 // NewOIDCPublicReceiptsCertified activates receipts only after the exact data
 // service has its native Principal/Role boundary installed.
 func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, backupper *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {

@@ -33,6 +33,38 @@ func TestRenderCoversFullRegistry(t *testing.T) {
 			t.Fatalf("rendered doc missing %q", want)
 		}
 	}
+	live, retired, found := strings.Cut(doc, "\n## Retired authentication settings\n")
+	if !found {
+		t.Fatal("rendered doc missing separate retired authentication section")
+	}
+	for _, key := range []string{"LANTERN_AUTH_TOKENS", "LANTERN_AUTH_EXEMPT_REFLECTION"} {
+		if strings.Contains(live, "| `"+key+"` |") {
+			t.Errorf("retired setting %s appears in the live registry table", key)
+		}
+		if !strings.Contains(retired, "| `"+key+"` |") {
+			t.Errorf("retired setting %s missing from documentation-only section", key)
+		}
+	}
+	for _, want := range []string{"including an empty value", "both OFF and OIDC", "before configuration is published", "general strict mode is off"} {
+		if !strings.Contains(retired, want) {
+			t.Errorf("retired auth section missing presence-rejection guidance %q", want)
+		}
+	}
+}
+
+func TestRenderRejectsRetiredSettingsInLiveRegistry(t *testing.T) {
+	reader := envconfig.NewReader(nil)
+	if _, err := provider.LoadConfig(reader); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	for _, key := range []string{"LANTERN_AUTH_TOKENS", "LANTERN_AUTH_EXEMPT_REFLECTION"} {
+		t.Run(key, func(t *testing.T) {
+			specs := append(reader.Known(), envconfig.Spec{Key: key, Kind: "string"})
+			if _, err := Render(specs); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Render accepted retired setting in live registry or failed to name it: %v", err)
+			}
+		})
+	}
 }
 
 // TestRenderRejectsDrift feeds Render a registry that disagrees with the

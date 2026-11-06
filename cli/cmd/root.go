@@ -90,7 +90,7 @@ GLOBAL CONNECTION FLAGS
       --tls-cert     client cert (mTLS)
       --tls-key      client key (mTLS)
       --tls-server-name  override the SNI / verification hostname
-      --token        bearer token for LANTERN_AUTH_TOKENS servers (env: LANTERN_TOKEN)
+      --token        server-accepted API or machine Bearer token (env: LANTERN_TOKEN)
       --insecure-skip-verify  skip server cert verification (dev only)
       --compression  per-call compressor: "none" (default) or "gzip"
       --chunk-size   batch chunk size for multi-key write/delete (default 1000)
@@ -185,12 +185,12 @@ func init() {
 	pf.BoolVar(&flagInsecureTLS, "insecure-skip-verify", false, "skip server cert verification (DEV ONLY)")
 	pf.StringVar(&flagCompression, "compression", "none", `per-call compressor: "none" or "gzip"`)
 	pf.IntVar(&flagChunkSize, "chunk-size", 1000, "batch chunk size for multi-key write/delete")
-	pf.StringVar(&flagToken, "token", "", "bearer token for servers running LANTERN_AUTH_TOKENS (falls back to the LANTERN_TOKEN env var; flag wins)")
+	pf.StringVar(&flagToken, "token", "", "server-accepted API or machine Bearer token (falls back to LANTERN_TOKEN; flag wins)")
 }
 
 // authToken resolves the client bearer token: --token wins, then the
-// LANTERN_TOKEN env var, else empty (no auth header) — mirroring how the
-// TLS flags thread through dial (#850).
+// LANTERN_TOKEN env var, else empty (no auth header). The server's current
+// API or machine profile validates the supplied credential.
 func authToken() string {
 	if flagToken != "" {
 		return flagToken

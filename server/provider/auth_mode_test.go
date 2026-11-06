@@ -1,59 +1,87 @@
 package provider
 
 import (
-	"os"
-	"strings"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
 func TestAuthModePreflight(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		env       map[string]string
-		wantError bool
-	}{
-		{"unset", nil, false},
-		{"explicit off", map[string]string{"LANTERN_AUTH_MODE": "off"}, false},
-		{"retired token", map[string]string{"LANTERN_AUTH_TOKENS": "legacy-token"}, true},
-		{"empty mode", map[string]string{"LANTERN_AUTH_MODE": ""}, true},
-		{"unknown mode", map[string]string{"LANTERN_AUTH_MODE": "OIDC"}, true},
-		{"OIDC explicit mode", map[string]string{"LANTERN_AUTH_MODE": "oidc"}, false},
-		{"implicit Issuer", map[string]string{"LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example"}, true},
-		{"empty Issuer", map[string]string{"LANTERN_OIDC_ADMIN_ISSUER": ""}, true},
-		{"implicit system setting", map[string]string{"LANTERN_SECURITY_STORE_DIR": "/tmp/sys"}, true},
-		{"empty security JSON in off", map[string]string{"LANTERN_AUTH_MODE": "off", "LANTERN_SECURITY_CONFIG_JSON": ""}, true},
-		{"security JSON in implicit off", map[string]string{"LANTERN_SECURITY_CONFIG_JSON": "{}"}, true},
-		{"auth typo", map[string]string{"LANTERN_AUTH_TOKEN": "token"}, true},
-		{"Issuer case typo", map[string]string{"LANTERN_OIdC_ADMIN_ISSUER": "https://idp.example"}, true},
-		{"off with Issuer", map[string]string{"LANTERN_AUTH_MODE": "off", "LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example"}, true},
-		{"off with token", map[string]string{"LANTERN_AUTH_MODE": "off", "LANTERN_AUTH_TOKENS": "legacy-token"}, true},
-	} {
+	type authModeTest struct {
+		name          string
+		env           []string
+		wantError     bool
+		wantLoadError bool
+	}
+	tests := []authModeTest{
+		{name: "unset"},
+		{name: "explicit off", env: []string{"LANTERN_AUTH_MODE=off"}},
+		{name: "explicit OIDC requires complete configuration", env: []string{"LANTERN_AUTH_MODE=oidc"}, wantLoadError: true},
+		{name: "empty mode", env: []string{"LANTERN_AUTH_MODE="}, wantError: true, wantLoadError: true},
+		{name: "unknown mode", env: []string{"LANTERN_AUTH_MODE=legacy"}, wantError: true, wantLoadError: true},
+		{name: "mode value case variant", env: []string{"LANTERN_AUTH_MODE=OIDC"}, wantError: true, wantLoadError: true},
+		{name: "retired token in implicit off", env: []string{"LANTERN_AUTH_TOKENS="}, wantError: true, wantLoadError: true},
+		{name: "partial trust in implicit off", env: []string{"LANTERN_OIDC_ADMIN_ISSUER="}, wantError: true, wantLoadError: true},
+		{name: "security JSON in implicit off", env: []string{"LANTERN_SECURITY_CONFIG_JSON={}"}, wantError: true, wantLoadError: true},
+	}
+	for _, mode := range []string{"off", "oidc"} {
+		for _, setting := range []string{
+			"LANTERN_AUTH_TOKENS=legacy-token",
+			"LANTERN_AUTH_TOKENS=",
+			"LANTERN_AUTH_EXEMPT_REFLECTION=true",
+			"LANTERN_AUTH_EXEMPT_REFLECTION=false",
+			"LANTERN_AUTH_EXEMPT_REFLECTION=",
+			"LANTERN_AUTH_TOKEN=token",
+			"LANTERN_AUTH_UNKNOWN=",
+			"lantern_auth_tokens=",
+			"LANTERN_Auth_EXEMPT_REFLECTION=false",
+			"lantern_auth_mode=off",
+			"LANTERN_AUTH_Mode=oidc",
+		} {
+			tests = append(tests, authModeTest{
+				name:          mode + " rejects " + setting,
+				env:           []string{"LANTERN_AUTH_MODE=" + mode, "LANTERN_STRICT_CONFIG=false", setting},
+				wantError:     true,
+				wantLoadError: true,
+			})
+		}
+		for _, setting := range []string{
+			"LANTERN_OIDC_ADMIN_ISSUER=https://idp.example",
+			"LANTERN_OIDC_ADMIN_ISSUER=",
+			"LANTERN_OIDC_UNKNOWN=",
+			"LANTERN_OIdC_ADMIN_ISSUER=https://idp.example",
+			"LANTERN_SECURITY_STORE_DIR=/tmp/sys",
+			"LANTERN_SECURITY_STORE_DIR=",
+			"LANTERN_SECURITY_UNKNOWN=",
+			"LANTERN_SECURITY_CONFIG_JSON=",
+			"LANTERN_SECURITY_CONFIG_JSON={}",
+			"lantern_security_config_json={}",
+		} {
+			tests = append(tests, authModeTest{
+				name:          mode + " rejects partial or unknown trust " + setting,
+				env:           []string{"LANTERN_AUTH_MODE=" + mode, "LANTERN_STRICT_CONFIG=false", setting},
+				wantError:     mode == "off",
+				wantLoadError: true,
+			})
+		}
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			for _, setting := range os.Environ() {
-				name, _, _ := strings.Cut(setting, "=")
-				if strings.HasPrefix(name, "LANTERN_AUTH_") || strings.HasPrefix(name, "LANTERN_OIDC_") || strings.HasPrefix(name, "LANTERN_SECURITY_") {
-					t.Setenv(name, "")
-					if err := os.Unsetenv(name); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			for name, value := range test.env {
-				t.Setenv(name, value)
-			}
-			err := validateAuthMode(testEnvironmentReader())
+			// Use captured inputs so ambient settings and earlier loads cannot
+			// hide a present-empty, unknown, partial or case-variant setting.
+			err := validateAuthMode(envconfig.NewReader(test.env))
 			if (err != nil) != test.wantError {
-				t.Fatalf("preflight = %v", err)
+				t.Fatalf("preflight = %v, want error %v", err, test.wantError)
 			}
-			if test.name == "OIDC explicit mode" {
-				if cfg, err := NewConfig(); err == nil || cfg != nil {
-					t.Fatal("partial OIDC configuration accepted")
-				}
+			cfg, err := LoadConfig(envconfig.NewReader(test.env))
+			if (err != nil) != test.wantLoadError {
+				t.Fatalf("LoadConfig = %v, want error %v", err, test.wantLoadError)
 			}
-			if test.wantError {
-				if cfg, err := NewConfig(); err == nil || cfg != nil {
-					t.Fatal("invalid auth reached configuration publication")
-				}
+			if test.wantLoadError && cfg != nil {
+				t.Fatal("invalid auth reached configuration publication")
+			}
+			if !test.wantLoadError && (cfg == nil || cfg.Security.Mode != "off") {
+				t.Fatal("valid OFF configuration was not preserved")
 			}
 		})
 	}

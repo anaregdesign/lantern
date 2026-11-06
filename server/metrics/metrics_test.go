@@ -826,6 +826,9 @@ func TestDomainMetrics_RejectionFamilies(t *testing.T) {
 			t.Errorf("metric family %q not registered", want)
 		}
 	}
+	if names["lantern_auth_rejected_total"] {
+		t.Error("retired static-auth metric is still registered")
+	}
 
 	// Pre-warming: every canonical reason has a row visible from the
 	// start (so dashboards never have to wait for the first reject).
