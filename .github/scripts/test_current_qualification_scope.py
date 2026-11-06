@@ -3,11 +3,14 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import current_qualification_scope as scope
+from git_test_fixture import synchronous_git_maintenance
 
 
 class QualificationScopeTest(unittest.TestCase):
@@ -85,6 +88,61 @@ class QualificationScopeTest(unittest.TestCase):
                 patch.object(scope.evidence_only_pr, "changed_files", return_value={"admin/app/Card.tsx": "M"}), \
                 patch.object(scope.evidence_only_pr, "git", return_value="120000 blob abc\tadmin/app/Card.tsx"):
             self.assertTrue(scope.classify({})[0])
+
+    def test_real_git_additions_deletions_and_missing_revisions_keep_full_qualification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, text=True,
+                                               stderr=subprocess.DEVNULL).strip()
+
+            git("init", "-q")
+            synchronous_git_maintenance(root)
+            hooks = root / "empty-hooks"
+            hooks.mkdir()
+            for key, value in {"user.name": "Fixture", "user.email": "fixture@example.invalid",
+                               "commit.gpgSign": "false", "core.hooksPath": str(hooks)}.items():
+                git("config", "--local", key, value)
+            git("commit", "--allow-empty", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            fixture = root / ".github/scripts/fixture.py"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text("# policy fixture\n")
+            git("add", "--", ".github/scripts/fixture.py")
+            git("commit", "-qm", "add policy fixture")
+            added = git("rev-parse", "HEAD")
+            fixture.unlink()
+            git("add", "--", ".github/scripts/fixture.py")
+            git("commit", "-qm", "delete policy fixture")
+            deleted = git("rev-parse", "HEAD")
+
+            for case, before, after, reason in (
+                    ("added", base, added, "nonregular or missing source"),
+                    ("deleted", added, deleted, "nonregular or missing source"),
+                    ("missing-base", "missing-revision", added, "classification unavailable: CalledProcessError"),
+                    ("missing-head", base, "missing-revision", "classification unavailable: CalledProcessError")):
+                with self.subTest(case=case):
+                    output = root / f"{case}-qualification-output"
+                    environ = os.environ | {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/fixture",
+                                            "PUSH_BEFORE_SHA": before, "GITHUB_SHA": after,
+                                            "GITHUB_OUTPUT": str(output),
+                                            "GITHUB_STEP_SUMMARY": str(root / f"{case}-summary")}
+                    result = subprocess.run([sys.executable, "-B", str(Path(scope.__file__).resolve())],
+                                            cwd=root, env=environ, check=True, capture_output=True, text=True)
+                    self.assertEqual(json.loads(result.stdout),
+                                     {"configured_source_integration_required": True, "reason": reason})
+                    self.assertEqual(output.read_text(), "configured_source_integration_required=true\n")
+
+                    environ["GITHUB_OUTPUT"] = str(root / f"{case}-native-output")
+                    result = subprocess.run([sys.executable, "-B", str(Path(scope.validation_scope.__file__).resolve())],
+                                            cwd=root, env=environ, check=True, capture_output=True, text=True)
+                    native = json.loads(result.stdout)
+                    self.assertTrue(native["full"])
+                    self.assertTrue(native["windows_required"])
+                    self.assertTrue(native["windows_rust_required"])
+                    if case.startswith("missing-"):
+                        self.assertEqual(native["reason"], reason)
 
 
 if __name__ == "__main__":
