@@ -51,7 +51,8 @@ def classify(environ):
         # A symlink or type change is not an application source edit.
         for path in changes:
             for revision in revisions:
-                if evidence_only_pr.git("ls-tree", revision, "--", path).split()[0] != "100644":
+                entry = evidence_only_pr.git("ls-tree", revision, "--", path).split()
+                if not entry or entry[0] != "100644":
                     return True, "nonregular or missing source"
         return required, "boundary or unknown change" if required else "reviewed application or harness-only edits"
     except Exception as error:
