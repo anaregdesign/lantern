@@ -20,7 +20,8 @@
 //
 // Shared storage is never assumed safe for concurrent writes (networked or
 // FUSE-backed filesystems generally have no reliable file locking), so every
-// writer owns instance-scoped names. Graph-only writes use temp file + rename.
+// writer owns instance-scoped names. Graph-only writes exclusively stage and
+// publish without replacing an existing recovery point.
 // Receipt sets exclusively create and sync immutable final members before
 // exclusively creating and syncing a manifest-last commit marker.
 package backup
@@ -124,6 +125,7 @@ type Backupper struct {
 	attempt           chan struct{}
 	fs                receiptBackupFS
 	lastSetID         uint64
+	lastGraphID       int64
 	productionMu      sync.Mutex
 	production        ProductionSnapshot
 	productionTicker  productionTimer
@@ -315,20 +317,38 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 		return Stats{}, fmt.Errorf("backup: mkdir %s: %w", b.cfg.Dir, err)
 	}
 
-	final := filepath.Join(b.cfg.Dir, b.fileName(start))
-	tmp := final[:len(final)-len(fileSuffix)] + tmpSuffix
-
-	f, err := os.Create(tmp)
+	snapshotID, err := b.nextGraphBackupID(ctx, start)
 	if err != nil {
 		b.failed()
-		return Stats{}, fmt.Errorf("backup: create %s: %w", tmp, err)
+		return Stats{}, err
+	}
+	final := filepath.Join(b.cfg.Dir, b.fileName(time.Unix(0, snapshotID)))
+	tmp := final[:len(final)-len(fileSuffix)] + tmpSuffix
+
+	f, owned, err := b.fs.openExclusive(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	cleanup := func(cause error) error {
+		if owned {
+			if removeErr := b.fs.remove(tmp); !errors.Is(removeErr, os.ErrNotExist) {
+				cause = errors.Join(cause, removeErr)
+			}
+		}
+		return cause
+	}
+	if err != nil || !owned || f == nil {
+		if owned && f != nil {
+			err = errors.Join(err, f.Close())
+		}
+		if err == nil {
+			err = errors.New("exclusive graph backup create returned no owned file")
+		}
+		b.failed()
+		return Stats{}, fmt.Errorf("backup: create %s: %w", tmp, cleanup(err))
 	}
 	sender := &protoFileSender{w: bufio.NewWriter(f), now: b.now, namespaceFormat: b.cfg.NamespaceFormat}
 	if b.cfg.NamespaceFormat != "" {
 		if _, err := sender.w.WriteString(graphDataBackupMagic); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
-			return Stats{}, err
+			b.failed()
+			return Stats{}, cleanup(errors.Join(err, f.Close()))
 		}
 	}
 	snapshotStart := b.now()
@@ -349,14 +369,23 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 		serr = cerr
 	}
 	if serr != nil {
-		_ = os.Remove(tmp)
 		b.failed()
-		return Stats{}, fmt.Errorf("backup: write %s: %w", tmp, serr)
+		return Stats{}, fmt.Errorf("backup: write %s: %w", tmp, cleanup(serr))
 	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
+	if err := ctx.Err(); err != nil {
 		b.failed()
-		return Stats{}, fmt.Errorf("backup: rename %s: %w", final, err)
+		return Stats{}, cleanup(err)
+	}
+	published, err := b.fs.renameExclusive(tmp, final)
+	if err != nil || !published {
+		if err == nil {
+			err = errors.New("exclusive graph backup publication did not publish")
+		}
+		// Publication may have succeeded before an error was reported (the
+		// portable no-replace operation can fail removing the staging link).
+		// Preserve every final path; only our exclusively created temp is owned.
+		b.failed()
+		return Stats{}, fmt.Errorf("backup: publish %s: %w", final, cleanup(err))
 	}
 
 	stats := Stats{Vertices: sender.vertices, Edges: sender.edges}
@@ -368,6 +397,7 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 		slog.String("source", source),
 		slog.Uint64("production_generation", policy.Generation),
 		slog.String("tick_id", tickID),
+		slog.Int64("snapshot_id", snapshotID),
 		slog.Int64("started_unix_ns", start.UnixNano()),
 		slog.Int64("finished_unix_ns", finished.UnixNano()),
 		slog.Int64("materialization_ns", materializationEnd.Sub(snapshotStart).Nanoseconds()),
@@ -452,8 +482,46 @@ func countLivePutOutcomes(outcomes []pb.PutOutcome, expected int) (int, error) {
 	return live, nil
 }
 
-// fileName builds this instance's dump filename for the given instant. The
-// nanosecond stamp keeps names unique even under a tight test loop.
+// nextGraphBackupID allocates under the attempt guard. Canonical final and
+// staging names reserve IDs regardless of their type or contents. Wall time
+// seeds the ID, but repeating/backward time and producer reconstruction must
+// not alias an existing recovery point. A separate same-ID producer may still
+// collide; exclusive staging/publication rejects it without replacement.
+func (b *Backupper) nextGraphBackupID(ctx context.Context, at time.Time) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	maxID := b.lastGraphID
+	err := b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		name := strings.TrimSuffix(entry.Name(), ".tmp")
+		id, ok := fileStamp(name)
+		if ok && id > maxID && id > 0 && b.fileName(time.Unix(0, id)) == name {
+			maxID = id
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("backup: scan graph backup directory for next ID: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	candidate := max(at.UnixNano(), int64(1))
+	if candidate <= maxID {
+		if maxID == 1<<63-1 {
+			return 0, errors.New("backup: graph backup snapshot ID exhausted")
+		}
+		candidate = maxID + 1
+	}
+	b.lastGraphID = candidate
+	return candidate, nil
+}
+
+// fileName formats a numeric graph snapshot ID through its historical
+// nanosecond spelling. Allocated IDs need not equal observed wall time.
 func (b *Backupper) fileName(ts time.Time) string {
 	return fmt.Sprintf("%s%s-%d%s", filePrefix, b.cfg.InstanceID, ts.UnixNano(), fileSuffix)
 }
@@ -465,7 +533,7 @@ func (b *Backupper) ownPrefix() string {
 }
 
 // listBackups returns every finalised dump in the directory (any instance),
-// newest first. Ordering uses the nanosecond stamp embedded in the filename
+// newest first. Ordering uses the numeric ID embedded in the filename
 // (deterministic, independent of filesystem mtime granularity), falling back
 // to mtime. Temp files and non-dump entries are ignored.
 func (b *Backupper) listBackups() ([]string, error) {
@@ -545,7 +613,7 @@ func (b *Backupper) collect(prefix string) ([]backupFile, error) {
 	return out, nil
 }
 
-// fileStamp parses the trailing "-<unixNano>.lbk" stamp from a dump
+// fileStamp parses the trailing numeric snapshot ID from a dump
 // filename. The instance token may itself contain '-', so the stamp is the
 // final '-'-separated segment.
 func fileStamp(name string) (int64, bool) {

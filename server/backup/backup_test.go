@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type fakeService struct {
 	beginRecovery         int
 	completeRecovery      int
 	completeErr           error
+	snapshotErr           error
 }
 
 func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequest, stream dataruntime.Sender[pb.BackupSnapshotResponse]) error {
@@ -40,7 +42,7 @@ func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequ
 			return err
 		}
 	}
-	return nil
+	return f.snapshotErr
 }
 
 func (f *fakeService) RestoreVertices(_ context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
@@ -337,6 +339,424 @@ func TestBackupper_Retention(t *testing.T) {
 		if filepath.Ext(e.Name()) == ".tmp" {
 			t.Fatalf("temp file lingered: %s", e.Name())
 		}
+	}
+}
+
+func TestBackupperGraphSnapshotIDsPreserveRecoveryPoints(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stamps  []int64
+		restart bool
+	}{
+		{name: "fixed clock", stamps: []int64{100, 100, 100}},
+		{name: "backward and repeated clock after restart", stamps: []int64{100, 50, 100}, restart: true},
+		{name: "nonpositive clock", stamps: []int64{0, -1, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t.TempDir())
+			cfg.Retain = 0
+			svc := &fakeService{}
+			var logs bytes.Buffer
+			b := New(svc, cfg, nil, slog.New(slog.NewJSONHandler(&logs, nil)))
+			originals := map[string][]byte{}
+			var lastID int64
+			for i, stamp := range tc.stamps {
+				if tc.restart && i == len(tc.stamps)-1 {
+					b = New(svc, cfg, nil, slog.New(slog.NewJSONHandler(&logs, nil)))
+				}
+				svc.frames = []*pb.BackupSnapshotResponse{vFrame(fmt.Sprintf("snapshot-%d", i))}
+				b.now = func() time.Time { return time.Unix(0, stamp) }
+				if _, err := b.BackupNow(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				paths, err := b.listBackups()
+				if err != nil || len(paths) != i+1 {
+					t.Fatalf("distinct recovery points = %v, %v", paths, err)
+				}
+				id, ok := fileStamp(filepath.Base(paths[0]))
+				if !ok || id <= lastID {
+					t.Fatalf("newest snapshot ID = %d, previous %d", id, lastID)
+				}
+				lastID = id
+				for path, before := range originals {
+					after, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatalf("completed recovery point changed: %s, %v", path, err)
+					}
+				}
+				raw, err := os.ReadFile(paths[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				originals[paths[0]] = raw
+			}
+			destination := &fakeService{}
+			if _, err := New(destination, cfg, nil, nil).RestoreOnStartup(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if len(destination.putV) != 1 || destination.putV[0].GetKey() != "snapshot-2" {
+				t.Fatalf("restore did not choose latest publication: %v", destination.putV)
+			}
+			preview, err := b.PreviewRetention(t.Context(), 2)
+			if err != nil || !preview.Complete || preview.ValidBackups != 3 || preview.PruneBackups != 1 {
+				t.Fatalf("logical-ID retention preview = %+v, %v", preview, err)
+			}
+			if err := b.prune(t.Context(), 2); err != nil {
+				t.Fatal(err)
+			}
+			remaining, err := b.listBackups()
+			if err != nil || len(remaining) != 2 {
+				t.Fatalf("retained points = %v, %v", remaining, err)
+			}
+			var wrote int
+			for _, line := range bytes.Split(logs.Bytes(), []byte{'\n'}) {
+				var record map[string]any
+				if len(line) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(line, &record); err != nil {
+					t.Fatal(err)
+				}
+				if record["msg"] == "backup: wrote dump" {
+					if record["tick_id"] != fmt.Sprint(tc.stamps[wrote]) || record["snapshot_id"] == nil {
+						t.Fatalf("wall tick and allocated ID were conflated: %v", record)
+					}
+					wrote++
+				}
+			}
+			if wrote != len(tc.stamps) {
+				t.Fatalf("successful publication logs = %d", wrote)
+			}
+		})
+	}
+}
+
+func TestBackupperGraphSnapshotIDsReserveCanonicalOwnedEntries(t *testing.T) {
+	for _, kind := range []string{"stale staging", "corrupt final", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			cfg := testConfig(t.TempDir())
+			cfg.Retain = 0
+			b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("old")}}, cfg, nil, nil)
+			b.now = func() time.Time { return time.Unix(0, 50) }
+			if _, err := b.BackupNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			oldPath := filepath.Join(cfg.Dir, b.fileName(time.Unix(0, 50)))
+			oldBytes, err := os.ReadFile(oldPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserved := []string{
+				filePrefix + cfg.InstanceID + "-peer-900" + fileSuffix,
+				b.ownPrefix() + "090" + fileSuffix,
+			}
+			reserved := b.fileName(time.Unix(0, 80))
+			switch kind {
+			case "stale staging":
+				preserved = append(preserved, reserved+".tmp")
+			case "corrupt final":
+				preserved = append(preserved, reserved)
+			case "directory":
+				if err := os.Mkdir(filepath.Join(cfg.Dir, reserved), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range preserved {
+				if err := os.WriteFile(filepath.Join(cfg.Dir, name), []byte(name), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			b = New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("new")}}, cfg, nil, nil)
+			b.now = func() time.Time { return time.Unix(0, 1) }
+			if _, err := b.BackupNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			newPath := filepath.Join(cfg.Dir, b.fileName(time.Unix(0, 81)))
+			vertices, _, err := decodeFile(newPath)
+			if err != nil || len(vertices) != 1 || vertices[0].GetKey() != "new" {
+				t.Fatalf("reserved-ID publication = %v, %v", vertices, err)
+			}
+			after, err := os.ReadFile(oldPath)
+			if err != nil || !bytes.Equal(oldBytes, after) {
+				t.Fatalf("old timestamp-named point changed: %v", err)
+			}
+			preview, err := b.PreviewRetention(t.Context(), 1)
+			if err != nil || !preview.Complete || preview.ValidBackups != 2 || preview.PruneBackups != 1 {
+				t.Fatalf("legacy/logical valid catalog = %+v, %v", preview, err)
+			}
+			if err := b.prune(t.Context(), 1); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range preserved {
+				raw, err := os.ReadFile(filepath.Join(cfg.Dir, name))
+				if err != nil || string(raw) != name {
+					t.Fatalf("unowned, invalid or staging entry changed: %s, %v", name, err)
+				}
+			}
+			if kind == "directory" {
+				if info, err := os.Stat(filepath.Join(cfg.Dir, reserved)); err != nil || !info.IsDir() {
+					t.Fatalf("nonregular blocker changed: %v", err)
+				}
+			}
+			if _, err := os.Stat(newPath); err != nil {
+				t.Fatalf("newest valid recovery point was pruned: %v", err)
+			}
+		})
+	}
+}
+
+type graphBackupReadDirectory struct {
+	read     func(int) ([]os.DirEntry, error)
+	closeErr error
+}
+
+func (d *graphBackupReadDirectory) ReadDir(n int) ([]os.DirEntry, error) { return d.read(n) }
+func (d *graphBackupReadDirectory) Close() error                         { return d.closeErr }
+
+func TestBackupperGraphSnapshotAllocationFailuresPreserveRecoveryPoints(t *testing.T) {
+	injected := errors.New("graph allocation fault")
+	for _, name := range []string{"open", "read", "close", "no progress", "directory bound", "cancel during scan", "ID exhaustion"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig(t.TempDir())
+			cfg.Retain = 0
+			b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("old")}}, cfg, nil, nil)
+			b.now = func() time.Time { return time.Unix(0, 100) }
+			if _, err := b.BackupNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			old := filepath.Join(cfg.Dir, b.fileName(time.Unix(0, 100)))
+			before, err := os.ReadFile(old)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			entries, err := os.ReadDir(cfg.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := injected
+			switch name {
+			case "open":
+				b.fs.openDir = func(string) (receiptBackupReadDir, error) { return nil, injected }
+			case "read":
+				b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+					return &graphBackupReadDirectory{read: func(int) ([]os.DirEntry, error) { return nil, injected }}, nil
+				}
+			case "close":
+				b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+					return &graphBackupReadDirectory{read: func(int) ([]os.DirEntry, error) { return nil, io.EOF }, closeErr: injected}, nil
+				}
+			case "no progress":
+				want = io.ErrNoProgress
+				b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+					return &graphBackupReadDirectory{read: func(int) ([]os.DirEntry, error) { return nil, nil }}, nil
+				}
+			case "directory bound":
+				want = errReceiptBackupDirectoryLimit
+				b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+					return &graphBackupReadDirectory{read: func(n int) ([]os.DirEntry, error) {
+						batch := make([]os.DirEntry, n)
+						for i := range batch {
+							batch[i] = entries[0]
+						}
+						return batch, nil
+					}}, nil
+				}
+			case "cancel during scan":
+				want = context.Canceled
+				b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+					return &graphBackupReadDirectory{read: func(int) ([]os.DirEntry, error) { cancel(); return entries, io.EOF }}, nil
+				}
+			case "ID exhaustion":
+				want = nil
+				if err := os.WriteFile(filepath.Join(cfg.Dir, b.fileName(time.Unix(0, 1<<63-1))), []byte("reserved"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			created, published := 0, 0
+			b.fs.openExclusive = func(string, int, os.FileMode) (receiptBackupSyncFile, bool, error) {
+				created++
+				return nil, false, injected
+			}
+			b.fs.renameExclusive = func(string, string) (bool, error) { published++; return false, injected }
+			if _, err := b.BackupNow(ctx); err == nil || (want != nil && !errors.Is(err, want)) || (want == nil && !strings.Contains(err.Error(), "ID exhausted")) {
+				t.Fatalf("allocation failure = %v, want %v", err, want)
+			}
+			if created != 0 || published != 0 {
+				t.Fatalf("incomplete allocation touched staging/publication: %d/%d", created, published)
+			}
+			after, err := os.ReadFile(old)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("allocation failure changed old recovery point: %v", err)
+			}
+		})
+	}
+}
+
+type graphBackupWriteFaultFile struct {
+	receiptBackupSyncFile
+	writeErr error
+	closeErr error
+	cancel   context.CancelFunc
+}
+
+func TestBackupperGraphFailedPublicationIDIsNotReusedByOwner(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	cfg.Retain = 0
+	b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("retry-independent-point")}}, cfg, nil, nil)
+	b.now = func() time.Time { return time.Unix(0, 100) }
+	base := b.fs
+	injected := errors.New("first publication fault")
+	b.fs.renameExclusive = func(string, string) (bool, error) { return false, injected }
+	if _, err := b.BackupNow(t.Context()); !errors.Is(err, injected) {
+		t.Fatal(err)
+	}
+	b.fs = base
+	if _, err := b.BackupNow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := b.listBackups()
+	if err != nil || len(paths) != 1 || filepath.Base(paths[0]) != b.fileName(time.Unix(0, 101)) {
+		t.Fatalf("failed allocation was reused: %v, %v", paths, err)
+	}
+}
+
+func (f *graphBackupWriteFaultFile) Write(raw []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return f.receiptBackupSyncFile.Write(raw)
+}
+
+func (f *graphBackupWriteFaultFile) Close() error {
+	err := f.receiptBackupSyncFile.Close()
+	if f.cancel != nil {
+		f.cancel()
+	}
+	return errors.Join(err, f.closeErr)
+}
+
+func TestBackupperGraphPublicationFailuresNeverReplaceRecoveryPoints(t *testing.T) {
+	injected := errors.New("graph publication fault")
+	for _, name := range []string{"staging collision", "publication collision", "publication false without error", "published then error", "published unreported error", "write", "close", "snapshot", "cancel before publication"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig(t.TempDir())
+			cfg.Retain = 1
+			svc := &fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("old")}}
+			b := New(svc, cfg, nil, nil)
+			b.now = func() time.Time { return time.Unix(0, 100) }
+			if _, err := b.BackupNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			old := filepath.Join(cfg.Dir, b.fileName(time.Unix(0, 100)))
+			before, err := os.ReadFile(old)
+			if err != nil {
+				t.Fatal(err)
+			}
+			final := filepath.Join(cfg.Dir, b.fileName(time.Unix(0, 101)))
+			tmp := final + ".tmp"
+			svc.frames = []*pb.BackupSnapshotResponse{vFrame("new")}
+			base := b.fs
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			want := injected
+			var publishCalls int
+			b.fs.renameExclusive = func(oldPath, newPath string) (bool, error) {
+				publishCalls++
+				switch name {
+				case "publication collision":
+					if err := os.WriteFile(newPath, []byte("foreign final"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "publication false without error":
+					return false, nil
+				}
+				renamed, err := base.renameExclusive(oldPath, newPath)
+				if err == nil && (name == "published then error" || name == "published unreported error") {
+					return name == "published then error", injected
+				}
+				return renamed, err
+			}
+			switch name {
+			case "staging collision":
+				want = os.ErrExist
+				b.fs.openExclusive = func(path string, flag int, mode os.FileMode) (receiptBackupSyncFile, bool, error) {
+					if flag != os.O_WRONLY|os.O_CREATE|os.O_EXCL || mode != 0o666 {
+						t.Fatal("graph staging flags/permissions changed")
+					}
+					if err := os.WriteFile(path, []byte("foreign staging"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					return base.openExclusive(path, flag, mode)
+				}
+			case "publication collision":
+				want = os.ErrExist
+			case "publication false without error":
+				want = nil
+			case "write", "close", "cancel before publication":
+				if name == "cancel before publication" {
+					want = context.Canceled
+				}
+				b.fs.openExclusive = func(path string, flag int, mode os.FileMode) (receiptBackupSyncFile, bool, error) {
+					file, owned, err := base.openExclusive(path, flag, mode)
+					if err != nil {
+						return file, owned, err
+					}
+					wrapper := &graphBackupWriteFaultFile{receiptBackupSyncFile: file}
+					if name == "write" {
+						wrapper.writeErr = injected
+					}
+					if name == "close" {
+						wrapper.closeErr = injected
+					}
+					if name == "cancel before publication" {
+						wrapper.cancel = cancel
+					}
+					return wrapper, owned, nil
+				}
+			case "snapshot":
+				svc.snapshotErr = injected
+			}
+			stats, err := b.BackupNow(ctx)
+			if err == nil || (want != nil && !errors.Is(err, want)) || stats != (Stats{}) {
+				t.Fatalf("failed publication = %+v, %v, want %v", stats, err, want)
+			}
+			if testutil.ToFloat64(b.metrics.failures) != 1 {
+				t.Fatal("failed attempt did not report exactly one failure")
+			}
+			after, err := os.ReadFile(old)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed publication changed or pruned old point: %v", err)
+			}
+			if name == "staging collision" {
+				raw, err := os.ReadFile(tmp)
+				if err != nil || string(raw) != "foreign staging" || publishCalls != 0 {
+					t.Fatalf("foreign staging changed: %q, %v", raw, err)
+				}
+			} else if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("owned staging remains: %v", err)
+			}
+			switch name {
+			case "publication collision":
+				raw, err := os.ReadFile(final)
+				if err != nil || string(raw) != "foreign final" {
+					t.Fatalf("foreign final changed: %q, %v", raw, err)
+				}
+			case "published then error", "published unreported error":
+				vertices, _, err := decodeFile(final)
+				if err != nil || len(vertices) != 1 || vertices[0].GetKey() != "new" {
+					t.Fatalf("visible final removed after publication error: %v, %v", vertices, err)
+				}
+			default:
+				if _, err := os.Stat(final); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("partial final exposed: %v", err)
+				}
+			}
+			if name == "cancel before publication" && publishCalls != 0 {
+				t.Fatal("cancelled attempt published")
+			}
+		})
 	}
 }
 
