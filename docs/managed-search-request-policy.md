@@ -78,12 +78,14 @@ desired policy and reports a coordinated restart pending; it cannot replace
 the engine or its cursors in that running process. The pure owner's restart
 method is not a live management activation endpoint.
 
-Concrete Search-certified Pump and anti-entropy providers depend on that exact
+Concrete Search-certified Pump and anti-entropy constructors depend on that exact
 sealed installation and verify both workers' actual captured fingerprints.
 A private witness binds the anti-entropy driver to the same constructed Pump,
 runtime, primary and graph cache. Raw constructors remain available for their
-existing callers, but the production injector selects the certified providers.
-Workers retain their original fingerprint during a live staged change.
+existing callers. The production injector selects the managed replication bundle,
+which uses those certified constructors internally; its checked selectors supply
+the same actual worker pair to App. Workers retain their original fingerprint
+during a live staged change.
 
 This operation does not automatically restart processes or establish a new
 data-restoration mechanism. Durable restart uses the existing WAL recovery

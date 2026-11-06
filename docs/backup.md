@@ -6,13 +6,14 @@
 > [#1394](https://github.com/anaregdesign/lantern/issues/1394) (durable
 > receipt backup/restore).
 
-Lantern is an **in-memory** store, so a single instance loses its whole graph
-on any restart — including a routine **rolling update** or pod restart. In
-graph-only mode, snapshot durability periodically dumps the graph to a mounted
-volume and restores the newest dump before serving. Durable
-receipt-WAL mode uses the same production schedule for a receipt-bearing
-backup set and restores it only at the durable runtime construction boundary,
-under the FileWAL lease and before any listener or background worker exists.
+Lantern keeps its serving graph **in memory**. In graph-only mode, a process
+restart loses the volatile graph unless startup restoration recovers it.
+Snapshot durability periodically dumps the graph to a mounted volume and
+restores the newest dump before serving. Durable receipt-WAL mode recovers its
+persisted runtime on normal restart. It uses the same production schedule for
+receipt-bearing backup sets; eligible backup restoration runs only at the
+durable runtime construction boundary, under the FileWAL lease and before any
+listener or background worker exists.
 
 The graph-only restore path is primarily the **single-instance** durability
 story — any single-pod or single-container deploy. In a **multi-replica**
@@ -288,10 +289,11 @@ damage cases. Backup formats and recovery order do not change. These data and
 receipt backups do not import native `sys:` authority or rejoin a node that lost
 its native state.
 
-> **TTL-vs-interval caveat.** Entries decay, so a dump is only as useful as its
-> data is still live at restore time. Keep `LANTERN_DEFAULT_TTL_SECONDS`
-> comfortably **above** `LANTERN_BACKUP_INTERVAL` (and above your expected
-> restart gap) or much of a restored graph may already be expired.
+> **TTL-vs-interval caveat.** Entries with TTLs decay. Choose the backup interval
+> and expected restart gap with those actual entry expirations in mind, or much
+> of a restored graph may already be expired. `LANTERN_DEFAULT_TTL_SECONDS`
+> reports metadata only; changing it does not assign TTLs to writes that omit
+> expiration.
 
 ## Durability via a mounted volume
 
