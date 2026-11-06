@@ -264,6 +264,7 @@ func stagedPublicationDefiniteGraphRetry(t *testing.T, ctx context.Context, f re
 	}
 	capture := captureGraphMutationForTest(t)
 	beforeGraph := f.cache.SnapshotReplication()
+	canonicalizeReceiptReplicationSnapshot(&beforeGraph)
 	beforeLog, beforeEvicted := f.log.RetainedEntries(), f.log.Evicted()
 	beforeOrigins := f.service.origins.States()
 	beforeReceipts, err := runtime.receipt.store.Snapshot()
@@ -308,10 +309,16 @@ func stagedPublicationDefiniteGraphRetry(t *testing.T, ctx context.Context, f re
 			t.Fatal("definite retry retained receipt origin ownership")
 		}
 		defer f.service.receiptOriginCutMu.Unlock()
-		if !reflect.DeepEqual(beforeGraph, f.cache.SnapshotReplication()) ||
-			!reflect.DeepEqual(beforeLog, f.log.RetainedEntries()) || f.log.Evicted() != beforeEvicted ||
-			!reflect.DeepEqual(beforeOrigins, f.service.origins.States()) {
-			t.Fatal("definite retry refusal published graph/log/origin state")
+		afterGraph := f.cache.SnapshotReplication()
+		canonicalizeReceiptReplicationSnapshot(&afterGraph)
+		if !reflect.DeepEqual(beforeGraph, afterGraph) {
+			t.Fatal("definite retry refusal published graph state")
+		}
+		if !reflect.DeepEqual(beforeLog, f.log.RetainedEntries()) || f.log.Evicted() != beforeEvicted {
+			t.Fatal("definite retry refusal published log state")
+		}
+		if !reflect.DeepEqual(beforeOrigins, f.service.origins.States()) {
+			t.Fatal("definite retry refusal published origin state")
 		}
 		receipts, snapshotErr := runtime.receipt.store.Snapshot()
 		if snapshotErr != nil {
