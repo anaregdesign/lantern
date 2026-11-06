@@ -884,7 +884,11 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer response.Body.Close()
+			defer func() {
+				if err := response.Body.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			if response.StatusCode != test.status || (response.Header.Get("Content-Encoding") == "gzip") != test.compressed {
 				t.Fatalf("current response status/encoding = %d/%q", response.StatusCode, response.Header.Get("Content-Encoding"))
 			}
@@ -894,7 +898,11 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer compressed.Close()
+				defer func() {
+					if err := compressed.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
 				reader = compressed
 			}
 			payload, err := io.ReadAll(reader)
