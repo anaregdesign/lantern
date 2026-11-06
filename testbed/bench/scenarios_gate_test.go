@@ -3780,9 +3780,9 @@ func goroutinePolicyTimeoutDiagnostics(env []string) string {
 			appendLine(name + ": unreadable")
 			return nil, false
 		}
-		defer file.Close()
 		data, err := io.ReadAll(io.LimitReader(file, limit+1))
-		if err != nil || len(data) > limit {
+		closeErr := file.Close()
+		if err != nil || closeErr != nil || len(data) > limit {
 			appendLine(name + ": unreadable or oversized")
 			return nil, false
 		}
