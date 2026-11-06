@@ -3,6 +3,7 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -33,6 +34,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
@@ -6402,6 +6404,398 @@ func (w *stagedPublicationFaultWAL) Write(mutationlog.Entry) error {
 	return nil
 }
 
+type initialMixedWireTransport struct {
+	inner    http.RoundTripper
+	requests atomic.Int64
+}
+
+func (c *initialMixedWireTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(request.URL.Path, "/MutateGraph") {
+		c.requests.Add(1)
+	}
+	return c.inner.RoundTrip(request)
+}
+
+func (c *initialMixedWireTransport) CloseIdleConnections() {
+	if closer, ok := c.inner.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
+type initialMixedWireState struct {
+	cut                    service.ReceiptWholeStateBackupCapture
+	graph                  graphcache.ReplicationSnapshot[string, *pb.Vertex]
+	stats                  mutationreceipt.Stats
+	logLength, logCapacity int
+	logEvicted             uint64
+	wal                    []byte
+}
+
+func captureInitialMixedWireState(ctx context.Context, wire receiptProtocolWireServer) (initialMixedWireState, error) {
+	source, policy, err := wire.runtime.ReceiptWholeStateBackupSource(wire.server.svc, wire.server.rep)
+	if err != nil {
+		return initialMixedWireState{}, err
+	}
+	cut, err := source.CaptureForBackup(ctx, policy)
+	if err != nil {
+		return initialMixedWireState{}, err
+	}
+	wal, err := os.ReadFile(wire.config.Path)
+	if err != nil {
+		return initialMixedWireState{}, err
+	}
+	length, capacity, evicted := wire.runtime.MutationLogStats()
+	graph := wire.runtime.GraphCache().SnapshotReplication()
+	canonicalizeReceiptWireGraph(&graph)
+	return initialMixedWireState{cut: cut, graph: graph, stats: wire.runtime.ReceiptStats(),
+		logLength: length, logCapacity: capacity, logEvicted: evicted, wal: wal}, nil
+}
+
+// This proof is deliberately restricted to this fixture's empty initial cut.
+// CaptureForBackup obtains a healthy exclusive committed cut, but does not
+// expose private admission-reader counts or prove those private locks absent.
+func (s initialMixedWireState) emptyHeader() (*pb.SnapshotHeader, error) {
+	frames := s.cut.WholeState.Graph
+	if len(frames) != 2 || frames[0].GetHeader() == nil || frames[1].GetFooter() == nil ||
+		!proto.Equal(frames[1].GetFooter(), &pb.SnapshotFooter{}) ||
+		s.cut.NodeID == (hlc.NodeID{}) || s.cut.Generation == ([16]byte{}) ||
+		s.cut.WALTip.Seq != 0 || s.cut.WALTip.Offset != int64(len(s.wal)) ||
+		s.cut.WALTip.SHA256 != sha256.Sum256(s.wal) ||
+		s.logLength != 0 || s.logCapacity <= 0 || s.logEvicted != 0 ||
+		len(s.cut.WholeState.Origins) != 0 || len(s.cut.WholeState.Receipts.Receipts) != 0 ||
+		len(s.cut.WholeState.Retired.Epochs) != 0 || s.stats.Entries != 0 || s.stats.Bytes != 0 ||
+		s.stats.OldestDeadlineMillis != 0 {
+		return nil, errors.New("mixed fixture has no empty exact WAL/receipt publication cut")
+	}
+	header := frames[0].GetHeader()
+	clock := header.GetCutoffHlc()
+	highWater := s.cut.WholeState.Receipts.ClockHighWaterMillis
+	if clock == nil || clock.GetWallNs() <= 0 || !bytes.Equal(clock.GetNodeId(), s.cut.NodeID[:]) ||
+		header.GetCutoffLocalSeq() != 0 || len(header.GetCutoffSeqPerOrigin()) != 0 ||
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT || header.GetReceiptMetadata() != nil ||
+		highWater <= 0 || highWater > clock.GetWallNs()/int64(time.Millisecond) ||
+		s.stats.HighWaterMillis != highWater || s.cut.WholeState.Retired.ClockHighWaterMillis != highWater ||
+		s.cut.WholeState.Policy.ClockHighWater.UnixMilli() != highWater {
+		return nil, errors.New("mixed fixture has inconsistent clock/cut metadata")
+	}
+	return header, nil
+}
+
+func unchangedInitialMixedWireState(before, after initialMixedWireState) error {
+	a, err := before.emptyHeader()
+	if err != nil {
+		return err
+	}
+	b, err := after.emptyHeader()
+	if err != nil {
+		return err
+	}
+	if before.cut.WALTip != after.cut.WALTip || before.cut.NodeID != after.cut.NodeID ||
+		before.cut.Generation != after.cut.Generation || !bytes.Equal(before.wal, after.wal) ||
+		before.logLength != after.logLength || before.logCapacity != after.logCapacity || before.logEvicted != after.logEvicted ||
+		!reflect.DeepEqual(before.graph, after.graph) || !reflect.DeepEqual(before.cut.WholeState.Origins, after.cut.WholeState.Origins) {
+		return errors.New("mixed refusal changed WAL/graph/log/origin/runtime state")
+	}
+	// Store.Begin can advance high-water without committing rows. Capture itself
+	// advances HLC. Only those two observations (and their exact copies in the
+	// cut metadata) may differ; all payload/policy/accounting fields remain.
+	if after.stats.HighWaterMillis < before.stats.HighWaterMillis ||
+		b.GetCutoffHlc().GetWallNs() < a.GetCutoffHlc().GetWallNs() ||
+		(b.GetCutoffHlc().GetWallNs() == a.GetCutoffHlc().GetWallNs() && b.GetCutoffHlc().GetLogical() < a.GetCutoffHlc().GetLogical()) {
+		return errors.New("mixed refusal moved monotonic clock observations backwards")
+	}
+	statsA, statsB := before.stats, after.stats
+	statsA.HighWaterMillis, statsB.HighWaterMillis = 0, 0
+	receiptsA, receiptsB := before.cut.WholeState.Receipts, after.cut.WholeState.Receipts
+	receiptsA.ClockHighWaterMillis, receiptsB.ClockHighWaterMillis = 0, 0
+	retiredA, retiredB := before.cut.WholeState.Retired, after.cut.WholeState.Retired
+	retiredA.ClockHighWaterMillis, retiredB.ClockHighWaterMillis = 0, 0
+	policyA, policyB := before.cut.WholeState.Policy, after.cut.WholeState.Policy
+	policyA.ClockHighWater, policyB.ClockHighWater = time.Time{}, time.Time{}
+	headerA, headerB := proto.Clone(a).(*pb.SnapshotHeader), proto.Clone(b).(*pb.SnapshotHeader)
+	headerA.CutoffHlc.WallNs, headerB.CutoffHlc.WallNs = 0, 0
+	headerA.CutoffHlc.Logical, headerB.CutoffHlc.Logical = 0, 0
+	if statsA != statsB || !reflect.DeepEqual(receiptsA, receiptsB) || !reflect.DeepEqual(retiredA, retiredB) ||
+		policyA != policyB || !proto.Equal(headerA, headerB) {
+		return errors.New("mixed refusal changed receipt rows, policy, accounting or cut metadata")
+	}
+	return nil
+}
+
+var initialMixedWireStages = []string{
+	"admission", "operation_budget", "receipt_runtime", "receipt_context", "prepare_items",
+	"replication_lock_wait", "origin_lock_wait", "receipt_begin", "receipt_reserve", "prepare_local_mutation",
+	"clock_floor", "graph_begin", "graph_staged", "validate_envelope", "stage_origin", "stage_receipt",
+	"check_before_wal", "publication_enter", "publication_complete",
+}
+
+func initialMixedWireStagesValid(events []decisiontrace.Event, dropped uint64, previous uint64, published bool) (uint64, error) {
+	if dropped != 0 || len(events) < 12 || len(events) > len(initialMixedWireStages) ||
+		(published && len(events) != len(initialMixedWireStages)) || (!published && len(events) > 17) {
+		return 0, errors.New("mixed call has incomplete, lossy or published admission evidence")
+	}
+	object := events[0].Object
+	var prior int64
+	for i, event := range events {
+		if object <= previous || event.Object != object || event.Kind != "graph_mutation" || event.Reason != "progress" ||
+			event.Stage != initialMixedWireStages[i] || event.Elapsed < prior {
+			return 0, errors.New("mixed call stages are reordered, duplicated or belong to another call")
+		}
+		prior = event.Elapsed
+	}
+	budget := events[1]
+	if !budget.HasDeadline || budget.DeadlineLeft <= 0 || budget.DeadlineLeft > int64(time.Second) {
+		return 0, errors.New("mixed call did not enter the original one-second operation budget")
+	}
+	return object, nil
+}
+
+// This is explicit fixture preparation, never an SDK or transport retry. Each
+// call must send once, and only a fully proven empty prepublication refusal may
+// acquire again. The caller's original context/identity/intent are not replaced.
+func acquireInitialMixedWire(t testing.TB, ctx context.Context,
+	call func(context.Context) (client.GraphMutationResult, error),
+	state func(context.Context) (initialMixedWireState, error), requests func() int64,
+) (client.GraphMutationResult, error) {
+	t.Helper()
+	if err := ctx.Err(); err != nil {
+		return client.GraphMutationResult{}, err
+	}
+	before, err := state(ctx)
+	if err != nil {
+		return client.GraphMutationResult{}, err
+	}
+	if _, err := before.emptyHeader(); err != nil {
+		return client.GraphMutationResult{}, err
+	}
+	var previous uint64
+	var lastRefusal error
+	for attempt := 1; attempt <= 4; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return client.GraphMutationResult{}, errors.Join(err, lastRefusal)
+		}
+		capture := decisiontrace.Start(64)
+		if capture == nil {
+			return client.GraphMutationResult{}, errors.Join(errors.New("mixed call diagnostic window is already owned"), lastRefusal)
+		}
+		var start int64
+		result, callErr := func() (client.GraphMutationResult, error) {
+			defer capture.Stop()
+			start = requests()
+			return call(ctx)
+		}()
+		events, dropped := capture.Drain()
+		if requests()-start != 1 {
+			return client.GraphMutationResult{}, errors.Join(errors.New("mixed SDK invocation did not send exactly once"), callErr)
+		}
+		object, err := initialMixedWireStagesValid(events, dropped, previous, callErr == nil)
+		if err != nil {
+			return client.GraphMutationResult{}, errors.Join(err, callErr)
+		}
+		previous = object
+		t.Logf("initial mixed wire acquisition attempt=%d code=%v stages=%d", attempt, connect.CodeOf(callErr), len(events))
+		if callErr == nil {
+			return result, nil
+		}
+		var wireErr *connect.Error
+		if !errors.Is(callErr, client.ErrResourceExhausted) || !errors.As(callErr, &wireErr) ||
+			wireErr.Code() != connect.CodeResourceExhausted || wireErr.Message() != graphcache.ErrGraphMutationBudget.Error() ||
+			len(result.Vertices) != 0 || len(result.Edges) != 0 || ctx.Err() != nil {
+			return client.GraphMutationResult{}, fmt.Errorf("mixed refusal is not definite original-context Core admission: %w", errors.Join(callErr, ctx.Err()))
+		}
+		lastRefusal = callErr
+		after, err := state(ctx)
+		if err != nil {
+			return client.GraphMutationResult{}, errors.Join(err, callErr)
+		}
+		if err := unchangedInitialMixedWireState(before, after); err != nil {
+			return client.GraphMutationResult{}, errors.Join(err, callErr)
+		}
+		before = after
+	}
+	return client.GraphMutationResult{}, errors.Join(errors.New("initial mixed wire acquisition exhausted four proven refusals"), lastRefusal)
+}
+
+func TestInitialMixedWireAdmissionProof(t *testing.T) {
+	// These are deterministic orchestration doubles, not evidence that a real
+	// Core budget refusal occurred. The real SDK/wire case below stays separate.
+	emptyState := func(t testing.TB, highWater int64) initialMixedWireState {
+		t.Helper()
+		policy := mutationreceipt.Config{Epoch: mutationreceipt.Epoch{1}, Retention: time.Hour,
+			MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: time.UnixMilli(highWater)}
+		store, err := mutationreceipt.New(policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts, err := store.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		retired, err := mutationreceipt.RetiredCatalogSnapshotFromActive(policy, receipts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := hlc.NodeID{0x65}
+		wal := []byte("empty fixture WAL")
+		// CaptureForBackup returns intermediate graph frames; receipt metadata
+		// is attached only by the later PrepareReceiptSnapshotFrames step.
+		header := &pb.SnapshotHeader{CutoffHlc: &pb.HLCTimestamp{WallNs: highWater * int64(time.Millisecond), NodeId: node[:]},
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}
+		return initialMixedWireState{cut: service.ReceiptWholeStateBackupCapture{
+			WholeState: service.ReceiptWholeStateCapture{Graph: []*pb.SnapshotResponse{
+				{Entry: &pb.SnapshotResponse_Header{Header: header}}, {Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{}}},
+			}, Receipts: receipts, Retired: retired, Policy: policy},
+			WALTip: mutationlog.FileWALTipWitness{Offset: int64(len(wal)), SHA256: sha256.Sum256(wal)},
+			NodeID: node, Generation: [16]byte{1}}, stats: store.Stats(), logCapacity: 16, wal: wal}
+	}
+	for _, tc := range []struct {
+		name      string
+		refusals  int
+		mode      string
+		wantCalls int
+		wantErr   bool
+	}{
+		{name: "initial success", wantCalls: 1},
+		{name: "one proven refusal retains the original context", refusals: 1, wantCalls: 2},
+		{name: "four refusals never make a fifth call", refusals: 5, wantCalls: 4, wantErr: true},
+		{name: "different capacity error", refusals: 1, mode: "message", wantCalls: 1, wantErr: true},
+		{name: "missing SDK sentinel", refusals: 1, mode: "sdk", wantCalls: 1, wantErr: true},
+		{name: "ambiguous transport error", refusals: 1, mode: "unavailable", wantCalls: 1, wantErr: true},
+		{name: "partial typed result", refusals: 1, mode: "result", wantCalls: 1, wantErr: true},
+		{name: "original context expires", refusals: 1, mode: "cancel", wantCalls: 1, wantErr: true},
+		{name: "two transport sends", refusals: 1, mode: "twice", wantCalls: 1, wantErr: true},
+		{name: "no transport send", refusals: 1, mode: "no send", wantCalls: 1, wantErr: true},
+		{name: "missing observation", refusals: 1, mode: "missing", wantCalls: 1, wantErr: true},
+		{name: "lossy observation", refusals: 1, mode: "drops", wantCalls: 1, wantErr: true},
+		{name: "another call object", refusals: 1, mode: "object", wantCalls: 1, wantErr: true},
+		{name: "reordered observation", refusals: 1, mode: "order", wantCalls: 1, wantErr: true},
+		{name: "publication already entered", refusals: 1, mode: "publication", wantCalls: 1, wantErr: true},
+		{name: "operation budget changed", refusals: 1, mode: "budget", wantCalls: 1, wantErr: true},
+		{name: "WAL bytes changed", refusals: 1, mode: "wal", wantCalls: 1, wantErr: true},
+		{name: "runtime generation changed", refusals: 1, mode: "generation", wantCalls: 1, wantErr: true},
+		{name: "receipt accounting changed", refusals: 1, mode: "accounting", wantCalls: 1, wantErr: true},
+		{name: "receipt policy changed", refusals: 1, mode: "policy", wantCalls: 1, wantErr: true},
+		{name: "graph cut metadata changed", refusals: 1, mode: "graph", wantCalls: 1, wantErr: true},
+		{name: "intermediate graph shape changed", refusals: 1, mode: "metadata", wantCalls: 1, wantErr: true},
+		{name: "clock moved backwards", refusals: 1, mode: "clock", wantCalls: 1, wantErr: true},
+		{name: "capture failed after refusal", refusals: 1, mode: "capture", wantCalls: 1, wantErr: true},
+		{name: "diagnostic window unavailable", mode: "window", wantCalls: 0, wantErr: true},
+		{name: "context already canceled", mode: "canceled", wantCalls: 0, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.mode == "canceled" {
+				cancel()
+			}
+			if tc.mode == "window" {
+				capture := decisiontrace.Start(1)
+				if capture == nil {
+					t.Fatal("test diagnostic window unavailable")
+				}
+				defer capture.Stop()
+			}
+			calls, sent := 0, int64(0)
+			_, err := acquireInitialMixedWire(t, ctx, func(callCtx context.Context) (client.GraphMutationResult, error) {
+				if callCtx != ctx {
+					t.Fatal("fixture replaced its original caller context")
+				}
+				calls++
+				sent++
+				if tc.mode == "twice" {
+					sent++
+				} else if tc.mode == "no send" {
+					sent--
+				}
+				refused := calls <= tc.refusals
+				limit := len(initialMixedWireStages)
+				if refused {
+					limit = 12
+				}
+				if tc.mode == "missing" {
+					limit = 0
+				} else if tc.mode == "publication" {
+					limit = 18
+				}
+				object := decisiontrace.NextID()
+				for i := 0; i < limit; i++ {
+					event := decisiontrace.Event{Kind: "graph_mutation", Object: object, Stage: initialMixedWireStages[i], Reason: "progress",
+						Elapsed: int64(i), HasDeadline: i > 0, DeadlineLeft: int64(time.Second) - int64(i)}
+					if i == 5 && tc.mode == "object" {
+						event.Object++
+					} else if i == 5 && tc.mode == "order" {
+						event.Stage = initialMixedWireStages[i+1]
+					} else if i == 1 && tc.mode == "budget" {
+						event.DeadlineLeft = int64(2 * time.Second)
+					}
+					decisiontrace.Emit(event)
+				}
+				if tc.mode == "drops" {
+					for i := 0; i < 80; i++ {
+						decisiontrace.Emit(decisiontrace.Event{Kind: "graph_mutation", Object: object, Stage: "admission"})
+					}
+				}
+				if !refused {
+					return client.GraphMutationResult{}, nil
+				}
+				if tc.mode == "cancel" {
+					cancel()
+				}
+				wireErr := connect.NewError(connect.CodeResourceExhausted, errors.New(graphcache.ErrGraphMutationBudget.Error()))
+				if tc.mode == "message" {
+					wireErr = connect.NewError(connect.CodeResourceExhausted, errors.New("different capacity refusal"))
+				} else if tc.mode == "sdk" {
+					return client.GraphMutationResult{}, wireErr
+				} else if tc.mode == "unavailable" {
+					return client.GraphMutationResult{}, errors.Join(client.ErrUnavailable, connect.NewError(connect.CodeUnavailable, errors.New("unknown outcome")))
+				} else if tc.mode == "result" {
+					return client.GraphMutationResult{Vertices: []client.VertexPutReceiptResult{{Key: "partial"}}}, errors.Join(client.ErrResourceExhausted, wireErr)
+				}
+				return client.GraphMutationResult{}, errors.Join(client.ErrResourceExhausted, wireErr)
+			}, func(callCtx context.Context) (initialMixedWireState, error) {
+				if callCtx != ctx {
+					t.Fatal("fixture replaced its capture context")
+				}
+				s := emptyState(t, 100+int64(calls))
+				if calls > 0 {
+					switch tc.mode {
+					case "capture":
+						return initialMixedWireState{}, errors.New("capture failed")
+					case "wal":
+						s.wal[0]++
+						s.cut.WALTip.SHA256 = sha256.Sum256(s.wal)
+					case "generation":
+						s.cut.Generation[0]++
+					case "accounting":
+						s.stats.LocalAdmissionRejects++
+					case "policy":
+						s.cut.WholeState.Policy.MaxBytes++
+					case "graph":
+						s.cut.WholeState.Graph[0].GetHeader().NamespaceFormat = "changed"
+					case "metadata":
+						s.cut.WholeState.Graph[0].GetHeader().ReceiptMetadata = &pb.SnapshotReceiptMetadata{}
+					case "clock":
+						s = emptyState(t, 99)
+					}
+				}
+				return s, nil
+			}, func() int64 { return sent })
+			if (err != nil) != tc.wantErr || calls != tc.wantCalls {
+				t.Fatalf("initial acquisition calls=%d err=%v; want calls=%d error=%t", calls, err, tc.wantCalls, tc.wantErr)
+			}
+			if tc.wantErr && calls > 0 {
+				var wireErr *connect.Error
+				if !errors.As(err, &wireErr) {
+					t.Fatal("fixture proof failure hid the original wire error", err)
+				}
+			}
+			if tc.mode != "window" && decisiontrace.Enabled() {
+				t.Fatal("fixture retained a diagnostic capture")
+			}
+		})
+	}
+}
+
 // The minimal mixed facade stays one-shot over the real Connect handler and
 // production search projection, including replay after durable restart.
 // This isolates the data contract; the native current-security gate separately
@@ -6411,7 +6805,8 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 	if err := wire.runtime.ActivatePublicReceipts(wire.server.svc, wire.server.rep); err != nil {
 		t.Fatal(err)
 	}
-	sdk, err := client.NewLantern(wire.server.url, client.WithHTTPClient(h2cClient()))
+	transport := &initialMixedWireTransport{inner: h2cClient().Transport}
+	sdk, err := client.NewLantern(wire.server.url, client.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6430,28 +6825,58 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 	}
 	vertices := []client.VertexInput{{Key: "mixed:a", Value: "first"}, {Key: "mixed:b", Value: "second"}}
 	edges := []client.EdgeAddReceiptInput{{Edge: client.EdgeInput{Tail: "mixed:a", Head: "mixed:b", Weight: 2}, ContribID: id}}
-	first, err := sdk.MutateGraph(t.Context(), vertices, edges, identity)
+	ctx := t.Context()
+	originalVertices := append([]client.VertexInput(nil), vertices...)
+	originalEdges := append([]client.EdgeAddReceiptInput(nil), edges...)
+	originalIdentity := identity
+	originalIdentity.OperationIDs = append([]client.ReceiptOperationID(nil), identity.OperationIDs...)
+	intentUnchanged := func() bool {
+		return reflect.DeepEqual(vertices, originalVertices) && reflect.DeepEqual(edges, originalEdges) && reflect.DeepEqual(identity, originalIdentity)
+	}
+	first, err := acquireInitialMixedWire(t, ctx, func(callCtx context.Context) (client.GraphMutationResult, error) {
+		return sdk.MutateGraph(callCtx, vertices, edges, identity)
+	}, func(callCtx context.Context) (initialMixedWireState, error) {
+		if !intentUnchanged() {
+			return initialMixedWireState{}, errors.New("initial mixed SDK call changed its original intent or identity")
+		}
+		return captureInitialMixedWireState(callCtx, wire)
+	}, transport.requests.Load)
+	if !intentUnchanged() {
+		t.Fatal("initial mixed SDK call changed its original intent or identity", err)
+	}
 	if err != nil || len(first.Vertices) != 2 || len(first.Edges) != 1 || first.Edges[0].EffectiveWeight != 2 {
 		t.Fatal(first, err)
 	}
+	admitted, err := captureInitialMixedWireState(ctx, wire)
+	if err != nil || admitted.cut.WALTip.Seq != 1 || admitted.logLength != 1 || admitted.logEvicted != 0 ||
+		len(admitted.cut.WholeState.Receipts.Receipts) != 3 || len(admitted.cut.WholeState.Origins) != 1 ||
+		admitted.cut.WholeState.Origins[0].LastSeq != 1 {
+		t.Fatal("initial SDK call did not publish exactly one complete group", err)
+	}
+	requests := transport.requests.Load()
 	repeated, err := sdk.MutateGraph(t.Context(), vertices, edges, identity)
-	if err != nil || !reflect.DeepEqual(first, repeated) {
+	if err != nil || !reflect.DeepEqual(first, repeated) || transport.requests.Load()-requests != 1 {
 		t.Fatal(repeated, err)
 	}
 	changed := append([]client.EdgeAddReceiptInput(nil), edges...)
 	changed[0].Edge.Weight++
+	requests = transport.requests.Load()
 	if _, err := sdk.MutateGraph(t.Context(), vertices, changed, identity); !errors.Is(err, client.ErrInvalidArgument) {
 		t.Fatal("changed intent accepted", err)
 	}
+	if transport.requests.Load()-requests != 1 {
+		t.Fatal("changed-intent SDK invocation was not one-shot")
+	}
 	drop := &dropFirstReceiptResponseTransport{inner: h2cClient().Transport, pathSuffix: "/MutateGraph"}
-	lostSDK, err := client.NewLantern(wire.server.url, client.WithHTTPClient(&http.Client{Transport: drop}))
+	lostTransport := &initialMixedWireTransport{inner: drop}
+	lostSDK, err := client.NewLantern(wire.server.url, client.WithHTTPClient(&http.Client{Transport: lostTransport}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = lostSDK.Close() }()
 	// Drop a confirmed duplicate's response: one-shot delivery returns unknown
 	// without executing a second attempt; read-only status resolves each member.
-	if _, err := lostSDK.MutateGraph(t.Context(), vertices, edges, identity); err == nil {
+	if _, err := lostSDK.MutateGraph(t.Context(), vertices, edges, identity); err == nil || lostTransport.requests.Load() != 1 {
 		t.Fatal("lost response unexpectedly succeeded")
 	}
 	for _, id := range identity.OperationIDs {
