@@ -645,9 +645,19 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	if _, err := f.client.GetRegistrationPolicy(ctx, securityWireRequest(readerToken, &pb.GetRegistrationPolicyRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader disclosed registration policy", err)
 	}
-	// Exercise the certified production mounts, rather than the retired
-	// static-token reflection exemption. The administrator's current Role
-	// carries schema.read; the registered data reader has no such authority.
+	// Grant schema.read explicitly in the isolated fixture: security.manage
+	// does not imply it. The registered data reader retains no schema grant.
+	schemaRole := &pb.SecurityRole{Id: "reflection_schema_reader", Rules: []*pb.SecurityRule{{
+		Id: "schema", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
+		Action: pb.SecurityAction_SECURITY_ACTION_SCHEMA_READ, Resource: &pb.SecurityRule_Global{Global: true},
+	}}}
+	if _, err := f.applyChanges(t, ctx, admin, []*pb.SecurityChange{
+		{Operation: &pb.SecurityChange_PutRole{PutRole: schemaRole}},
+		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: schemaRole.Id}}},
+	}); err != nil {
+		t.Fatal("fixture schema Role through current authority", err)
+	}
+	// Exercise the certified production mounts with current schema authority.
 	schema, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{
 		Identity: principal.Msg.Identity, Action: pb.SecurityAction_SECURITY_ACTION_SCHEMA_READ,
 	}))
