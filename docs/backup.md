@@ -51,11 +51,33 @@ changes a leaderless-replication invariant.
   `lantern_restore_edges`, and restore logs exclude expired or causally
   superseded rows.
 - **Per-instance files.** Each writer owns files named
-  `lantern-backup-<instance>-<nanos>.lbk` (`instance` defaults to the
-  hostname). Writes are atomic (temp file + `rename`); a half-written file is
-  never a restore candidate. Restore picks the **newest valid** file and skips
-  a corrupt/truncated one for the next-newest. Retention deletes only an
-  instance's **own** files.
+  `lantern-backup-<instance>-<snapshot-id>.lbk` (`instance` defaults to the
+  hostname). The positive signed 64-bit ID retains the historical numeric
+  filename format. It is seeded by observed Unix nanoseconds (or1), then
+  advances above this producer's last allocated ID and every canonical final
+  or `.lbk.tmp` ID already present for the exact same instance. The ID is not
+  necessarily a wall-clock timestamp: repeated/backward time and producer
+  reconstruction on the same directory must not replace a recovery point.
+  Existing timestamp-named dumps remain readable without migration.
+- **Publication and collisions.** A producer exclusively creates its
+  ID-specific staging file and publishes it atomically without replacing any
+  existing final path. Half-written staging files are never restore
+  candidates. Use one producer per `InstanceID`; overlapping producers may
+  return a collision error rather than both succeed. An error cleans only
+  the staging path whose exclusive creation proved ownership. A final path
+  that became visible is preserved even if publication reports an error;
+  that attempt reports failure and does not run retention. Stale staging,
+  corrupt files and nonregular entries reserve canonical IDs and are not
+  deleted to make room.
+- **Discovery and bounds.** Restore still picks the **newest valid** file by
+  numeric suffix, using the existing modification-time tie-break, and skips
+  a corrupt/truncated file for the next-newest. This is not a global causal
+  or publication order across independent instances. Retention validates and
+  deletes only this instance's **own** files. Allocation reuses the bounded
+  directory scan (100,000 entries); scan failures, incomplete enumeration,
+  cancellation and ID exhaustion fail the attempt without overwriting an
+  old point. This change adds no file/directory-sync durability guarantee or
+  change to receipt backup-set publication.
 
 The `.lbk` format contains graph records only. It does not preserve mutation
 receipts, contribution identities, origin cutoffs, or receipt clock
