@@ -20,11 +20,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"text/template"
@@ -3717,19 +3719,131 @@ func goroutinePolicyFragment(t *testing.T, start, end string) string {
 
 func runGoroutinePolicyShell(t *testing.T, fixture string, env ...string) ([]byte, int, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// This real controller watchdog is separate from the fixture's virtual
+	// policy clock. WaitDelay bounds pipe draining, not descendant lifetime.
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "bash", "-c", fixture)
+	command.WaitDelay = time.Second
 	command.Env = append(os.Environ(), env...)
 	output, err := command.CombinedOutput()
 	if ctx.Err() != nil {
-		t.Fatalf("bounded fake policy fixture timed out: %s", output)
+		t.Fatalf("bounded fake policy fixture timed out (%v); controller=15s, pipe drain=1s\n%s", ctx.Err(), goroutinePolicyTimeoutDiagnostics(env))
 	}
 	code := -1
 	if command.ProcessState != nil {
 		code = command.ProcessState.ExitCode()
 	}
 	return output, code, err
+}
+
+// Timeout evidence deliberately excludes command output, environment values,
+// Docker rows and profiles. These are fixed fixture files, not process probes.
+func goroutinePolicyTimeoutDiagnostics(env []string) string {
+	const limit = 4096
+	dir := ""
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "OUTDIR="); ok {
+			dir = value
+		}
+	}
+	if dir == "" {
+		return "fixture diagnostics: OUTDIR not supplied\n"
+	}
+	var report strings.Builder
+	truncated := false
+	appendLine := func(line string) {
+		const marker = "diagnostics truncated\n"
+		if truncated {
+			return
+		}
+		if report.Len()+len(line)+1 <= limit-len(marker) {
+			report.WriteString(line)
+			report.WriteByte('\n')
+		} else {
+			report.WriteString(marker)
+			truncated = true
+		}
+	}
+	read := func(name string) ([]byte, bool) {
+		info, err := os.Lstat(filepath.Join(dir, name))
+		if os.IsNotExist(err) {
+			appendLine(name + ": missing")
+			return nil, false
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			appendLine(name + ": unavailable")
+			return nil, false
+		}
+		file, err := os.Open(filepath.Join(dir, name))
+		if err != nil {
+			appendLine(name + ": unreadable")
+			return nil, false
+		}
+		data, err := io.ReadAll(io.LimitReader(file, limit+1))
+		closeErr := file.Close()
+		if err != nil || closeErr != nil || len(data) > limit {
+			appendLine(name + ": unreadable or oversized")
+			return nil, false
+		}
+		return data, true
+	}
+	for _, name := range []string{"clock", "memory-point"} {
+		if data, ok := read(name); ok {
+			if value, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil {
+				appendLine(fmt.Sprintf("%s: %d", name, value))
+			} else {
+				appendLine(name + ": invalid integer")
+			}
+		}
+	}
+	for _, name := range []string{"phase-calls", "events"} {
+		if data, ok := read(name); ok {
+			counts := make(map[string]int)
+			for _, event := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				switch event {
+				case "warmup", "steady", "semantic", "memory", "retained-call", "capture5", "capture10", "time-post", "end":
+					counts[event]++
+				default:
+					counts["unrecognized"]++
+				}
+			}
+			data, _ = json.Marshal(counts)
+			appendLine(name + ": " + string(data))
+		}
+	}
+	for _, name := range []string{
+		"goroutine_policy_phase_warmup_return.json", "goroutine_policy_phase_steady_return.json",
+		"goroutine_policy_barrier.json", "goroutine_policy_control_5.json", "goroutine_policy_control_10.json",
+		"goroutine_policy_post_5.json", "goroutine_policy_post_10.json",
+		"goroutine_policy_timing_5.json", "goroutine_policy_timing_10.json",
+	} {
+		data, ok := read(name)
+		if !ok {
+			continue
+		}
+		var document map[string]json.RawMessage
+		if json.Unmarshal(data, &document) != nil {
+			appendLine(name + ": partial or invalid JSON")
+			continue
+		}
+		scalars := make(map[string]any)
+		for _, key := range []string{"started_ns", "finished_ns", "exit_code", "t0_ns", "pending_rpc", "offset_seconds", "start_ns", "end_ns"} {
+			var value *int64
+			if raw, ok := document[key]; ok && json.Unmarshal(raw, &value) == nil && value != nil {
+				scalars[key] = *value
+			}
+		}
+		for _, key := range []string{"coordinator_returned", "semantic_complete", "fixture_only"} {
+			var value *bool
+			if raw, ok := document[key]; ok && json.Unmarshal(raw, &value) == nil && value != nil {
+				scalars[key] = *value
+			}
+		}
+		data, _ = json.Marshal(scalars)
+		appendLine(name + ": present " + string(data))
+	}
+	return report.String()
 }
 
 func TestReceiptGoroutinePolicyScope(t *testing.T) {

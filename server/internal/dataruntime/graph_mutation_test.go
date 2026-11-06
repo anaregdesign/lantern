@@ -282,20 +282,139 @@ func TestGraphMutationCancellationDuringWALCannotAbortCommit(t *testing.T) {
 	capture := captureGraphMutationForTest(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	walCalls := 0
+	cancelledInWAL := false
 	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
+		walCalls++
+		if ctx.Err() != nil {
+			t.Fatal("caller cancelled before WAL entry", ctx.Err())
+		}
 		cancel()
+		cancelledInWAL = ctx.Err() == context.Canceled
 		return nil
 	}))
 	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
 	request := graphMutationTestRequest(t, runtime, 0x66)
-	response, err := f.service.MutateGraph(ctx, request)
+	originalRequest := proto.Clone(request)
+	beforeGraph := f.cache.SnapshotReplication()
+	beforeLog := f.log.RetainedEntries()
+	beforeEvicted := f.log.Evicted()
+	beforeOrigins := f.service.origins.States()
+	beforeReceipts, err := runtime.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStats := runtime.receipt.store.Stats()
+	beforeFaultCh := f.service.publicationFaultCh
+	lastHighWater := beforeStats.HighWaterMillis
+	// Core admission can refuse this fixture before its WAL precondition is
+	// reached. Only a publication-free refusal may acquire that precondition
+	// again; the original request, caller context and production budgets stay
+	// unchanged. Exhaustion must fail because cancellation was not exercised.
+	assertPublicationFree := func() {
+		t.Helper()
+		if !f.service.graphMutationAdmission.TryLock() {
+			t.Fatal("refusal retained mixed mutation admission")
+		}
+		f.service.graphMutationAdmission.Unlock()
+		admission := runtime.receipt.operationAdmission
+		if !admission.mu.TryLock() {
+			t.Fatal("refusal retained receipt admission ownership")
+		}
+		readers, exclusive := admission.readers, admission.exclusive
+		admission.mu.Unlock()
+		if readers != 0 || exclusive {
+			t.Fatal("refusal retained receipt admission", readers, exclusive)
+		}
+		if !f.service.replicationCutMu.TryRLock() {
+			t.Fatal("refusal retained publication ownership")
+		}
+		defer f.service.replicationCutMu.RUnlock()
+		certificate := f.service.replicationCutMu.readCertificate.Load()
+		if !certificate.stable() || certificate.faulted || f.service.publicationFaultCount != 0 ||
+			f.service.receiptCommitFaulted || f.service.snapshotInstallFaulted ||
+			f.service.pendingLocalMutation != nil || len(f.service.pendingMutations) != 0 ||
+			f.service.pendingCount != 0 || f.service.pendingBytes != 0 ||
+			f.service.activeSnapshotInstall.Load() != nil || f.service.publicationFaultCh != beforeFaultCh {
+			t.Fatal("refusal changed publication/fault state")
+		}
+		if !f.service.receiptOriginCutMu.TryRLock() {
+			t.Fatal("refusal retained receipt origin ownership")
+		}
+		f.service.receiptOriginCutMu.RUnlock()
+		// These existing reads reacquire the graph and staged visibility cuts.
+		// Core Abort releases its search lock before those cuts; no new mutation
+		// or clock reset is used to repair a rejected attempt.
+		if _, live := f.cache.GetVertex("a"); live || !reflect.DeepEqual(beforeGraph, f.cache.SnapshotReplication()) {
+			t.Fatal("refusal published graph state")
+		}
+		if !reflect.DeepEqual(beforeLog, f.log.RetainedEntries()) || f.log.Evicted() != beforeEvicted ||
+			!reflect.DeepEqual(beforeOrigins, f.service.origins.States()) {
+			t.Fatal("refusal published a log/origin decision")
+		}
+		receipts, snapshotErr := runtime.receipt.store.Snapshot()
+		if snapshotErr != nil {
+			t.Fatal("refusal left receipt state unavailable", snapshotErr)
+		}
+		stats := runtime.receipt.store.Stats()
+		if receipts.Version != beforeReceipts.Version || receipts.Epoch != beforeReceipts.Epoch ||
+			receipts.PolicyFingerprint != beforeReceipts.PolicyFingerprint ||
+			!reflect.DeepEqual(receipts.Receipts, beforeReceipts.Receipts) ||
+			stats.Entries != beforeStats.Entries || stats.Bytes != beforeStats.Bytes ||
+			stats.OldestDeadlineMillis != beforeStats.OldestDeadlineMillis ||
+			stats.LocalAdmissionRejects != beforeStats.LocalAdmissionRejects ||
+			stats.ReplicationCapacityStalls != beforeStats.ReplicationCapacityStalls ||
+			stats.NoLongerProvableLookups != beforeStats.NoLongerProvableLookups {
+			t.Fatal("refusal changed committed receipts or accounting", stats)
+		}
+		// Begin/Abort retain legitimate monotonic clock observations. Compare
+		// committed rows and deadlines above, rather than whole-Stats equality.
+		if stats.HighWaterMillis < lastHighWater || receipts.ClockHighWaterMillis != stats.HighWaterMillis {
+			t.Fatal("refusal moved receipt clock high-water backwards", stats.HighWaterMillis, lastHighWater)
+		}
+		lastHighWater = stats.HighWaterMillis
+	}
+	assertPublicationFree()
+	var response *pb.MutateGraphResponse
+	var stages map[string]decisiontrace.Event
+	for attempt := 1; attempt <= 4; attempt++ {
+		response, err = f.service.MutateGraph(ctx, request)
+		// Drain each call separately: elapsed diagnostic counters restart at
+		// admission, and operation_budget remains mandatory even on refusal.
+		stages = graphMutationDiagnosticStages(t, capture)
+		t.Logf("admission attempt=%d WAL calls=%d code=%v stages=%v", attempt, walCalls, connect.CodeOf(err), stages)
+		if err == nil {
+			break
+		}
+		budgetErr, exactBudget := err.(*connect.Error)
+		if !exactBudget || budgetErr.Code() != connect.CodeResourceExhausted || budgetErr.Unwrap() != graphcache.ErrGraphMutationBudget ||
+			response != nil || ctx.Err() != nil || walCalls != 0 ||
+			stages["publication_enter"].Object != 0 || stages["publication_complete"].Object != 0 {
+			t.Fatal("refusal was not a publication-free Core admission", response, err, ctx.Err(), walCalls, stages)
+		}
+		if !proto.Equal(request, originalRequest) {
+			t.Fatal("admission changed the original request")
+		}
+		assertPublicationFree()
+		if attempt == 4 {
+			t.Fatal("Core admission exhausted before WAL cancellation invariant was exercised")
+		}
+	}
+	if !proto.Equal(request, originalRequest) {
+		t.Fatal("WAL admission changed the original request")
+	}
+	if walCalls != 1 || !cancelledInWAL || ctx.Err() != context.Canceled {
+		t.Fatal("cancellation was not inside exactly one WAL write", walCalls, cancelledInWAL, ctx.Err())
+	}
 	if err != nil || len(response.GetResults()) != 3 || f.log.Len() != 1 || runtime.receipt.store.Stats().Entries != 3 {
 		t.Fatal("successful WAL was rolled back after cancellation", response, err)
+	}
+	if f.service.LocalSeq(f.service.clock.NodeID()) != 1 || len(f.service.origins.States()) != 1 {
+		t.Fatal("successful WAL did not publish exactly one origin decision", f.service.origins.States())
 	}
 	if weight, live := f.cache.GetWeight("a", "b"); !live || weight != 2 {
 		t.Fatal("committed graph incomplete", weight, live)
 	}
-	stages := graphMutationDiagnosticStages(t, capture)
 	if stages["publication_complete"].Object == 0 {
 		t.Fatal("completed WAL misclassified after caller cancellation", stages)
 	}
