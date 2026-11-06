@@ -6,12 +6,12 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/operationalpolicy"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-// A concrete group marker forces the real owner to register before public
-// certification. Future group packages add their own marker dependencies here;
-// absent groups never obtain a dummy application capability.
+// Every concrete marker proves an actual registered owner before public
+// certification. No group obtains a dummy application capability.
 type managedOperationalCertified struct {
 	runtime   *SecurityRuntime
 	manager   *ManagedOperationalRuntime
@@ -25,9 +25,11 @@ type managedOperationalCertified struct {
 	capacity  *dataruntime.GraphPolicyOwner
 	plan      *service.ShutdownPlan
 	search    managedSearchCertified
+	pump      *replication.Pump
+	anti      *replication.AntiEntropy
 }
 
-func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntime, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, slow managedSlowRPCCertified, rate managedRateCertified, request *ManagedRequestRuntime, backup managedBackupCertified, capacity managedCapacityCertified, lifecycle managedLifecycleCertified, search managedSearchCertified) (managedOperationalCertified, error) {
+func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntime, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, slow managedSlowRPCCertified, rate managedRateCertified, request *ManagedRequestRuntime, backup managedBackupCertified, capacity managedCapacityCertified, lifecycle managedLifecycleCertified, search managedSearchCertified, replication managedReplicationCertified) (managedOperationalCertified, error) {
 	if runtime == nil || manager == nil || manager.runtime != runtime || runtime.managedOperational != manager || slow.manager != manager || slow.owner == nil || slow.adapter == nil || slow.adapter.owner != slow.owner {
 		return managedOperationalCertified{}, errManagedOperational
 	}
@@ -49,10 +51,13 @@ func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntim
 	if !search.validFor(manager, primary) {
 		return managedOperationalCertified{}, errManagedOperational
 	}
+	if !replication.validFor(manager, primary, search) {
+		return managedOperationalCertified{}, errManagedOperational
+	}
 	manager.mu.Lock()
-	slowEntry, rateEntry, requestEntry, backupEntry, capacityEntry, lifecycleEntry, searchEntry := manager.slowRPC, manager.rate, manager.request, manager.backup, manager.capacity, manager.lifecycle, manager.search
+	slowEntry, rateEntry, requestEntry, backupEntry, capacityEntry, lifecycleEntry, searchEntry, replicationEntry := manager.slowRPC, manager.rate, manager.request, manager.backup, manager.capacity, manager.lifecycle, manager.search, manager.replication
 	manager.mu.Unlock()
-	if slowEntry == nil || slowEntry.owner != slow.adapter || rateEntry == nil || rateEntry.owner != rate.adapter || requestEntry == nil || requestEntry.owner != request || backupEntry == nil || backupEntry.owner != backup.adapter || capacityEntry == nil || capacityEntry.owner != capacity.adapter || lifecycleEntry == nil || lifecycleEntry.owner != lifecycle.adapter || searchEntry == nil || searchEntry.owner != search.runtime {
+	if slowEntry == nil || slowEntry.owner != slow.adapter || rateEntry == nil || rateEntry.owner != rate.adapter || requestEntry == nil || requestEntry.owner != request || backupEntry == nil || backupEntry.owner != backup.adapter || capacityEntry == nil || capacityEntry.owner != capacity.adapter || lifecycleEntry == nil || lifecycleEntry.owner != lifecycle.adapter || searchEntry == nil || searchEntry.owner != search.runtime || replicationEntry == nil || replicationEntry.owner != replication.owner {
 		return managedOperationalCertified{}, errManagedOperational
 	}
 	// Availability proves installed owners, including the fixed recovery pair.
@@ -76,5 +81,5 @@ func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntim
 			return managedOperationalCertified{}, err
 		}
 	}
-	return managedOperationalCertified{runtime: runtime, manager: manager, slowRPC: slow.owner, rate: rate.owner, recovery: rate.recovery, primary: primary, request: request, validator: request.validator, backup: backup.owner, capacity: capacity.owner, plan: lifecycle.plan, search: search}, nil
+	return managedOperationalCertified{runtime: runtime, manager: manager, slowRPC: slow.owner, rate: rate.owner, recovery: rate.recovery, primary: primary, request: request, validator: request.validator, backup: backup.owner, capacity: capacity.owner, plan: lifecycle.plan, search: search, pump: replication.pump, anti: replication.anti}, nil
 }

@@ -41,7 +41,7 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	slowOwner := NewSlowRPCInterceptor(0, logger)
-	operational := operationalPublicTestCertification(t, runtime, primary, slowOwner)
+	operational := operationalPublicTestCertification(t, runtime, primary, slowOwner, cert)
 	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational)
 	if err != nil {
 		t.Fatal(err)

@@ -56,7 +56,7 @@ func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, logOwner.logger))
+	operational := operationalPublicTestCertification(t, runtime, primary, NewSlowRPCInterceptor(0, logOwner.logger), certified)
 	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, certified, logging, operational)
 	if err != nil {
 		t.Fatal(err)
