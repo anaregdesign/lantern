@@ -287,13 +287,12 @@ func TestTTL_GoSDKZeroTimeRemainsPermanent_RealConnectWire(t *testing.T) {
 }
 
 func TestTTL_ExplicitEpochReceipt_RealConnectWire(t *testing.T) {
-	const token = "ttl-receipt"
-	wire := newPublicReceiptWireServer(t, hlc.NodeID{0xa9}, 8, token)
+	wire := newReceiptProtocolWireServer(t, hlc.NodeID{0xa9}, 8)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	capability := publicReceiptCapability(t, wire, token)
+	capability := receiptProtocolCapability(t, wire)
 	issued := time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)
-	receiptContext := publicReceiptWireContext(t, capability, 0xa9, 2, issued)
+	receiptContext := receiptProtocolContext(t, capability, 0xa9, 2, issued)
 	request := &pb.PutVerticesRequest{
 		Vertices: []*pb.Vertex{
 			{Key: "fractional", Value: &pb.Vertex_String_{String_: "gone"},
@@ -302,14 +301,14 @@ func TestTTL_ExplicitEpochReceipt_RealConnectWire(t *testing.T) {
 		},
 		ReceiptContext: receiptContext,
 	}
-	response, err := wire.raw.PutVertices(ctx, receiptRequestWithToken(request, token))
+	response, err := wire.raw.PutVertices(ctx, connect.NewRequest(request))
 	want := []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED, pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}
 	if err != nil || !slices.Equal(response.Msg.GetOutcomes(), want) {
 		t.Fatalf("receipt Put outcomes = (%+v, %v), want %v", response, err, want)
 	}
-	statuses, err := wire.raw.GetReceiptStatuses(ctx, receiptRequestWithToken(&pb.GetReceiptStatusesRequest{
+	statuses, err := wire.raw.GetReceiptStatuses(ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
 		OperationIds: receiptContext.GetOperationIds(),
-	}, token))
+	}))
 	if err != nil || len(statuses.Msg.GetStatuses()) != len(want) {
 		t.Fatalf("receipt statuses = (%+v, %v)", statuses, err)
 	}
@@ -319,29 +318,29 @@ func TestTTL_ExplicitEpochReceipt_RealConnectWire(t *testing.T) {
 			t.Fatalf("receipt status[%d] = %+v, want %v", i, status, want[i])
 		}
 	}
-	if _, err := wire.raw.GetVertex(ctx, receiptRequestWithToken(&pb.GetVertexRequest{Key: "fractional"}, token)); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := wire.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "fractional"})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("receipt expired Put remained readable: %v", err)
 	}
-	if live, err := wire.raw.GetVertex(ctx, receiptRequestWithToken(&pb.GetVertexRequest{Key: "permanent"}, token)); err != nil ||
+	if live, err := wire.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "permanent"})); err != nil ||
 		live.Msg.GetVertex().GetString_() != "live" || live.Msg.GetVertex().GetExpiration() != nil {
 		t.Fatalf("receipt permanent Put = (%+v, %v)", live, err)
 	}
 
 	contribID := make([]byte, len(graphcache.ContribID{}))
 	contribID[0] = 1
-	addContext := publicReceiptWireContext(t, capability, 0xaa, 1, issued)
-	add, err := wire.raw.AddEdges(ctx, receiptRequestWithToken(&pb.AddEdgesRequest{
+	addContext := receiptProtocolContext(t, capability, 0xaa, 1, issued)
+	add, err := wire.raw.AddEdges(ctx, connect.NewRequest(&pb.AddEdgesRequest{
 		Edges: []*pb.Edge{{Tail: "tail", Head: "head", Weight: 2,
 			Expiration: timestamppb.New(time.Unix(-1, 0).UTC())}},
 		ContribIds:     [][]byte{contribID},
 		ReceiptContext: addContext,
-	}, token))
+	}))
 	if err != nil || add.Msg.GetWritten() != 1 || !slices.Equal(add.Msg.GetEffectiveWeights(), []float32{0}) {
 		t.Fatalf("receipt pre-epoch Add = (%+v, %v), want zero effective weight", add, err)
 	}
-	status, err := wire.raw.GetReceiptStatus(ctx, receiptRequestWithToken(&pb.GetReceiptStatusRequest{
+	status, err := wire.raw.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{
 		OperationId: addContext.GetOperationIds()[0],
-	}, token))
+	}))
 	if err != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
 		t.Fatalf("receipt Add status = (%+v, %v)", status, err)
 	}
@@ -349,9 +348,9 @@ func TestTTL_ExplicitEpochReceipt_RealConnectWire(t *testing.T) {
 	if !ok || result.AddEdgeEffectiveWeight != 0 {
 		t.Fatalf("receipt Add original result = %+v, want zero effective weight", result)
 	}
-	if _, err := wire.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+	if _, err := wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
 		Tail: "tail", Head: "head",
-	}, token)); connect.CodeOf(err) != connect.CodeNotFound {
+	})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("receipt expired Add remained readable: %v", err)
 	}
 }

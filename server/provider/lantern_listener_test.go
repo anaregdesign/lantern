@@ -28,6 +28,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -67,6 +68,57 @@ func TestLoadTLSConfigEnvironmentPEM(t *testing.T) {
 		} else if strings.Contains(err.Error(), "FAKE_") {
 			t.Fatal("TLS parser exposed input material")
 		}
+	}
+}
+
+func TestLanternListenerTransportConfiguration(t *testing.T) {
+	seed := httptest.NewTLSServer(http.NotFoundHandler())
+	defer seed.Close()
+	certificate := seed.TLS.Certificates[0]
+	privateKey, err := x509.MarshalPKCS8PrivateKey(certificate.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Certificate[0]}))
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKey}))
+	for _, test := range []struct {
+		name   string
+		tls    TLSConfig
+		mutual bool
+	}{
+		{name: "h2c"},
+		{name: "TLS", tls: TLSConfig{CertPEM: certPEM, KeyPEM: keyPEM}},
+		{name: "mTLS", tls: TLSConfig{CertPEM: certPEM, KeyPEM: keyPEM, ClientCAPEM: certPEM}, mutual: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			socket := httptest.NewUnstartedServer(nil)
+			defer socket.Close()
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			listener, err := newLanternListenerTransport(socket.Listener, NetConfig{}, test.tls, logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := listener.Server()
+			if listener.Listener() != socket.Listener || listener.Addr() != socket.Listener.Addr().String() || server.Addr != listener.Addr() {
+				t.Fatal("transport replaced its owned listener")
+			}
+			if server.Handler != nil || server.ReadHeaderTimeout != 30*time.Second {
+				t.Fatal("transport selected a handler or changed the header timeout")
+			}
+			if server.Protocols == nil || !server.Protocols.HTTP1() || !server.Protocols.HTTP2() || !server.Protocols.UnencryptedHTTP2() {
+				t.Fatal("transport lost HTTP/1, HTTP/2 or h2c support")
+			}
+			wantTLS := test.tls.CertPEM != ""
+			if listener.TLSEnabled() != wantTLS || (server.TLSConfig != nil) != wantTLS {
+				t.Fatal("transport TLS selection differs from supplied material")
+			}
+			if wantTLS && (server.TLSConfig.MinVersion != tls.VersionTLS12 || len(server.TLSConfig.Certificates) != 1) {
+				t.Fatal("transport changed TLS certificate or minimum version")
+			}
+			if test.mutual && (server.TLSConfig.ClientAuth != tls.RequireAndVerifyClientCert || server.TLSConfig.ClientCAs == nil) {
+				t.Fatal("transport lost mutual client verification")
+			}
+		})
 	}
 }
 
@@ -120,27 +172,20 @@ func newMessageLimitedListener(
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server, err := NewLanternListener(
-		listener,
-		netCfg,
-		TLSConfig{},
-		ObservabilityConfig{},
-		CORSConfig{},
-		primary,
-		replication,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		NewSlowRPCInterceptor(0, logger),
-		NewHealthChecker(),
-		logger,
-	)
+	server, err := newLanternListenerTransport(listener, netCfg, TLSConfig{}, logger)
 	if err != nil {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
+	// These tests qualify the shared transport and codec limits. The test mux
+	// mounts only the supplied service adapters, outside public certification.
+	options := authenticatedHandlerOptions(netCfg, nil, nil, nil, nil, nil, NewSlowRPCInterceptor(0, logger), logger)
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternServiceHandler(service.NewLanternServiceConnectHandler(primary), options...))
+	if replication != nil {
+		mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(replication), options...))
+	}
+	server.Server().Handler = mux
 	serveDone := make(chan error, 1)
 	go func() {
 		serveDone <- server.Server().Serve(server.Listener())
@@ -617,23 +662,7 @@ func TestLanternListenerRejectsNegativeConnectMessageLimits(t *testing.T) {
 				}
 			}()
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			if server, err := NewLanternListener(
-				listener,
-				netCfg,
-				TLSConfig{},
-				ObservabilityConfig{},
-				CORSConfig{},
-				dataruntime.NewExecutor(nil),
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				NewSlowRPCInterceptor(0, logger),
-				NewHealthChecker(),
-				logger,
-			); server != nil || err == nil {
+			if server, err := newLanternListenerTransport(listener, netCfg, TLSConfig{}, logger); server != nil || err == nil {
 				t.Fatalf("negative Connect message limit = %p, %v", server, err)
 			}
 		})

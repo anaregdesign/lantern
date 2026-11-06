@@ -1,5 +1,5 @@
-// Package replication supports bearer-free h2c peers and verified HTTPS
-// peers with a separate, credential-bearing PeerTransport.
+// Package replication provides h2c transport helpers and verified HTTPS
+// workload peers through a separately owned PeerTransport.
 package replication
 
 import (

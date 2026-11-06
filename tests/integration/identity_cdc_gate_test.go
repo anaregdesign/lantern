@@ -494,14 +494,13 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 	if testing.Short() {
 		t.Skip("skipping public three-replica receipt Add identity projection")
 	}
-	const token = "receipt-add-receiver-ahead-token"
-	a := newPublicReceiptWireServer(t, hlc.NodeID{0xD1, 0x41}, 16, token)
-	b := newPublicReceiptWireServer(t, hlc.NodeID{0xD1, 0x42}, 16, token)
-	c := newPublicReceiptWireServer(t, hlc.NodeID{0xD1, 0x43}, 16, token)
+	a := newReceiptProtocolWireServer(t, hlc.NodeID{0xD1, 0x41}, 16)
+	b := newReceiptProtocolWireServer(t, hlc.NodeID{0xD1, 0x42}, 16)
+	c := newReceiptProtocolWireServer(t, hlc.NodeID{0xD1, 0x43}, 16)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	capability := publicReceiptCapability(t, a, token)
+	capability := receiptProtocolCapability(t, a)
 	edges := []*pb.Edge{
 		{Tail: "receiver-ahead/add", Head: "duplicate", Weight: 2, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
 		{Tail: "receiver-ahead/add", Head: "fresh", Weight: 3, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
@@ -510,28 +509,25 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 		bytes.Repeat([]byte{0x41}, len(graphcache.ContribID{})),
 		bytes.Repeat([]byte{0x42}, len(graphcache.ContribID{})),
 	}
-	seed := func(name string, wire publicReceiptWireServer, count int) uint64 {
+	seed := func(name string, wire receiptProtocolWireServer, count int) uint64 {
 		t.Helper()
-		added, err := wire.raw.AddEdges(ctx, receiptRequestWithToken(&pb.AddEdgesRequest{
+		added, err := wire.raw.AddEdges(ctx, connect.NewRequest(&pb.AddEdgesRequest{
 			Edges:      edges[:count],
 			ContribIds: contribIDs[:count],
-		}, token))
+		}))
 		if err != nil || added.Msg.GetWritten() != int32(count) ||
 			!reflect.DeepEqual(added.Msg.GetEffectiveWeights(), []float32{2, 3}[:count]) {
 			t.Fatalf("%s receiptless seed = %+v, %v", name, added, err)
 		}
 		origin := hex.EncodeToString(wire.config.NodeID[:])
-		cut := receiptOriginCut(waitForPublicReceiptCut(
-			t, ctx, name+" committed seed", wire, token,
-			map[string]uint64{origin: 1}, 5*time.Second,
-		))
+		cut := receiptOriginCut(waitForReceiptProtocolCut(t, ctx, name+" committed seed", wire, map[string]uint64{origin: 1}, 5*time.Second))
 		if len(cut) != 1 || cut[origin] == 0 {
 			t.Fatalf("%s seed frontier = %v, want nonzero local origin only", name, cut)
 		}
 		for _, edge := range edges[:count] {
-			got, err := wire.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+			got, err := wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
 				Tail: edge.GetTail(), Head: edge.GetHead(),
-			}, token))
+			}))
 			if err != nil || got.Msg.GetEdge().GetWeight() != edge.GetWeight() {
 				t.Fatalf("%s seed graph (%q, %q) = %+v, %v", name, edge.GetTail(), edge.GetHead(), got, err)
 			}
@@ -540,39 +536,36 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 	}
 	bSeedSeq := seed("B", b, 1)
 	cSeedSeq := seed("C", c, 2)
-	if _, err := b.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+	if _, err := b.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
 		Tail: edges[1].GetTail(), Head: edges[1].GetHead(),
-	}, token)); connect.CodeOf(err) != connect.CodeNotFound {
+	})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("B already has A's second Add edge before repair: %v", err)
 	}
 
 	request := &pb.AddEdgesRequest{
 		Edges:      edges,
 		ContribIds: contribIDs,
-		ReceiptContext: publicReceiptWireContext(
+		ReceiptContext: receiptProtocolContext(
 			t, capability, 0x43, 2,
 			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
 		),
 	}
-	added, err := a.raw.AddEdges(ctx, receiptRequestWithToken(request, token))
+	added, err := a.raw.AddEdges(ctx, connect.NewRequest(request))
 	if err != nil || added.Msg.GetWritten() != 2 ||
 		!reflect.DeepEqual(added.Msg.GetEffectiveWeights(), []float32{2, 3}) {
 		t.Fatalf("A original Add = %+v, %v, want [2 3]", added, err)
 	}
 	aOrigin := hex.EncodeToString(a.config.NodeID[:])
-	aCut := receiptOriginCut(waitForPublicReceiptCut(
-		t, ctx, "A Add committed", a, token,
-		map[string]uint64{aOrigin: 1}, 5*time.Second,
-	))
+	aCut := receiptOriginCut(waitForReceiptProtocolCut(t, ctx, "A Add committed", a, map[string]uint64{aOrigin: 1}, 5*time.Second))
 	if len(aCut) != 1 || aCut[aOrigin] == 0 {
 		t.Fatalf("A Add frontier = %v, want nonzero A origin only", aCut)
 	}
 	aSeq := aCut[aOrigin]
 	for _, replica := range []struct {
 		name string
-		wire publicReceiptWireServer
+		wire receiptProtocolWireServer
 	}{{"B", b}, {"C", c}} {
-		for i, status := range receiptWireStatuses(t, ctx, replica.wire, token, request.GetReceiptContext().GetOperationIds()) {
+		for i, status := range receiptProtocolStatuses(t, ctx, replica.wire, request.GetReceiptContext().GetOperationIds()) {
 			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
 				status.GetReceipt() != nil {
 				t.Fatalf("%s isolated status[%d] = %+v, want NOT_YET_OBSERVED", replica.name, i, status)
@@ -582,7 +575,7 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 
 	for _, replica := range []struct {
 		name       string
-		wire       publicReceiptWireServer
+		wire       receiptProtocolWireServer
 		seedSeq    uint64
 		accepted   []bool
 		identityOp pb.IdentityOperation
@@ -593,20 +586,16 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 		{"C", c, cSeedSeq, []bool{false, false}, pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY, nil},
 	} {
 		t.Run(replica.name, func(t *testing.T) {
-			stop := startPublicReceiptPump(t, ctx, "A->"+replica.name+" receiver-ahead", replica.wire, a, token)
+			stop := startReceiptProtocolPump(t, ctx, "A->"+replica.name+" receiver-ahead", replica.wire, a)
 			defer stop()
 			localOrigin := hex.EncodeToString(replica.wire.config.NodeID[:])
 			wantCut := map[string]uint64{localOrigin: replica.seedSeq, aOrigin: aSeq}
-			requireExactReceiptCut(t, replica.name+" repaired", waitForPublicReceiptCut(
-				t, ctx, replica.name+" repaired", replica.wire, token, wantCut, 5*time.Second,
-			), wantCut)
-			requireReceiptAddResults(t, replica.name+" original Add", receiptWireStatuses(
-				t, ctx, replica.wire, token, request.GetReceiptContext().GetOperationIds(),
-			), request.GetReceiptContext().GetOperationIds(), []float32{2, 3})
+			requireExactReceiptCut(t, replica.name+" repaired", waitForReceiptProtocolCut(t, ctx, replica.name+" repaired", replica.wire, wantCut, 5*time.Second), wantCut)
+			requireReceiptAddResults(t, replica.name+" original Add", receiptProtocolStatuses(t, ctx, replica.wire, request.GetReceiptContext().GetOperationIds()), request.GetReceiptContext().GetOperationIds(), []float32{2, 3})
 			for _, edge := range edges {
-				got, err := replica.wire.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+				got, err := replica.wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
 					Tail: edge.GetTail(), Head: edge.GetHead(),
-				}, token))
+				}))
 				if err != nil || got.Msg.GetEdge().GetWeight() != edge.GetWeight() {
 					t.Fatalf("%s repaired graph (%q, %q) = %+v, %v",
 						replica.name, edge.GetTail(), edge.GetHead(), got, err)
@@ -615,9 +604,9 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 
 			cursor := map[string]uint64{localOrigin: replica.seedSeq + 1, aOrigin: aSeq}
 			full, err := newReplicationRawClient(t, replica.wire.server.url).Subscribe(
-				ctx, receiptRequestWithToken(&pb.SubscribeRequest{
+				ctx, connect.NewRequest(&pb.SubscribeRequest{
 					FromSeqPerOrigin: cursor, AcceptReceiptEnvelopes: true,
-				}, token),
+				}),
 			)
 			if err != nil {
 				t.Fatalf("%s full Subscribe: %v", replica.name, err)
@@ -648,10 +637,10 @@ func TestIdentityCDC_ReceiptAddReceiverAheadProjectsOnlyAcceptedEdges(t *testing
 			}
 
 			identity, err := newReplicationRawClient(t, replica.wire.server.url).Subscribe(
-				ctx, receiptRequestWithToken(&pb.SubscribeRequest{
+				ctx, connect.NewRequest(&pb.SubscribeRequest{
 					Projection:       pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
 					FromSeqPerOrigin: cursor,
-				}, token),
+				}),
 			)
 			if err != nil {
 				t.Fatalf("%s identity Subscribe: %v", replica.name, err)

@@ -12,36 +12,15 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 )
 
-// PeerConfig groups the outbound peer-replication pump knobs (#185, #190).
+// PeerConfig carries replication reconnect/polling intervals and retained legacy
+// topology inputs. BackoffMin/BackoffMax and DiscoveryInterval feed the current
+// managed scheduling owner. Current peer identities and eligible HTTPS origins
+// come from the separately certified signed workload membership.
 //
-//   - LANTERN_PEERS                      CSV list of peer addresses
-//     ("host:port" without auth, "https://host:port" with auth).
-//     Empty (the default) yields a no-op pump
-//     unless LANTERN_PEER_DISCOVERY=dns; otherwise the server runs in
-//     single-instance mode. Whitespace around each entry is trimmed;
-//     empty entries are dropped.
-//   - LANTERN_PUMP_BACKOFF_MIN_MS        initial reconnect delay after a
-//     pump session error. Default 250ms. Doubles on each successive
-//     failure, capped at LANTERN_PUMP_BACKOFF_MAX_MS.
-//   - LANTERN_PUMP_BACKOFF_MAX_MS        upper cap on the reconnect
-//     delay. Default 30000ms (30s).
-//   - LANTERN_PEER_DISCOVERY             peer discovery mode. "static"
-//     (default) uses LANTERN_PEERS as-is. "dns" periodically resolves
-//     LANTERN_PEER_DNS_NAME to its A/AAAA records and treats every
-//     non-self address as a peer — the standard k8s headless-Service /
-//     Docker Compose service-name pattern (#190).
-//   - LANTERN_PEER_DNS_NAME              hostname for DNS discovery.
-//     Required when LANTERN_PEER_DISCOVERY=dns.
-//   - LANTERN_PEER_DEFAULT_PORT          port appended to every DNS-
-//     resolved IP. Default "50051".
-//   - LANTERN_PEER_DISCOVERY_INTERVAL_MS DNS re-poll cadence. Default
-//     10000ms (10s). A transient resolution failure logs and preserves
-//     the previously-active peer set so established subscriptions are
-//     not torn down.
-//   - LANTERN_PEER_CA_FILE               PEM trust roots required for
-//     bearer-bearing HA peers; never inferred from inbound TLS settings.
-//   - LANTERN_PEER_CLIENT_CERT_FILE / LANTERN_PEER_CLIENT_KEY_FILE
-//     optional outbound client certificate/key for peer mTLS.
+// LANTERN_PEERS, legacy static/DNS discovery selectors and public-token peer
+// CA/client-certificate settings do not enable HA. loadPeerPlaneConfig rejects
+// their explicit presence, including empty values; they remain represented here
+// only for that startup refusal and the documented registry contract.
 type PeerConfig struct {
 	Peers             []string
 	CAFile            string
@@ -207,14 +186,4 @@ func newReplicationPumpConfig(
 		cfg.Source = resolver.Source
 	}
 	return cfg
-}
-
-// firstToken picks the client-side token when auth is enabled (#850):
-// clients send tokens[0]; the server accepts any configured token, which is
-// what makes {old,new} rotation zero-downtime.
-func firstToken(tokens []string) string {
-	if len(tokens) == 0 {
-		return ""
-	}
-	return tokens[0]
 }

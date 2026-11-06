@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -44,10 +45,10 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
-	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/http2"
+	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -259,8 +260,9 @@ func TestAuth_DataNamespaceReceiptReplayOverConnect(t *testing.T) {
 	if err := runtime.ActivatePublicReceipts(primary, rep); err != nil {
 		t.Fatal(err)
 	}
-	server := newConnectTestServer(t, primary, rep, provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{testToken}}))
-	sdk := newConnectClientFor(t, server.url, client.WithAuthToken(testToken))
+	// This fixture tests receipt replay mechanics, independently of public authentication.
+	server := newConnectTestServer(t, primary, rep)
+	sdk := newConnectClientFor(t, server.url)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	capability, err := sdk.GetReceiptCapability(ctx)
@@ -310,7 +312,7 @@ func TestAuth_ModePreflightAndAnonymousConnect(t *testing.T) {
 				t.Setenv("LANTERN_AUTH_MODE", "off")
 			}
 			cfg, err := provider.NewConfig()
-			if err != nil || cfg.Auth.Enabled() {
+			if err != nil || cfg.Security.Mode != "off" {
 				t.Fatalf("anonymous config: %v", err)
 			}
 			cache := provider.NewGraphCache(cfg.Cache, cfg.Search)
@@ -337,121 +339,6 @@ func TestAuth_ModePreflightAndAnonymousConnect(t *testing.T) {
 		t.Setenv("LANTERN_AUTH_MODE", "oidc")
 		if cfg, err := provider.NewConfig(); err == nil || cfg != nil {
 			t.Fatalf("incomplete OIDC configuration: %v", err)
-		}
-	})
-}
-
-// newAuthedServer stands up an in-process Lantern (data plane + replication
-// service) with the #850 bearer-token interceptor armed, mirroring how the
-// production listener mounts it.
-func newAuthedServer(t *testing.T) (*connectTestServer, *graphcache.GraphCache[string, *pb.Vertex], *service.LanternService) {
-	t.Helper()
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
-	var nid hlc.NodeID
-	copy(nid[:], "auth-node-000000")
-	clock := hlc.New(nid, hlc.Options{})
-	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	rep := service.NewLanternReplicationService(log, cache, clock).WithOriginStates(svc)
-	auth := provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{"stale-rotated-out", testToken}})
-	srv := newConnectTestServer(t, svc, rep, auth)
-	return srv, cache, svc
-}
-
-// TestAuth_SDKRoundTrip drives the #850 contract through the SDK: a
-// tokenless client is rejected with Unauthenticated on unary AND the
-// replication streams; WithAuthToken fixes both; rotation admits any
-// configured token; failover inherits the option.
-func TestAuth_SDKRoundTrip(t *testing.T) {
-	srv, _, _ := newAuthedServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	t.Run("tokenless unary rejected", func(t *testing.T) {
-		l := newConnectClientFor(t, srv.url)
-		_, err := l.PutVertex(ctx, "k", "v", time.Minute)
-		if !errors.Is(err, client.ErrUnauthenticated) && connectCode(err) != connect.CodeUnauthenticated {
-			t.Fatalf("tokenless put: got %v, want Unauthenticated", err)
-		}
-	})
-
-	t.Run("tokenless replication stream rejected", func(t *testing.T) {
-		// The replication service must NOT ride the health exemption: a
-		// tokenless Subscribe fails at first receive.
-		raw := graphv1connect.NewLanternReplicationServiceClient(h2cClient(), srv.url)
-		stream, err := raw.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
-		if err == nil {
-			if stream.Receive() {
-				t.Fatal("tokenless Subscribe delivered a message")
-			}
-			err = stream.Err()
-			_ = stream.Close()
-		}
-		if connect.CodeOf(err) != connect.CodeUnauthenticated {
-			t.Fatalf("tokenless Subscribe: got %v (err=%v), want Unauthenticated", connect.CodeOf(err), err)
-		}
-	})
-
-	t.Run("token accepted end to end", func(t *testing.T) {
-		l := newConnectClientFor(t, srv.url, client.WithAuthToken(testToken))
-		if _, err := l.PutVertex(ctx, "authed", "v", time.Minute); err != nil {
-			t.Fatalf("authed put: %v", err)
-		}
-		if _, err := l.GetVertex(ctx, "authed"); err != nil {
-			t.Fatalf("authed get: %v", err)
-		}
-		var fullSeen bool
-		for event, err := range l.Subscribe(ctx, nil) {
-			if err != nil {
-				t.Fatalf("authed full Subscribe: %v", err)
-			}
-			fullSeen = event != nil
-			break
-		}
-		if !fullSeen {
-			t.Fatal("authed full Subscribe returned no Mutation")
-		}
-		var checkpointSeen bool
-		for event, err := range l.BootstrapIdentity(ctx) {
-			if err != nil {
-				t.Fatalf("authed identity Subscribe: %v", err)
-			}
-			_, checkpointSeen = event.(*client.IdentityCheckpoint)
-			break
-		}
-		if !checkpointSeen {
-			t.Fatal("authed identity Subscribe returned no checkpoint")
-		}
-	})
-
-	t.Run("tokenless identity stream rejected", func(t *testing.T) {
-		l := newConnectClientFor(t, srv.url)
-		var streamErr error
-		for _, err := range l.BootstrapIdentity(ctx) {
-			streamErr = err
-			break
-		}
-		if !errors.Is(streamErr, client.ErrUnauthenticated) || connect.CodeOf(streamErr) != connect.CodeUnauthenticated {
-			t.Fatalf("tokenless identity Subscribe = %v", streamErr)
-		}
-	})
-
-	t.Run("rotation: stale-but-configured token accepted", func(t *testing.T) {
-		l := newConnectClientFor(t, srv.url, client.WithAuthToken("stale-rotated-out"))
-		if _, err := l.PutVertex(ctx, "rotated", "v", time.Minute); err != nil {
-			t.Fatalf("rotation token put: %v", err)
-		}
-	})
-
-	t.Run("failover inherits the token", func(t *testing.T) {
-		lf, err := client.NewLanternFailover([]string{srv.url},
-			client.WithHTTPClient(h2cClient()), client.WithAuthToken(testToken))
-		if err != nil {
-			t.Fatalf("NewLanternFailover: %v", err)
-		}
-		t.Cleanup(func() { _ = lf.Close() })
-		if _, err := lf.PutVertex(ctx, "via-failover", "v", time.Minute); err != nil {
-			t.Fatalf("failover put: %v", err)
 		}
 	})
 }
@@ -499,25 +386,17 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 	}
 	srv := newConnectTestServer(
 		t, primary, replicationService,
-		provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{testToken}}),
 		provider.NewValidationInterceptor(defaultIntegrationValidationLimits()).ConnectInterceptor(),
 	)
 	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
 	ctx := t.Context()
-	authorizedPutEdge := func(edge *pb.Edge) *connect.Request[pb.PutEdgeRequest] {
+	putEdgeRequest := func(edge *pb.Edge) *connect.Request[pb.PutEdgeRequest] {
 		req := connect.NewRequest(&pb.PutEdgeRequest{Edge: edge})
-		req.Header().Set("Authorization", "Bearer "+testToken)
 		return req
 	}
-	authorizedPutEdges := func(edges []*pb.Edge) *connect.Request[pb.PutEdgesRequest] {
+	putEdgesRequest := func(edges []*pb.Edge) *connect.Request[pb.PutEdgesRequest] {
 		req := connect.NewRequest(&pb.PutEdgesRequest{Edges: edges})
-		req.Header().Set("Authorization", "Bearer "+testToken)
 		return req
-	}
-	if _, err := raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{
-		Edge: &pb.Edge{Tail: "singular", Head: "edge", Weight: 1},
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("tokenless raw PutEdge = %v, want Unauthenticated", err)
 	}
 
 	beforeReceipts := runtime.ReceiptStats()
@@ -547,7 +426,7 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 		t.Run("singular/"+weight.name, func(t *testing.T) {
 			// SDK PutEdge conveniences call PutEdges; the generated client
 			// exercises the singular RPC and its own interceptor path.
-			_, err := raw.PutEdge(ctx, authorizedPutEdge(&pb.Edge{
+			_, err := raw.PutEdge(ctx, putEdgeRequest(&pb.Edge{
 				Tail: "singular", Head: "edge", Weight: weight.value,
 			}))
 			if connect.CodeOf(err) != connect.CodeInvalidArgument {
@@ -556,7 +435,7 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 			assertUnchanged(t)
 		})
 		t.Run("plural/"+weight.name, func(t *testing.T) {
-			_, err := raw.PutEdges(ctx, authorizedPutEdges([]*pb.Edge{
+			_, err := raw.PutEdges(ctx, putEdgesRequest([]*pb.Edge{
 				{Tail: "prefix", Head: "edge", Weight: 1},
 				{Tail: "plural", Head: "edge", Weight: weight.value},
 			}))
@@ -566,13 +445,13 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 			assertUnchanged(t)
 		})
 	}
-	put, err := raw.PutEdge(ctx, authorizedPutEdge(&pb.Edge{
+	put, err := raw.PutEdge(ctx, putEdgeRequest(&pb.Edge{
 		Tail: "singular", Head: "edge", Weight: 2.5,
 	}))
 	if err != nil || put.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
 		t.Fatalf("finite raw PutEdge = %+v, %v", put, err)
 	}
-	plural, err := raw.PutEdges(ctx, authorizedPutEdges([]*pb.Edge{
+	plural, err := raw.PutEdges(ctx, putEdgesRequest([]*pb.Edge{
 		{Tail: "plural", Head: "edge", Weight: math.MaxFloat32},
 	}))
 	if err != nil || len(plural.Msg.GetOutcomes()) != 1 ||
@@ -592,151 +471,6 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 	}
 }
 
-// TestAuth_PumpReplicatesAgainstAuthedPeer pins the peer-credential path:
-// a pump replicates through verified TLS to an auth-enabled peer.
-func TestAuth_PumpReplicatesAgainstAuthedPeer(t *testing.T) {
-	srcSrv, _, srcSvc := newAuthedServer(t)
-	peer := newAuthenticatedReplicationPeer(t, srcSrv, testToken)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Local (destination) node — plain, no auth needed on its own surface.
-	dstCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	dstLog := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
-	var dstID hlc.NodeID
-	copy(dstID[:], "auth-node-dst000")
-	dstClock := hlc.New(dstID, hlc.Options{})
-	dstSvc := service.NewLanternService(dstCache).WithReplication(dstLog, dstClock, nil)
-
-	p := replication.NewPump(replication.Config{
-		NodeID:        dstID,
-		Peers:         []string{peer.url},
-		BackoffMin:    20 * time.Millisecond,
-		BackoffMax:    200 * time.Millisecond,
-		PeerTransport: peer.transport,
-	}, dstSvc, dstCache)
-	pumpCtx, pumpCancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() { _ = p.Run(pumpCtx); close(done) }()
-	t.Cleanup(func() {
-		pumpCancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
-	})
-
-	// Write on the source THROUGH its authed surface; the pump must carry
-	// it to the destination.
-	if _, err := srcSvc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
-		Key: "replicated", Value: &pb.Vertex_Nil{Nil: true},
-	}}); err != nil {
-		t.Fatalf("source put: %v", err)
-	}
-	if !waitForVertex(t, dstCache, "replicated", 5*time.Second) {
-		t.Fatal("authed pump did not replicate the vertex")
-	}
-}
-
-func TestAuth_DNSPeerAuthenticatesResolvedIPOverTLS(t *testing.T) {
-	srcSrv, _, srcSvc := newAuthedServer(t)
-	peer := newAuthenticatedReplicationPeer(t, srcSrv, testToken)
-	addr := strings.TrimPrefix(peer.url, "https://")
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport, err := replication.NewAuthenticatedPeerTransport(
-		peer.ca, nil, testToken, nil, "example.com", port,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var dstID hlc.NodeID
-	copy(dstID[:], "auth-node-dns000")
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
-	clock := hlc.New(dstID, hlc.Options{})
-	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	pump := replication.NewPump(replication.Config{
-		NodeID: dstID, Peers: []string{addr},
-		BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
-		PeerTransport: transport,
-	}, svc, cache)
-	done := make(chan error, 1)
-	go func() { done <- pump.Run(ctx) }()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("stop DNS pump: %v", err)
-		}
-	}()
-	if _, err := srcSvc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
-		Key: "dns-peer", Value: &pb.Vertex_Nil{Nil: true},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if !waitForVertex(t, cache, "dns-peer", 4*time.Second) {
-		t.Fatal("DNS-discovered IP did not authenticate against the configured certificate DNS identity")
-	}
-}
-
-func TestAuth_DNSPeerRejectsMismatchedIdentityOverTLS(t *testing.T) {
-	srcSrv, _, srcSvc := newAuthedServer(t)
-	peer := newAuthenticatedReplicationPeer(t, srcSrv, testToken)
-	addr := strings.TrimPrefix(peer.url, "https://")
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const wrongIdentity = "unrelated.invalid"
-	transport, err := replication.NewAuthenticatedPeerTransport(
-		peer.ca, nil, testToken, nil, wrongIdentity, port,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var dstID hlc.NodeID
-	copy(dstID[:], "auth-node-bad-dns")
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
-	svc := service.NewLanternService(cache).WithReplication(log, hlc.New(dstID, hlc.Options{}), nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if _, err := srcSvc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
-		Key: "must-not-replicate", Value: &pb.Vertex_Nil{Nil: true},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	pump := replication.NewPump(replication.Config{
-		NodeID: dstID, Peers: []string{addr},
-		BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
-		PeerTransport: transport,
-	}, svc, cache)
-	done := make(chan error, 1)
-	go func() { done <- pump.Run(ctx) }()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("stop mismatched DNS pump: %v", err)
-		}
-	}()
-	for ctx.Err() == nil {
-		peers := pump.Snapshot()
-		if len(peers) == 1 && strings.Contains(peers[0].LastError, "certificate") &&
-			strings.Contains(peers[0].LastError, wrongIdentity) {
-			if _, copied := cache.GetVertex("must-not-replicate"); copied {
-				t.Fatal("untrusted DNS identity received a bearer and replicated")
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("pump never reported a certificate mismatch: %+v", pump.Snapshot())
-}
-
 // connectCode unwraps the connect error code from an SDK error chain.
 func connectCode(err error) connect.Code {
 	var ce *connect.Error
@@ -744,6 +478,33 @@ func connectCode(err error) connect.Code {
 		return ce.Code()
 	}
 	return 0
+}
+
+// The two reflection versions have the same message wire shape. An explicit
+// method path prevents the client from falling back and hiding a broken mount.
+func currentReflectionServices(ctx context.Context, client *http.Client, baseURL, version, token string) ([]string, error) {
+	call := connect.NewClient[reflectionv1.ServerReflectionRequest, reflectionv1.ServerReflectionResponse](
+		client, baseURL+"/grpc.reflection."+version+".ServerReflection/ServerReflectionInfo", connect.WithGRPC(),
+	).CallBidiStream(ctx)
+	if token != "" {
+		call.RequestHeader().Set("Authorization", "Bearer "+token)
+	}
+	sendErr := call.Send(&reflectionv1.ServerReflectionRequest{MessageRequest: &reflectionv1.ServerReflectionRequest_ListServices{ListServices: ""}})
+	requestCloseErr := call.CloseRequest()
+	response, err := call.Receive()
+	responseCloseErr := call.CloseResponse()
+	if err != nil {
+		return nil, err
+	}
+	if response.GetListServicesResponse() == nil {
+		return nil, errors.New("reflection returned no service list")
+	}
+	var names []string
+	for _, service := range response.GetListServicesResponse().GetService() {
+		names = append(names, service.GetName())
+	}
+	slices.Sort(names)
+	return names, errors.Join(sendErr, requestCloseErr, responseCloseErr)
 }
 
 // Status names the immutable original outcome, independently of later policy.
@@ -883,6 +644,43 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	}
 	if _, err := f.client.GetRegistrationPolicy(ctx, securityWireRequest(readerToken, &pb.GetRegistrationPolicyRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader disclosed registration policy", err)
+	}
+	// Exercise the certified production mounts, rather than the retired
+	// static-token reflection exemption. The administrator's current Role
+	// carries schema.read; the registered data reader has no such authority.
+	schema, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{
+		Identity: principal.Msg.Identity, Action: pb.SecurityAction_SECURITY_ACTION_SCHEMA_READ,
+	}))
+	if err != nil || !schema.Msg.Allowed {
+		t.Fatal("fixture lacks current schema authority", err)
+	}
+	wantServices := []string{graphv1connect.LanternServiceName, graphv1connect.LanternSecurityServiceName,
+		graphv1connect.LanternNativeAuthServiceName, graphv1connect.LanternChangeServiceName, "grpc.health.v1.Health"}
+	slices.Sort(wantServices)
+	reflectionHTTP := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
+	for _, version := range []string{"v1", "v1alpha"} {
+		for _, actor := range []struct {
+			name, token string
+			wantCode    connect.Code
+		}{
+			{"anonymous", "", connect.CodeUnauthenticated},
+			{"invalid Bearer", "invalid-credential", connect.CodeUnauthenticated},
+			{"data reader lacks schema.read", readerToken, connect.CodePermissionDenied},
+			{"current schema.read", admin, 0},
+		} {
+			t.Run("reflection/"+version+"/"+actor.name, func(t *testing.T) {
+				names, err := currentReflectionServices(t.Context(), reflectionHTTP, f.server.URL, version, actor.token)
+				if actor.wantCode != 0 {
+					if connect.CodeOf(err) != actor.wantCode || len(names) != 0 {
+						t.Fatalf("reflection disclosed names or changed refusal: %v, %v", names, err)
+					}
+					return
+				}
+				if err != nil || !reflect.DeepEqual(names, wantServices) {
+					t.Fatalf("current public reflection services = %v, %v; want %v", names, err, wantServices)
+				}
+			})
+		}
 	}
 	for key, want := range map[string]bool{"tenant:public:1": true, "tenant:private:1": false, "other:1": false} {
 		result, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, LogicalKey: &key}))
@@ -1049,6 +847,72 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	if f.fetches.Load() != before {
 		t.Fatal("machine admission contacted an IdP")
 	}
+	// Keep production compression assembly covered with the same current
+	// authority fixture. Protocol-only receipt fixtures below do not establish
+	// authentication, even when their client sends an Authorization header.
+	largeValue := "current-compression:" + strings.Repeat("payload-", 1024)
+	if err := f.graph.PutVertex("data:orders:compressed", &pb.Vertex{
+		Key: "data:orders:compressed", Value: &pb.Vertex_String_{String_: largeValue},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, key, credential, value string
+		status                       int
+		compressed                   bool
+	}{
+		{"small current response", "orders:1", token, "visible", http.StatusOK, false},
+		{"large current response", "orders:compressed", token, largeValue, http.StatusOK, true},
+		{"invalid current Bearer", "orders:compressed", token + "=", "", http.StatusUnauthorized, false},
+	} {
+		t.Run("compression/"+test.name, func(t *testing.T) {
+			body, err := protojson.Marshal(&pb.GetVertexRequest{Key: test.key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				f.server.URL+graphv1connect.LanternServiceGetVertexProcedure, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Connect-Protocol-Version", "1")
+			request.Header.Set("Accept-Encoding", "gzip")
+			request.Header.Set("Authorization", "Bearer "+test.credential)
+			client := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != test.status || (response.Header.Get("Content-Encoding") == "gzip") != test.compressed {
+				t.Fatalf("current response status/encoding = %d/%q", response.StatusCode, response.Header.Get("Content-Encoding"))
+			}
+			var reader io.Reader = response.Body
+			if test.compressed {
+				compressed, err := gzip.NewReader(response.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer compressed.Close()
+				reader = compressed
+			}
+			payload, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.status != http.StatusOK {
+				if bytes.Contains(payload, []byte(largeValue)) {
+					t.Fatal("invalid credential disclosed compressed data")
+				}
+				return
+			}
+			var result pb.GetVertexResponse
+			if err := protojson.Unmarshal(payload, &result); err != nil || result.GetVertex().GetKey() != test.key || result.GetVertex().GetString_() != test.value {
+				t.Fatal("current compressed data contract", err)
+			}
+		})
+	}
 	admin := f.token(t, "admin", nil)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE, MachineName: "worker"}
 	if _, err := f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}); err != nil {
@@ -1061,6 +925,22 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 
 func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	for _, actor := range []struct{ name, token string }{{"anonymous", ""}, {"invalid Bearer", "invalid-credential"}} {
+		t.Run("receipt authentication/"+actor.name, func(t *testing.T) {
+			capability := connect.NewRequest(&pb.GetReceiptCapabilityRequest{})
+			status := connect.NewRequest(&pb.GetReceiptStatusRequest{})
+			if actor.token != "" {
+				capability.Header().Set("Authorization", "Bearer "+actor.token)
+				status.Header().Set("Authorization", "Bearer "+actor.token)
+			}
+			if response, err := f.data.GetReceiptCapability(t.Context(), capability); response != nil || connect.CodeOf(err) != connect.CodeUnauthenticated {
+				t.Fatal("receipt capability disclosed continuity before authentication", response, err)
+			}
+			if response, err := f.data.GetReceiptStatus(t.Context(), status); response != nil || connect.CodeOf(err) != connect.CodeUnauthenticated {
+				t.Fatal("receipt status validation preceded authentication", response, err)
+			}
+		})
+	}
 	admin := f.token(t, "admin", nil)
 	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {

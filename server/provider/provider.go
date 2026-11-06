@@ -2,7 +2,6 @@ package provider
 
 import (
 	"os"
-	"strings"
 
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/config"
@@ -60,7 +59,6 @@ type Config struct {
 	Shutdown             ShutdownConfig
 	Validation           ValidationLimits
 	Traversal            TraversalConfig
-	Auth                 AuthConfig
 	Security             SecurityConfig
 	Changes              ChangeConfig
 	LLM                  LLMConfig
@@ -137,21 +135,17 @@ func LoadConfig(reader *envconfig.Reader) (*Config, error) {
 		Validation:    operational.Validation,
 		Traversal:     operational.Traversal,
 		Tracing:       operational.Tracing,
-		Auth: AuthConfig{
-			Tokens:           splitTokens(reader.String("LANTERN_AUTH_TOKENS", "")),
-			ExemptReflection: reader.Bool("LANTERN_AUTH_EXEMPT_REFLECTION", true),
-		},
-		LLM:         loadLLMConfig(reader),
-		Scan:        operational.Scan,
-		Search:      operational.Search,
-		MutationLog: loadMutationLogConfig(reader),
-		ReceiptWAL:  receiptWAL,
-		Replication: loadReplicationConfig(reader),
-		Readiness:   loadReadinessConfig(reader),
-		Peer:        peer,
-		AntiEntropy: loadAntiEntropyConfig(reader),
-		CORS:        loadCORSConfig(reader),
-		Backup:      loadBackupConfig(reader),
+		LLM:           loadLLMConfig(reader),
+		Scan:          operational.Scan,
+		Search:        operational.Search,
+		MutationLog:   loadMutationLogConfig(reader),
+		ReceiptWAL:    receiptWAL,
+		Replication:   loadReplicationConfig(reader),
+		Readiness:     loadReadinessConfig(reader),
+		Peer:          peer,
+		AntiEntropy:   loadAntiEntropyConfig(reader),
+		CORS:          loadCORSConfig(reader),
+		Backup:        loadBackupConfig(reader),
 	}
 	if len(securityConfig.AuthorityJSON) != 0 {
 		cfg.TLS.CertPEM = securityConfig.TLS.CertPEM
@@ -189,26 +183,8 @@ func NewTLSConfig(c *Config) TLSConfig                     { return c.TLS }
 func NewRateLimitConfig(c *Config) RateLimitConfig         { return c.RateLimit }
 func NewObservabilityConfig(c *Config) ObservabilityConfig { return c.Observability }
 func NewCacheConfig(c *Config) CacheConfig                 { return c.Cache }
-func NewAuthConfig(c *Config) AuthConfig                   { return c.Auth }
 func NewShutdownConfig(c *Config) ShutdownConfig           { return c.Shutdown }
 func NewValidationLimits(c *Config) ValidationLimits       { return c.Validation }
 func NewTraversalConfig(c *Config) TraversalConfig         { return c.Traversal }
 func NewScanConfig(c *Config) ScanConfig                   { return c.Scan }
 func NewSearchConfig(c *Config) SearchConfig               { return c.Search }
-
-// splitTokens parses the comma-separated LANTERN_AUTH_TOKENS value (#850).
-// Entries are trimmed and empties dropped so "old,new," cannot admit the
-// empty token.
-func splitTokens(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}

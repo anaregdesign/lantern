@@ -17,6 +17,50 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestAuthTokenPrecedence(t *testing.T) {
+	oldToken := flagToken
+	t.Cleanup(func() { flagToken = oldToken })
+	for _, test := range []struct {
+		name string
+		flag string
+		env  string
+		want string
+	}{
+		{name: "absent credential"},
+		{name: "environment credential", env: "environment-credential", want: "environment-credential"},
+		{name: "flag credential", flag: "flag-credential", want: "flag-credential"},
+		{name: "flag wins", flag: "flag-credential", env: "environment-credential", want: "flag-credential"},
+		{name: "empty flag falls back", flag: "", env: "environment-credential", want: "environment-credential"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			flagToken = test.flag
+			t.Setenv("LANTERN_TOKEN", test.env)
+			if got := authToken(); got != test.want {
+				t.Fatalf("authToken = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRootHelpCurrentBearerGuidance(t *testing.T) {
+	oldOut := rootCmd.OutOrStdout()
+	t.Cleanup(func() { rootCmd.SetOut(oldOut) })
+	var output bytes.Buffer
+	rootCmd.SetOut(&output)
+	if err := rootCmd.Help(); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	help := output.String()
+	for _, want := range []string{"server-accepted API or machine Bearer token", "LANTERN_TOKEN", "flag wins"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help missing current bearer guidance %q", want)
+		}
+	}
+	if strings.Contains(help, "LANTERN_AUTH_TOKENS") {
+		t.Error("help still recommends retired static auth")
+	}
+}
+
 func TestBuildHTTPClient_HTTP2Wire(t *testing.T) {
 	oldTLS, oldCA, oldCert, oldKey, oldServer, oldInsecure := flagTLS, flagTLSCA, flagTLSCert, flagTLSKey, flagTLSServer, flagInsecureTLS
 	t.Cleanup(func() {

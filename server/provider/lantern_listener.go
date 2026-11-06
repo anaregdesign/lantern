@@ -1,19 +1,6 @@
-// Package provider: lantern_listener.go owns the primary :6380
-// listener. A single http.Server bound to LANTERN_PORT accepts all
-// three Connect protocols (Connect, gRPC, gRPC-Web) over h2c — exactly
-// what graphv1connect.NewLanternServiceHandler advertises — and adds
-// two addon handlers so existing infra continues to work:
-//
-//   - grpchealth: serves grpc.health.v1.Health (consumed by
-//     grpc-health-probe, Kubernetes startup/liveness probes, grpcurl)
-//   - grpcreflect: serves grpc.reflection.v1/v1alpha1.ServerReflection
-//     (consumed by grpcurl -plaintext, Postman, BloomRPC) when
-//     LANTERN_REFLECTION=true.
-//
-// h2c is enabled via the Go 1.24+ http.Server.Protocols field
-// (SetUnencryptedHTTP2) rather than the deprecated
-// golang.org/x/net/http2/h2c.NewHandler wrapper. SA1019-clean and
-// removes the x/net/http2/h2c dependency from this listener.
+// Package provider: lantern_listener.go owns the primary listener's transport
+// configuration and shared Connect handler options. The certified public
+// composition owns its service, health and reflection mounts.
 package provider
 
 import (
@@ -28,28 +15,11 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"connectrpc.com/grpchealth"
-	"connectrpc.com/grpcreflect"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/dataruntime"
-	"github.com/anaregdesign/lantern/server/service"
 )
 
-// connectHandlerOptions assembles the connect.HandlerOption chain
-// shared by every mounted Connect handler. Order matters (#850):
-// logging and metrics wrap everything so even rejected calls are
-// observable; the rate limiter runs BEFORE auth so an unauthenticated
-// flood is shed by the cheaper token-bucket check before paying even a
-// constant-time compare; auth runs before validation so no validation
-// CPU (batch walks, key checks) is spent on unauthenticated requests;
-// slow-rpc fires last so the duration captures the full chain.
-// (Pre-#850 the chain ran validation before rate-limit so a malformed
-// request never burned a token; with auth in the middle the
-// security-first ordering wins — a malformed request from an
-// AUTHENTICATED client now consumes a token, which is the cheaper
-// trade.)
+// authenticatedHandlerOptions keeps logging and metrics outside admission,
+// then applies the supplied rate/authentication owners before validation.
+// Slow RPC observation is innermost.
 //
 // Nil entries are skipped. Operational owners remain mounted while disabled,
 // so future validated settings can enable them without rebuilding handlers.
@@ -57,23 +27,6 @@ import (
 // connect.WithRecover catches panics in handlers and returns
 // CodeInternal — the equivalent of the grpc-middleware recovery
 // interceptor.
-func connectHandlerOptions(
-	netCfg NetConfig,
-	val *ValidationInterceptor,
-	rl *RateLimitInterceptor,
-	auth *AuthInterceptor,
-	log *LoggingInterceptor,
-	met *PrometheusInterceptor,
-	slow *SlowRPCInterceptor,
-	logger *slog.Logger,
-) []connect.HandlerOption {
-	var authentication connect.Interceptor
-	if auth != nil && auth.Enabled() {
-		authentication = auth
-	}
-	return authenticatedHandlerOptions(netCfg, val, rl, authentication, log, met, slow, logger)
-}
-
 func authenticatedHandlerOptions(netCfg NetConfig, val *ValidationInterceptor, rl *RateLimitInterceptor, authentication connect.Interceptor, log *LoggingInterceptor, met *PrometheusInterceptor, slow *SlowRPCInterceptor, logger *slog.Logger) []connect.HandlerOption {
 	var ints []connect.Interceptor
 	if log != nil {
@@ -115,14 +68,8 @@ func authenticatedHandlerOptions(netCfg NetConfig, val *ValidationInterceptor, r
 	return opts
 }
 
-// LanternListener is the primary :6380 listener. NewLanternListener
-// returns an *http.Server already configured to speak Connect over
-// h2c (and TLS when configured); LanternServer.Run drives its
-// lifecycle.
-//
-// The struct exists so wire can inject ONE thing into LanternServer
-// while the constructor still composes the mux, TLS, and protocol
-// negotiation in one place.
+// LanternListener is the primary transport with its certified public handler.
+// LanternServer.Run drives its lifecycle.
 type LanternListener struct {
 	server   *http.Server
 	listener net.Listener
@@ -155,111 +102,21 @@ func (l *LanternListener) Addr() string {
 // *tls.Config. LanternServer picks ServeTLS over Serve when true.
 func (l *LanternListener) TLSEnabled() bool { return l.tls }
 
-// NewLanternListener mounts both Lantern service handlers, the
-// gRPC-Health-v1 surface, and (when enabled) the gRPC reflection
-// surface on a single http.Server. The net.Listener is wire-injected
-// (so tests can substitute bufconn) and consumed by LanternServer.Run.
-//
-//   - Net is unused for the bind itself (lis owns that) but supplies
-//     per-message request and response size caps enforced by every generated
-//     Connect handler.
-//   - tlsCfg switches Serve → ServeTLS.
-//   - svc / rep are the wire bindings to the in-process services.
-//   - val / rl / log / met / slow are the Connect interceptors.
-//   - hc is the gRPC-Health-v1 implementation served at
-//     /grpc.health.v1.Health/.
-//   - cors wraps the mux with the CORS middleware (no-op when
-//     LANTERN_CORS_ALLOWED_ORIGINS is empty).
-//   - obs.EnableReflection mounts grpcreflect when true (default
-//     true).
-//
-// h2c is enabled via http.Server.Protocols.SetUnencryptedHTTP2()
-// (Go 1.24+). This is SA1019-clean and replaces the deprecated
-// h2c.NewHandler wrapper pattern.
-func NewLanternListener(
+// newLanternListenerTransport configures TLS, protocols and server timeouts
+// without selecting any HTTP handlers. Only the certified public composition
+// installs the serving mux; tests can install a service-only transport fixture.
+func newLanternListenerTransport(
 	lis net.Listener,
 	netCfg NetConfig,
 	tlsCfg TLSConfig,
-	obs ObservabilityConfig,
-	cors CORSConfig,
-	svc *dataruntime.Executor,
-	rep *dataruntime.Replication,
-	val *ValidationInterceptor,
-	rl *RateLimitInterceptor,
-	auth *AuthInterceptor,
-	logInt *LoggingInterceptor,
-	met *PrometheusInterceptor,
-	slow *SlowRPCInterceptor,
-	hc *HealthChecker,
 	logger *slog.Logger,
 ) (*LanternListener, error) {
 	if netCfg.MaxRecvMsgBytes < 0 || netCfg.MaxSendMsgBytes < 0 {
 		return nil, errors.New("connect message size limits must be zero (unlimited) or positive")
 	}
-	handlerOpts := connectHandlerOptions(netCfg, val, rl, auth, logInt, met, slow, logger)
-
-	mux := http.NewServeMux()
-	mux.Handle(graphv1connect.NewLanternServiceHandler(
-		service.NewLanternServiceConnectHandler(svc),
-		handlerOpts...,
-	))
-	if rep != nil {
-		mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(
-			service.NewLanternReplicationServiceConnectHandler(rep),
-			handlerOpts...,
-		))
-	}
-	// gRPC-Health-v1 surface so grpc-health-probe + Kubernetes gRPC
-	// probes keep working. HealthChecker pre-registers both Lantern
-	// service entries; readiness Gate + LanternServer flip them via
-	// SetServingStatus.
-	mux.Handle(grpchealth.NewHandler(hc.Inner()))
-
-	// gRPC reflection so grpcurl -plaintext keeps working. Mounted
-	// only when reflection is enabled — same env-var contract as
-	// before (LANTERN_REFLECTION, default true).
-	if obs.EnableReflection {
-		reflector := grpcreflect.NewStaticReflector(
-			graphv1connect.LanternServiceName,
-			graphv1connect.LanternReplicationServiceName,
-			grpchealth.HealthV1ServiceName,
-		)
-		// Reflection is mounted OUTSIDE the Lantern interceptor chain, so
-		// with auth enabled it stays reachable by default (schema discovery
-		// is not data access). LANTERN_AUTH_EXEMPT_REFLECTION=false wraps
-		// both mounts with the same bearer check for locked-down deploys.
-		// grpc.health.v1 below is ALWAYS exempt: Kubernetes gRPC probes
-		// cannot attach headers.
-		v1path, v1h := grpcreflect.NewHandlerV1(reflector)
-		v1apath, v1ah := grpcreflect.NewHandlerV1Alpha(reflector)
-		if auth != nil && auth.Enabled() && !auth.ExemptReflection() {
-			v1h = auth.RequireHTTP(v1h)
-			v1ah = auth.RequireHTTP(v1ah)
-		}
-		mux.Handle(v1path, v1h)
-		mux.Handle(v1apath, v1ah)
-	}
-
-	// CORS sits outside the mux so preflight responses (OPTIONS +
-	// Access-Control-Request-Method) get short-circuited before any
-	// handler runs. No-op when LANTERN_CORS_ALLOWED_ORIGINS is empty.
-	handler := CORSMiddleware(cors)(mux)
-
-	// otelhttp wraps the whole thing so every request — Connect,
-	// grpchealth, grpcreflect — produces a server-side OpenTelemetry
-	// span. The span name is derived from the URL path, which for
-	// Connect equals "/<service>/<method>". This replaces the
-	// previous otelgrpc StatsHandler.
-	handler = otelhttp.NewHandler(handler, "lantern",
-		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-			return r.URL.Path
-		}),
-	)
-
 	addr := lis.Addr().String()
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	// Enable HTTP/2 cleartext (h2c) so Connect, gRPC, and gRPC-Web

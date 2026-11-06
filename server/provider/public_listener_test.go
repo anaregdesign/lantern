@@ -7,11 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/grpchealth"
+	"connectrpc.com/grpcreflect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 )
 
 func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T) {
@@ -91,6 +95,7 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 		}
 	}
 	server.Config.Handler = listener.Server().Handler
+	server.Config.Protocols = listener.Server().Protocols
 	server.Start()
 	control := graphv1connect.NewLanternSecurityServiceClient(server.Client(), server.URL)
 	capabilities, err := control.GetAuthCapabilities(context.Background(), connect.NewRequest(&pb.GetAuthCapabilitiesRequest{}))
@@ -110,5 +115,44 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 		if response.StatusCode != http.StatusNotFound {
 			t.Fatal("private API registered on public mux", path, response.StatusCode)
 		}
+	}
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	reflectionClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
+	defer reflectionClient.CloseIdleConnections()
+	for _, serviceName := range []string{grpcreflect.ReflectV1ServiceName, grpcreflect.ReflectV1AlphaServiceName} {
+		t.Run(serviceName, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			client := connect.NewClient[reflectionv1.ServerReflectionRequest, reflectionv1.ServerReflectionResponse](reflectionClient, server.URL+"/"+serviceName+"/ServerReflectionInfo", connect.WithGRPC())
+			stream := client.CallBidiStream(ctx)
+			defer stream.CloseResponse()
+			if err := stream.Send(&reflectionv1.ServerReflectionRequest{MessageRequest: &reflectionv1.ServerReflectionRequest_ListServices{ListServices: ""}}); err != nil {
+				t.Fatal("send reflection request", err)
+			}
+			if err := stream.CloseRequest(); err != nil {
+				t.Fatal("close reflection request", err)
+			}
+			response, err := stream.Receive()
+			if err != nil || response.GetErrorResponse() != nil || response.GetListServicesResponse() == nil {
+				t.Fatal("certified OFF reflection", response, err)
+			}
+			want := map[string]bool{
+				graphv1connect.LanternServiceName:           true,
+				graphv1connect.LanternSecurityServiceName:   true,
+				graphv1connect.LanternNativeAuthServiceName: true,
+				grpchealth.HealthV1ServiceName:              true,
+			}
+			services := response.GetListServicesResponse().GetService()
+			if len(services) != len(want) {
+				t.Fatalf("public reflection advertised unexpected services: %v", services)
+			}
+			for _, service := range services {
+				if !want[service.GetName()] {
+					t.Fatalf("private or duplicate service advertised by public reflection: %q", service.GetName())
+				}
+				delete(want, service.GetName())
+			}
+		})
 	}
 }

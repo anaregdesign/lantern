@@ -21,9 +21,8 @@ func TestContributionClients_GoSDK_RealConnectH2C(t *testing.T) {
 	defer cancel()
 
 	t.Run("caller IDs, indexed outcomes, and the Put base", func(t *testing.T) {
-		node := newAuthedPumpNode(t, hlc.NodeID{0xf1}, 64)
-		sdk := newConnectClientFor(t, node.url,
-			client.WithAuthToken(testToken), client.WithBatchChunkSize(2))
+		node := newValidatedPumpNode(t, hlc.NodeID{0xf1}, 64)
+		sdk := newConnectClientFor(t, node.url, client.WithBatchChunkSize(2))
 		const tail, head = "sdk/contrib/tail", "sdk/contrib/head"
 		first, second, fresh := client.ContribID{0x11}, client.ContribID{0x22}, client.ContribID{0x33}
 		if outcome, err := sdk.PutEdge(ctx, tail, head, 2, 0); err != nil ||
@@ -72,7 +71,7 @@ func TestContributionClients_GoSDK_RealConnectH2C(t *testing.T) {
 	})
 
 	t.Run("committed response loss is not retried", func(t *testing.T) {
-		node := newAuthedPumpNode(t, hlc.NodeID{0xf2}, 64)
+		node := newValidatedPumpNode(t, hlc.NodeID{0xf2}, 64)
 		const tail, head = "sdk/loss/tail", "sdk/loss/head"
 		id := client.ContribID{0x44}
 		if _, err := node.sdk.PutEdge(ctx, tail, head, 2, 0); err != nil {
@@ -85,7 +84,6 @@ func TestContributionClients_GoSDK_RealConnectH2C(t *testing.T) {
 			inner: h2cClient().Transport, pathSuffix: "/DeleteEdgeContributions",
 		}
 		lossy := newConnectClientFor(t, node.url,
-			client.WithAuthToken(testToken),
 			client.WithHTTPClient(&http.Client{Transport: transport}),
 			client.WithRetry(client.RetryPolicy{MaxAttempts: 3}),
 		)
@@ -106,7 +104,7 @@ func TestContributionClients_GoSDK_RealConnectH2C(t *testing.T) {
 	})
 
 	t.Run("capacity rejection has no partial result", func(t *testing.T) {
-		node := newAuthedPumpNode(t, hlc.NodeID{0xf3}, 64)
+		node := newValidatedPumpNode(t, hlc.NodeID{0xf3}, 64)
 		const tail, head = "sdk/cap/tail", "sdk/cap/head"
 		id, missing := client.ContribID{0x55}, client.ContribID{0x66}
 		if _, err := node.sdk.PutEdge(ctx, tail, head, 2, 0); err != nil {
@@ -135,7 +133,7 @@ func TestContributionClients_GoSDK_RealConnectH2C(t *testing.T) {
 	})
 
 	t.Run("expired Add reports absent and preserves the Put base", func(t *testing.T) {
-		node := newAuthedPumpNode(t, hlc.NodeID{0xf7}, 64)
+		node := newValidatedPumpNode(t, hlc.NodeID{0xf7}, 64)
 		const tail, head = "sdk/expired/tail", "sdk/expired/head"
 		id := client.ContribID{0x88}
 		if _, err := node.sdk.PutEdge(ctx, tail, head, 2, 0); err != nil {
@@ -157,8 +155,8 @@ func TestContributionClients_GoSDK_RealConnectH2C(t *testing.T) {
 func TestContributionClients_GoSDKReceipt_RealConnectH2C(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
 	defer cancel()
-	wire := newPublicReceiptWireServer(t, hlc.NodeID{0xf4}, 32, testToken)
-	sdk := newConnectClientFor(t, wire.server.url, client.WithAuthToken(testToken))
+	wire := newReceiptProtocolWireServer(t, hlc.NodeID{0xf4}, 32)
+	sdk := newConnectClientFor(t, wire.server.url)
 	const tail, head = "sdk/receipt/tail", "sdk/receipt/head"
 	id := client.ContribID{0x77}
 	if _, err := sdk.PutEdge(ctx, tail, head, 2, 0); err != nil {
@@ -179,7 +177,6 @@ func TestContributionClients_GoSDKReceipt_RealConnectH2C(t *testing.T) {
 		inner: h2cClient().Transport, pathSuffix: "/DeleteEdgeContributions",
 	}
 	lossy := newConnectClientFor(t, wire.server.url,
-		client.WithAuthToken(testToken),
 		client.WithHTTPClient(&http.Client{Transport: transport}),
 		client.WithRetry(client.RetryPolicy{MaxAttempts: 2}),
 	)
@@ -217,7 +214,7 @@ func TestContributionClients_CLI_RealConnectH2C(t *testing.T) {
 	defer cancel()
 
 	t.Run("shared one-shot and REPL grammar", func(t *testing.T) {
-		node := newAuthedPumpNode(t, hlc.NodeID{0xf5}, 64)
+		node := newValidatedPumpNode(t, hlc.NodeID{0xf5}, 64)
 		const tail, head = "cli/contrib/tail", "cli/contrib/head"
 		idHex := strings.Repeat("ab", client.ContribIDSize)
 		if _, err := node.sdk.PutEdge(ctx, tail, head, 2, 0); err != nil {
@@ -282,7 +279,7 @@ func TestContributionClients_CLI_RealConnectH2C(t *testing.T) {
 	})
 
 	t.Run("server rejection remains typed and atomic", func(t *testing.T) {
-		node := newAuthedPumpNode(t, hlc.NodeID{0xf6}, 64)
+		node := newValidatedPumpNode(t, hlc.NodeID{0xf6}, 64)
 		const tail, head = "cli/rejected/tail", "cli/rejected/head"
 		idHex, missingHex := strings.Repeat("cd", client.ContribIDSize),
 			strings.Repeat("ef", client.ContribIDSize)

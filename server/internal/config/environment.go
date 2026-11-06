@@ -11,9 +11,9 @@ import (
 // foreignEnvPrefixes names LANTERN_*-prefixed namespaces owned by sibling
 // processes that legitimately share an env file with the server, so the
 // unknown-variable sweep does not flag them (#847). The MCP server reads
-// LANTERN_MCP_* in its own process; LANTERN_TOKEN is the CLIENT-side auth
-// token consumed by lantern-cli and the MCP server (#850) — a compose file
-// commonly sets it alongside the server's LANTERN_AUTH_TOKENS.
+// LANTERN_MCP_* in its own process; LANTERN_TOKEN is the client-side credential
+// consumed by lantern-cli and the MCP server for Server-accepted API or machine
+// Bearer authentication. It is not a Server authentication configuration key.
 var foreignEnvPrefixes = []string{"LANTERN_MCP_", "LANTERN_TOKEN"}
 
 // CheckEnvironment is the boot-time config validation pass (#847). It runs after

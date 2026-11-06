@@ -200,20 +200,24 @@ type replicationTestPeer struct {
 	transport *replication.PeerTransport
 }
 
-// Mount the same Connect handlers on a certificate-verified HTTP/2 listener
-// for authenticated peer traffic; existing client-facing h2c fixtures remain
-// separate so unrelated SDK tests retain their original wire contract.
-func newAuthenticatedReplicationPeer(t *testing.T, source *connectTestServer, token string) replicationTestPeer {
+// Mount protocol-only service adapters on a certificate-verified HTTP/2 peer.
+// The fixture owns the client and exact eligible origin; public credentials are
+// never attached. Native workload admission has separate current wire coverage.
+func newVerifiedReplicationPeer(t *testing.T, source *connectTestServer) replicationTestPeer {
 	t.Helper()
 	if source == nil || source.handler == nil {
-		t.Fatal("authenticated replication peer requires a Connect handler")
+		t.Fatal("verified replication peer requires a Connect handler")
 	}
 	srv := httptest.NewUnstartedServer(source.handler)
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
-	transport, err := replication.NewAuthenticatedPeerTransport(ca, nil, token, []string{srv.URL}, "", "")
+	client := srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return errors.New("test replication peer redirect rejected")
+	}
+	transport, err := replication.NewVerifiedPeerTransport(client, func(origin string) bool { return origin == srv.URL })
 	if err != nil {
 		t.Fatal(err)
 	}

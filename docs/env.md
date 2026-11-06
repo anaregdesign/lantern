@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE - do not edit. Regenerate with `make envdoc` (or `go generate ./...`). -->
 
-Every `LANTERN_*` variable the server reads, generated from the envconfig
+Live `LANTERN_*` settings are generated from the envconfig
 registry (#847). A set-but-malformed value logs a startup warning and falls
 back to its default; an unknown `LANTERN_*` name logs a typo warning; with
 `LANTERN_STRICT_CONFIG=true` either condition fails boot. An explicitly empty
@@ -37,9 +37,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | int | `1024` | Origin-seq gap size above which the anti-entropy sweep logs a warning. |
 | `LANTERN_ANTI_ENTROPY_INTERVAL_MS` | int | `30000` | Anti-entropy sweep cadence in milliseconds. |
 | `LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS` | int | `30000` | Per-peer anti-entropy catch-up subscribe timeout in milliseconds. |
-| `LANTERN_AUTH_EXEMPT_REFLECTION` | bool | `true` | Retired. Any explicit value, including empty, is rejected; use OIDC and named machine identities or schema.read Roles. |
 | `LANTERN_AUTH_MODE` | string | `off` | Authentication mode: off (default) or oidc. OFF has anonymous data and unavailable security management; complete OIDC configuration enables Role-only RBAC. Empty/unknown modes, partial trust settings and retired authentication options fail startup. |
-| `LANTERN_AUTH_TOKENS` | string | (empty) | Retired. Any explicit value, including empty, is rejected; use OIDC and named machine identities or schema.read Roles. |
 | `LANTERN_BACKUP_DIR` | string | (empty) | Mounted directory backup files are written to and startup restore reads from. |
 | `LANTERN_BACKUP_ENABLED` | bool | `false` | Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or durable receipt sets according to runtime mode. |
 | `LANTERN_BACKUP_INSTANCE_ID` | string | (empty) | Per-instance ownership token used to derive safe backup filenames; defaults to the hostname. |
@@ -153,7 +151,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | int | `500` | RPCs slower than this emit a warn-level "slow rpc" log line (0 disables). |
 | `LANTERN_STRICT_CONFIG` | bool | `false` | Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set. |
-| `LANTERN_TLS_CERT_FILE` | string | (empty) | PEM certificate path; setting cert + key enables TLS on the primary listener and is required for bearer-enabled HA. |
+| `LANTERN_TLS_CERT_FILE` | string | (empty) | PEM certificate path; setting cert + key enables TLS on the public primary listener. Private workload mTLS uses its separate identity and trust settings. |
 | `LANTERN_TLS_CLIENT_CA_FILE` | string | (empty) | PEM client-CA bundle path; setting it additionally enables mTLS client verification. |
 | `LANTERN_TLS_KEY_FILE` | string | (empty) | PEM private-key path; pairs with LANTERN_TLS_CERT_FILE. |
 | `LANTERN_TOMBSTONE_TTL` | duration | `8760h0m0s` | Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. A tombstone consumes one causal-identity entry until expiration; an equal/newer write can transition the same identity between live floor, Put barrier, and tombstone without consuming another slot. |
@@ -162,3 +160,15 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES` | int | `10000000` | Maximum adjacency entries scanned by PPR/PageRank-Nibble per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED. |
 | `LANTERN_TRAVERSAL_TIMEOUT_MS` | int | `5000` | Server-side wall-clock budget for Illuminate traversals in milliseconds (default 5000; 0 explicitly disables it); expiry surfaces as DEADLINE_EXCEEDED. |
 | `LANTERN_VERSION` | string | (empty) | Overrides the version label reported in lantern_build_info and GetServerStatus. |
+
+## Retired authentication settings
+
+These names are documentation-only metadata, not live parsed settings or defaults.
+Any explicit retired authentication key, including an empty value, is rejected
+before configuration is published in both OFF and OIDC, even when general strict mode is off.
+Unknown or case-variant `LANTERN_AUTH_*` keys are also rejected. Remove these settings.
+
+| Retired variable | Guidance |
+|---|---|
+| `LANTERN_AUTH_EXEMPT_REFLECTION` | The static-token reflection exemption is unsupported. OIDC reflection requires current schema.read authority. |
+| `LANTERN_AUTH_TOKENS` | Static token lists are unsupported. Use current OIDC API or named machine credentials. |
