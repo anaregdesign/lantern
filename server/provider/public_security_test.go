@@ -131,6 +131,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		func(c *managedOperationalCertified) { c.validator = NewValidationInterceptor(c.validator.limits) },
 		func(c *managedOperationalCertified) { c.backup = nil },
 		func(c *managedOperationalCertified) { c.capacity = nil },
+		func(c *managedOperationalCertified) { c.search = managedSearchCertified{} },
 		func(c *managedOperationalCertified) { c.capacity = &dataruntime.GraphPolicyOwner{} },
 		func(c *managedOperationalCertified) {
 			c.backup = backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil)
@@ -161,7 +162,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 		t.Fatal("unbound workload certified")
 	}
 	public, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert, logging, operational)
-	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery || public.request != operational.request || public.validator != operational.validator || public.backup != operational.backup || public.capacity != operational.capacity {
+	if err != nil || public.rate != operational.rate || public.recovery != operational.recovery || public.request != operational.request || public.validator != operational.validator || public.backup != operational.backup || public.capacity != operational.capacity || public.search != operational.search {
 		t.Fatal(err)
 	}
 	runtime.mode = "oidc"

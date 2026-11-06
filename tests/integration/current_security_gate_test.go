@@ -243,6 +243,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			WithScanLimits(service.ScanLimits(startup.Scan)).
 			WithTraversalTimeout(startup.Traversal.Timeout).
 			WithTraversalLimits(service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: startup.Traversal.MaxPushes, MaxTouchedEdges: startup.Traversal.MaxTouchedEdges}, MaxResults: startup.Traversal.MaxResults})
+		svc.WithSearchLimits(capturedOperationalSearchLimits(t, startup.Search, svc.SearchPolicyBaseline()))
 		if id == 1 {
 			svc.WithTombstoneTTL(time.Hour)
 		}
@@ -313,7 +314,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if _, err := provider.NewManagedShutdownPlan(lifecycleMarker); err != nil {
 			t.Fatal("actual shared shutdown plan", err)
 		}
-		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker)
+		searchMarker, err := provider.NewManagedSearchRuntime(t.Context(), operationalRuntime, svc)
+		if err != nil {
+			t.Fatal("actual Search engine recovery", err)
+		}
+		operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, svc, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker, searchMarker)
 		if err != nil {
 			t.Fatal("operational owner certification", id, err)
 		}
@@ -2260,7 +2265,8 @@ func exerciseCurrentRatePolicy(t *testing.T, ctx context.Context, controls []gra
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_REQUEST ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_BACKUP ||
 			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_CAPACITY ||
-			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_LIFECYCLE {
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_LIFECYCLE ||
+			future.Group == pb.OperationalGroup_OPERATIONAL_GROUP_SEARCH {
 			continue
 		}
 		if future.Application != pb.OperationalSettingsApplicationState_OPERATIONAL_SETTINGS_APPLICATION_STATE_UNAVAILABLE || future.Error != pb.OperationalSettingsError_OPERATIONAL_SETTINGS_ERROR_OWNER_UNAVAILABLE || future.Effective != nil || future.Desired != nil {

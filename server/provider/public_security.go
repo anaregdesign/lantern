@@ -27,6 +27,7 @@ type publicSecurityCertified struct {
 	validator *ValidationInterceptor
 	backup    *backup.Backupper
 	capacity  *dataruntime.GraphPolicyOwner
+	search    managedSearchCertified
 }
 
 func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified, logging managedLogCertified, operational managedOperationalCertified) (publicSecurityCertified, error) {
@@ -44,6 +45,9 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	}
 	if !operational.capacity.OwnsInstallation(data, primary) {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed graph policy owner")
+	}
+	if !operational.search.validFor(operational.manager, primary) {
+		return publicSecurityCertified{}, errors.New("public security requires the exact installed Search engine")
 	}
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
@@ -68,7 +72,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if err := runtime.protectDataService(primary); err != nil {
 		return publicSecurityCertified{}, err
 	}
-	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery, request: operational.request, validator: operational.validator, backup: operational.backup, capacity: operational.capacity}, nil
+	return publicSecurityCertified{runtime: runtime, primary: primary, slowRPC: operational.slowRPC, rate: operational.rate, recovery: operational.recovery, request: operational.request, validator: operational.validator, backup: operational.backup, capacity: operational.capacity, search: operational.search}, nil
 }
 
 func certifyEdgeCreateTopology(primary *dataruntime.Executor, mode string, voters int, peer *PeerIdentityRuntime) error {

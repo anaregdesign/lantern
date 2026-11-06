@@ -41,6 +41,12 @@ type (
 	RequestPolicyOwner              = dataruntime.RequestPolicyOwner
 	ScanLimits                      = dataruntime.ScanLimits
 	SearchLimits                    = dataruntime.SearchLimits
+	SearchRequestPolicy             = dataruntime.SearchRequestPolicy
+	SearchPolicyVersion             = dataruntime.SearchPolicyVersion
+	SearchPolicySnapshot            = dataruntime.SearchPolicySnapshot
+	SearchPolicyAuthority           = dataruntime.SearchPolicyAuthority
+	SearchPolicyStatus              = dataruntime.SearchPolicyStatus
+	SearchPolicyOwner               = dataruntime.SearchPolicyOwner
 	SearchObservation               = dataruntime.SearchObservation
 	CapacityLimits                  = dataruntime.CapacityLimits
 	TraversalLimits                 = dataruntime.TraversalLimits
@@ -62,6 +68,18 @@ const (
 )
 
 var ErrDurableReceiptWALBackupFallbackEligible = dataruntime.ErrDurableReceiptWALBackupFallbackEligible
+
+func ResolveSearchPolicy(baseline SearchLimits, generation uint64, policy SearchRequestPolicy) (SearchPolicySnapshot, error) {
+	return dataruntime.ResolveSearchPolicy(baseline, generation, policy)
+}
+
+func SearchRequestPolicyFromLimits(limits SearchLimits) SearchRequestPolicy {
+	return dataruntime.SearchRequestPolicyFromLimits(limits)
+}
+
+func NewSearchPolicyOwner(baseline SearchLimits, initial SearchPolicySnapshot, authority SearchPolicyAuthority) (*SearchPolicyOwner, error) {
+	return dataruntime.NewSearchPolicyOwner(baseline, initial, authority)
+}
 
 func NewLanternService(cache Backend) *LanternService { return dataruntime.NewExecutor(cache) }
 

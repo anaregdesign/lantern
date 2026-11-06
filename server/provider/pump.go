@@ -109,6 +109,77 @@ func NewReplicationPump(
 	return replication.NewPump(cfg, svc, cache)
 }
 
+// searchPumpCertified binds a constructed Pump to the sealed Search engine.
+// It conveys composition identity, never a native replication-policy grant.
+type searchPumpCertified struct {
+	manager     *ManagedOperationalRuntime
+	primary     *dataruntime.Executor
+	cache       *graphcache.GraphCache[string, *v1.Vertex]
+	certified   runtimeCertified
+	search      managedSearchCertified
+	pump        *replication.Pump
+	fingerprint string
+}
+
+func validSearchPeerInstallation(certified runtimeCertified, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, cache *graphcache.GraphCache[string, *v1.Vertex], search managedSearchCertified) bool {
+	return certified.valid && certified.runtime != nil && certified.primary == primary && certified.replication != nil &&
+		manager != nil && manager.runtime != nil && manager.runtime.data == certified.runtime &&
+		cache != nil && cache == certified.runtime.GraphCache() && search.validFor(manager, primary)
+}
+
+func (c searchPumpCertified) valid() bool {
+	return validSearchPeerInstallation(c.certified, c.manager, c.primary, c.cache, c.search) &&
+		c.pump != nil && c.fingerprint != "" && c.primary.SearchConfigFingerprint() == c.fingerprint &&
+		c.pump.SearchConfigFingerprint() == c.fingerprint
+}
+
+func (c searchPumpCertified) validFor(certified runtimeCertified, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, cache *graphcache.GraphCache[string, *v1.Vertex], search managedSearchCertified, pump *replication.Pump) bool {
+	return c.valid() && validSearchPeerInstallation(certified, manager, primary, cache, search) &&
+		c.manager == manager && c.primary == primary && c.cache == cache && c.pump == pump &&
+		c.certified.runtime == certified.runtime && c.certified.replication == certified.replication &&
+		c.search.runtime == search.runtime && c.search.installation == search.installation
+}
+
+// NewSearchCertifiedReplicationPump constructs peer workers only after the
+// actual primary's managed Search installation has been sealed. The ordinary
+// constructor remains available for isolated legacy compositions.
+func NewSearchCertifiedReplicationPump(
+	pc PeerConfig,
+	resolver *PeerResolver,
+	rc ReplicationConfig,
+	peerTransport *replication.PeerTransport,
+	svc *dataruntime.Executor,
+	cache *graphcache.GraphCache[string, *v1.Vertex],
+	m replication.Metrics,
+	logger *slog.Logger,
+	installer *SnapshotInstallerSelection,
+	certified runtimeCertified,
+	manager *ManagedOperationalRuntime,
+	search managedSearchCertified,
+) (searchPumpCertified, error) {
+	if !validSearchPeerInstallation(certified, manager, svc, cache, search) {
+		return searchPumpCertified{}, errManagedOperational
+	}
+	pump := NewReplicationPump(pc, resolver, rc, peerTransport, svc, cache, m, logger, installer, certified)
+	result := searchPumpCertified{
+		manager: manager, primary: svc, cache: cache, certified: certified, search: search,
+		pump: pump, fingerprint: svc.SearchConfigFingerprint(),
+	}
+	if !result.valid() {
+		return searchPumpCertified{}, errManagedOperational
+	}
+	return result, nil
+}
+
+// NewSearchReplicationPump selects the exact worker attested by the witness.
+// No worker is started, reconfigured or adopted by this selector.
+func NewSearchReplicationPump(certified searchPumpCertified) (*replication.Pump, error) {
+	if !certified.valid() {
+		return nil, errManagedOperational
+	}
+	return certified.pump, nil
+}
+
 func newReplicationPumpConfig(
 	pc PeerConfig,
 	resolver *PeerResolver,

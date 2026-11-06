@@ -298,6 +298,92 @@ func s3aTestReconcileRelay(ctx context.Context, o *s3aOwner, proof s3aTestRelayP
 	}
 }
 
+type s3aTestRelayResult struct {
+	count uint64
+	err   error
+}
+
+func s3aTestReceiveEnteredRelay(ctx context.Context, entered <-chan struct{}, result <-chan s3aTestRelayResult) (s3aTestRelayResult, error) {
+	observedResult := func(got s3aTestRelayResult) (s3aTestRelayResult, error) {
+		select {
+		case <-entered:
+			return got, nil
+		default:
+			return got, errors.New("relay result has no controlled native entry witness")
+		}
+	}
+	// Prefer an already received result so the both-ready case is exercised
+	// deterministically. Its entry witness must already exist; never wait for
+	// a later entry to excuse a genuine pre-entry deadline.
+	select {
+	case got := <-result:
+		return observedResult(got)
+	default:
+	}
+	select {
+	case <-entered:
+		select {
+		case got := <-result:
+			return got, nil
+		case <-ctx.Done():
+			return s3aTestRelayResult{}, ctx.Err()
+		}
+	case got := <-result:
+		return observedResult(got)
+	case <-ctx.Done():
+		return s3aTestRelayResult{}, ctx.Err()
+	}
+}
+
+func TestS3AEnteredRelayResultObservation(t *testing.T) {
+	t.Run("both ready retains the one original result", func(t *testing.T) {
+		entered := make(chan struct{})
+		close(entered)
+		result := make(chan s3aTestRelayResult, 2)
+		want := s3aTestRelayResult{7, context.DeadlineExceeded}
+		sentinel := s3aTestRelayResult{9, errors.New("unconsumed sentinel")}
+		result <- want
+		result <- sentinel
+		got, err := s3aTestReceiveEnteredRelay(t.Context(), entered, result)
+		if err != nil || got != want {
+			t.Fatal("both-ready observation lost the original result or entry witness", got, err)
+		}
+		select {
+		case remaining := <-result:
+			if remaining != sentinel {
+				t.Fatal("observer did not retain the second result unchanged", remaining)
+			}
+		default:
+			t.Fatal("observer consumed more than the original result")
+		}
+		select {
+		case extra := <-result:
+			t.Fatal("observer left an unexpected result", extra)
+		default:
+		}
+	})
+	t.Run("result without entry remains rejected", func(t *testing.T) {
+		entered := make(chan struct{})
+		result := make(chan s3aTestRelayResult, 1)
+		want := s3aTestRelayResult{0, context.DeadlineExceeded}
+		result <- want
+		close(result)
+		got, err := s3aTestReceiveEnteredRelay(t.Context(), entered, result)
+		if err == nil || got != want {
+			t.Fatal("pre-entry deadline was accepted or its original result lost", got, err)
+		}
+	})
+	t.Run("entry without result keeps the bounded context", func(t *testing.T) {
+		entered := make(chan struct{})
+		close(entered)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := s3aTestReceiveEnteredRelay(ctx, entered, nil); err != context.Canceled {
+			t.Fatal("entry-first result wait ignored cancellation", err)
+		}
+	})
+}
+
 func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 	n := s3aTestCluster(t, func(_ uint32, c *s3aConfig) {
 		c.Limits.PerPeerQueue = 1
@@ -359,24 +445,11 @@ func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 	}
 	n.nodes[3].kernel.hooks.beforeB = func() { close(held); <-release }
 	n.nodes[3].kernel.gate.Unlock()
-	type relayResult struct {
-		count uint64
-		err   error
-	}
-	result := make(chan relayResult, 1)
-	go func() { count, err := n.nodes[3].CatchUp(ctx, 2); result <- relayResult{count, err} }()
-	select {
-	case <-appendHeld:
-	case got := <-result:
-		t.Fatal("relay did not reach controlled native entry", got.count, got.err)
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	var got relayResult
-	select {
-	case got = <-result:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+	result := make(chan s3aTestRelayResult, 1)
+	go func() { count, err := n.nodes[3].CatchUp(ctx, 2); result <- s3aTestRelayResult{count, err} }()
+	got, entryErr := s3aTestReceiveEnteredRelay(ctx, appendHeld, result)
+	if entryErr != nil {
+		t.Fatal("relay did not establish controlled native entry", got.count, got.err, entryErr)
 	}
 	if got.count != 0 || got.err != context.DeadlineExceeded {
 		t.Fatal("entered relay did not expose natural deadline", got.count, got.err)

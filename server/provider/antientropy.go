@@ -69,6 +69,36 @@ func NewAntiEntropyDriver(
 	return replication.NewAntiEntropy(cfg, svc, svc, cache)
 }
 
+// NewSearchCertifiedAntiEntropyDriver shares the exact certified Pump and
+// sealed Search installation. It adds no managed replication-policy owner.
+func NewSearchCertifiedAntiEntropyDriver(
+	pc PeerConfig,
+	resolver *PeerResolver,
+	rc ReplicationConfig,
+	ac AntiEntropyConfig,
+	peerTransport *replication.PeerTransport,
+	svc *dataruntime.Executor,
+	cache *graphcache.GraphCache[string, *v1.Vertex],
+	pump *replication.Pump,
+	m replication.AntiEntropyMetrics,
+	logger *slog.Logger,
+	installer *SnapshotInstallerSelection,
+	certified runtimeCertified,
+	manager *ManagedOperationalRuntime,
+	search managedSearchCertified,
+	pumpCertified searchPumpCertified,
+) (*replication.AntiEntropy, error) {
+	if !pumpCertified.validFor(certified, manager, svc, cache, search, pump) {
+		return nil, errManagedOperational
+	}
+	driver := NewAntiEntropyDriver(pc, resolver, rc, ac, peerTransport, svc, cache, pump, m, logger, installer)
+	if !pumpCertified.validFor(certified, manager, svc, cache, search, pump) ||
+		!driver.UsesPump(pump) || driver.SearchConfigFingerprint() != pumpCertified.fingerprint {
+		return nil, errManagedOperational
+	}
+	return driver, nil
+}
+
 func newAntiEntropyReplicationConfig(
 	pc PeerConfig,
 	resolver *PeerResolver,

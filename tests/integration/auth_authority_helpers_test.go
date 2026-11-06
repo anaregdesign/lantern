@@ -39,6 +39,29 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Capture only the eleven selected request fields into the actual engine's
+// existing excluded baseline. No environment reread or invented index/session
+// defaults are involved in this fixture mapping.
+func capturedOperationalSearchLimits(t *testing.T, configured provider.SearchConfig, baseline service.SearchLimits) service.SearchLimits {
+	t.Helper()
+	baseline.DefaultLimit, baseline.MaxLimit = configured.DefaultLimit, configured.MaxLimit
+	baseline.DefaultMinShould = configured.DefaultMinShould
+	baseline.Timeout, baseline.MaxQueryBytes = configured.Timeout, configured.MaxQueryBytes
+	baseline.WorkBudget = search.Budget{MaxQueryTerms: int64(configured.MaxQueryTerms), MaxDictionaryVisits: int64(configured.MaxDictionaryVisits),
+		MaxPostingVisits: int64(configured.MaxPostingVisits), MaxPositionVisits: int64(configured.MaxPositionVisits), MaxExpirationVisits: int64(configured.MaxExpirationVisits)}
+	switch strings.ToLower(strings.TrimSpace(configured.DefaultMode)) {
+	case "", "any":
+		baseline.DefaultMode = search.MatchAny
+	case "all":
+		baseline.DefaultMode = search.MatchAll
+	case "min-should", "minshould", "min_should":
+		baseline.DefaultMode = search.MatchMinShould
+	default:
+		t.Fatal("unknown captured Search mode")
+	}
+	return baseline
+}
+
 // This fixture exercises the certified production public handler composition
 // with independent original provisioning and the selected native time build.
 type oidcControlWireFixture struct {
@@ -288,6 +311,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 		WithScanLimits(service.ScanLimits(startup.Scan)).
 		WithTraversalTimeout(startup.Traversal.Timeout).
 		WithTraversalLimits(service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: startup.Traversal.MaxPushes, MaxTouchedEdges: startup.Traversal.MaxTouchedEdges}, MaxResults: startup.Traversal.MaxResults})
+	dataService.WithSearchLimits(capturedOperationalSearchLimits(t, startup.Search, dataService.SearchPolicyBaseline()))
 	if durableReceipts {
 		dataService.WithTombstoneTTL(time.Hour)
 	}
@@ -361,7 +385,11 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if _, err := provider.NewManagedShutdownPlan(lifecycleMarker); err != nil {
 		t.Fatal("actual shared shutdown plan", err)
 	}
-	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker)
+	searchMarker, err := provider.NewManagedSearchRuntime(t.Context(), operationalRuntime, dataService)
+	if err != nil {
+		t.Fatal("actual Search engine recovery", err)
+	}
+	operationalCertified, err := provider.NewManagedOperationalCertified(t.Context(), runtime, operationalRuntime, dataService, slowCertified, rateCertified, requestRuntime, backupMarker, capacityMarker, lifecycleMarker, searchMarker)
 	if err != nil {
 		t.Fatal("operational owner certification", err)
 	}

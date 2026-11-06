@@ -189,6 +189,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewManagedCapacityRuntime(",
 		"provider.NewServingReadinessGate(",
 		"provider.NewManagedLifecycleRuntime(",
+		"provider.NewManagedSearchRuntime(",
 		"provider.NewManagedOperationalCertified(",
 		"provider.NewPublicSecurityCertified(",
 		"provider.NewOIDCPublicReceiptsCertified(",
@@ -196,8 +197,9 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewServingMetricsServer(",
 		"provider.NewWorkloadPeerTransport(",
 		"provider.NewSnapshotInstallerSelection(",
-		"provider.NewReplicationPump(",
-		"provider.NewAntiEntropyDriver(",
+		"provider.NewSearchCertifiedReplicationPump(",
+		"provider.NewSearchReplicationPump(",
+		"provider.NewSearchCertifiedAntiEntropyDriver(",
 	}
 	previous := -1
 	for _, needle := range ordered {
@@ -210,7 +212,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime(", "provider.NewServingReadinessGate(", "provider.NewManagedLifecycleRuntime(", "provider.NewManagedShutdownPlan(", "provider.NewManagedLifecycleConfig("} {
+	for _, owner := range []string{"provider.NewBackupper(", "provider.NewRateLimitInterceptorProvider(", "provider.NewRateRecoveryRuntime(", "provider.NewManagedRateRuntime(", "provider.NewValidationInterceptorProvider(", "provider.NewManagedRequestRuntime(", "provider.NewManagedBackupRuntime(", "provider.NewGraphPolicyOwner(", "provider.NewManagedCapacityRuntime(", "provider.NewServingReadinessGate(", "provider.NewManagedLifecycleRuntime(", "provider.NewManagedShutdownPlan(", "provider.NewManagedLifecycleConfig(", "provider.NewManagedSearchRuntime(", "provider.NewSearchCertifiedReplicationPump(", "provider.NewSearchReplicationPump(", "provider.NewSearchCertifiedAntiEntropyDriver("} {
 		if strings.Count(text, owner) != 1 {
 			t.Fatalf("generated injector does not construct exactly one %q", owner)
 		}
@@ -219,7 +221,8 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		!strings.Contains(text, "provider.NewManagedBackupRuntime(ctx, managedOperationalRuntime, backupper)") ||
 		!strings.Contains(text, "provider.NewGraphPolicyOwner(cacheConfig, servingRuntime, executor, runtimeCertified)") ||
 		!strings.Contains(text, "provider.NewManagedCapacityRuntime(ctx, managedOperationalRuntime, graphPolicyOwner)") ||
-		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified)") {
+		!strings.Contains(text, "provider.NewManagedSearchRuntime(ctx, managedOperationalRuntime, executor)") ||
+		!strings.Contains(text, "provider.NewManagedOperationalCertified(ctx, securityRuntime, managedOperationalRuntime, executor, managedSlowRPCCertified, managedRateCertified, managedRequestRuntime, managedBackupCertified, managedCapacityCertified, managedLifecycleCertified, managedSearchCertified)") {
 		t.Fatal("generated injector does not certify the actual Request executor and validator together")
 	}
 	if !strings.Contains(text, "service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphPolicyOwner, executor, replication)") ||
@@ -239,10 +242,13 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
 	}
+	if strings.Contains(text, "provider.NewReplicationPump(") || strings.Contains(text, "provider.NewAntiEntropyDriver(") || !strings.Contains(text, "provider.NewSearchReplicationPump(searchPumpCertified)") {
+		t.Fatal("generated injector can bypass final Search installation when constructing peer workers")
+	}
 	if strings.Count(text, "provider.NewSnapshotInstallerSelection(") != 1 ||
 		strings.Count(text, "provider.NewWorkloadPeerTransport(") != 1 ||
-		!strings.Contains(text, "peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)") ||
-		!strings.Contains(text, "peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)") {
+		!strings.Contains(text, "peerTransport, executor, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified, managedOperationalRuntime, managedSearchCertified)") ||
+		!strings.Contains(text, "peerTransport, executor, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection, runtimeCertified, managedOperationalRuntime, managedSearchCertified, searchPumpCertified)") {
 		t.Fatal("generated injector does not share the certified peer transport and Snapshot installer across Pump and anti-entropy")
 	}
 }
@@ -272,6 +278,11 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	if !app.graphPolicy.OwnsInstallation(app.runtime, app.svc) || !app.server.UsesWatcher(app.graphPolicy) {
 		t.Fatal("App GC watcher differs from the certified graph owner")
 	}
+	fingerprint := app.svc.SearchConfigFingerprint()
+	if fingerprint == "" || app.pump.SearchConfigFingerprint() != fingerprint || app.antiEntropy.SearchConfigFingerprint() != fingerprint || !app.antiEntropy.UsesPump(app.pump) {
+		t.Fatal("App peer workers did not capture the final installed Search fingerprint together")
+	}
+
 	if !app.server.UsesShutdownPlan(app.shutdownPlan) || app.shutdownPlan.Current().Generation != 0 {
 		t.Fatal("App and public HTTP server do not share the bootstrap shutdown plan")
 	}

@@ -240,6 +240,12 @@ func invokePublic[Req, Resp any](ctx context.Context, req *Req, svc *Executor, f
 	if err != nil {
 		return nil, err
 	}
+	if _, search := any(req).(*pb.SearchVerticesRequest); search {
+		ctx, err = svc.captureSearchPolicy(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Replication status intentionally remains available during graph faults.
 	// Other unary calls may await the one active install before their original
 	// final authority/state checks; neither failed repair nor expiry is bypassed.
@@ -254,7 +260,11 @@ func invokePublic[Req, Resp any](ctx context.Context, req *Req, svc *Executor, f
 	}
 	blind := blindMutationRequired(admissionAccess(admission), any(req).(proto.Message))
 	if svc.namespaceFormat == "" && !blind {
-		return fn(ctx, req)
+		response, callErr := fn(ctx, req)
+		if checkErr := checkSearchPolicyOutput(ctx); checkErr != nil {
+			return nil, checkErr
+		}
+		return response, callErr
 	}
 	var scope [][32]byte
 	if admission != nil {
@@ -299,6 +309,9 @@ func invokePublic[Req, Resp any](ctx context.Context, req *Req, svc *Executor, f
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := checkSearchPolicyOutput(ctx); err != nil {
+		return nil, err
 	}
 	return any(logical).(*Resp), nil
 }

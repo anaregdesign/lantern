@@ -61,6 +61,7 @@ type Executor struct {
 	scan                      ScanLimits
 	requestPolicies           RequestPolicySource
 	search                    *query.Engine
+	searchPolicies            *SearchPolicyOwner
 	log                       *mutationlog.Log
 	clock                     *hlc.Clock
 	origin                    []byte

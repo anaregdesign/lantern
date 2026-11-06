@@ -741,14 +741,21 @@ func securityProvisioningIntent(t *testing.T, root, issuer string, voters int, b
 	return input
 }
 
-func securityProvisioningIntentWithAllocator(root, issuer string, voters int, browser, api bool, listen func(string, string) (net.Listener, error)) (input map[string]any, err error) {
-	origins, release, err := reserveSecurityWireOrigins(2*voters, listen)
+func securityProvisioningIntentWithAllocator(root, issuer string, voters int, browser, api bool, listen func(string, string) (net.Listener, error)) (map[string]any, error) {
+	input, release, err := securityProvisioningReserveIntent(root, issuer, voters, browser, api, listen)
 	if err != nil {
 		return nil, err
 	}
-	// Hold both endpoint families together until the complete intent exists,
-	// then release them before the CLI or serving process can bind them.
-	defer func() { err = errors.Join(err, release()) }()
+	// Existing callers release the complete topology before returning.
+	return input, release()
+}
+
+func securityProvisioningReserveIntent(root, issuer string, voters int, browser, api bool, listen func(string, string) (net.Listener, error)) (map[string]any, func() error, error) {
+	origins, release, err := reserveSecurityWireOrigins(2*voters, listen)
+	if err != nil {
+		return nil, release, err
+	}
+	// The caller owns both endpoint families until its explicit release.
 	profile := map[string]any{"issuer": issuer, "algorithms": []string{"EdDSA"}}
 	if browser {
 		profile["client_id"] = "admin"
@@ -761,7 +768,7 @@ func securityProvisioningIntentWithAllocator(root, issuer string, voters int, br
 		control, data := origins[2*(i-1)], origins[2*(i-1)+1]
 		nodes = append(nodes, map[string]string{"name": fmt.Sprintf("node-%d", i), "control_origin": control, "control_listen": strings.TrimPrefix(control, "https://"), "data_origin": data, "data_listen": strings.TrimPrefix(data, "https://")})
 	}
-	return map[string]any{"material_root": filepath.Join(root, "trust"), "node": "node-1", "public_origin": "https://admin.example", "persistence_root": filepath.Join(root, "state"), "target_platform": runtime.GOOS, "tls_termination": "proxy", "trusted_proxy_ips": []string{"127.0.0.1"}, "initial_admin": map[string]string{"issuer": issuer, "subject": "admin"}, "nodes": nodes, "issuers": []map[string]any{profile}}, nil
+	return map[string]any{"material_root": filepath.Join(root, "trust"), "node": "node-1", "public_origin": "https://admin.example", "persistence_root": filepath.Join(root, "state"), "target_platform": runtime.GOOS, "tls_termination": "proxy", "trusted_proxy_ips": []string{"127.0.0.1"}, "initial_admin": map[string]string{"issuer": issuer, "subject": "admin"}, "nodes": nodes, "issuers": []map[string]any{profile}}, release, nil
 }
 
 func securityProvisioningDiagnostic(input map[string]any) string {
@@ -803,6 +810,74 @@ func TestSecurityProvisioningIntentTopology(t *testing.T) {
 			t.Fatalf("Close called %d times, want once", listener.closeCalls)
 		}
 	}
+}
+
+func TestSecurityProvisioningRetainedIntent(t *testing.T) {
+	t.Run("held through provision and released once", func(t *testing.T) {
+		allocator := new(securityWirePortAllocator)
+		input, release, err := securityProvisioningReserveIntent("private-root", "https://idp.example", 3, true, true, allocator.listen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := release(); err != nil {
+				t.Error(err)
+			}
+		}()
+		// Serializing the complete provisioning input must not release any
+		// signed control/data endpoint before the provisioning phase ends.
+		if _, err := json.Marshal(input); err != nil {
+			t.Fatal(err)
+		}
+		if len(allocator.active) != 6 || allocator.calls != 6 {
+			t.Fatal("provisioning did not retain the complete endpoint topology")
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 0 {
+				t.Fatal("endpoint released during provisioning")
+			}
+		}
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+		if err := release(); err != nil || len(allocator.active) != 0 {
+			t.Fatal("retained intent release was not idempotent", err)
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 1 {
+				t.Fatal("retained intent did not close each owned endpoint once")
+			}
+		}
+	})
+	t.Run("partial reservation failure", func(t *testing.T) {
+		listenErr, closeErr := errors.New("allocate endpoint"), errors.New("close endpoint")
+		allocator := &securityWirePortAllocator{failAt: 3, listenErr: listenErr, closeErr: closeErr}
+		input, release, err := securityProvisioningReserveIntent("private-root", "https://idp.example", 3, true, true, allocator.listen)
+		if input != nil || !errors.Is(err, listenErr) || !errors.Is(err, closeErr) || len(allocator.active) != 0 {
+			t.Fatal("partial intent did not preserve allocation and cleanup errors", err)
+		}
+		if err := release(); err != nil {
+			t.Fatal("partial failure cleanup was repeated", err)
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 1 {
+				t.Fatal("partial intent did not close each owned endpoint once")
+			}
+		}
+	})
+	t.Run("immediate release compatibility", func(t *testing.T) {
+		closeErr := errors.New("close endpoint")
+		allocator := &securityWirePortAllocator{closeErr: closeErr}
+		input, err := securityProvisioningIntentWithAllocator("private-root", "https://idp.example", 1, true, true, allocator.listen)
+		if input == nil || !errors.Is(err, closeErr) || len(allocator.active) != 0 {
+			t.Fatal("existing callers lost their immediate release or cleanup error", err)
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 1 {
+				t.Fatal("immediate caller did not close each owned endpoint once")
+			}
+		}
+	})
 }
 
 func TestSecurityProvisioningDiagnostic(t *testing.T) {
@@ -980,22 +1055,37 @@ func TestBenchHeapAppRealWire(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("controlled native App requires Linux or Darwin")
 	}
+	// Finish both builds before allocating the signed endpoint topology.
+	normal := securityProvisioningBinary(t, true)
+	tagged := securityProvisioningBinary(t, true, "lantern_bench_heap")
 	issuer := newOIDCWireIssuer(t)
 	root := securityProvisioningDirectory(t)
-	input := securityProvisioningIntent(t, root, issuer.provider.URL, 1, true, true)
+	input, release, err := securityProvisioningReserveIntent(root, issuer.provider.URL, 1, true, true, net.Listen)
+	if err != nil {
+		t.Fatal("reserve controlled heap topology", err)
+	}
+	defer func() {
+		if err := release(); err != nil {
+			t.Error("release controlled heap topology", err)
+		}
+	}()
 	input["root_ca_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.provider.Certificate().Raw}))
 	input["private_origins"] = map[string][]string{issuer.provider.URL: {"127.0.0.1/32"}}
 	raw, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	normal := securityProvisioningBinary(t, true)
-	tagged := securityProvisioningBinary(t, true, "lantern_bench_heap")
 	env := securityProvisioningEnvironment(string(raw))
-	for _, args := range [][]string{{"provision-security", "--operator-directory", filepath.Join(root, "operator")}, {"init-security"}} {
-		if output, err := securityProvisioningCommand(t, tagged, env, args...); err != nil {
-			t.Fatalf("controlled heap App setup failed: %v\n%s", err, output)
-		}
+	if output, err := securityProvisioningCommand(t, tagged, env, "provision-security", "--operator-directory", filepath.Join(root, "operator")); err != nil {
+		t.Fatalf("controlled heap App provisioning failed: %v\n%s", err, output)
+	}
+	// Retain both families through provisioning, then release immediately
+	// before the real bind. Release-to-init and later restart gaps remain.
+	if err := release(); err != nil {
+		t.Fatal("release controlled heap topology before initialization", err)
+	}
+	if output, err := securityProvisioningCommand(t, tagged, env, "init-security"); err != nil {
+		t.Fatalf("controlled heap App initialization failed: %v\n%s", err, output)
 	}
 	address := securityProvisioningAddress(t)
 	_, port, _ := net.SplitHostPort(address)

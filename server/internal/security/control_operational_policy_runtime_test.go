@@ -101,10 +101,113 @@ func operationalPolicyApplyFixture(t *testing.T, public *CurrentAuthority, comma
 		t.Fatal(err)
 	}
 	result, err := public.Apply(ctx, review, producer, [32]byte{})
-	if err != nil || result.Progress != CurrentApplied || result.Original == nil || result.Original.Disposition() != S1Applied {
-		t.Fatal("reviewed native commit failed", result.Progress, err)
+	initialProgress, initialErr := result.Progress, err
+	result, err = operationalPolicyCompleteFixture(ctx, review, result, err, public.Lookup,
+		operationalPolicyRetainedFixture(public, review), func(ctx context.Context) bool {
+			return s3aPause(ctx, public.origin.network.limits.Backoff)
+		})
+	if err != nil {
+		t.Fatal("reviewed native commit failed", "initial", initialProgress, initialErr, "final", result.Progress, err)
 	}
 	return result
+}
+
+// A bounded scheduling refusal can retain H without applying it. Continue only
+// that exact original through status lookup, within the first invocation's
+// context. This fixture never prepares, renews, consumes or calls Apply again.
+func operationalPolicyCompleteFixture(ctx context.Context, review CurrentReview, result CurrentChangeResult, err error,
+	lookup func(context.Context, CurrentProfile, FullChangeID, [32]byte) (CurrentChangeResult, error),
+	retained func(CurrentChangeResult) error, pause func(context.Context) bool,
+) (CurrentChangeResult, error) {
+	for {
+		if ctx.Err() != nil {
+			return result, errors.Join(err, ctx.Err())
+		}
+		if _, bounded := ctx.Deadline(); !bounded {
+			return result, errors.Join(err, ErrS1Contract)
+		}
+		if result.Profile != review.Profile || result.ID != review.ID || result.Intent != review.Operation.Digest() {
+			return result, errors.Join(err, ErrS1Contract)
+		}
+		if result.Progress == CurrentApplied {
+			if err != nil || result.Original == nil || result.Original.ID() != review.ID || result.Original.Operation() != review.Operation || result.Original.Disposition() != S1Applied {
+				return result, errors.Join(err, ErrS1Contract)
+			}
+			return result, retained(result)
+		}
+		if !operationalPolicyCreditOnlyFixture(err) || result.Original != nil || result.Progress != CurrentOriginDurable && result.Progress != CurrentChosen {
+			return result, errors.Join(err, ErrS1Contract)
+		}
+		if checkErr := retained(result); checkErr != nil {
+			return result, checkErr
+		}
+		if !pause(ctx) {
+			return result, errors.Join(err, ctx.Err())
+		}
+		if ctx.Err() != nil {
+			return result, errors.Join(err, ctx.Err())
+		}
+		result, err = lookup(ctx, review.Profile, review.ID, review.Operation.Digest())
+	}
+}
+
+// errors.Is alone would also accept credit joined with cancellation, authority
+// loss or an unknown failure. Every actual error leaf must be the credit refusal.
+func operationalPolicyCreditOnlyFixture(err error) bool {
+	if err == errS3ACredit {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !operationalPolicyCreditOnlyFixture(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return operationalPolicyCreditOnlyFixture(wrapped.Unwrap())
+	}
+	return false
+}
+
+func operationalPolicyRetainedFixture(public *CurrentAuthority, review CurrentReview) func(CurrentChangeResult) error {
+	k := public.origin.network.kernel
+	var captured bool
+	var serial uint64
+	var reservation authorityOriginReservation
+	var digest [32]byte
+	var raw string
+	return func(result CurrentChangeResult) error {
+		k.gate.Lock()
+		defer k.gate.Unlock()
+		owned := k.originIDs[review.ID]
+		current, ok := k.originReservations[owned]
+		if !ok || owned == 0 || current.ID != review.ID || current.Operation != review.Operation.Digest() {
+			return errors.New("fixture lost original reservation ownership")
+		}
+		var h *s2cHistoricalH
+		for _, original := range k.origins {
+			if original.handoff.id == review.ID && original.handoff.operation == review.Operation {
+				h = original
+				break
+			}
+		}
+		if h == nil || h.handoff.serial != owned {
+			return errors.New("fixture lost retained original H")
+		}
+		if !captured {
+			captured, serial, reservation, digest, raw = true, k.originSerial, current, h.digest(), h.raw
+		}
+		if k.originSerial != serial || current != reservation || h.digest() != digest || h.raw != raw || result.Original != nil && result.Original.HandoffDigest() != digest {
+			return errors.New("fixture changed original H or reservation ownership")
+		}
+		return nil
+	}
 }
 
 func TestOperationalPolicyRuntimeBindingAndVerifiedProjection(t *testing.T) {

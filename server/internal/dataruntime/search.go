@@ -14,6 +14,21 @@ type SearchObservation = query.Observation
 // SearchVertices delegates bounded execution and paging to query. The service
 // retains graph publication cuts, namespace handling and authorization scopes.
 func (s *Executor) SearchVertices(ctx context.Context, in *pb.SearchVerticesRequest) (*pb.SearchVerticesResponse, error) {
+	if s.searchPolicies != nil {
+		var captureErr error
+		ctx, captureErr = s.captureSearchPolicy(ctx)
+		if captureErr != nil {
+			return nil, captureErr
+		}
+		lease := ctx.Value(searchPolicyContextKey{}).(searchPolicyLease)
+		response, err := lease.effective.engine.SearchVertices(ctx, in, searchReader{service: s}, s.metrics.OnSearchExecution)
+		// Refuse output if authority or effective engine changed during the
+		// capture/page. Existing PublicAPI ACL/output checks still run too.
+		if checkErr := checkSearchPolicyOutput(ctx); checkErr != nil {
+			return nil, checkErr
+		}
+		return response, err
+	}
 	return s.search.SearchVertices(ctx, in, searchReader{service: s}, s.metrics.OnSearchExecution)
 }
 

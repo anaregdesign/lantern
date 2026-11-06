@@ -24,9 +24,10 @@ type managedOperationalCertified struct {
 	backup    *backup.Backupper
 	capacity  *dataruntime.GraphPolicyOwner
 	plan      *service.ShutdownPlan
+	search    managedSearchCertified
 }
 
-func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntime, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, slow managedSlowRPCCertified, rate managedRateCertified, request *ManagedRequestRuntime, backup managedBackupCertified, capacity managedCapacityCertified, lifecycle managedLifecycleCertified) (managedOperationalCertified, error) {
+func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntime, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, slow managedSlowRPCCertified, rate managedRateCertified, request *ManagedRequestRuntime, backup managedBackupCertified, capacity managedCapacityCertified, lifecycle managedLifecycleCertified, search managedSearchCertified) (managedOperationalCertified, error) {
 	if runtime == nil || manager == nil || manager.runtime != runtime || runtime.managedOperational != manager || slow.manager != manager || slow.owner == nil || slow.adapter == nil || slow.adapter.owner != slow.owner {
 		return managedOperationalCertified{}, errManagedOperational
 	}
@@ -45,16 +46,19 @@ func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntim
 	if lifecycle.manager != manager || lifecycle.owner == nil || lifecycle.adapter == nil || lifecycle.adapter.owner != lifecycle.owner || lifecycle.adapter.plan != lifecycle.plan || lifecycle.adapter.gate != lifecycle.gate || !lifecycle.plan.UsesOwner(lifecycle.owner) {
 		return managedOperationalCertified{}, errManagedOperational
 	}
+	if !search.validFor(manager, primary) {
+		return managedOperationalCertified{}, errManagedOperational
+	}
 	manager.mu.Lock()
-	slowEntry, rateEntry, requestEntry, backupEntry, capacityEntry, lifecycleEntry := manager.slowRPC, manager.rate, manager.request, manager.backup, manager.capacity, manager.lifecycle
+	slowEntry, rateEntry, requestEntry, backupEntry, capacityEntry, lifecycleEntry, searchEntry := manager.slowRPC, manager.rate, manager.request, manager.backup, manager.capacity, manager.lifecycle, manager.search
 	manager.mu.Unlock()
-	if slowEntry == nil || slowEntry.owner != slow.adapter || rateEntry == nil || rateEntry.owner != rate.adapter || requestEntry == nil || requestEntry.owner != request || backupEntry == nil || backupEntry.owner != backup.adapter || capacityEntry == nil || capacityEntry.owner != capacity.adapter || lifecycleEntry == nil || lifecycleEntry.owner != lifecycle.adapter {
+	if slowEntry == nil || slowEntry.owner != slow.adapter || rateEntry == nil || rateEntry.owner != rate.adapter || requestEntry == nil || requestEntry.owner != request || backupEntry == nil || backupEntry.owner != backup.adapter || capacityEntry == nil || capacityEntry.owner != capacity.adapter || lifecycleEntry == nil || lifecycleEntry.owner != lifecycle.adapter || searchEntry == nil || searchEntry.owner != search.runtime {
 		return managedOperationalCertified{}, errManagedOperational
 	}
 	// Availability proves installed owners, including the fixed recovery pair.
 	// Invalid bootstrap values must remain repairable, so no value validation or
 	// owner callback runs while holding the manager lock.
-	if slow.adapter.AvailableOperationalPolicy(operationalpolicy.GroupSlowRPC, operationalpolicy.Version) != nil || rate.adapter.AvailableOperationalPolicy(operationalpolicy.GroupRate, operationalpolicy.Version) != nil || request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil || backup.adapter.AvailableOperationalPolicy(operationalpolicy.GroupBackup, operationalpolicy.Version) != nil || capacity.adapter.AvailableOperationalPolicy(operationalpolicy.GroupCapacity, operationalpolicy.Version) != nil || lifecycle.adapter.AvailableOperationalPolicy(operationalpolicy.GroupLifecycle, operationalpolicy.Version) != nil {
+	if slow.adapter.AvailableOperationalPolicy(operationalpolicy.GroupSlowRPC, operationalpolicy.Version) != nil || rate.adapter.AvailableOperationalPolicy(operationalpolicy.GroupRate, operationalpolicy.Version) != nil || request.AvailableOperationalPolicy(operationalpolicy.GroupRequest, operationalpolicy.Version) != nil || backup.adapter.AvailableOperationalPolicy(operationalpolicy.GroupBackup, operationalpolicy.Version) != nil || capacity.adapter.AvailableOperationalPolicy(operationalpolicy.GroupCapacity, operationalpolicy.Version) != nil || lifecycle.adapter.AvailableOperationalPolicy(operationalpolicy.GroupLifecycle, operationalpolicy.Version) != nil || search.runtime.AvailableOperationalPolicy(operationalpolicy.GroupSearch, operationalpolicy.Version) != nil {
 		return managedOperationalCertified{}, errManagedOperational
 	}
 	if err := manager.Reconcile(ctx); err != nil {
@@ -72,5 +76,5 @@ func NewManagedOperationalCertified(ctx context.Context, runtime *SecurityRuntim
 			return managedOperationalCertified{}, err
 		}
 	}
-	return managedOperationalCertified{runtime: runtime, manager: manager, slowRPC: slow.owner, rate: rate.owner, recovery: rate.recovery, primary: primary, request: request, validator: request.validator, backup: backup.owner, capacity: capacity.owner, plan: lifecycle.plan}, nil
+	return managedOperationalCertified{runtime: runtime, manager: manager, slowRPC: slow.owner, rate: rate.owner, recovery: rate.recovery, primary: primary, request: request, validator: request.validator, backup: backup.owner, capacity: capacity.owner, plan: lifecycle.plan, search: search}, nil
 }
