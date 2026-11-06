@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestStagedPublicationRecoveryClassification(t *testing.T) {
@@ -89,12 +92,16 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 					f.service.WithLogger(slog.New(slog.NewJSONHandler(&diagnostics,
 						&slog.HandlerOptions{Level: slog.LevelWarn})))
 					runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
-					invoke, id := stagedPublicationAdapterCall(t, f, runtime, operation)
+					invoke, id, graphRequest := stagedPublicationAdapterCall(t, f, runtime, operation)
+					var originalGraphRequest *pb.MutateGraphRequest
+					if graphRequest != nil {
+						originalGraphRequest = proto.Clone(graphRequest).(*pb.MutateGraphRequest)
+					}
 					originID := f.service.clock.NodeID()
 					if relay {
 						origin := newReceiptEdgeDeleteFixtureWithLimits(t, nil, hlc.NodeID{0x51}, 32, 1<<20)
 						originRuntime := bindPublicReceiptFixtureForConcurrencyTest(t, origin)
-						publish, originReceiptID := stagedPublicationAdapterCall(t, origin, originRuntime, operation)
+						publish, originReceiptID, _ := stagedPublicationAdapterCall(t, origin, originRuntime, operation)
 						if err := publish(); err != nil {
 							t.Fatal(err)
 						}
@@ -157,7 +164,14 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 							t.Fatalf("definite abort lookup = %v, %v", status, err)
 						}
 						retained := attempted
-						if err := invoke(); err != nil || writes != 2 || f.log.Len() != 1 || f.service.LocalSeq(originID) != 1 {
+						retry := invoke
+						if operation == "graph mutation" && !relay {
+							retry = func() error {
+								return stagedPublicationDefiniteGraphRetry(t, t.Context(), f, runtime, graphRequest,
+									originalGraphRequest, func() int { return writes }, func() mutationlog.MutationOp { return attempted })
+							}
+						}
+						if err := retry(); err != nil || writes != 2 || f.log.Len() != 1 || f.service.LocalSeq(originID) != 1 {
 							t.Fatalf("definite retry failed to publish exactly once: %v, writes=%d", err, writes)
 						}
 						if relay && attempted != retained {
@@ -183,7 +197,7 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 	}
 }
 
-func stagedPublicationAdapterCall(t *testing.T, f receiptEdgeDeleteFixture, runtime *ServingRuntime, operation string) (func() error, mutationreceipt.ID) {
+func stagedPublicationAdapterCall(t *testing.T, f receiptEdgeDeleteFixture, runtime *ServingRuntime, operation string) (func() error, mutationreceipt.ID, *pb.MutateGraphRequest) {
 	t.Helper()
 	for _, key := range []string{"tail", "head"} {
 		if err := f.cache.PutVertex(key, &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "before"}}); err != nil {
@@ -201,15 +215,19 @@ func stagedPublicationAdapterCall(t *testing.T, f receiptEdgeDeleteFixture, runt
 	if err != nil {
 		t.Fatal(err)
 	}
+	var graphRequest *pb.MutateGraphRequest
+	if operation == "graph mutation" {
+		added := graphcache.ContribID{0x81}
+		graphRequest = &pb.MutateGraphRequest{ReceiptContext: context, Items: []*pb.GraphMutationItem{
+			{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: "created"}}},
+			{Operation: &pb.GraphMutationItem_AddEdge{AddEdge: &pb.GraphMutationEdgeAdd{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}, ContribId: added[:]}}},
+		}}
+	}
 	return func() error {
 		var err error
 		switch operation {
 		case "graph mutation":
-			added := graphcache.ContribID{0x81}
-			_, err = f.service.MutateGraph(t.Context(), &pb.MutateGraphRequest{ReceiptContext: context, Items: []*pb.GraphMutationItem{
-				{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: "created"}}},
-				{Operation: &pb.GraphMutationItem_AddEdge{AddEdge: &pb.GraphMutationEdgeAdd{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}, ContribId: added[:]}}},
-			}})
+			_, err = f.service.MutateGraph(t.Context(), graphRequest)
 		case "vertex put":
 			_, err = f.service.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "created"}}, IfAbsent: true, ReceiptContext: context})
 		case "vertex delete":
@@ -231,7 +249,150 @@ func stagedPublicationAdapterCall(t *testing.T, f receiptEdgeDeleteFixture, runt
 			t.Fatalf("unknown operation %s", operation)
 		}
 		return err
-	}, id
+	}, id, graphRequest
+}
+
+// The WAL sentinel matrix owns durable abort/retry behavior, not successful
+// timed Core admission. Only the definite local retry may reacquire its
+// pre-WAL admission, with all committed state and the original call intact.
+func stagedPublicationDefiniteGraphRetry(t *testing.T, ctx context.Context, f receiptEdgeDeleteFixture, runtime *ServingRuntime,
+	request, originalRequest *pb.MutateGraphRequest, walCalls func() int, walOp func() mutationlog.MutationOp,
+) error {
+	t.Helper()
+	if request == nil || originalRequest == nil || !proto.Equal(request, originalRequest) || ctx.Err() != nil || walCalls() != 1 {
+		t.Fatal("invalid definite graph retry precondition")
+	}
+	capture := captureGraphMutationForTest(t)
+	beforeGraph := f.cache.SnapshotReplication()
+	beforeLog, beforeEvicted := f.log.RetainedEntries(), f.log.Evicted()
+	beforeOrigins := f.service.origins.States()
+	beforeReceipts, err := runtime.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStats := runtime.receipt.store.Stats()
+	beforeFaultCh := f.service.publicationFaultCh
+	beforeWALOp := walOp()
+	lastHighWater := beforeStats.HighWaterMillis
+	assertPublicationFree := func() {
+		t.Helper()
+		if !f.service.graphMutationAdmission.TryLock() {
+			t.Fatal("definite retry retained mixed mutation admission")
+		}
+		f.service.graphMutationAdmission.Unlock()
+		admission := runtime.receipt.operationAdmission
+		if !admission.mu.TryLock() {
+			t.Fatal("definite retry retained receipt admission ownership")
+		}
+		readers, exclusive := admission.readers, admission.exclusive
+		admission.mu.Unlock()
+		if readers != 0 || exclusive {
+			t.Fatal("definite retry retained receipt admission", readers, exclusive)
+		}
+		// Probe exclusive ownership without publishing a transition: the gate's
+		// TryLock/Unlock would change its certificate and generation. Shared
+		// probes and a stable certificate alone cannot detect leaked readers.
+		if !f.service.replicationCutMu.mu.TryLock() {
+			t.Fatal("definite retry retained publication ownership")
+		}
+		defer f.service.replicationCutMu.mu.Unlock()
+		certificate := f.service.replicationCutMu.readCertificate.Load()
+		if !certificate.stable() || certificate.faulted || f.service.publicationFaultCount != 0 ||
+			f.service.receiptCommitFaulted || f.service.snapshotInstallFaulted ||
+			f.service.pendingLocalMutation != nil || len(f.service.pendingMutations) != 0 ||
+			f.service.pendingCount != 0 || f.service.pendingBytes != 0 ||
+			f.service.activeSnapshotInstall.Load() != nil || f.service.publicationFaultCh != beforeFaultCh {
+			t.Fatal("definite retry changed publication/fault state")
+		}
+		if !f.service.receiptOriginCutMu.TryLock() {
+			t.Fatal("definite retry retained receipt origin ownership")
+		}
+		defer f.service.receiptOriginCutMu.Unlock()
+		if !reflect.DeepEqual(beforeGraph, f.cache.SnapshotReplication()) ||
+			!reflect.DeepEqual(beforeLog, f.log.RetainedEntries()) || f.log.Evicted() != beforeEvicted ||
+			!reflect.DeepEqual(beforeOrigins, f.service.origins.States()) {
+			t.Fatal("definite retry refusal published graph/log/origin state")
+		}
+		receipts, snapshotErr := runtime.receipt.store.Snapshot()
+		if snapshotErr != nil {
+			t.Fatal("definite retry left receipt state unavailable", snapshotErr)
+		}
+		stats := runtime.receipt.store.Stats()
+		if receipts.Version != beforeReceipts.Version || receipts.Epoch != beforeReceipts.Epoch ||
+			receipts.PolicyFingerprint != beforeReceipts.PolicyFingerprint ||
+			!reflect.DeepEqual(receipts.Receipts, beforeReceipts.Receipts) ||
+			stats.Entries != beforeStats.Entries || stats.Bytes != beforeStats.Bytes ||
+			stats.OldestDeadlineMillis != beforeStats.OldestDeadlineMillis ||
+			stats.LocalAdmissionRejects != beforeStats.LocalAdmissionRejects ||
+			stats.ReplicationCapacityStalls != beforeStats.ReplicationCapacityStalls ||
+			stats.NoLongerProvableLookups != beforeStats.NoLongerProvableLookups {
+			t.Fatal("definite retry refusal changed committed receipts/accounting", stats)
+		}
+		// Begin/Abort may retain monotonic clock observations, never new rows.
+		if stats.HighWaterMillis < lastHighWater || receipts.ClockHighWaterMillis != stats.HighWaterMillis {
+			t.Fatal("definite retry moved receipt clock backwards", stats.HighWaterMillis, lastHighWater)
+		}
+		lastHighWater = stats.HighWaterMillis
+	}
+	assertPublicationFree()
+	var previousObject uint64
+	for attempt := 1; attempt <= 4; attempt++ {
+		response, callErr := f.service.MutateGraph(ctx, request)
+		stages := stagedPublicationGraphDiagnosticStages(t, capture)
+		if object := stages["admission"].Object; object <= previousObject {
+			t.Fatal("definite retry reused an admission observation", object, previousObject)
+		} else {
+			previousObject = object
+		}
+		t.Logf("definite retry admission attempt=%d WAL calls=%d code=%v stages=%v", attempt, walCalls(), connect.CodeOf(callErr), stages)
+		if !proto.Equal(request, originalRequest) {
+			t.Fatal("definite retry changed the original request")
+		}
+		if callErr == nil {
+			if response == nil || walCalls() != 2 || stages["publication_enter"].Object == 0 || stages["publication_complete"].Object == 0 {
+				t.Fatal("definite retry did not complete its second WAL publication", response, walCalls(), stages)
+			}
+			return nil
+		}
+		budgetErr, exactBudget := callErr.(*connect.Error)
+		if !exactBudget || budgetErr.Code() != connect.CodeResourceExhausted || budgetErr.Unwrap() != graphcache.ErrGraphMutationBudget ||
+			response != nil || ctx.Err() != nil || walCalls() != 1 || walOp() != beforeWALOp ||
+			stages["operation_budget"].Object == 0 || stages["graph_begin"].Object == 0 ||
+			stages["publication_enter"].Object != 0 || stages["publication_complete"].Object != 0 {
+			t.Fatal("definite retry refusal was not publication-free Core admission", response, callErr, ctx.Err(), walCalls(), stages)
+		}
+		assertPublicationFree()
+		if attempt == 4 {
+			t.Fatal("Core admission exhausted before definite WAL retry invariant was exercised")
+		}
+	}
+	panic("unreachable definite retry acquisition")
+}
+
+func stagedPublicationGraphDiagnosticStages(t *testing.T, capture *decisiontrace.Capture) map[string]decisiontrace.Event {
+	t.Helper()
+	events, dropped := capture.Drain()
+	if dropped != 0 || len(events) == 0 || events[0].Stage != "admission" {
+		t.Fatal("missing or lossy definite retry admission observation", events, dropped)
+	}
+	object := events[0].Object
+	stages := make(map[string]decisiontrace.Event, len(events))
+	var prior int64
+	for _, event := range events {
+		if event.Kind != "graph_mutation" || object == 0 || event.Object != object || event.Stage == "" || event.Elapsed < prior {
+			t.Fatal("mixed or invalid definite retry observation", event)
+		}
+		if _, duplicate := stages[event.Stage]; duplicate {
+			t.Fatal("duplicate definite retry stage", event)
+		}
+		prior = event.Elapsed
+		stages[event.Stage] = event
+	}
+	budget := stages["operation_budget"]
+	if !budget.HasDeadline || budget.DeadlineLeft > int64(time.Second) {
+		t.Fatal("definite retry operation budget changed or was not entered", budget)
+	}
+	return stages
 }
 
 func assertStagedPublicationFaultViews(t *testing.T, f receiptEdgeDeleteFixture, id mutationreceipt.ID) {
@@ -277,7 +438,7 @@ func TestStagedPublicationHeldWALSentinelRejectsWaitingViews(t *testing.T) {
 				}
 			}()
 			runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
-			invoke, id := stagedPublicationAdapterCall(t, f, runtime, operation)
+			invoke, id, _ := stagedPublicationAdapterCall(t, f, runtime, operation)
 			committed := make(chan error, 1)
 			go func() { committed <- invoke() }()
 			select {
