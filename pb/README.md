@@ -64,7 +64,7 @@ See [AGENTS.md](../AGENTS.md) for the full release checklist.
 
 ## Stability
 
-The `graph.v1` package is the stable wire contract. Breaking changes (renamed
-fields, removed RPCs, changed semantics) are reserved for a future `graph.v2`
-package — additions inside `graph.v1` (new RPCs, new fields with proper proto
-numbering) are allowed under semver minor bumps.
+The `graph.v1` package is the current wire schema. Until v1.0.0, Lantern
+makes no backward-compatibility guarantees: fields, RPCs, and semantics may
+change within this package. See the canonical
+[versioning and compatibility policy](../CONTRIBUTING.md#versioning--compatibility-pre-v100).
