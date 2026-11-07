@@ -711,7 +711,9 @@ func TestSecurityProvisioningOwnedProcessFailureCleanup(t *testing.T) {
 		select {
 		case <-interrupts:
 			writeMarker("interrupted")
-			fmt.Fprintln(os.Stdout, retainedOutput)
+			if _, err := fmt.Fprintln(os.Stdout, retainedOutput); err != nil {
+				t.Fatal("owned worker evidence write failed", err)
+			}
 			// Avoid testing's success output so the owner retains only this
 			// fixed evidence alongside its deliberate primary failure.
 			os.Exit(0)
