@@ -129,11 +129,13 @@ func (o *authorityOriginOwner) closeOwned() {
 // verification, key fetching and native cookie parsing occur outside the gate.
 func (o *authorityOriginOwner) verifyFacts(ctx context.Context, producer CurrentCredentialProducer) (CurrentCredentialView, CurrentCredentialFacts, error) {
 	if producer == nil {
+		o.tracePublicRefusal("verify_facts", "producer", 0)
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, ErrPermissionDenied
 	}
 	select {
 	case o.inputs <- struct{}{}:
 	default:
+		o.tracePublicRefusal("verify_facts", "credit", 0)
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, errS3ACredit
 	}
 	defer func() { <-o.inputs }()
@@ -141,11 +143,24 @@ func (o *authorityOriginOwner) verifyFacts(ctx context.Context, producer Current
 	stop := context.AfterFunc(o.network.ctx, cancel)
 	defer func() { stop(); cancel() }()
 	if err := o.network.check(ctx); err != nil {
+		o.tracePublicRefusal("verify_facts", "network", 0)
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, err
 	}
 	k := o.network.kernel
 	k.gate.Lock()
-	if o.closed || !o.configuredReadyLocked() || k.readyLocked() != nil || k.chosen != nil {
+	reason := ""
+	switch {
+	case o.closed:
+		reason = "closed"
+	case !o.configuredReadyLocked():
+		reason = "configuration"
+	case k.readyLocked() != nil:
+		reason = "kernel"
+	case k.chosen != nil:
+		reason = "chosen"
+	}
+	if reason != "" {
+		o.tracePublicRefusal("verify_facts", reason, k.replayState.slot)
 		k.gate.Unlock()
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, ErrAuthorityUnavailable
 	}
@@ -153,9 +168,11 @@ func (o *authorityOriginOwner) verifyFacts(ctx context.Context, producer Current
 	k.gate.Unlock()
 	facts, err := producer.VerifyCurrentCredential(ctx, view)
 	if err != nil {
+		o.tracePublicRefusal("verify_facts", "facts", 0)
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, err
 	}
 	if err = ctx.Err(); err != nil {
+		o.tracePublicRefusal("verify_facts", "context", 0)
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, err
 	}
 	return view, facts, nil

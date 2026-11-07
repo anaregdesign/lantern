@@ -15,8 +15,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -627,7 +629,7 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 
 func securityProvisioningPublisher(t *testing.T, binary, config, state, mode string) (func(), func()) {
 	t.Helper()
-	command := exec.CommandContext(t.Context(), binary, "--config", config, "--state", state, "--mode", mode)
+	command := securityProvisioningOwnedCommand(t, binary, "--config", config, "--state", state, "--mode", mode)
 	command.Env = securityProvisioningEnvironment("")
 	var logs bytes.Buffer
 	command.Stdout, command.Stderr = &logs, &logs
@@ -646,27 +648,149 @@ func securityProvisioningPublisher(t *testing.T, binary, config, state, mode str
 		default:
 		}
 	}
-	stop := func() {
+	stop := securityProvisioningOwnedStop(t, command, done, &joined, &logs, 5*time.Second, "operator publisher failed clean stop", "operator publisher failed to join")
+	t.Cleanup(stop)
+	return check, stop
+}
+
+// A fixture process belongs to its bounded stop/join, including after a failed
+// assertion. testing cancels t.Context before cleanup; CommandContext's default
+// Kill would race that owner's graceful interrupt and erase its final evidence.
+func securityProvisioningOwnedCommand(t *testing.T, binary string, args ...string) *exec.Cmd {
+	t.Helper()
+	return exec.Command(binary, args...)
+}
+
+func securityProvisioningOwnedStop(t *testing.T, command *exec.Cmd, done <-chan error, joined *bool, logs *bytes.Buffer, limit time.Duration, stopFailure, joinFailure string) func() {
+	t.Helper()
+	return func() {
 		t.Helper()
-		if joined {
+		if *joined {
 			return
 		}
 		_ = command.Process.Signal(os.Interrupt)
 		select {
 		case err := <-done:
-			joined = true
+			*joined = true
 			if err != nil {
-				t.Fatalf("operator publisher failed clean stop: %v\n%s", err, logs.Bytes())
+				t.Fatalf("%s: %v\n%s", stopFailure, err, logs.Bytes())
 			}
-		case <-time.After(5 * time.Second):
+			if t.Failed() && logs.Len() != 0 {
+				t.Logf("owned process output after primary failure:\n%s", logs.Bytes())
+			}
+		case <-time.After(limit):
 			_ = command.Process.Kill()
 			<-done
-			joined = true
-			t.Fatal("operator publisher failed to join")
+			*joined = true
+			t.Fatal(joinFailure)
 		}
 	}
-	t.Cleanup(stop)
-	return check, stop
+}
+
+func TestSecurityProvisioningOwnedProcessFailureCleanup(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("provisioning processes require Unix interrupt handling")
+	}
+	const childMarker = "security-provisioning-owned-process"
+	const primaryFailure = "deliberate provisioning assertion failure"
+	const retainedOutput = "owned worker completed its graceful stop"
+	mode, directory := "", ""
+	if n := len(os.Args); n >= 4 && os.Args[n-3] == childMarker {
+		mode, directory = os.Args[n-2], os.Args[n-1]
+	}
+	writeMarker := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(name+"\n"), 0600); err != nil {
+			t.Fatal("owned process marker failed", err)
+		}
+	}
+	if mode == "worker" {
+		interrupts := make(chan os.Signal, 1)
+		signal.Notify(interrupts, os.Interrupt)
+		writeMarker("ready")
+		select {
+		case <-interrupts:
+			writeMarker("interrupted")
+			fmt.Fprintln(os.Stdout, retainedOutput)
+			// Avoid testing's success output so the owner retains only this
+			// fixed evidence alongside its deliberate primary failure.
+			os.Exit(0)
+		case <-time.After(10 * time.Second):
+			t.Fatal("owned worker never received its interrupt")
+		}
+	}
+	if mode == "owner" {
+		command := securityProvisioningOwnedCommand(t, os.Args[0], "-test.run=^TestSecurityProvisioningOwnedProcessFailureCleanup$", "--", childMarker, "worker", directory)
+		var logs bytes.Buffer
+		command.Stdout, command.Stderr = &logs, &logs
+		// Preserve any erroneous cancellation action while observing its
+		// completion. This makes a regression to CommandContext deterministic:
+		// its asynchronous Kill cannot lose the race to cleanup's interrupt.
+		var canceled chan struct{}
+		if original := command.Cancel; original != nil {
+			canceled = make(chan struct{})
+			command.Cancel = func() error {
+				defer close(canceled)
+				return original()
+			}
+		}
+		if err := command.Start(); err != nil {
+			t.Fatal("owned worker failed to start", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- command.Wait() }()
+		joined := false
+		stop := securityProvisioningOwnedStop(t, command, done, &joined, &logs, 5*time.Second, "owned worker failed clean stop", "owned worker failed to join")
+		t.Cleanup(func() {
+			if t.Context().Err() == nil {
+				t.Error("owned cleanup preceded test context cancellation")
+			}
+			if canceled != nil {
+				select {
+				case <-canceled:
+				case <-time.After(5 * time.Second):
+					t.Error("owned process cancellation did not settle")
+				}
+			}
+			stop()
+			writeMarker("joined")
+		})
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			if _, err := os.Stat(filepath.Join(directory, "ready")); err == nil {
+				break
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("owned worker readiness marker failed", err)
+			}
+			if !time.Now().Before(deadline) {
+				t.Fatal("owned worker never became ready")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal(primaryFailure)
+	}
+	if mode != "" {
+		t.Fatal("unknown owned process child mode")
+	}
+	directory = t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSecurityProvisioningOwnedProcessFailureCleanup$", "-test.v", "--", childMarker, "owner", directory)
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("owned failure child exceeded its bound: %v; exit=%v\n%s", ctx.Err(), err, output)
+	}
+	var exited *exec.ExitError
+	diagnostics := regexp.MustCompile(`(?m)^[ \t]+[^\r\n]+\.go:[0-9]+: (.*)$`).FindAllSubmatch(output, -1)
+	if !errors.As(err, &exited) || exited.ExitCode() != 1 || len(diagnostics) != 2 || string(diagnostics[0][1]) != primaryFailure || string(diagnostics[1][1]) != "owned process output after primary failure:" || bytes.Count(output, []byte(retainedOutput)) != 1 || bytes.Contains(output, []byte("DATA RACE")) || bytes.Contains(output, []byte("panic:")) {
+		t.Fatalf("owned failure child lost its primary failure or failed cleanup: %v\n%s", err, output)
+	}
+	for _, name := range []string{"ready", "interrupted", "joined"} {
+		value, err := os.ReadFile(filepath.Join(directory, name))
+		if err != nil || string(value) != name+"\n" {
+			t.Fatalf("owned failure child did not finish %s: %v marker=%q\n%s", name, err, value, output)
+		}
+	}
 }
 
 func securityProvisioningBrowserControl(t *testing.T, issuer *oidcControlWireFixture) graphv1connect.LanternSecurityServiceClient {
@@ -986,7 +1110,7 @@ func securityProvisioningLaunch(t *testing.T, binary string, env []string, origi
 
 func securityProvisioningLaunchProcess(t *testing.T, binary string, env []string, origin string) (func(), func(), *os.Process) {
 	t.Helper()
-	command := exec.CommandContext(t.Context(), binary)
+	command := securityProvisioningOwnedCommand(t, binary)
 	command.Env = env
 	var logs bytes.Buffer
 	command.Stdout, command.Stderr = &logs, &logs
@@ -996,25 +1120,7 @@ func securityProvisioningLaunchProcess(t *testing.T, binary string, env []string
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 	joined := false
-	stop := func() {
-		t.Helper()
-		if joined {
-			return
-		}
-		_ = command.Process.Signal(os.Interrupt)
-		select {
-		case err := <-done:
-			joined = true
-			if err != nil {
-				t.Fatalf("controlled server failed clean shutdown: %v\n%s", err, logs.Bytes())
-			}
-		case <-time.After(10 * time.Second):
-			_ = command.Process.Kill()
-			<-done
-			joined = true
-			t.Fatal("controlled server failed to join")
-		}
-	}
+	stop := securityProvisioningOwnedStop(t, command, done, &joined, &logs, 10*time.Second, "controlled server failed clean shutdown", "controlled server failed to join")
 	t.Cleanup(stop)
 	wait := func() {
 		client := &http.Client{Timeout: time.Second}

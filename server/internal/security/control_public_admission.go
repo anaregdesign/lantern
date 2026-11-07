@@ -6,7 +6,21 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
+
+// Callers pass an installed slot only while already holding kernel.gate.
+// These fixed facts observe the refused operation; they never query authority,
+// sample time, expose credentials, or provide an admission input. Turn carries
+// the installed consensus slot for this event kind, not a newly sampled cut.
+func (o *authorityOriginOwner) tracePublicRefusal(stage, reason string, slot uint64) {
+	var owner uint64
+	if o != nil && o.network != nil && o.network.timeOwner != nil {
+		owner = o.network.timeOwner.traceID
+	}
+	decisiontrace.Emit(decisiontrace.Event{Kind: "public_refusal", Object: owner, Stage: stage, Reason: reason, Turn: slot})
+}
 
 // CurrentPublicVersion names the new public contract. Legacy scalar revisions,
 // 16-byte change IDs and ENFORCED statuses retain their original meanings.
@@ -90,6 +104,11 @@ func (o *CurrentAuthority) Profile() CurrentProfile {
 // writer Revision, a short wall deadline, or authority from Snapshot alone.
 func (o *CurrentAuthority) Admit(ctx context.Context, producer CurrentCredentialProducer) (*Admission, error) {
 	if o == nil || o.origin == nil || !o.origin.network.enterCall() {
+		var origin *authorityOriginOwner
+		if o != nil {
+			origin = o.origin
+		}
+		origin.tracePublicRefusal("admit", "owner", 0)
 		return nil, ErrAuthorityUnavailable
 	}
 	defer o.origin.network.calls.Done()
@@ -99,20 +118,28 @@ func (o *CurrentAuthority) Admit(ctx context.Context, producer CurrentCredential
 	}
 	c, err := captureAuthorityUseCredential(view, facts, false)
 	if err != nil {
+		o.origin.tracePublicRefusal("admit", "credential", 0)
 		return nil, err
 	}
 	k := o.origin.network.kernel
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
-	if k.readyLocked() != nil || k.chosen != nil {
+	if k.readyLocked() != nil {
+		o.origin.tracePublicRefusal("admit", "kernel", k.replayState.slot)
+		return nil, ErrAuthorityUnavailable
+	}
+	if k.chosen != nil {
+		o.origin.tracePublicRefusal("admit", "chosen", k.replayState.slot)
 		return nil, ErrAuthorityUnavailable
 	}
 	if err = o.origin.authorizePublicCredentialLocked(ctx, c); err != nil {
+		o.origin.tracePublicRefusal("admit", "authority", k.replayState.slot)
 		return nil, err
 	}
 	access, active := view.Snapshot().AccessFor(c.actor)
 	if !active {
+		o.origin.tracePublicRefusal("admit", "inactive", k.replayState.slot)
 		return nil, ErrPermissionDenied
 	}
 	current := &currentPublicAdmission{owner: o, credential: c, snapshot: view.Snapshot(), profile: o.Profile()}
@@ -138,6 +165,11 @@ func (o *CurrentAuthority) Admit(ctx context.Context, producer CurrentCredential
 
 func (a *currentPublicAdmission) check(ctx context.Context) error {
 	if a == nil || a.owner == nil || a.owner.origin == nil || !a.owner.origin.network.enterCall() {
+		var origin *authorityOriginOwner
+		if a != nil && a.owner != nil {
+			origin = a.owner.origin
+		}
+		origin.tracePublicRefusal("admission_check", "owner", 0)
 		return ErrAuthorityUnavailable
 	}
 	o := a.owner.origin
@@ -146,10 +178,19 @@ func (a *currentPublicAdmission) check(ctx context.Context) error {
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
-	if k.readyLocked() != nil || k.chosen != nil {
+	if k.readyLocked() != nil {
+		o.tracePublicRefusal("admission_check", "kernel", k.replayState.slot)
 		return ErrAuthorityUnavailable
 	}
-	return o.authorizePublicCredentialLocked(ctx, a.credential)
+	if k.chosen != nil {
+		o.tracePublicRefusal("admission_check", "chosen", k.replayState.slot)
+		return ErrAuthorityUnavailable
+	}
+	err := o.authorizePublicCredentialLocked(ctx, a.credential)
+	if err != nil {
+		o.tracePublicRefusal("admission_check", "authority", k.replayState.slot)
+	}
+	return err
 }
 
 // Public callers may retry a fresh admission when installed state advances or
@@ -157,7 +198,12 @@ func (a *currentPublicAdmission) check(ctx context.Context) error {
 // credential. Keep same-cut credential, lineage and expiry failures denied.
 // The caller owns kernel.gate; this adds no renewal, re-verification or I/O.
 func (o *authorityOriginOwner) authorizePublicCredentialLocked(ctx context.Context, c authorityCredential) error {
-	if !o.configuredReadyLocked() || c.cut != o.network.kernel.replayState.projection.cut {
+	if !o.configuredReadyLocked() {
+		o.tracePublicRefusal("admission_current", "configuration", o.network.kernel.replayState.slot)
+		return ErrAuthorityUnavailable
+	}
+	if c.cut != o.network.kernel.replayState.projection.cut {
+		o.tracePublicRefusal("admission_current", "cut", o.network.kernel.replayState.slot)
 		return ErrAuthorityUnavailable
 	}
 	_, err := o.authorizeCurrentCredentialLocked(ctx, c)
