@@ -9,7 +9,67 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
+
+func TestCurrentAdmissionCutRefusalTraceDoesNotSampleOrRefresh(t *testing.T) {
+	_, origins, _ := authorityTestComposite(t)
+	o := &CurrentAuthority{origin: origins[1]}
+	ctx := s3aTestContext(t)
+	if err := o.origin.network.renewAuthority(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a, err := o.Admit(ctx, authorityFakeCredentialProducer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSnapshot := a.Snapshot()
+	// A retained credential from a different complete cut must fail before any
+	// native time sample. Tracing cannot refresh or relabel that credential.
+	a.current.credential.cut.Sequence++
+	staleCut := a.current.credential.cut
+	calls := 0
+	sample := o.origin.network.timeOwner.producer.sample
+	o.origin.network.timeOwner.producer.sample = func() (authorityTimeStamp, error) { calls++; return sample() }
+	capture := decisiontrace.Start(16)
+	if capture == nil {
+		t.Fatal("capture already owned")
+	}
+	defer capture.Stop()
+	err = a.Check(ctx, time.Time{})
+	capture.Stop()
+	events, dropped := capture.Drain()
+	if !errors.Is(err, ErrAuthorityUnavailable) || calls != 0 || a.Snapshot() != originalSnapshot || a.current.credential.cut != staleCut || dropped != 0 || len(events) != 2 || events[0].Kind != "public_refusal" || events[0].Stage != "admission_current" || events[0].Reason != "cut" || events[1].Stage != "admission_check" {
+		t.Fatal("trace sampled/refreshed stale admission or lost actual cut refusal", err, calls, events, dropped)
+	}
+}
+
+func TestCurrentAdmissionAbsentOwnerTraceRetainsUnavailable(t *testing.T) {
+	capture := decisiontrace.Start(4)
+	if capture == nil {
+		t.Fatal("capture already owned")
+	}
+	defer capture.Stop()
+	var owner *CurrentAuthority
+	if _, err := owner.Admit(t.Context(), nil); !errors.Is(err, ErrAuthorityUnavailable) {
+		t.Fatal("absent owner changed admission refusal", err)
+	}
+	var admission *currentPublicAdmission
+	if err := admission.check(t.Context()); !errors.Is(err, ErrAuthorityUnavailable) {
+		t.Fatal("absent owner changed check refusal", err)
+	}
+	capture.Stop()
+	events, dropped := capture.Drain()
+	if dropped != 0 || len(events) != 2 || events[0].Stage != "admit" || events[1].Stage != "admission_check" {
+		t.Fatal("absent owner refusal lost actual stage", events, dropped)
+	}
+	for _, event := range events {
+		if event.Kind != "public_refusal" || event.Reason != "owner" || event.Object != 0 || event.Turn != 0 {
+			t.Fatal("absent owner invented authority state", event)
+		}
+	}
+}
 
 func TestCurrentAuthorityFixedVoterCountDoesNotShrinkWithReadiness(t *testing.T) {
 	for _, count := range []int{1, 3} {

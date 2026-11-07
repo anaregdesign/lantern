@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -30,7 +31,7 @@ import (
 // mint fixture time. go test itself supplies -test.* arguments and runs tests.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 1 || os.Args[1] == listenerlaunch.Argument || os.Args[1] == "init-security" || os.Args[1] == "provision-security" || os.Args[1] == "renew-security" || os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
-		if err := runMain(); err != nil {
+		if err := runFunctionalMain(len(os.Args) == 1, runMain, os.Stderr); err != nil {
 			decisiontrace.WriteStartupFailure(os.Stderr, err)
 			slog.Error("functional server exited with error", slog.Any("err", err))
 			os.Exit(1)
@@ -38,6 +39,63 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// Only the controlled serving child owns this bounded passive capture. Normal
+// binaries do not compile this file, and m.Run retains its existing captures.
+// Finalize after runMain returns, before TestMain calls os.Exit. Overflow remains
+// explicit diagnostic loss; neither capture nor its records authorize a request.
+func runFunctionalMain(serving bool, run func() error, output io.Writer) error {
+	if !serving {
+		return run()
+	}
+	capture := decisiontrace.Start(4096)
+	if capture == nil {
+		return errors.New("controlled public decision capture already owned")
+	}
+	err := run()
+	capture.Stop()
+	events, dropped := capture.Drain()
+	traceErr := json.NewEncoder(output).Encode(struct {
+		Kind    string                `json:"kind"`
+		Events  []decisiontrace.Event `json:"events"`
+		Dropped uint64                `json:"dropped"`
+	}{"controlled_public_trace", events, dropped})
+	return errors.Join(err, traceErr)
+}
+
+func TestFunctionalMainCaptureRetainsTerminalLossAndOwnership(t *testing.T) {
+	primary := errors.New("synthetic primary failure")
+	var output strings.Builder
+	err := runFunctionalMain(true, func() error {
+		for range 4097 {
+			decisiontrace.Emit(decisiontrace.Event{Kind: "public_refusal", Stage: "admit", Reason: "cut", Turn: 7})
+		}
+		return primary
+	}, &output)
+	if !errors.Is(err, primary) || decisiontrace.Enabled() {
+		t.Fatal("capture masked primary failure or retained ownership", err)
+	}
+	var record struct {
+		Kind    string
+		Events  []decisiontrace.Event
+		Dropped uint64
+	}
+	if err := json.Unmarshal([]byte(output.String()), &record); err != nil || record.Kind != "controlled_public_trace" || len(record.Events) != 4096 || record.Dropped != 1 {
+		t.Fatal("bounded terminal capture lost explicit overflow", err)
+	}
+	existing := decisiontrace.Start(1)
+	if existing == nil {
+		t.Fatal("capture was not released")
+	}
+	defer existing.Stop()
+	called := false
+	if err := runFunctionalMain(true, func() error { called = true; return nil }, io.Discard); err == nil || called || !decisiontrace.Enabled() {
+		t.Fatal("serving capture stole existing ownership", err, called)
+	}
+	if err := runFunctionalMain(false, func() error { called = true; return primary }, io.Discard); !errors.Is(err, primary) || !called {
+		t.Fatal("non-serving command changed its error or capture", err)
+	}
 }
 
 // Controlled UDP supplies synthetic UTC for this real App lifetime test only.

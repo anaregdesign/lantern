@@ -393,21 +393,10 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 		}
 		return k.replayState.slot, accepted, k.replayState.projection.snapshot.configuredTrustDigest, k.p.count, k.configuredReadyLocked()
 	}
+	var startup configuredOwnerStartupObservation
 	wait := func(label string, predicate func() bool) {
 		t.Helper()
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			if predicate() {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				slot, accepted, digest, count, ready := state(2)
-				t.Fatalf("%s: %v; survivor slot=%d accepted=%x digest=%s P=%d ready=%v", label, ctx.Err(), slot, accepted, digest, count, ready)
-			case <-ticker.C:
-			}
-		}
+		configuredOwnerTestWait(t, ctx, owners, &startup, label, predicate)
 	}
 	statement := configuredOwnerStatement(owners[1].network.kernel)
 	votes, err := owners[1].collectConfiguredEndorsements(ctx, statement)
@@ -426,15 +415,7 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 	done := make(chan struct{})
 	workerOwner.network.workers.Add(1)
 	go func() { defer close(done); workerOwner.configuredLoop() }()
-	wait("initial matching worker must close its unresolved suffix", func() bool {
-		for _, id := range []uint32{1, 2, 3} {
-			slot, accepted, _, _, ready := state(id)
-			if slot != 2 || accepted != [32]byte{} || !ready {
-				return false
-			}
-		}
-		return (&CurrentAuthority{origin: workerOwner}).Ready(ctx)
-	})
+	configuredOwnerTestWaitForStartup(t, ctx, owners, workerOwner, &startup)
 	// The real ordinary renewal loop supplies eventual startup renewal. Park it
 	// only after public readiness, and join its previous cycle before injecting
 	// the later expiry fault. No test-issued renewal competes with startup.
@@ -634,6 +615,153 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 		t.Fatal("healthy worker stopped during idle polling")
 	default:
 	}
+}
+
+// The blocked peers cannot depend on the bounded delivery cache retaining every
+// CHOSEN datagram. This fault changes delivery only: signatures, fixed voters,
+// native journals, the one configured worker and its ordinary renewal are real.
+func TestConfiguredOwnerStartupConvergenceAfterDroppedChosenTLS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	_, owners, _ := authorityTestCompositeConfiguredMembersWithRenewal(t, 3, 2, nil, configuredIntent(t), true, func(id uint32, ownerCtx context.Context) {
+		if id != 2 {
+			<-ownerCtx.Done()
+		}
+	})
+	var dropped atomic.Uint64
+	for _, owner := range owners {
+		trust := owner.network.kernel.trust
+		owner.network.hooks.beforeSend = func(_ context.Context, target uint32, raw []byte) error {
+			if target != 3 || len(raw) <= len(s2cMessageMagic) || raw[len(s2cMessageMagic)] != s2cChosen {
+				return nil
+			}
+			message, err := s2cDecodeMessage(trust, raw)
+			if err != nil {
+				return err
+			}
+			if message.slot == 2 {
+				dropped.Add(1)
+				return errS3AWire
+			}
+			return nil
+		}
+	}
+	defer func() { t.Logf("initial slot-2 CHOSEN deliveries refused to fixed member 3: %d", dropped.Load()) }()
+	statement := configuredOwnerStatement(owners[1].network.kernel)
+	votes, err := owners[1].collectConfiguredEndorsements(ctx, statement)
+	if err != nil {
+		t.Fatal("initial native endorsements", err)
+	}
+	value, err := owners[1].sealConfigured(ctx, statement, votes)
+	if err != nil {
+		t.Fatal("initial native seal", err)
+	}
+	if _, err := owners[1].network.Drive(ctx, value); err != nil {
+		t.Fatal("initial native configuration", err)
+	}
+	authorityTestConverge(t, owners)
+	workerOwner := owners[2]
+	workerOwner.network.workers.Add(1)
+	go workerOwner.configuredLoop()
+	var startup configuredOwnerStartupObservation
+	configuredOwnerTestWaitForStartup(t, ctx, owners, workerOwner, &startup)
+	if dropped.Load() == 0 {
+		t.Fatal("fixture never refused a genuine initial CHOSEN delivery")
+	}
+}
+
+// Observations are detached, bounded facts from the existing gates. They never
+// call Ready, current time, membership, journal validation or a network probe.
+type configuredOwnerStateObservation struct {
+	Member                                  uint32
+	Slot, Records                           uint64
+	Accepted, AcceptedValueNonzero          bool
+	Chosen, ConfigurationMatches            bool
+	StartupRecoveryPending, Pending, Active bool
+	PendingSlot, ActiveSlot                 uint64
+	Closed, KernelUnknown                   bool
+}
+
+type configuredOwnerStartupObservation struct {
+	ReadyObserved, Ready bool
+}
+
+func configuredOwnerTestStates(owners map[uint32]*authorityOriginOwner) []configuredOwnerStateObservation {
+	ids := make([]uint32, 0, len(owners))
+	for id := range owners {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	states := make([]configuredOwnerStateObservation, 0, len(ids))
+	for _, id := range ids {
+		o := owners[id]
+		k := o.network.kernel
+		k.gate.Lock()
+		r := o.network.receiver
+		s := configuredOwnerStateObservation{Member: id, Slot: k.replayState.slot, Records: k.p.count,
+			Accepted: k.accepted != nil, Chosen: k.chosen != nil, ConfigurationMatches: k.configuredReadyLocked(),
+			StartupRecoveryPending: r.startupRecoveryPending, Pending: r.pending != nil, Active: r.active != nil,
+			Closed: o.closed || k.closed || o.network.closed.Load(), KernelUnknown: k.unknown != nil}
+		if k.accepted != nil {
+			s.AcceptedValueNonzero = k.accepted.value != [32]byte{}
+		}
+		if r.pending != nil {
+			s.PendingSlot = r.pending.request.statement.Slot
+		}
+		if r.active != nil {
+			s.ActiveSlot = r.active.certificate.request.statement.Slot
+		}
+		k.gate.Unlock()
+		states = append(states, s)
+	}
+	return states
+}
+
+func configuredOwnerTestWait(t *testing.T, ctx context.Context, owners map[uint32]*authorityOriginOwner, startup *configuredOwnerStartupObservation, label string, predicate func() bool) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if predicate() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s: %v; actual startup Ready=%+v; members=%+v", label, ctx.Err(), *startup, configuredOwnerTestStates(owners))
+		case <-ticker.C:
+		}
+	}
+}
+
+func configuredOwnerTestWaitForStartup(t *testing.T, ctx context.Context, owners map[uint32]*authorityOriginOwner, worker *authorityOriginOwner, observed *configuredOwnerStartupObservation) {
+	t.Helper()
+	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must install its recovered prefix certificate", func() bool {
+		for _, state := range configuredOwnerTestStates(owners) {
+			if state.Member == worker.network.kernel.config.Member {
+				return state.Slot == 2 && !state.AcceptedValueNonzero && !state.Chosen && state.ConfigurationMatches && !state.StartupRecoveryPending && state.Active && state.ActiveSlot == 2
+			}
+		}
+		return false
+	})
+	// Only the survivor owns a configured worker here; the other members have
+	// automatic renewal/catch-up parked. Its cleared fence and native slot-2
+	// certificate show startup publication, not delivery to every peer or current
+	// public readiness. Recover a missed CHOSEN through the existing authenticated
+	// range path inside the original 30s, then retain the original Ready poll.
+	// No extra Ready/time probe or test-issued renewal competes with the worker.
+	authorityTestConvergeContext(t, ctx, owners)
+	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must close its unresolved suffix", func() bool {
+		for _, state := range configuredOwnerTestStates(owners) {
+			// Preserve the original value comparison; a retained NOOP ACCEPT
+			// has a zero value too. Presence remains separately diagnostic.
+			if state.Slot != 2 || state.AcceptedValueNonzero || !state.ConfigurationMatches {
+				return false
+			}
+		}
+		observed.ReadyObserved = true
+		observed.Ready = (&CurrentAuthority{origin: worker}).Ready(ctx)
+		return observed.Ready
+	})
 }
 
 func TestConfiguredOwnerConditionalRecoveryRetainsAcceptedHandoff(t *testing.T) {
