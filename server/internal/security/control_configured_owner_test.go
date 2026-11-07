@@ -735,6 +735,21 @@ func configuredOwnerTestWait(t *testing.T, ctx context.Context, owners map[uint3
 
 func configuredOwnerTestWaitForStartup(t *testing.T, ctx context.Context, owners map[uint32]*authorityOriginOwner, worker *authorityOriginOwner, observed *configuredOwnerStartupObservation) {
 	t.Helper()
+	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must install its recovered prefix certificate", func() bool {
+		for _, state := range configuredOwnerTestStates(owners) {
+			if state.Member == worker.network.kernel.config.Member {
+				return state.Slot == 2 && !state.AcceptedValueNonzero && !state.Chosen && state.ConfigurationMatches && !state.StartupRecoveryPending && state.Active && state.ActiveSlot == 2
+			}
+		}
+		return false
+	})
+	// Only the survivor owns a configured worker here; the other members have
+	// automatic renewal/catch-up parked. Its cleared fence and native slot-2
+	// certificate show startup publication, not delivery to every peer or current
+	// public readiness. Recover a missed CHOSEN through the existing authenticated
+	// range path inside the original 30s, then retain the original Ready poll.
+	// No extra Ready/time probe or test-issued renewal competes with the worker.
+	authorityTestConvergeContext(t, ctx, owners)
 	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must close its unresolved suffix", func() bool {
 		for _, state := range configuredOwnerTestStates(owners) {
 			// Preserve the original value comparison; a retained NOOP ACCEPT

@@ -22,6 +22,13 @@ func authorityTestConverge(t *testing.T, owners map[uint32]*authorityOriginOwner
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
+	authorityTestConvergeContext(t, ctx, owners)
+}
+
+// A fixture with an enclosing lifecycle budget must keep convergence within
+// that same context; authenticated catch-up never receives a fresh deadline.
+func authorityTestConvergeContext(t *testing.T, ctx context.Context, owners map[uint32]*authorityOriginOwner) {
+	t.Helper()
 	var last error
 	for {
 		receipts := make(map[uint32]s2LocalReceipt)
