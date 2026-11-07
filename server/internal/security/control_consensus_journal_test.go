@@ -70,7 +70,11 @@ func TestS2CJournalDurableRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restored.close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restored.close: %v", err)
+		}
+	}(restored.close)
 	if !reflect.DeepEqual(indices, []uint64{1, 2, 3}) || !reflect.DeepEqual(restored.records, wantRecords) ||
 		restored.floor != last || restored.used != wantUsed || restored.count != 3 {
 		t.Fatalf("restore differs: indices=%v records=%q floor=%+v used=%d", indices, restored.records, restored.floor, restored.used)
@@ -162,7 +166,11 @@ func TestS2CJournalMissingTipCapacity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer restored.close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned restored.close: %v", err)
+				}
+			}(restored.close)
 			if restored.floor != floor || restored.used != policy.Bytes || visits != 2 || !bytes.Equal(s2cJournalReadFile(t, path+".tip"), tip) {
 				t.Fatal("catch-up did not restore exact durable budget and tip")
 			}
@@ -281,7 +289,11 @@ func TestS2CJournalUncertaintyAndPanic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer restored.close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned restored.close: %v", err)
+				}
+			}(restored.close)
 			wantCount := uint64(1)
 			if point == "after log panic" {
 				wantCount = 2

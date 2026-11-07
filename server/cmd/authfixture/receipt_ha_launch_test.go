@@ -37,7 +37,12 @@ func TestReceiptHALaunchCleanupUsesOwnedListenerIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer listener.Close()
+		defer func() {
+			// The ownership proof below closes this exact handle itself.
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Errorf("close checked receipt HA listener: %v", err)
+			}
+		}()
 		if err := receiptHAOwnedListenersClosed([]net.Listener{listener}); err == nil {
 			t.Fatal("open owned listener was reported closed")
 		}
@@ -47,12 +52,21 @@ func TestReceiptHALaunchCleanupUsesOwnedListenerIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer public.Close()
+		defer func() {
+			// h.close below owns the first close of this exact handle.
+			if err := public.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Errorf("close released receipt HA public listener: %v", err)
+			}
+		}()
 		peer, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer peer.Close()
+		defer func() {
+			if err := peer.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Errorf("close released receipt HA peer listener: %v", err)
+			}
+		}()
 		h := &receiptHALaunch{public: newReceiptHAFrontend(public), peers: []net.Listener{peer}}
 		defer h.close()
 		owned := []net.Listener{h.public.listener, h.peers[0]}
@@ -62,7 +76,11 @@ func TestReceiptHALaunchCleanupUsesOwnedListenerIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal("controlled replacement could not acquire released address", err)
 		}
-		defer replacement.Close()
+		defer func() {
+			if err := replacement.Close(); err != nil {
+				t.Errorf("close replacement receipt HA listener: %v", err)
+			}
+		}()
 		if competing, err := net.Listen("tcp", address); err == nil {
 			_ = competing.Close()
 			t.Fatal("controlled replacement did not exclude a competing bind")

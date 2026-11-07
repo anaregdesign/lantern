@@ -60,12 +60,16 @@ func writePrivateNewFile(path string, value []byte) (err error) {
 	return syncSecurityDirectory(filepath.Dir(path))
 }
 
-func syncSecurityDirectory(path string) error {
+func syncSecurityDirectory(path string) (err error) {
 	d, err := os.Open(path)
 	if err != nil {
 		return errSecurityProvisioning
 	}
-	defer d.Close()
+	defer func() {
+		if closeErr := d.Close(); closeErr != nil {
+			err = errors.Join(err, errSecurityProvisioning)
+		}
+	}()
 	if d.Sync() != nil {
 		return errSecurityProvisioning
 	}

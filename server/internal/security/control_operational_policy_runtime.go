@@ -61,14 +61,14 @@ func (o *CurrentAuthority) BindOperationalPolicyRuntime(group operationalpolicy.
 	return nil
 }
 
-func (k *s2cParticipant) operationalOwnersAvailableLocked() error {
-	policies := k.replayState.projection.snapshot.OperationalPolicies()
+func (o *s2cParticipant) operationalOwnersAvailableLocked() error {
+	policies := o.replayState.projection.snapshot.OperationalPolicies()
 	for _, group := range operationalpolicy.Groups() {
-		floor := k.operationalFloors[group]
+		floor := o.operationalFloors[group]
 		if floor == nil && policies.Get(group) == nil {
 			continue
 		}
-		owner := k.operationalRuntimes[group]
+		owner := o.operationalRuntimes[group]
 		if floor == nil || owner == nil || owner.AvailableOperationalPolicy(group, operationalpolicy.Version) != nil {
 			return ErrOperationalPolicyUnavailable
 		}
@@ -108,10 +108,10 @@ func (o *CurrentAuthority) CurrentOperationalPolicies(ctx context.Context) (Oper
 	return k.operationalPolicyProjectionLocked(), nil
 }
 
-func (k *s2cParticipant) operationalPolicyProjectionLocked() OperationalPolicyProjection {
-	p := OperationalPolicyProjection{Policies: k.replayState.projection.snapshot.OperationalPolicies(), Cut: k.replayState.projection.cut, Member: k.config.Member}
+func (o *s2cParticipant) operationalPolicyProjectionLocked() OperationalPolicyProjection {
+	p := OperationalPolicyProjection{Policies: o.replayState.projection.snapshot.OperationalPolicies(), Cut: o.replayState.projection.cut, Member: o.config.Member}
 	for _, group := range operationalpolicy.Groups() {
-		if floor := k.operationalFloors[group]; floor != nil {
+		if floor := o.operationalFloors[group]; floor != nil {
 			p.Preparations = append(p.Preparations, floor.preparation)
 		}
 	}

@@ -289,7 +289,7 @@ func TestSingletonNOOPCompletionFixture(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			var callContext context.Context = ctx
+			var callContext = ctx
 			if tc.unbounded {
 				callContext = context.Background()
 			}

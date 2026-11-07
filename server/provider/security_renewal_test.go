@@ -574,7 +574,9 @@ func TestRenewSecurityGeneratedPublisherMaintenanceLifecycle(t *testing.T) {
 				t.Fatal("maintenance changed native state")
 			}
 			if stale, err := membershippublisher.Open(oldConfig, publisherState, "resume"); err == nil {
-				stale.Close()
+				if err := stale.Close(); err != nil {
+					t.Error("close unexpected stale publisher", err)
+				}
 				t.Fatal("stale old window resumed after advancement")
 			}
 			resumed, err := membershippublisher.Open(plan.NextConfig, publisherState, "resume")

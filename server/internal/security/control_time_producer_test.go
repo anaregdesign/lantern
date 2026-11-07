@@ -107,9 +107,10 @@ func TestAuthorityTimeProducer(t *testing.T) {
 	for _, mode := range []string{"success", "offset before", "offset after", "bad nonce", "bad mode", "short", "oversize", "read timeout", "cancel", "close", "sample failure", "sample regression", "sample epoch"} {
 		t.Run(mode, func(t *testing.T) {
 			offsetSeconds := int64(0)
-			if mode == "offset before" {
+			switch mode {
+			case "offset before":
 				offsetSeconds = -3600
-			} else if mode == "offset after" {
+			case "offset after":
 				offsetSeconds = 3600
 			}
 			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -571,6 +572,161 @@ func TestAuthorityTimeProducerDarwinReadAbortClose(t *testing.T) {
 			t.Fatal("close did not cancel and join the additional read", err)
 		}
 	})
+}
+
+func TestAuthorityTimeProducerOwnsOneCloseBeforeMeasurementCommit(t *testing.T) {
+	for _, mode := range []string{"success", "close failure", "primary and close failure", "primary and close timeout", "read timeout and close failure", "close consumes read deadline", "callback join"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				source, err := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				samples := 0
+				p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) {
+					samples++
+					return fakeAuthorityTimeStamp(uint64(samples) * 10_000_000), nil
+				}}
+				defer p.close()
+				primary := errors.New("injected read failure")
+				if mode == "read timeout and close failure" {
+					primary = &net.OpError{Op: "read", Net: "udp", Err: os.ErrDeadlineExceeded}
+				}
+				var closeErr error
+				switch mode {
+				case "success", "close consumes read deadline":
+					closeErr = nil
+				case "close failure", "primary and close timeout", "callback join":
+					closeErr = &net.OpError{Op: "close", Net: "udp", Err: os.ErrDeadlineExceeded}
+				default:
+					closeErr = errors.New("injected close failure")
+				}
+				closeEntered, releaseClose := make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+				defer release()
+				var closes atomic.Int32
+				var entered sync.Once
+				var nonce [8]byte
+				var flight context.Context
+				writes, reads := 0, 0
+				conn := &timeProducerConn{
+					write: func(raw []byte) (int, error) {
+						writes++
+						copy(nonce[:], raw[40:48])
+						return len(raw), nil
+					},
+					read: func(raw []byte) (int, error) {
+						reads++
+						switch mode {
+						case "primary and close failure", "primary and close timeout", "read timeout and close failure", "close consumes read deadline":
+							return 0, primary
+						case "callback join":
+							cancel()
+							<-closeEntered
+							return 0, primary
+						default:
+							response := fakeAuthorityNTPResponse(nonce)
+							return copy(raw, response[:]), nil
+						}
+					},
+					close: func() error {
+						closes.Add(1)
+						entered.Do(func() { close(closeEntered) })
+						switch mode {
+						case "callback join":
+							<-releaseClose
+						case "close consumes read deadline":
+							<-flight.Done()
+							<-releaseClose
+						}
+						return closeErr
+					},
+				}
+				type result struct {
+					measurement authorityTimeMeasurement
+					err         error
+				}
+				exchange := func() result {
+					m, err := p.exchangeIO(ctx, "127.0.0.1:123", nil, func(ctx context.Context, _, _ string) (net.Conn, error) {
+						flight = ctx
+						return conn, nil
+					})
+					return result{m, err}
+				}
+				var got result
+				if mode == "callback join" || mode == "close consumes read deadline" {
+					done := make(chan result, 1)
+					go func() { done <- exchange() }()
+					select {
+					case <-closeEntered:
+					case <-done:
+						t.Fatal("exchange never entered its cancellation Close")
+					}
+					if mode == "close consumes read deadline" {
+						// Let only the original flight timer advance while its
+						// physical Close remains blocked. The Read already failed.
+						<-flight.Done()
+					}
+					synctest.Wait()
+					select {
+					case <-done:
+						t.Fatal("exchange returned before its cancellation Close joined")
+					default:
+					}
+					release()
+					got = <-done
+				} else {
+					got = exchange()
+				}
+				if closes.Load() != 1 || writes != 1 || reads != 1 || p.attempts != 1 || p.writes != 1 || p.busy {
+					t.Fatal("cleanup changed close/send/read ownership or acquisition counters")
+				}
+				wantStage, wantReason, wantRead := "read", "read", "other"
+				wantExchange, wantIncoming := decisiontrace.ContextLive, decisiontrace.ContextLive
+				switch mode {
+				case "success":
+					wantStage, wantReason, wantRead = "measured", "ok", "none"
+				case "close failure":
+					wantStage, wantReason, wantRead = "close", "close", "none"
+				case "read timeout and close failure":
+					wantReason, wantRead = "read_timeout", "timeout"
+				case "callback join":
+					wantExchange, wantIncoming = decisiontrace.ContextCanceled, decisiontrace.ContextCanceled
+				case "close consumes read deadline":
+					wantExchange = decisiontrace.ContextDeadlineExceeded
+				}
+				probe, attempt := p.completedProbe()
+				if probe.Stage != wantStage || probe.Reason != wantReason || attempt.Stage != wantStage || attempt.Reason != wantReason || attempt.ReadCount != 1 || !attempt.HasReadBudget || attempt.ReadRemainingNS != int64(3*time.Second) || attempt.FirstReadError != wantRead || attempt.FinalReadError != wantRead || attempt.ExchangeContext != wantExchange || attempt.IncomingContext != wantIncoming {
+					t.Fatal("cleanup changed the actual Read or completed-attempt classifications")
+				}
+				if mode == "success" {
+					if got.err != nil || got.measurement.sequence != 1 || p.sequence != 1 || samples != 2 {
+						t.Fatal("successful cleanup changed a complete measurement")
+					}
+					return
+				}
+				if got.err == nil || closeErr != nil && !errors.Is(got.err, closeErr) || got.measurement != (authorityTimeMeasurement{}) || p.sequence != 0 {
+					t.Fatal("failed exchange published a measurement/sequence or lost its errors")
+				}
+				if mode != "close failure" && !errors.Is(got.err, primary) {
+					t.Fatal("cleanup replaced the original failed Read")
+				}
+				var transport *authorityTimeTransportError
+				if mode == "close failure" && errors.As(got.err, &transport) {
+					t.Fatal("Close failure was mislabeled as DNS/dial/Write/Read failure")
+				}
+				if mode == "close consumes read deadline" {
+					original, ok := got.err.(*authorityTimeTransportError)
+					if !ok || original.Unwrap() != primary {
+						t.Fatal("successful delayed Close changed the original Read failure")
+					}
+				}
+			})
+		})
+	}
 }
 
 func TestAuthorityTimeTransportClassification(t *testing.T) {

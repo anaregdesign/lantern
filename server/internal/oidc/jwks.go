@@ -89,8 +89,12 @@ func decodeKey(key jsonKey, algorithm string) (crypto.PublicKey, error) {
 		if errX != nil || errY != nil || len(x) != 32 || len(y) != 32 {
 			return nil, ErrInvalidDocument
 		}
-		public := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
-		if !public.Curve.IsOnCurve(public.X, public.Y) {
+		encoded := make([]byte, 1, 65)
+		encoded[0] = 4 // SEC 1 uncompressed point.
+		encoded = append(encoded, x...)
+		encoded = append(encoded, y...)
+		public, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), encoded)
+		if err != nil {
 			return nil, ErrInvalidDocument
 		}
 		return public, nil

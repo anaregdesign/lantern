@@ -89,3 +89,33 @@ func TestRegistrationCredentialCurrentEvidenceRefusals(t *testing.T) {
 		t.Fatal("zero current view accepted")
 	}
 }
+
+func TestRegistrationCredentialRequiresExactDeadlineRepresentation(t *testing.T) {
+	_, view, event := registrationTestView(t, registrationImage())
+	original, err := captureRegistrationCredential(view, CurrentCredentialFacts{Token: &event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	low, high, err := view.TimeBounds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		deadline time.Time
+		want     bool
+	}{
+		{name: "original deadline", deadline: original.claim.AdmissionDeadline, want: true},
+		{name: "same-instant named UTC", deadline: original.claim.AdmissionDeadline.In(time.FixedZone("named-UTC", 0))},
+		{name: "earlier deadline", deadline: original.claim.AdmissionDeadline.Add(-time.Nanosecond)},
+		{name: "later deadline", deadline: original.claim.AdmissionDeadline.Add(time.Nanosecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claim := original.claim
+			claim.AdmissionDeadline = tc.deadline
+			if got := registrationEvidenceTimesValid(claim, low, high); got != tc.want {
+				t.Fatalf("registration deadline accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

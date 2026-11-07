@@ -3,6 +3,7 @@
 package security
 
 import (
+	"errors"
 	"io"
 	"os"
 )
@@ -48,13 +49,18 @@ func newNativeAuthorityTimeProducerFrom(read func(string, int64) ([]byte, error)
 	return &authorityTimeProducer{source: source, sample: sample}, nil
 }
 
-func readAuthorityTimeFile(path string, limit int64) ([]byte, error) {
+func readAuthorityTimeFile(path string, limit int64) (raw []byte, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			raw = nil
+			err = errors.Join(err, errAuthorityTime)
+		}
+	}()
+	raw, err = io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil || len(raw) == 0 || int64(len(raw)) > limit {
 		return nil, errAuthorityTime
 	}

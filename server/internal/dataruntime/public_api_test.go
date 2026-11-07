@@ -353,8 +353,7 @@ func TestPublicAPI_GetVerticesBatchRetriesWithoutBlockingPublication(t *testing.
 	<-backend.entered
 	writerDone := make(chan struct{})
 	go func() {
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
+		completeTestPublicationInterval(t, svc)
 		close(writerDone)
 	}()
 	select {
@@ -433,8 +432,7 @@ func TestPublicAPI_PrefixCountRetriesWithoutBlockingPublication(t *testing.T) {
 			}
 			writerDone := make(chan struct{})
 			go func() {
-				svc.replicationCutMu.Lock()
-				svc.replicationCutMu.Unlock()
+				completeTestPublicationInterval(t, svc)
 				close(writerDone)
 			}()
 			select {

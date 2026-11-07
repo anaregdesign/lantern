@@ -91,7 +91,7 @@ func (v *Verifier) verifyNativeID(ctx context.Context, a NativeAttempt, raw, cod
 	if err != nil {
 		return VerifiedIdentity{}, false, err
 	}
-	if claims.AuthTime != nil && (claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time)) {
+	if claims.AuthTime != nil && (claims.AuthTime.After(v.now()) || claims.AuthTime.After(claims.IssuedAt.Time)) {
 		return VerifiedIdentity{}, false, ErrInvalidToken
 	}
 	_, codeHash := members["c_hash"]

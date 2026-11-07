@@ -25,7 +25,11 @@ func TestS2LocalOwnerCompleteMaterialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer o.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned o.Close: %v", err)
+		}
+	}(o.Close)
 	_, genesis, err := o.ReadLocalCut()
 	if err != nil || genesis.LocalIndex != 1 || genesis.ControlSlot != 0 {
 		t.Fatal(genesis, err)
@@ -93,7 +97,11 @@ func TestS2LocalOwnerPlanFences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer o.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned o.Close: %v", err)
+		}
+	}(o.Close)
 	_, floor, _ := o.ReadLocalCut()
 	p, err := o.PrepareNext(history[0])
 	if err != nil {
@@ -129,7 +137,11 @@ func TestS2LocalOwnerPlanFences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resumed.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned resumed.Close: %v", err)
+		}
+	}(resumed.Close)
 	if _, err = resumed.CommitPrepared(reprepared); !errors.Is(err, errS2LocalPlan) {
 		t.Fatal("old incarnation token", err)
 	}
@@ -203,7 +215,11 @@ func TestS2LocalOwnerExactQuotaAndFiniteExhaustion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer o.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned o.Close: %v", err)
+				}
+			}(o.Close)
 			before, _, _ := s2LocalFiles(path, scope.Storage)
 			p, err := o.PrepareNext(history[0])
 			if short {
@@ -297,7 +313,11 @@ func TestS2LocalOwnerPublicationPanicRequiresRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resumed.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned resumed.Close: %v", err)
+				}
+			}(resumed.Close)
 			state, r, err := resumed.ReadLocalCut()
 			want, e := ApplyS1(g.state, history[0])
 			if err != nil || e != nil || r.LocalIndex != 2 || !bytes.Equal(s2TestEncode(t, state, g.roots), s2TestEncode(t, want.State, g.roots)) {
@@ -426,7 +446,11 @@ func TestS2LocalProcessCrash(t *testing.T) {
 			o.hooks.afterLog = exit
 		case "holdBeforePublish":
 			o.hooks.beforePublish = func() {
-				fmt.Fprintln(os.Stdout, "held")
+				if _, err := fmt.Fprintln(os.Stdout, "held"); err != nil {
+					// This callback holds the publication gate. Panic unwinds it;
+					// Goexit here could strand deferred owner cleanup behind it.
+					panic(err)
+				}
 				// Keep a timer alive in the standalone test subprocess. An
 				// empty select can trigger Go's deadlock exit and release the
 				// lease before the parent actually probes the paused owner.
@@ -478,7 +502,11 @@ func TestS2LocalProcessCrash(t *testing.T) {
 			if err != nil {
 				t.Fatal("resume after process exit", err)
 			}
-			defer o.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned o.Close: %v", err)
+				}
+			}(o.Close)
 			got, receipt, err := o.ReadLocalCut()
 			if err != nil || receipt.LocalIndex != uint64(len(proof)+1) || receipt.ControlSlot != uint64(len(proof)) {
 				t.Fatal("recovered cut", receipt, err)
@@ -568,7 +596,11 @@ func TestS2LocalCrossProcessAliasLease(t *testing.T) {
 	if err != nil {
 		t.Fatal("crashed owner retained lease", err)
 	}
-	defer o.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned o.Close: %v", err)
+		}
+	}(o.Close)
 	_, receipt, err := o.ReadLocalCut()
 	if err != nil || receipt.LocalIndex != 2 {
 		t.Fatal("crashed publication not recovered", receipt, err)
@@ -586,7 +618,11 @@ func TestS2LocalPublicationUncertaintyDominates(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer o.Close()
+				defer func(closeOwned func() error) {
+					if err := closeOwned(); err != nil {
+						t.Errorf("close owned o.Close: %v", err)
+					}
+				}(o.Close)
 				_, floor, err := o.ReadLocalCut()
 				if err != nil {
 					t.Fatal(err)
@@ -632,7 +668,11 @@ func TestS2LocalPublicationUncertaintyDominates(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer r.Close()
+				defer func(closeOwned func() error) {
+					if err := closeOwned(); err != nil {
+						t.Errorf("close owned r.Close: %v", err)
+					}
+				}(r.Close)
 				state, receipt, err := r.ReadLocalCut()
 				if err != nil || receipt.LocalIndex != 2 || state.slot != 1 {
 					t.Fatal("durable uncertain successor not recovered", err)
@@ -678,7 +718,11 @@ func TestS2LocalOwnerRepresentabilityKeepsSameDecision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer o.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned o.Close: %v", err)
+				}
+			}(o.Close)
 			next := history[0]
 			if bound == "capsule-ledger" || bound == "S1-control-reserve" {
 				p, err := o.PrepareNext(next)
@@ -722,7 +766,11 @@ func TestS2LocalOwnerFreezesPreparedInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer o.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned o.Close: %v", err)
+		}
+	}(o.Close)
 	_, floor, err := o.ReadLocalCut()
 	if err != nil {
 		t.Fatal(err)
@@ -752,7 +800,11 @@ func TestS2LocalOwnerFreezesPreparedInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned r.Close: %v", err)
+		}
+	}(r.Close)
 	_, recovered, err := r.ReadLocalCut()
 	if err != nil || recovered != receipt {
 		t.Fatal("frozen decision did not survive recovery", err)

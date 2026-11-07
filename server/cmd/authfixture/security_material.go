@@ -228,7 +228,7 @@ func attachFixtureSecurity(f *fixture, directory string) error {
 		if err != nil {
 			return err
 		}
-		var issuers []map[string]any = make([]map[string]any, 0)
+		issuers := make([]map[string]any, 0)
 		for _, issuer := range image.Issuers {
 			if issuer.EnvOwned {
 				issuers = append(issuers, fixtureIssuerIntent(issuer))

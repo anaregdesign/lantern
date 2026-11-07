@@ -136,18 +136,18 @@ func (o *authorityOriginOwner) supportOperationalPolicyLocked(ctx context.Contex
 	return response, nil
 }
 
-func (n *s3aOwner) operationalPolicySupportResponse(ctx context.Context, raw []byte, check func() error) ([]byte, error) {
-	if n.origin == nil || check == nil {
+func (o *s3aOwner) operationalPolicySupportResponse(ctx context.Context, raw []byte, check func() error) ([]byte, error) {
+	if o.origin == nil || check == nil {
 		return nil, ErrOperationalPolicyUnavailable
 	}
-	k := n.kernel
+	k := o.kernel
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
 	if check() != nil {
 		return nil, ErrAuthorityUnavailable
 	}
-	response, err := n.origin.supportOperationalPolicyLocked(ctx, raw)
+	response, err := o.origin.supportOperationalPolicyLocked(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -209,8 +209,8 @@ func (o *authorityOriginOwner) collectOperationalPolicySupport(ctx context.Conte
 	return encodeOperationalPolicyCandidate(k.trust, h, raw)
 }
 
-func (n *s3aOwner) ensureOperationalPolicyCandidate(ctx context.Context, digest [32]byte) error {
-	k := n.kernel
+func (o *s3aOwner) ensureOperationalPolicyCandidate(ctx context.Context, digest [32]byte) error {
+	k := o.kernel
 	k.gate.Lock()
 	if k.readyLocked() != nil {
 		k.gate.Unlock()
@@ -222,10 +222,10 @@ func (n *s3aOwner) ensureOperationalPolicyCandidate(ctx context.Context, digest 
 		return nil
 	}
 	k.gate.Unlock()
-	if n.origin == nil {
+	if o.origin == nil {
 		return ErrOperationalPolicyUnavailable
 	}
-	candidate, err := n.origin.collectOperationalPolicySupport(ctx, h)
+	candidate, err := o.origin.collectOperationalPolicySupport(ctx, h)
 	if err != nil {
 		return err
 	}

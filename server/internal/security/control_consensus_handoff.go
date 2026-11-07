@@ -96,10 +96,16 @@ func (h *s2cHistoricalH) digest() [32]byte {
 }
 
 func s2cCanonicalTime(t time.Time, optional bool) bool {
-	if t.IsZero() {
-		return optional && t == (time.Time{})
+	// Value-switch cases compare the complete representation. Equal would
+	// discard the location and monotonic distinctions required by this wire cut.
+	switch t {
+	case time.Time{}:
+		return optional
+	case t.Round(0):
+		return !t.IsZero() && t.Location() == time.UTC && t.Year() >= 1 && t.Year() <= 9999
+	default:
+		return false
 	}
-	return t.Location() == time.UTC && t.Year() >= 1 && t.Year() <= 9999 && t == t.Round(0)
 }
 
 func s2cCredentialEvidence(h s2cHistoricalHeader) [32]byte {
@@ -167,7 +173,12 @@ func s2cVerifyCredential(h s2cHistoricalHeader, origin s2cOriginDescriptor, comm
 func s2cVerifyPurpose(h s2cHistoricalHeader, operation OperationIdentity) bool {
 	p := h.Purpose
 	if p == nil {
-		return h.PurposeEvidence == [32]byte{} && h.PurposeBinding == [32]byte{} && h.PurposeDeadline == (time.Time{})
+		switch h.PurposeDeadline {
+		case time.Time{}:
+			return h.PurposeEvidence == [32]byte{} && h.PurposeBinding == [32]byte{}
+		default:
+			return false
+		}
 	}
 	if p.ID != h.ID || p.OperationDigest != h.OperationDigest || p.Actor != operation.actor || p.Reviewed != operation.reviewed || p.OriginDigest != h.OriginDigest || p.Serial != h.Serial || p.IssuerConfigRevision != h.Authentication.IssuerConfigRevision || p.Lineage != h.Lineage || p.Challenge == [32]byte{} || p.ReauthenticationEvidence == [32]byte{} {
 		return false
@@ -181,7 +192,12 @@ func s2cVerifyPurpose(h s2cHistoricalHeader, operation OperationIdentity) bool {
 	if p.CredentialExpiresAt.Before(deadline) {
 		deadline = p.CredentialExpiresAt
 	}
-	return p.ReviewAt.Before(p.NotBefore) && !p.AuthenticationTime.Before(p.NotBefore) && !p.ApprovedAt.Before(p.AuthenticationTime) && !h.Consume.Before(p.ApprovedAt) && h.Consume.Before(deadline) && h.PurposeDeadline == deadline && h.PurposeBinding == s1PurposeBinding(h.ID, operation) && h.PurposeEvidence == s2cHash("purpose-evidence", p)
+	switch h.PurposeDeadline {
+	case deadline:
+	default:
+		return false
+	}
+	return p.ReviewAt.Before(p.NotBefore) && !p.AuthenticationTime.Before(p.NotBefore) && !p.ApprovedAt.Before(p.AuthenticationTime) && !h.Consume.Before(p.ApprovedAt) && h.Consume.Before(deadline) && h.PurposeBinding == s1PurposeBinding(h.ID, operation) && h.PurposeEvidence == s2cHash("purpose-evidence", p)
 }
 
 // Parsing and signature validation never sample current time. Expiry governs

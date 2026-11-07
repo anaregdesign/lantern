@@ -21,7 +21,11 @@ func TestCreateLeasedReceiptWALCandidateFreshRestartAndExclusiveOwner(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned owner.Close: %v", err)
+		}
+	}(owner.Close)
 	if seq, ok := owner.state.log.LastSeq(); ok || seq != 0 {
 		t.Fatalf("fresh Log = %d, %v", seq, ok)
 	}
@@ -47,7 +51,11 @@ func TestCreateLeasedReceiptWALCandidateFreshRestartAndExclusiveOwner(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restored.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restored.Close: %v", err)
+		}
+	}(restored.Close)
 	if seq, ok := restored.state.log.LastSeq(); ok || seq != 0 {
 		t.Fatalf("restarted empty Log = %d, %v", seq, ok)
 	}

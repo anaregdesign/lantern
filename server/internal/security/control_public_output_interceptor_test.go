@@ -115,7 +115,11 @@ func TestCurrentPublicOutputTLSProtocolMatrix(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer stream.Close()
+				defer func(closeOwned func() error) {
+					if err := closeOwned(); err != nil {
+						t.Errorf("close owned stream.Close: %v", err)
+					}
+				}(stream.Close)
 				if !stream.Receive() || stream.Receive() || stream.Err() != nil || stream.ResponseTrailer().Get("X-Current-Trailer") != "terminal" {
 					t.Fatal("stream/trailer failure", stream.Err())
 				}
@@ -264,7 +268,11 @@ func TestCurrentPublicOutputStreamingRefusalKeepsProtocolOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer stream.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned stream.Close: %v", err)
+				}
+			}(stream.Close)
 			if stream.Receive() || connect.CodeOf(stream.Err()) != connect.CodePermissionDenied {
 				t.Fatal("fixed refusal lost RPC protocol", stream.Err())
 			}

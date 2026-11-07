@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -37,7 +38,7 @@ func nativeExchangeBinding(c NativeCompletion) [32]byte {
 // ExchangeApple accepts only an opaque consumed Apple completion. It sends the
 // operator's exact client_secret_post binding once, without Basic or PKCE. The
 // workflow must never retry this operation after possible dispatch.
-func (f *Fetcher) ExchangeApple(ctx context.Context, c NativeCompletion, registry *SecretRegistry) (NativeTokens, error) {
+func (f *Fetcher) ExchangeApple(ctx context.Context, c NativeCompletion, registry *SecretRegistry) (tokens NativeTokens, err error) {
 	binding := nativeExchangeBinding(c)
 	if binding == [32]byte{} {
 		return NativeTokens{}, ErrInvalidToken
@@ -67,7 +68,16 @@ func (f *Fetcher) ExchangeApple(ctx context.Context, c NativeCompletion, registr
 	if err != nil {
 		return NativeTokens{}, ErrFetch
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := closeFetchBody(response.Body); closeErr != nil {
+			tokens = NativeTokens{}
+			if err == nil {
+				err = closeErr
+			} else if !errors.Is(err, closeErr) {
+				err = errors.Join(err, closeErr)
+			}
+		}
+	}()
 	media, _, typeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if typeErr != nil || media != "application/json" || response.StatusCode != http.StatusOK || response.ContentLength > 64<<10 || response.Header.Get("Content-Encoding") != "" {
 		return NativeTokens{}, ErrFetch

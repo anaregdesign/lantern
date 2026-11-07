@@ -43,24 +43,24 @@ func (o *authorityOriginOwner) configuredReadyLocked() bool {
 	return o.network.kernel.configuredReadyLocked()
 }
 
-func (k *s2cParticipant) configuredReadyLocked() bool {
-	desired := k.config.configured
+func (o *s2cParticipant) configuredReadyLocked() bool {
+	desired := o.config.configured
 	if desired == nil {
 		// Independently provisioned historical profiles have no config capability.
 		// An enrolled current profile may never use omission as a serving fallback.
-		for _, member := range k.trust.members {
+		for _, member := range o.trust.members {
 			if member.ConfiguredTrust != 0 {
 				return false
 			}
 		}
-		for _, origin := range k.trust.origins {
+		for _, origin := range o.trust.origins {
 			if origin.ConfiguredTrust != 0 {
 				return false
 			}
 		}
 		return true
 	}
-	p := k.replayState.projection
+	p := o.replayState.projection
 	return desired.valid() && p.snapshot.configuredTrustDigest == hex.EncodeToString(desired.digest[:])
 }
 

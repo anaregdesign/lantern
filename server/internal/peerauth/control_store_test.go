@@ -19,7 +19,11 @@ func TestControlStoreUsesWholeTimeInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned s.Close: %v", err)
+		}
+	}(s.Close)
 	if s.Check(t.Context()) != nil {
 		t.Fatal("valid interval rejected")
 	}

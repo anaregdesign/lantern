@@ -10,7 +10,7 @@ import (
 // initializeSecurityPeer creates only the generated data membership custody.
 // The caller retains ownership of the control authority and publishes CLEAN
 // only after both independent state families have completed initialization.
-func initializeSecurityPeer(ctx context.Context, config SecurityConfig, current *security.CurrentAuthority) error {
+func initializeSecurityPeer(ctx context.Context, config SecurityConfig, current *security.CurrentAuthority) (err error) {
 	if config.ProvisionedPeer == nil {
 		return nil
 	}
@@ -36,7 +36,11 @@ func initializeSecurityPeer(ctx context.Context, config SecurityConfig, current 
 		return err
 	}
 	lease := current.WorkloadTime()
-	defer lease.Close()
+	defer func() {
+		if closeErr := lease.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	cfg.Identity.Now, cfg.Identity.TimeBounds, cfg.Identity.Time = lease.VerificationTime, lease.TimeBounds, lease.Observe
 	peer, _, err := NewConfiguredPeerIdentity(cfg)
 	if err != nil {

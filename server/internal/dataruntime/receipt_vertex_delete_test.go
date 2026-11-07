@@ -258,7 +258,9 @@ func TestVertexDeleteReceiptCoordinatorReceiptOnlyPublication(t *testing.T) {
 			t.Fatalf("identity projection = %+v", frame)
 		}
 		cancel()
-		waitReceiptTest(t, "Subscribe cancellation", done)
+		if err := waitReceiptTest(t, "Subscribe cancellation", done); connect.CodeOf(err) != connect.CodeCanceled {
+			t.Fatalf("Subscribe cancellation = %v, want canceled", err)
+		}
 	}
 }
 

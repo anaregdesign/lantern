@@ -2386,7 +2386,11 @@ func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testin
 		t.Run("vertex/"+tc.name, func(t *testing.T) {
 			originCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 			log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
-			defer log.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close mutation log: %v", err)
+				}
+			}(log.Close)
 			clock := hlc.New(hlc.NodeID{0x41}, hlc.Options{})
 			originSvc := NewExecutor(originCache).WithReplication(log, clock, nil)
 			if _, err := originSvc.PutVertices(context.Background(), &pb.PutVerticesRequest{Vertices: tc.vertices, IfAbsent: tc.ifAbsent}); err != nil {
@@ -2396,7 +2400,11 @@ func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer cancel()
+			defer func(stop func() error) {
+				if err := stop(); err != nil {
+					t.Errorf("close replay subscription: %v", err)
+				}
+			}(cancel)
 			entry := <-ch
 			mutation := mustGraphMutation(t, entry.Op)
 			if len(mutation.GetOp().GetReplicatedPutVertices().GetEntries()) == 0 {
@@ -2429,7 +2437,11 @@ func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testin
 		t.Run("edge/"+tc.name, func(t *testing.T) {
 			originCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 			log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
-			defer log.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close mutation log: %v", err)
+				}
+			}(log.Close)
 			clock := hlc.New(hlc.NodeID{0x42}, hlc.Options{})
 			originSvc := NewExecutor(originCache).WithReplication(log, clock, nil)
 			if _, err := originSvc.PutEdges(context.Background(), &pb.PutEdgesRequest{Edges: tc.edges}); err != nil {
@@ -2439,7 +2451,11 @@ func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer cancel()
+			defer func(stop func() error) {
+				if err := stop(); err != nil {
+					t.Errorf("close replay subscription: %v", err)
+				}
+			}(cancel)
 			mutation := mustGraphMutation(t, (<-ch).Op)
 			if len(mutation.GetOp().GetReplicatedPutEdges().GetEntries()) != 2 {
 				t.Fatalf("ordered edge entries = %v, want 2", mutation.GetOp().GetReplicatedPutEdges().GetEntries())
@@ -2996,7 +3012,11 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 		clock := hlc.New(hlc.NodeID{0xC9}, hlc.Options{})
 		log := mutationlog.New(mutationlog.Options{Capacity: 16})
-		defer log.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close mutation log: %v", err)
+			}
+		}(log.Close)
 		svc := NewExecutor(cache).
 			WithCapacityLimits(CapacityLimits{MaxVertices: 1, MaxEdges: 1}).
 			WithTombstoneTTL(24*time.Hour).
@@ -3052,7 +3072,11 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 		cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxVertexEntries: 1, MaxEdgeEntries: 1})
 		clock := hlc.New(hlc.NodeID{0xCA}, hlc.Options{})
 		log := mutationlog.New(mutationlog.Options{Capacity: 16})
-		defer log.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close mutation log: %v", err)
+			}
+		}(log.Close)
 		svc := NewExecutor(cache).
 			WithCapacityLimits(CapacityLimits{MaxVertices: 10, MaxEdges: 10}).
 			WithTombstoneTTL(24*time.Hour).
@@ -3105,7 +3129,11 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 		cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxVertexEntries: 1})
 		clock := hlc.New(hlc.NodeID{0xCB}, hlc.Options{})
 		log := mutationlog.New(mutationlog.Options{Capacity: 16})
-		defer log.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close mutation log: %v", err)
+			}
+		}(log.Close)
 		svc := NewExecutor(cache).
 			WithCapacityLimits(CapacityLimits{MaxVertices: 10}).
 			WithReplication(log, clock, nil)
@@ -3161,7 +3189,11 @@ func TestLanternService_RestoreEdgesBypassesLocalCausalBudget(t *testing.T) {
 	}
 	clock := hlc.New(hlc.NodeID{0xBC}, hlc.Options{})
 	log := mutationlog.New(mutationlog.Options{Capacity: 16})
-	defer log.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close mutation log: %v", err)
+		}
+	}(log.Close)
 	svc := NewExecutor(cache).WithReplication(log, clock, nil)
 
 	resp, err := svc.RestoreEdges(context.Background(), &pb.PutEdgesRequest{Edges: []*pb.Edge{{

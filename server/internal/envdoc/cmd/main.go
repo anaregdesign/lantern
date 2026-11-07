@@ -1,6 +1,6 @@
 // Command envdoc regenerates the operator-facing environment-variable
 // reference (docs/env.md) from the envconfig registry. Invoked by the
-// go:generate directive in server/generate.go; see #847.
+// generation directive in server/generate.go; see #847.
 package main
 
 import (

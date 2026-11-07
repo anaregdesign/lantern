@@ -126,7 +126,11 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 			defer cancel()
 			client := connect.NewClient[reflectionv1.ServerReflectionRequest, reflectionv1.ServerReflectionResponse](reflectionClient, server.URL+"/"+serviceName+"/ServerReflectionInfo", connect.WithGRPC())
 			stream := client.CallBidiStream(ctx)
-			defer stream.CloseResponse()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Error("close reflection response", err)
+				}
+			}(stream.CloseResponse)
 			if err := stream.Send(&reflectionv1.ServerReflectionRequest{MessageRequest: &reflectionv1.ServerReflectionRequest_ListServices{ListServices: ""}}); err != nil {
 				t.Fatal("send reflection request", err)
 			}

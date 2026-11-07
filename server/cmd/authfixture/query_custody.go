@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,7 +49,7 @@ func checkQueryCustody(node queryCurrentNode) (queryShutdownNode, error) {
 	return out, nil
 }
 
-func readQueryPrivateFile(path string, limit int64) ([]byte, error) {
+func readQueryPrivateFile(path string, limit int64) (raw []byte, err error) {
 	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm()&0077 != 0 || before.Size() > limit {
 		return nil, errors.New("private regular query custody file required")
@@ -59,12 +58,17 @@ func readQueryPrivateFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		err = errors.Join(err, file.Close())
+		if err != nil {
+			raw = nil
+		}
+	}()
 	info, err := file.Stat()
 	if err != nil || !os.SameFile(before, info) || privatefile.Check(file) != nil {
 		return nil, errors.New("query custody path changed")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
+	raw, err = io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil || int64(len(raw)) > limit {
 		return nil, errors.New("bounded query custody file required")
 	}
@@ -149,12 +153,4 @@ func stopCurrentQueryChildren(f fixture, children []*fixtureProcess, dir string,
 	}
 	_, err = writeFile(dir, "query-shutdown.json", append(raw, '\n'))
 	return errors.Join(failure, err)
-}
-
-func validQueryBinding(s string) bool {
-	if !strings.HasPrefix(s, "current-v2:") || len(s) != 75 {
-		return false
-	}
-	raw, err := hex.DecodeString(strings.TrimPrefix(s, "current-v2:"))
-	return err == nil && len(raw) == sha256.Size
 }

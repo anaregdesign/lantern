@@ -634,7 +634,7 @@ func (s *Executor) validateIncomingTombstoneExpirationAt(m *pb.Mutation, localWa
 		return expiration, err
 	}
 	if m.GetHlc() == nil {
-		return time.Time{}, fmt.Errorf("Delete mutation lacks its origin HLC")
+		return time.Time{}, fmt.Errorf("delete mutation lacks its origin HLC")
 	}
 	if err := s.tombstoneDeadlineBoundsAt(m.GetHlc().GetWallNs(), expiration, localWall); err != nil {
 		return time.Time{}, err
@@ -668,19 +668,19 @@ func mutationTombstoneExpiration(m *pb.Mutation, retentionEnabled bool) (time.Ti
 	}
 	if !retentionEnabled {
 		if stamp != nil {
-			return time.Time{}, fmt.Errorf("Delete tombstone retention is disabled on this node")
+			return time.Time{}, fmt.Errorf("delete tombstone retention is disabled on this node")
 		}
 		return time.Time{}, nil
 	}
 	if stamp == nil {
-		return time.Time{}, fmt.Errorf("Delete mutation lacks its absolute tombstone expiration")
+		return time.Time{}, fmt.Errorf("delete mutation lacks its absolute tombstone expiration")
 	}
 	if err := stamp.CheckValid(); err != nil {
 		return time.Time{}, fmt.Errorf("invalid Delete tombstone expiration: %w", err)
 	}
 	expiration := stamp.AsTime()
 	if !expiration.After(time.Unix(0, 0)) {
-		return time.Time{}, fmt.Errorf("Delete tombstone expiration must be after Unix epoch")
+		return time.Time{}, fmt.Errorf("delete tombstone expiration must be after Unix epoch")
 	}
 	return expiration, nil
 }

@@ -32,8 +32,16 @@ func TestReceiptHAControlPartitionsOnlyData(t *testing.T) {
 
 func TestReceiptHAShutdownDoesNotWaitForCallerPipeEOF(t *testing.T) {
 	input, caller := io.Pipe()
-	defer input.Close()
-	defer caller.Close()
+	defer func() {
+		if err := input.Close(); err != nil {
+			t.Errorf("close receipt HA command reader: %v", err)
+		}
+	}()
+	defer func() {
+		if err := caller.Close(); err != nil {
+			t.Errorf("close receipt HA command writer: %v", err)
+		}
+	}()
 	commands := make(chan string, 1)
 	done := make(chan struct{})
 	go func() { defer close(done); readReceiptHACommands(context.Background(), input, commands) }()

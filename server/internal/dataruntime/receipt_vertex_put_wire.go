@@ -657,7 +657,7 @@ func (s *receiptVertexWALPreflight) message(
 		raw = raw[valueBytes:]
 	}
 	if descriptor.FullName() == "graph.v1.Mutation" && opCount != 1 {
-		return errors.New("Mutation.op must occur exactly once")
+		return errors.New("mutation.op must occur exactly once")
 	}
 	if descriptor.FullName() == "graph.v1.MutationOp" && armCount != 1 {
 		return errors.New("MutationOp must contain exactly one receipt Vertex arm")

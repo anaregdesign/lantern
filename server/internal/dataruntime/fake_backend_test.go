@@ -442,7 +442,7 @@ func (f *fakeBackend) Watch(ctx context.Context, interval time.Duration) {
 func (f *fakeBackend) ScanByPrefixPage(_ context.Context, prefix, after string, limit int, desc bool, fn func(string, string, *pb.Vertex) bool) (bool, bool) {
 	keys := make([]string, 0, len(f.vertices))
 	for k := range f.vertices {
-		if prefix != "" && !(len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
+		if prefix != "" && (len(k) < len(prefix) || k[:len(prefix)] != prefix) {
 			continue
 		}
 		if after != "" {
@@ -666,11 +666,11 @@ func (f *fakeBackend) ScanEdgesByPrefixPage(_ context.Context, tailPrefix, headP
 	type row struct{ t, h string }
 	var rows []row
 	for t, hs := range f.edges {
-		if tailPrefix != "" && !(len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
+		if tailPrefix != "" && (len(t) < len(tailPrefix) || t[:len(tailPrefix)] != tailPrefix) {
 			continue
 		}
 		for h := range hs {
-			if headPrefix != "" && !(len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
+			if headPrefix != "" && (len(h) < len(headPrefix) || h[:len(headPrefix)] != headPrefix) {
 				continue
 			}
 			if afterTail != "" || afterHead != "" {
@@ -706,11 +706,11 @@ func (f *fakeBackend) DeleteEdgesByPrefix(_ context.Context, tailPrefix, headPre
 func (f *fakeBackend) DeleteEdgesByPrefixKeys(_ context.Context, tailPrefix, headPrefix string, limit int) []graphcache.EdgeKey[string] {
 	var victims []graphcache.EdgeKey[string]
 	for t, hs := range f.edges {
-		if tailPrefix != "" && !(len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
+		if tailPrefix != "" && (len(t) < len(tailPrefix) || t[:len(tailPrefix)] != tailPrefix) {
 			continue
 		}
 		for h := range hs {
-			if headPrefix != "" && !(len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
+			if headPrefix != "" && (len(h) < len(headPrefix) || h[:len(headPrefix)] != headPrefix) {
 				continue
 			}
 			victims = append(victims, graphcache.EdgeKey[string]{Tail: t, Head: h})
@@ -724,9 +724,7 @@ func (f *fakeBackend) DeleteEdgesByPrefixKeys(_ context.Context, tailPrefix, hea
 	}
 	for _, v := range victims {
 		if row, ok := f.edges[v.Tail]; ok {
-			if _, ok := row[v.Head]; ok {
-				delete(row, v.Head)
-			}
+			delete(row, v.Head)
 		}
 	}
 	f.deleteEdges += len(victims)

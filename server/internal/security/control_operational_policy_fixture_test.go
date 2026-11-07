@@ -91,7 +91,7 @@ func TestOperationalPolicyFixtureContinuation(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(s3aTestContext(t))
 			defer cancel()
-			var input context.Context = ctx
+			var input = ctx
 			if phase == "cancelled" {
 				cancel()
 			}

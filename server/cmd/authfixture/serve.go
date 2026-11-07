@@ -336,11 +336,11 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 	return poll.wait(ctx)
 }
 
-func (poll *fixtureReadinessPoll) wait(ctx context.Context) error {
+func (p *fixtureReadinessPoll) wait(ctx context.Context) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		ready, err := poll.once(ctx)
+		ready, err := p.once(ctx)
 		if err != nil {
 			return err
 		}
@@ -349,7 +349,7 @@ func (poll *fixtureReadinessPoll) wait(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return poll.failure("timeout", fmt.Errorf("fixture timed out before certified readiness: %s", strings.Join(poll.last, "; ")))
+			return p.failure("timeout", fmt.Errorf("fixture timed out before certified readiness: %s", strings.Join(p.last, "; ")))
 		case <-ticker.C:
 		}
 	}

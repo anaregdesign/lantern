@@ -888,7 +888,11 @@ func TestReceiptEdgeAddCombinedBaselineSuffixRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restarted.Close: %v", err)
+		}
+	}(restarted.Close)
 	if weight, live := restarted.graph.GetWeight("baseline", "suffix"); !live || weight != 6 {
 		t.Fatalf("combined-baseline Add = (%v, %v), want (6, true)", weight, live)
 	}

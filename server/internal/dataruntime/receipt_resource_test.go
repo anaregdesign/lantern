@@ -111,7 +111,11 @@ func TestReceiptResourceSurvivesAllWALFamiliesAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resumed.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned resumed.Close: %v", err)
+		}
+	}(resumed.Close)
 	for i, id := range ids {
 		status, row, err := resumed.receipt.store.Lookup(id, time.Now())
 		if err != nil || status != mutationreceipt.Confirmed || row.Resource != want[i] {

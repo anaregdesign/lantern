@@ -106,7 +106,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 				}
 				for _, file := range files {
 					info, err := file.Info()
-					if err != nil || !info.Mode().IsRegular() && !(file.Name() == "identity" && info.IsDir()) {
+					if err != nil || !info.Mode().IsRegular() && (file.Name() != "identity" || !info.IsDir()) {
 						t.Fatal("workload material must be a regular file", file.Name(), err)
 					}
 					private := strings.HasPrefix(file.Name(), "authority-") || strings.HasSuffix(file.Name(), ".key") || file.Name() == "machines.json" || file.Name() == "cdc-keys.json"

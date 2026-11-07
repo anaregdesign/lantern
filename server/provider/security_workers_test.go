@@ -168,7 +168,11 @@ func TestSecurityWorkersReloadDataDespiteControlFailureAndExpiredReadiness(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Error("close membership store", err)
+		}
+	}(store.Close)
 	input := filepath.Join(dir, "input")
 	peer := &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: clock.Now, SelfIdentity: m.Members[0].Identity, ManifestFile: input}}
 	clock.advance(2 * time.Minute)
@@ -234,8 +238,16 @@ func TestSecurityWorkersLogOnlyFixedPrivateFaultCategory(t *testing.T) {
 		t.Fatal("rollback did not fence workload")
 	}
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Error("close diagnostic reader", err)
+		}
+	}(reader.Close)
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Error("close diagnostic writer", err)
+		}
+	}(writer.Close)
 	worker := NewSecurityWorkers(&SecurityRuntime{mode: "off", peer: peer}, peer, readiness.NewGate(100, false, nil), slog.New(slog.NewJSONHandler(writer, nil)))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

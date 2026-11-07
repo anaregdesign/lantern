@@ -159,7 +159,7 @@ func main() {
 	}
 	if err == nil && *compose {
 		if len(public) != 3 || len(peer) != 0 || *serverBinary != "" || *publicMTLS || *overridesFile != "" || flag.NArg() != 0 {
-			err = errors.New("Compose requires three public ports and no local peer ports/supervision/overrides")
+			err = errors.New("compose requires three public ports and no local peer ports/supervision/overrides")
 		} else {
 			peer = []int{6381, 6382, 6383}
 		}

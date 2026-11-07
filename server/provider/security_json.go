@@ -110,7 +110,7 @@ func securityIssuerPreset(input securityIssuerJSON) (securityIssuerJSON, error) 
 	}
 	if input.Issuer == security.GoogleIssuer {
 		if len(input.Algorithms) != 0 && !slices.Equal(input.Algorithms, []string{"RS256"}) || input.TokenOrigin != "" && input.TokenOrigin != "https://oauth2.googleapis.com" {
-			return securityIssuerJSON{}, errors.New("Google configuration requires its pinned algorithm and token origin")
+			return securityIssuerJSON{}, errors.New("google configuration requires its pinned algorithm and token origin")
 		}
 		input.Algorithms = []string{"RS256"}
 		if input.ClientSecret != "" && input.TokenOrigin == "" {
@@ -241,7 +241,7 @@ func compileSecurityIssuer(origin string, input securityIssuerJSON, bindings map
 		switch profile.Kind {
 		case security.GoogleIDToken:
 			if profile.SecretID != "" || profile.TokenOrigin != "" || profile.ClientSecret != "" {
-				return security.Issuer{}, errors.New("Google native clients cannot carry a client secret")
+				return security.Issuer{}, errors.New("google native clients cannot carry a client secret")
 			}
 		case security.AppleNative, security.AppleAndroidWeb:
 			client.SecretRef = inlineSecretID(profile.SecretID, input.Issuer, profile.ID)

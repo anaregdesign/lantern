@@ -41,6 +41,24 @@ class ConfiguredTimeDiagnosticTest(unittest.TestCase):
         self.assertEqual(result["verdict"], "test_failed")
         self.assertEqual(result["observation"]["reason"], "read_timeout")
 
+    def test_failed_close_is_content_free_and_never_qualifies_success(self):
+        record = dict(version=1, factory="ready", source="expected", stage="close", reason="close", attempt=1, install="not_run", current="not_run", verdict="fail")
+        result = diagnostic.parse_result(self.output(record, "FAIL"))
+        self.assertEqual(result["verdict"], "test_failed")
+        self.assertEqual(result["observation"]["stage"], "close")
+        self.assertEqual(result["observation"]["reason"], "close")
+        self.assertNotIn("private", json.dumps(result))
+        for stage, reason in (("close", "close"), ("close", "ok"), ("measured", "close")):
+            attempted_pass = dict(version=1, factory="ready", source="expected", stage=stage, reason=reason, attempt=1, install="installed", current="ok", verdict="pass")
+            with self.subTest(stage=stage, reason=reason):
+                self.assertEqual(diagnostic.parse_result(self.output(attempted_pass))["verdict"], "marker_invalid")
+        for field in ("stage", "reason"):
+            unknown = dict(record, **{field: "close/private-token"})
+            with self.subTest(field=field):
+                rejected = diagnostic.parse_result(self.output(unknown, "FAIL"))
+                self.assertEqual(rejected["verdict"], "marker_invalid")
+                self.assertNotIn("private", json.dumps(rejected))
+
     def test_campaign_has_one_measurement_and_stops_after_precondition_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "private.log"

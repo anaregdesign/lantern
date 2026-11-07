@@ -230,3 +230,61 @@ func TestS2CHistoricalBrowserAndDeadlineClaims(t *testing.T) {
 		t.Fatal("different common configuration")
 	}
 }
+
+func TestS2CCanonicalTimePreservesRepresentationBoundaries(t *testing.T) {
+	utc := time.Date(2030, time.January, 2, 3, 4, 5, 6, time.UTC)
+	// Now supplies a monotonic representation only. No elapsed-clock or
+	// external UTC observation participates in this representation check.
+	monotonic := time.Now()
+	for _, tc := range []struct {
+		name     string
+		value    time.Time
+		optional bool
+		want     bool
+	}{
+		{name: "optional exact zero", optional: true, want: true},
+		{name: "required exact zero"},
+		{name: "optional same-instant named zero", value: time.Time{}.In(time.FixedZone("named-zero", 0)), optional: true},
+		{name: "required UTC", value: utc, want: true},
+		{name: "optional UTC", value: utc, optional: true, want: true},
+		{name: "same-instant named UTC", value: utc.In(time.FixedZone("named-UTC", 0))},
+		{name: "same-instant offset", value: utc.In(time.FixedZone("offset", 3600))},
+		{name: "monotonic", value: monotonic},
+		{name: "stripped monotonic UTC", value: monotonic.Round(0).UTC(), want: true},
+		{name: "year below wire range", value: time.Date(0, time.January, 1, 0, 0, 0, 0, time.UTC)},
+		{name: "year above wire range", value: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s2cCanonicalTime(tc.value, tc.optional); got != tc.want {
+				t.Fatalf("canonical representation = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestS2CAbsentPurposeRequiresExactZeroDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		deadline time.Time
+		want     bool
+	}{
+		{name: "exact zero", want: true},
+		{name: "same-instant named zero", deadline: time.Time{}.In(time.FixedZone("named-zero", 0))},
+		{name: "nonzero", deadline: time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := s2cHistoricalHeader{PurposeDeadline: tc.deadline}
+			if got := s2cVerifyPurpose(h, OperationIdentity{}); got != tc.want {
+				t.Fatalf("absent purpose deadline accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	h := s2cHistoricalHeader{PurposeEvidence: [32]byte{1}}
+	if s2cVerifyPurpose(h, OperationIdentity{}) {
+		t.Fatal("absent purpose accepted nonzero evidence")
+	}
+	h = s2cHistoricalHeader{PurposeBinding: [32]byte{1}}
+	if s2cVerifyPurpose(h, OperationIdentity{}) {
+		t.Fatal("absent purpose accepted nonzero binding")
+	}
+}

@@ -597,7 +597,11 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer runtime.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned runtime.Close: %v", err)
+			}
+		}(runtime.Close)
 		primary := runtime.NewExecutor(nil)
 		if err := primary.InstallReceiptBaseline(context.Background(), producerCapture(archive)); err != nil {
 			t.Fatal(err)
@@ -617,7 +621,11 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer restarted.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned restarted.Close: %v", err)
+			}
+		}(restarted.Close)
 		if got := restarted.GraphCache().SnapshotReplication().Tombstones.Edges; len(got) != 0 {
 			t.Fatalf("restart resurrected expired tombstone: %+v", got)
 		}

@@ -545,10 +545,10 @@ func (s *Executor) tombstoneDeadlineBoundsAt(wallNs int64, expiration, localWall
 		return nil
 	}
 	if expiration.After(time.Unix(0, wallNs).Add(s.tombstoneTTL)) {
-		return fmt.Errorf("Delete tombstone expiration exceeds origin HLC plus LANTERN_TOMBSTONE_TTL")
+		return fmt.Errorf("delete tombstone expiration exceeds origin HLC plus LANTERN_TOMBSTONE_TTL")
 	}
 	if expiration.After(localWall.Add(s.tombstoneTTL).Add(hlc.DefaultMaxSkew)) {
-		return fmt.Errorf("Delete tombstone expiration exceeds LANTERN_TOMBSTONE_TTL plus maximum clock skew")
+		return fmt.Errorf("delete tombstone expiration exceeds LANTERN_TOMBSTONE_TTL plus maximum clock skew")
 	}
 	return nil
 }

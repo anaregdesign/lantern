@@ -37,7 +37,11 @@ func TestAuthorityOutputNativePauseGate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer log.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned log.Close: %v", err)
+				}
+			}(log.Close)
 			child.Stdout, child.Stderr = log, log
 			if err := child.Start(); err != nil {
 				t.Fatal(err)

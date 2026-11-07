@@ -502,7 +502,11 @@ func TestReceiptSnapshotCollectorStagesContributionRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer candidate.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned candidate.Close: %v", err)
+		}
+	}(candidate.Close)
 	capture, err := candidate.installCapture(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -544,7 +548,11 @@ func TestReceiptSnapshotCollectorCanonicalizesDecodedTransportMessages(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer candidate.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned candidate.Close: %v", err)
+		}
+	}(candidate.Close)
 	var spool bytes.Buffer
 	if err := candidate.WriteSpool(&spool); err != nil {
 		t.Fatal(err)
@@ -567,7 +575,11 @@ func TestReceiptSnapshotCollectorRetainsRetiredEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer candidate.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned candidate.Close: %v", err)
+		}
+	}(candidate.Close)
 	capture, err := candidate.installCapture(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -617,7 +629,11 @@ func TestReceiptSnapshotCollectorAcceptsIndependentSectionMaxima(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect exact independent maxima: %v", err)
 	}
-	defer candidate.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned candidate.Close: %v", err)
+		}
+	}(candidate.Close)
 	if candidate.Metadata().Header.GetCutoffLocalSeq() != header.GetCutoffLocalSeq() {
 		t.Fatal("exact independent maxima changed the accepted candidate")
 	}
@@ -1011,7 +1027,11 @@ func TestReceiptSnapshotCandidateMetadataAndSpoolAreOwned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer candidate.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned candidate.Close: %v", err)
+		}
+	}(candidate.Close)
 	before := candidate.Metadata()
 	frames[0].GetHeader().CutoffLocalSeq++
 	frames[1].GetReceipt().OriginalResult[0] ^= 1
@@ -1033,7 +1053,11 @@ func TestReceiptSnapshotCandidateRejectsSpoolTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer candidate.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned candidate.Close: %v", err)
+		}
+	}(candidate.Close)
 	if _, err := candidate.spool.WriteAt([]byte{0xff}, int64(candidate.metadata.SpoolBytes-1)); err != nil {
 		t.Fatal(err)
 	}

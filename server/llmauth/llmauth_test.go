@@ -2,6 +2,11 @@ package llmauth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +14,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
 )
 
@@ -76,6 +83,85 @@ func TestGoogleTokenSourceHTTPClientInjectsBearerToken(t *testing.T) {
 
 	if gotAuth != "Bearer "+token {
 		t.Errorf("Authorization = %q, want bearer token", gotAuth)
+	}
+}
+
+func TestGoogleServiceAccountHTTPClientAcceptsOnlyServiceAccounts(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const email = "fixture@example.invalid"
+	var tokenCalls, apiCalls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls.Add(1)
+		if r.URL.Path != "/token" || r.Method != http.MethodPost || r.ParseForm() != nil || r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" {
+			t.Error("service-account token request lost its OAuth grant")
+			http.Error(w, "invalid grant", http.StatusBadRequest)
+			return
+		}
+		claims := jwt.MapClaims{}
+		token, err := jwt.ParseWithClaims(r.Form.Get("assertion"), claims, func(*jwt.Token) (any, error) {
+			return &key.PublicKey, nil
+		}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(email), jwt.WithAudience("http://"+r.Host+"/token"))
+		if err != nil || token == nil || !token.Valid || claims["scope"] != GoogleCloudPlatformScope {
+			t.Error("service-account token request lost its signed identity, audience or scope", err)
+			http.Error(w, "invalid assertion", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"access_token": "service-account-token", "token_type": "Bearer", "expires_in": 3600}); err != nil {
+			t.Error("write token response", err)
+		}
+	}))
+	defer provider.Close()
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, provider.Client())
+	for _, credentials := range []map[string]any{
+		{"type": "authorized_user", "client_id": "fixture-client", "client_secret": "fixture-secret", "refresh_token": "fixture-refresh"},
+		{"type": "external_account", "audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/fixture/providers/fixture", "subject_token_type": "urn:ietf:params:oauth:token-type:jwt", "token_url": provider.URL + "/token", "credential_source": map[string]string{"url": provider.URL + "/subject"}},
+	} {
+		raw, err := json.Marshal(credentials)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if client, err := NewGoogleServiceAccountHTTPClient(ctx, raw); err == nil || client != nil {
+			t.Fatal("service-account constructor admitted another credential family")
+		}
+	}
+	if tokenCalls.Load() != 0 {
+		t.Fatal("rejected credential family contacted the token provider")
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]string{
+		"type": "service_account", "project_id": "fixture-project", "client_email": email,
+		"private_key": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+		"token_uri":   provider.URL + "/token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewGoogleServiceAccountHTTPClient(ctx, raw, WithBaseTransport(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		apiCalls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer service-account-token" {
+			t.Error("service-account bearer token missing from API request")
+		}
+		return textResponse(http.StatusOK, "ok"), nil
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get("https://example.invalid/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Error("close API response", err)
+	}
+	if tokenCalls.Load() != 1 || apiCalls.Load() != 1 {
+		t.Fatal("service-account request did not use exactly one token and API request")
 	}
 }
 

@@ -382,7 +382,11 @@ func TestGraphSnapshotStageReleasesPartialAndFailedFileOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer owner.Close()
+			defer func(closeOwned func() error, ownedPhase string) {
+				if err := closeOwned(); !snapshotStageCloseExpected(ownedPhase, err) {
+					t.Errorf("close owned Snapshot scratch: %v", err)
+				}
+			}(owner.Close, phase)
 			file, err := owner.create()
 			if err != nil {
 				t.Fatal(err)
@@ -424,7 +428,7 @@ func TestGraphSnapshotStageReleasesPartialAndFailedFileOwnership(t *testing.T) {
 			if used, files := owner.stats(); files != 0 || used != snapshotScratchMetadataBytes && used != 0 {
 				t.Fatalf("%s release retained a scratch extent: used=%d files=%d", phase, used, files)
 			}
-			if err := owner.Close(); err != nil && !errors.Is(err, context.Canceled) {
+			if err := owner.Close(); !snapshotStageCloseExpected(phase, err) {
 				t.Fatal(err)
 			}
 			assertSnapshotStageScratchReleased(t, owner, config)
@@ -797,6 +801,81 @@ func TestGraphSnapshotStagingPreservesTransportErrorBeforeNativeCapture(t *testi
 			_, err := installSnapshot(ctx, testGraphOnlySnapshotInstaller(t, apply, graph), stream)
 			if !errors.Is(err, status.want) || err.Error() != status.want.Error() || stream.receives != 1 || len(events) != 0 || len(apply.finishes) != 0 {
 				t.Fatalf("native proof handling masked source failure or began replay: receives=%d events=%v finishes=%v err=%v want=%v", stream.receives, events, apply.finishes, err, status.want)
+			}
+		})
+	}
+}
+
+// Scratch Close retains operational cancellation as well as cleanup failures.
+// Accept only the cancellation leaves expected by this one replay phase, never
+// a joined physical failure or a custom Is method claiming to be cancellation.
+func snapshotStageCloseExpected(phase string, err error) bool {
+	if err == nil {
+		return true
+	}
+	if phase != "canceled replay" {
+		return false
+	}
+	var canceledOnly func(error) bool
+	canceledOnly = func(candidate error) bool {
+		if candidate == context.Canceled {
+			return true
+		}
+		switch wrapped := candidate.(type) {
+		case interface{ Unwrap() []error }:
+			children := wrapped.Unwrap()
+			if len(children) == 0 {
+				return false
+			}
+			for _, child := range children {
+				if !canceledOnly(child) {
+					return false
+				}
+			}
+			return true
+		case interface{ Unwrap() error }:
+			return canceledOnly(wrapped.Unwrap())
+		default:
+			return false
+		}
+	}
+	return canceledOnly(err)
+}
+
+type snapshotStageCancellationImposter struct{}
+
+func (snapshotStageCancellationImposter) Error() string        { return "physical close failure" }
+func (snapshotStageCancellationImposter) Is(target error) bool { return target == context.Canceled }
+
+func TestSnapshotStageCloseClassifiesCancellationAndCleanupSeparately(t *testing.T) {
+	physical := errors.New("physical close failure")
+	imposter := snapshotStageCancellationImposter{}
+	if !errors.Is(imposter, context.Canceled) {
+		t.Fatal("custom-Is negative control did not claim cancellation")
+	}
+	for _, tc := range []struct {
+		name  string
+		phase string
+		err   error
+		want  bool
+	}{
+		{name: "clean", phase: "partial replay", want: true},
+		{name: "canceled replay clean", phase: "canceled replay", want: true},
+		{name: "cancellation", phase: "canceled replay", err: context.Canceled, want: true},
+		{name: "wrapped cancellation", phase: "canceled replay", err: fmt.Errorf("replay: %w", context.Canceled), want: true},
+		{name: "joined cancellations", phase: "canceled replay", err: errors.Join(context.Canceled, context.Canceled), want: true},
+		{name: "cancellation and physical", phase: "canceled replay", err: errors.Join(context.Canceled, physical)},
+		{name: "wrapped joined physical", phase: "canceled replay", err: fmt.Errorf("replay: %w", errors.Join(context.Canceled, physical))},
+		{name: "custom Is physical", phase: "canceled replay", err: imposter},
+		{name: "physical", phase: "canceled replay", err: physical},
+		{name: "other operational deadline", phase: "canceled replay", err: context.DeadlineExceeded},
+		{name: "partial collection cannot cancel", phase: "partial collection", err: context.Canceled},
+		{name: "source error cannot cancel", phase: "source error", err: context.Canceled},
+		{name: "partial replay cannot cancel", phase: "partial replay", err: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := snapshotStageCloseExpected(tc.phase, tc.err); got != tc.want {
+				t.Fatalf("Close expected = %v, want %v", got, tc.want)
 			}
 		})
 	}

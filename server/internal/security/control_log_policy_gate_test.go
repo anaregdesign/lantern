@@ -93,7 +93,11 @@ func TestLogPolicyNativeExplicitAdoptionAndVerifiedRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal("verified complete recovery rejected policy/floor", err)
 	}
-	defer resumed.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned resumed.Close: %v", err)
+		}
+	}(resumed.Close)
 	if resumed.logPolicyFloor != k.logPolicyFloor || resumed.logPolicyFloorOriginal != k.logPolicyFloorOriginal || *resumed.replayState.projection.snapshot.LogPolicy() != *projection.Policy {
 		t.Fatal("restart lost committed ancestry or version floor")
 	}

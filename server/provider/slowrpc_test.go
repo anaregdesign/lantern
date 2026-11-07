@@ -422,7 +422,7 @@ func TestLoggingInterceptor_SearchSpanAttributesAreBounded(t *testing.T) {
 		}
 	}
 	for _, attr := range ended[0].Attributes() {
-		value := attr.Value.Emit()
+		value := attr.Value.String()
 		if strings.Contains(value, req.Msg.GetQuery()) || strings.Contains(value, req.Msg.GetPrefix()) {
 			t.Fatalf("search span leaked query or prefix in %s=%q", attr.Key, value)
 		}

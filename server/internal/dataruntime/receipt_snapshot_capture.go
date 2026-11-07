@@ -59,52 +59,52 @@ type ReceiptWholeStateSource struct {
 }
 
 // Capture returns one detached publication cut.
-func (s *ReceiptWholeStateSource) Capture(
+func (c *ReceiptWholeStateSource) Capture(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateCapture, error) {
-	if s == nil || s.capture == nil {
+	if c == nil || c.capture == nil {
 		return ReceiptWholeStateCapture{}, errors.New("receipt whole-state source is nil")
 	}
-	return s.capture(ctx, policy)
+	return c.capture(ctx, policy)
 }
 
 // CaptureForBackup returns one detached publication cut and its exact durable
 // FileWAL tip. Graph-only, faulted, mismatched, or closed runtimes fail closed
 // and return no partial image or witness.
-func (s *ReceiptWholeStateSource) CaptureForBackup(
+func (c *ReceiptWholeStateSource) CaptureForBackup(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateBackupCapture, error) {
-	if s == nil || s.captureBackup == nil {
+	if c == nil || c.captureBackup == nil {
 		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state backup source is nil")
 	}
-	return s.captureBackup(ctx, policy)
+	return c.captureBackup(ctx, policy)
 }
 
-func (s *ReceiptWholeStateSource) belongsTo(replication *Replication) bool {
-	if s == nil || s.owner == nil || s.store == nil || s.retired == nil || s.cache == nil ||
-		s.capture == nil || s.captureBackup == nil || replication == nil {
+func (c *ReceiptWholeStateSource) belongsTo(replication *Replication) bool {
+	if c == nil || c.owner == nil || c.store == nil || c.retired == nil || c.cache == nil ||
+		c.capture == nil || c.captureBackup == nil || replication == nil {
 		return false
 	}
 	backend, backendOK := replication.backend.(*graphcache.GraphCache[string, *pb.Vertex])
-	ownerBackend, ownerBackendOK := s.owner.cache.(*graphcache.GraphCache[string, *pb.Vertex])
+	ownerBackend, ownerBackendOK := c.owner.cache.(*graphcache.GraphCache[string, *pb.Vertex])
 	originOwner, originOwnerOK := replication.origins.(*Executor)
 	runtimeSlotMatches := replication.runtime == nil ||
-		(replication.runtime.receipt != nil && replication.runtime.receipt.retired == s.retired)
+		(replication.runtime.receipt != nil && replication.runtime.receipt.retired == c.retired)
 	return backendOK && ownerBackendOK && originOwnerOK &&
-		s.cache == backend && s.cache == ownerBackend &&
-		s.owner == originOwner &&
-		s.owner.log == replication.log &&
-		s.owner.clock == replication.clock &&
-		s.owner.runtime == replication.runtime &&
+		c.cache == backend && c.cache == ownerBackend &&
+		c.owner == originOwner &&
+		c.owner.log == replication.log &&
+		c.owner.clock == replication.clock &&
+		c.owner.runtime == replication.runtime &&
 		runtimeSlotMatches &&
-		s.owner.receiptStore == s.store &&
-		s.owner.receiptRetiredCatalog == s.retired &&
-		s.owner.receiptEdgeContributionDeleteCoordinator != nil &&
-		s.owner.receiptEdgeContributionDeleteCoordinator.service == s.owner &&
-		s.owner.receiptEdgeContributionDeleteCoordinator.cache == s.cache &&
-		s.owner.receiptEdgeContributionDeleteCoordinator.store == s.store
+		c.owner.receiptStore == c.store &&
+		c.owner.receiptRetiredCatalog == c.retired &&
+		c.owner.receiptEdgeContributionDeleteCoordinator != nil &&
+		c.owner.receiptEdgeContributionDeleteCoordinator.service == c.owner &&
+		c.owner.receiptEdgeContributionDeleteCoordinator.cache == c.cache &&
+		c.owner.receiptEdgeContributionDeleteCoordinator.store == c.store
 }
 
 // NewReceiptWholeStateSource exposes only the executor's detached capture,

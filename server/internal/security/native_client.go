@@ -45,7 +45,7 @@ func (c NativeClient) validConfiguration(issuer string, preserveSecret bool) boo
 			}
 		}
 	case AppleNative, AppleAndroidWeb:
-		if issuer != AppleIssuer || len(c.Presenters) != 0 || !(preserveSecret && c.SecretRef == "") && !validRoleID(c.SecretRef) || len(c.SecretRef) > 64 {
+		if issuer != AppleIssuer || len(c.Presenters) != 0 || (!preserveSecret || c.SecretRef != "") && !validRoleID(c.SecretRef) || len(c.SecretRef) > 64 {
 			return false
 		}
 		if c.Kind == AppleNative {

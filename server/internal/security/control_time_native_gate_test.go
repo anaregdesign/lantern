@@ -37,7 +37,20 @@ func TestAuthorityTimeNativePauseGate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer server.Close()
+			defer func(closeOwned func() error) {
+				err := closeOwned()
+				// The later-registered cleanup closes this exact UDP listener
+				// and joins its reader first; only its ordinary closed state is expected.
+				if err == net.ErrClosed {
+					return
+				}
+				if operation, ok := err.(*net.OpError); ok && operation.Err == net.ErrClosed {
+					return
+				}
+				if err != nil {
+					t.Errorf("close owned UDP listener: %v", err)
+				}
+			}(server.Close)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -54,7 +67,13 @@ func TestAuthorityTimeNativePauseGate(t *testing.T) {
 				binary.BigEndian.PutUint64(raw[40:48], stamp)
 				_, _ = server.WriteToUDP(raw[:], peer)
 			}()
-			defer func() { _ = server.Close(); <-done }()
+			defer func() {
+				err := server.Close()
+				<-done
+				if err != nil {
+					t.Errorf("close and join owned UDP reader: %v", err)
+				}
+			}()
 			dir := t.TempDir()
 			ctx, cancel := context.WithTimeout(context.Background(), tc.pause+10*time.Second)
 			defer cancel()
@@ -64,7 +83,11 @@ func TestAuthorityTimeNativePauseGate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer log.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned log.Close: %v", err)
+				}
+			}(log.Close)
 			child.Stdout, child.Stderr = log, log
 			if err = child.Start(); err != nil {
 				t.Fatal(err)

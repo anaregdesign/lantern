@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func (r *SecretRegistry) load(issuer security.Issuer, tokenEndpoint string) (str
 	return r.loadClient(issuer.URL, issuer.ClientID, issuer.SecretRef, tokenEndpoint)
 }
 
-func (r *SecretRegistry) loadClient(issuer, clientID, secretRef, tokenEndpoint string) (string, error) {
+func (r *SecretRegistry) loadClient(issuer, clientID, secretRef, tokenEndpoint string) (secret string, err error) {
 	if r == nil {
 		return "", ErrFetch
 	}
@@ -72,7 +73,16 @@ func (r *SecretRegistry) loadClient(issuer, clientID, secretRef, tokenEndpoint s
 	if err != nil {
 		return "", ErrFetch
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			secret = ""
+			if err == nil {
+				err = ErrFetch
+			} else if !errors.Is(err, ErrFetch) {
+				err = errors.Join(err, ErrFetch)
+			}
+		}
+	}()
 	opened, err := file.Stat()
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || privatefile.Check(file) != nil {
 		return "", ErrFetch
@@ -94,7 +104,7 @@ func validSecretName(name string) bool {
 	}
 	for i := range len(name) {
 		c := name[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			return false
 		}
 	}

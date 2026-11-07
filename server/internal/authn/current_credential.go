@@ -96,7 +96,8 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 	}
 	verifier := oidc.NewVerifierWithClock(p.keys, view.VerificationTime)
 	var verified oidc.VerifiedIdentity
-	if p.kind == "access" {
+	switch p.kind {
+	case "access":
 		issuerURL, err := oidc.TokenIssuer(p.bearer)
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
@@ -109,22 +110,22 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
 		}
-	} else if p.kind == "code" {
+	case "code":
 		verified, err = verifier.VerifyLoginCompletion(ctx, p.completion, p.tokens)
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
 		}
-	} else if p.kind == "native-login" {
+	case "native-login":
 		verified, err = verifier.VerifyNativeCompletion(ctx, p.nativeCompletion, p.nativeTokens)
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
 		}
-	} else if p.kind == "native-registration" {
+	case "native-registration":
 		verified, err = verifier.VerifyNativeRegistrationCompletion(ctx, p.nativeCompletion, p.nativeTokens)
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
 		}
-	} else {
+	default:
 		return security.CurrentCredentialFacts{}, oidc.ErrInvalidToken
 	}
 	if _, _, err := view.TimeBounds(); err != nil {

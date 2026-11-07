@@ -23,7 +23,11 @@ func TestBenchHeapTrustedInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close owned store: %v", err)
+		}
+	}()
 	if err := os.WriteFile(physical+"/input", []byte(`{"value":1}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +81,11 @@ func TestBenchHeapPublicationCustody(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.Close()
+			defer func() {
+				if err := store.Close(); err != nil {
+					t.Errorf("close owned store: %v", err)
+				}
+			}()
 			switch name {
 			case "temp_symlink":
 				if err := os.Symlink("never-created", filepath.Join(physical, ".output.tmp")); err != nil {

@@ -42,7 +42,7 @@ func validCreateEdgeOutcome(outcome pb.CreateEdgeOutcome) bool {
 }
 func edgeCreateDigest(edge *pb.Edge, namespace string) ([32]byte, error) {
 	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || !utf8.ValidString(edge.GetTail()) || !utf8.ValidString(edge.GetHead()) || len(edge.GetTail())+len(edge.GetHead()) > mutationreceipt.MaxResourceIdentityBytes || !edgeweight.IsFiniteSource(edge.GetWeight()) || edge.GetWeight() == 0 {
-		return [32]byte{}, errors.New("Create requires bounded nonempty UTF-8 endpoints and a finite nonzero weight")
+		return [32]byte{}, errors.New("create requires bounded nonempty UTF-8 endpoints and a finite nonzero weight")
 	}
 	if err := rejectProtoUnknownFields(edge.ProtoReflect()); err != nil {
 		return [32]byte{}, err
@@ -206,7 +206,7 @@ func replayEdgeCreateEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e 
 	}
 	tx, err := graph.BeginEdgeCreateReplay(items, hlcFromProto(e.Mutation.GetHlc()))
 	if err != nil {
-		return fmt.Errorf("Create accepted effect replay: %w", err)
+		return fmt.Errorf("create accepted effect replay: %w", err)
 	}
 	defer tx.Abort()
 	tx.Commit()

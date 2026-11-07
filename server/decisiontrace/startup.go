@@ -75,7 +75,7 @@ func startupContextValid(state ContextState) bool {
 
 func startupLabelValid(label string) bool {
 	switch label {
-	case "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "measured",
+	case "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "close", "measured",
 		"binding", "rtt", "source_bound", "transmit", "receive", "reference", "overflow", "interval", "native_install",
 		"elapsed", "age", "anchor_interval", "utc_window", "width", "contradiction", "installed",
 		"ok", "read_timeout", "rate", "deny", "source_fault", "install_rejected", "native_terminal":

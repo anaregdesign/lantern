@@ -18,6 +18,17 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+// completeTestPublicationInterval exercises the gate's certificate transition,
+// including in tests that deliberately publish no graph or log mutation.
+func completeTestPublicationInterval(t testing.TB, svc *Executor) {
+	t.Helper()
+	svc.replicationCutMu.Lock()
+	defer svc.replicationCutMu.Unlock()
+	if svc.replicationCutMu.readCertificate.Load() != activePublicationCertificate {
+		t.Error("exclusive publication interval did not activate the read certificate")
+	}
+}
+
 func receiptBenchmarkContext(
 	b testing.TB,
 	runtime *ServingRuntime,

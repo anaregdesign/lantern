@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -80,5 +81,43 @@ func TestCodeExchangeRejectsUnconfiguredBrowser(t *testing.T) {
 	defer p.mu.Unlock()
 	if called {
 		t.Fatal("unconfigured browser reached token endpoint")
+	}
+}
+
+func TestCodeExchangeResponseCleanupCannotReturnTokens(t *testing.T) {
+	p := newTestProvider(t)
+	privateClose := errors.New("private provider cleanup detail")
+	for _, tc := range []struct {
+		name, body string
+		closeErr   error
+		primary    error
+	}{
+		{"success", `{"id_token":"fixture-id","access_token":"fixture-access","token_type":"Bearer"}`, nil, nil},
+		{"close failure", `{"id_token":"fixture-id","access_token":"fixture-access","token_type":"Bearer"}`, privateClose, nil},
+		{"primary failure", `{`, nil, ErrInvalidToken},
+		{"primary and close failure", `{`, privateClose, ErrInvalidToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher, transport := newCloseFaultFetcher(tc.body, tc.closeErr)
+			tokens, err := fetcher.ExchangeCode(t.Context(), p.trust, Discovery{Issuer: p.trust.Issuer.URL, TokenEndpoint: p.server.URL + "/token"}, nil, "fixture-code", strings.Repeat("a", 43))
+			if tc.primary == nil && tc.closeErr == nil {
+				if err != nil || tokens.IDToken() != "fixture-id" || tokens.AccessToken() != "fixture-access" {
+					t.Fatal("complete exchange was rejected")
+				}
+			} else {
+				if err == nil || tokens != (CodeTokens{}) || tc.primary != nil && !errors.Is(err, tc.primary) {
+					t.Fatal("failed exchange returned tokens or lost its primary error")
+				}
+				if tc.closeErr == nil && err != tc.primary {
+					t.Fatal("successful cleanup changed primary error identity")
+				}
+				if tc.closeErr != nil && (!errors.Is(err, ErrFetch) || tc.primary == nil && err != ErrFetch || strings.Contains(err.Error(), privateClose.Error())) {
+					t.Fatal("cleanup failure was lost or exposed private details")
+				}
+			}
+			if transport.calls != 1 || transport.body.closes != 1 {
+				t.Fatal("response cleanup caused another dispatch or Close")
+			}
+		})
 	}
 }

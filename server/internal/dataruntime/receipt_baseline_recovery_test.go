@@ -393,7 +393,11 @@ func TestReceiptBaselineSuffixCoalescesExactReceiptDuplicatesAndRejectsConflicts
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer restarted.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned restarted.Close: %v", err)
+				}
+			}(restarted.Close)
 			snapshot, err := restarted.receipt.store.Snapshot()
 			if err != nil {
 				t.Fatal(err)
@@ -537,7 +541,11 @@ func TestReceiptBaselineSuffixReplaysReplicatedDeletePastLocalCausalLimit(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restarted.Close: %v", err)
+		}
+	}(restarted.Close)
 	stats := restarted.graph.CausalMetadataStats()
 	if stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
 		t.Fatalf("replicated suffix causal state = %+v", stats)
@@ -581,7 +589,11 @@ func TestReceiptBaselineSuffixReplaysVertexReceiptFamiliesWithRetiredState(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restarted.Close: %v", err)
+		}
+	}(restarted.Close)
 	if _, live := restarted.graph.GetVertex("suffix-live"); live {
 		t.Fatal("baseline suffix recovery resurrected exactly deleted Vertex")
 	}
@@ -722,7 +734,11 @@ func TestReceiptBaselineSuffixDoesNotReapplyOmittedVertexDeleteAfterBlockerExpir
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restarted.Close: %v", err)
+		}
+	}(restarted.Close)
 	for _, tombstone := range restarted.graph.SnapshotReplication().Tombstones.Vertices {
 		if tombstone.Key == "blocked" {
 			t.Fatalf("baseline suffix reapplied omitted older Vertex Delete: %+v", tombstone)

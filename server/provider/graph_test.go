@@ -94,7 +94,9 @@ func TestNewGraphCache_GCEdgeBudget(t *testing.T) {
 	cache := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute, GCEdgeBudget: 1}}, SearchConfig{})
 	live := time.Now().Add(time.Minute)
 	for _, key := range []string{"a", "b", "c"} {
-		cache.PutVertexWithExpiration(key, &v1.Vertex{Key: key}, live)
+		if err := cache.PutVertexWithExpiration(key, &v1.Vertex{Key: key}, live); err != nil {
+			t.Fatal("seed GC vertex", key, err)
+		}
 	}
 	cache.AddEdgeWithExpiration("a", "b", 1, live)
 	cache.AddEdgeWithExpiration("b", "c", 1, live)

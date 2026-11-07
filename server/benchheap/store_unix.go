@@ -36,17 +36,23 @@ func OpenStore(path string, rename func(int, string, string) error) (*Store, err
 	dir := os.NewFile(uintptr(fd), absolute)
 	info, err := dir.Stat()
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-		dir.Close()
+		if closeErr := dir.Close(); closeErr != nil {
+			return nil, errors.Join(ErrInput, closeErr)
+		}
 		return nil, ErrInput
 	}
 	root, err := os.OpenRoot(absolute)
 	if err != nil {
-		dir.Close()
+		if closeErr := dir.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	store := &Store{root: root, directory: dir, identity: info, rename: rename}
 	if err := store.Check(); err != nil {
-		store.Close()
+		if closeErr := store.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return store, nil

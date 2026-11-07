@@ -107,12 +107,12 @@ func requireOperationalPolicyCandidate(t *s2cTrust, state *S1ApplyState, h *s2cH
 	return nil
 }
 
-func (k *s2cParticipant) installOperationalPolicyCandidateLocked(raw []byte) error {
-	candidate, err := verifyOperationalPolicyCandidate(k.trust, raw)
+func (o *s2cParticipant) installOperationalPolicyCandidateLocked(raw []byte) error {
+	candidate, err := verifyOperationalPolicyCandidate(o.trust, raw)
 	if err != nil {
 		return err
 	}
-	old := k.origins[candidate.digest()]
+	old := o.origins[candidate.digest()]
 	if old == nil || old.raw != candidate.raw {
 		return errS2CProtocol
 	}
@@ -122,15 +122,15 @@ func (k *s2cParticipant) installOperationalPolicyCandidateLocked(raw []byte) err
 		}
 		return nil
 	}
-	if err := k.requireLocalOperationalPolicyCandidate(candidate); err != nil {
+	if err := o.requireLocalOperationalPolicyCandidate(candidate); err != nil {
 		return err
 	}
 	before, after := uint64(len(historicalWire(old))), uint64(len(historicalWire(candidate)))
-	if k.pending[candidate.digest()] == nil || k.pendingBytes < before || after > k.config.PendingBytes-(k.pendingBytes-before) {
+	if o.pending[candidate.digest()] == nil || o.pendingBytes < before || after > o.config.PendingBytes-(o.pendingBytes-before) {
 		return errS2CCapacity
 	}
-	k.origins[candidate.digest()], k.pending[candidate.digest()] = candidate, candidate
-	k.pendingBytes = k.pendingBytes - before + after
+	o.origins[candidate.digest()], o.pending[candidate.digest()] = candidate, candidate
+	o.pendingBytes = o.pendingBytes - before + after
 	return nil
 }
 
@@ -145,20 +145,20 @@ func operationalPolicyCandidateCertificate(t *s2cTrust, h *s2cHistoricalH) (*ope
 	return cloneOperationalPolicyCertificate(verified.operationalCertificate), nil
 }
 
-func (k *s2cParticipant) requireLocalOperationalPolicyCandidate(h *s2cHistoricalH) error {
-	if !operationalPolicySupportRequired(k.replayState, h) {
+func (o *s2cParticipant) requireLocalOperationalPolicyCandidate(h *s2cHistoricalH) error {
+	if !operationalPolicySupportRequired(o.replayState, h) {
 		return nil
 	}
-	cert, err := operationalPolicyCandidateCertificate(k.trust, h)
+	cert, err := operationalPolicyCandidateCertificate(o.trust, h)
 	if err != nil {
 		return err
 	}
-	floor := k.operationalFloors[cert.statement.Group]
+	floor := o.operationalFloors[cert.statement.Group]
 	if floor == nil {
 		return errOperationalPolicySupport
 	}
 	for _, proof := range cert.voters {
-		if proof.Signer == k.config.Member {
+		if proof.Signer == o.config.Member {
 			if proof.Floor.Scope != floor.floor.Scope || proof.Floor.Index != floor.floor.Index || floor.floor.Chain != [32]byte{} && proof.Floor.Chain != floor.floor.Chain {
 				return errOperationalPolicySupport
 			}
@@ -168,11 +168,11 @@ func (k *s2cParticipant) requireLocalOperationalPolicyCandidate(h *s2cHistorical
 	return errOperationalPolicySupport
 }
 
-func (k *s2cParticipant) persistOperationalPolicyCandidateLocked(candidate *s2cHistoricalH) error {
+func (o *s2cParticipant) persistOperationalPolicyCandidateLocked(candidate *s2cHistoricalH) error {
 	if candidate == nil || candidate.candidate == "" {
 		return errOperationalPolicySupport
 	}
-	old := k.origins[candidate.digest()]
+	old := o.origins[candidate.digest()]
 	if old == nil || old.raw != candidate.raw {
 		return errS2CProtocol
 	}
@@ -183,17 +183,17 @@ func (k *s2cParticipant) persistOperationalPolicyCandidateLocked(candidate *s2cH
 		return nil
 	}
 	before, after := uint64(len(historicalWire(old))), uint64(len(historicalWire(candidate)))
-	if k.pending[candidate.digest()] == nil || k.pendingBytes < before || after > k.config.PendingBytes-(k.pendingBytes-before) {
+	if o.pending[candidate.digest()] == nil || o.pendingBytes < before || after > o.config.PendingBytes-(o.pendingBytes-before) {
 		return errS2CCapacity
 	}
-	if err := k.requireLocalOperationalPolicyCandidate(candidate); err != nil {
+	if err := o.requireLocalOperationalPolicyCandidate(candidate); err != nil {
 		return err
 	}
-	if err := k.appendRecord(s2cPRecord{kind: s2cPOperationalPolicyCandidate, raw: candidate.candidate}, k.credit); err != nil {
+	if err := o.appendRecord(s2cPRecord{kind: s2cPOperationalPolicyCandidate, raw: candidate.candidate}, o.credit); err != nil {
 		return err
 	}
-	if err := k.installOperationalPolicyCandidateLocked([]byte(candidate.candidate)); err != nil {
-		k.unknown = err
+	if err := o.installOperationalPolicyCandidateLocked([]byte(candidate.candidate)); err != nil {
+		o.unknown = err
 		return errS2CUnknown
 	}
 	return nil

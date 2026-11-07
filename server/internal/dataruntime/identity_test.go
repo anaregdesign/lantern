@@ -328,7 +328,9 @@ func TestCreateIdentityProjectionIncludesAcceptedEdgesOnly(t *testing.T) {
 	f := newReceiptEdgeDeleteFixture(t, nil)
 	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
 	for _, key := range []string{"a", "b"} {
-		f.cache.PutVertex(key, &pb.Vertex{Key: key})
+		if err := f.cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	request := &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1}, {Tail: "a", Head: "b", Weight: 9}, {Tail: "a", Head: "private-missing", Weight: 1}}, ReceiptContext: publicReceiptContext(t, runtime, 0x41, 3)}
 	if _, err := f.service.CreateEdges(t.Context(), request); err != nil {
