@@ -497,6 +497,45 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 	}
 }
 
+// This completion observer receives no work context and cannot renew one.
+func snapshotStageGateObservePumpStop(done <-chan error, observerExpiry <-chan time.Time) bool {
+	select {
+	case <-done:
+		return true
+	case <-observerExpiry:
+		return false
+	}
+}
+
+func TestSnapshotStageGateObserverAfterCallerDeadline(t *testing.T) {
+	// An already-past deadline expires immediately without starting a timer.
+	caller, cancel := context.WithDeadline(t.Context(), time.Time{})
+	defer cancel()
+	callerErr := caller.Err()
+	if callerErr != context.DeadlineExceeded {
+		t.Fatal("caller deadline control did not expire", callerErr)
+	}
+	for _, tc := range []struct {
+		name   string
+		joined bool
+	}{
+		{name: "completion after caller deadline", joined: true},
+		{name: "observer expiry", joined: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done, observerExpiry := make(chan error, 1), make(chan time.Time, 1)
+			if tc.joined {
+				done <- context.Canceled
+			} else {
+				observerExpiry <- time.Time{}
+			}
+			if joined := snapshotStageGateObservePumpStop(done, observerExpiry); joined != tc.joined || caller.Err() != callerErr {
+				t.Fatalf("observer lost completion or changed the expired caller: joined=%t want=%t caller=%v", joined, tc.joined, caller.Err())
+			}
+		})
+	}
+}
+
 func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 	qualifiedUTC, began, owner := time.Now().UTC(), time.Now(), new(byte)
 	var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
@@ -596,10 +635,8 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 		if !joined {
 			// This observer only waits after stop. It never replaces or
 			// extends the original context passed to Pump or Snapshot.
-			select {
-			case <-done:
-				joined = true
-			case <-time.After(time.Second):
+			joined = snapshotStageGateObservePumpStop(done, time.After(time.Second))
+			if !joined {
 				t.Error("large native spool Pump did not join within the post-stop observer budget")
 			}
 		}

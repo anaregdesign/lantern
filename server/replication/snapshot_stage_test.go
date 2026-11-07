@@ -512,6 +512,11 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 				scratch.readAt = func(file *os.File, data []byte, offset int64) (int, error) {
 					if file == canonical && !injected && (failure.name == "digest read" || failure.name == "live replay read" && apply.checkedBegins != 0) {
 						injected = true
+						if failure.name == "digest read" {
+							// A Reader may return bytes together with its error.
+							data[0] = 1
+							return 1, readFailure
+						}
 						return 0, readFailure
 					}
 					return readAt(file, data, offset)
@@ -554,6 +559,16 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 			if detail.phase != wantPhase || detail.liveStarted != failure.afterBegin || detail.elapsed < 0 || detail.phaseElapsed < 0 {
 				t.Fatalf("wrong failure boundary: got=%+v wantPhase=%s live=%t", detail, wantPhase, failure.afterBegin)
 			}
+			if detail.failureReturnedAt.IsZero() || detail.failureReturnElapsed < 0 || detail.failureReturnPhaseElapsed < 0 ||
+				detail.deferredUnwindElapsed < 0 || detail.failureReturnElapsed+detail.deferredUnwindElapsed != detail.elapsed {
+				t.Fatalf("failed return and deferred unwind were not observed separately: %+v", detail)
+			}
+			if failure.name == "digest read" && (!detail.sealReadAttempted || detail.sealReadBytes != 1 || detail.sealReadBytes >= detail.stagedBytes || detail.sealReadEOF) {
+				t.Fatalf("partial failed digest read lost bytes or claimed complete EOF: %+v", detail)
+			}
+			if failure.afterBegin && (!detail.sealReadAttempted || detail.sealReadBytes != detail.stagedBytes || !detail.sealReadEOF) {
+				t.Fatalf("completed seal progress was lost before live replay failure: %+v", detail)
+			}
 			if failure.afterBegin && (detail.stagedFrames != 3 || detail.stagedBytes == 0 || detail.liveFramesRead == 0) {
 				t.Fatalf("cleanup discarded completed stage/read counts: %+v", detail)
 			}
@@ -579,6 +594,16 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 }
 
 func TestGraphSnapshotStagingCancellationDuringDiskPassesReleasesOwnership(t *testing.T) {
+	t.Run("before canonical read", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		diagnostic := newSnapshotInstallDiagnostic(time.Now())
+		// A canceled seal must return before accessing even a file handle.
+		stage := &graphSnapshotStage{ctx: ctx, diagnostic: diagnostic}
+		if err := stage.seal(); !errors.Is(err, context.Canceled) || diagnostic.sealReadAttempted || diagnostic.sealReadBytes != 0 || diagnostic.sealReadEOF {
+			t.Fatalf("expired-before-read seal invented I/O progress: err=%v diagnostic=%+v", err, diagnostic)
+		}
+	})
 	for _, phase := range []string{"collection", "identity sort output", "canonical digest", "live replay"} {
 		t.Run(phase, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -640,6 +665,17 @@ func TestGraphSnapshotStagingCancellationDuringDiskPassesReleasesOwnership(t *te
 			result, err := installSnapshot(ctx, installer, stream)
 			if !interrupted || !errors.Is(err, context.Canceled) || result.Header != nil || len(apply.cutoffs) != 0 {
 				t.Fatalf("disk-pass cancellation was lost or verified: interrupted=%t result=%+v cutoffs=%v err=%v", interrupted, result, apply.cutoffs, err)
+			}
+			var diagnosed *snapshotInstallError
+			if !errors.As(err, &diagnosed) || diagnosed.diagnostic.failureReturnedAt.IsZero() {
+				t.Fatalf("canceled disk pass lacks a failure-return observation: %v", err)
+			}
+			detail := diagnosed.diagnostic
+			if phase == "canonical digest" && (!detail.sealReadAttempted || detail.sealReadBytes == 0 || detail.sealReadBytes > detail.stagedBytes || detail.sealReadEOF) {
+				t.Fatalf("interrupted digest did not retain its actual read progress: %+v", detail)
+			}
+			if phase == "live replay" && (!detail.sealReadAttempted || detail.sealReadBytes != detail.stagedBytes || !detail.sealReadEOF) {
+				t.Fatalf("live cancellation lost its completed seal observation: %+v", detail)
 			}
 			if phase == "live replay" {
 				if apply.checkedBegins != 1 || len(apply.finishes) != 1 || apply.finishes[0] || apply.releases != 1 {

@@ -15,8 +15,14 @@ type snapshotInstallDiagnostic struct {
 	phase                                     string
 	started, phaseStarted                     time.Time
 	elapsed, phaseElapsed                     time.Duration
+	failureReturnedAt                         time.Time
+	failureReturnElapsed                      time.Duration
+	failureReturnPhaseElapsed                 time.Duration
+	deferredUnwindElapsed                     time.Duration
 	liveStarted                               bool
 	stagedFrames, stagedBytes, liveFramesRead uint64
+	sealReadAttempted, sealReadEOF            bool
+	sealReadBytes                             uint64
 	cleanupFailed                             bool
 	admission                                 peerauth.AdmissionDiagnostics
 }
@@ -32,12 +38,26 @@ func (d *snapshotInstallDiagnostic) enter(phase string) {
 	d.phase, d.phaseStarted = phase, time.Now()
 }
 
+// observeFailureReturn samples the Install return boundary before its deferred
+// stage/scratch cleanup. Inline error handling inside a completed operation may
+// already have run; this does not measure physical close or individual I/O time.
+func (d *snapshotInstallDiagnostic) observeFailureReturn(now time.Time) {
+	if d != nil && d.failureReturnedAt.IsZero() {
+		d.failureReturnedAt = now
+	}
+}
+
 func (d *snapshotInstallDiagnostic) failure(cause error, now time.Time, admission peerauth.AdmissionDiagnostics) error {
 	if cause == nil {
 		return nil
 	}
 	observation := *d
 	observation.elapsed, observation.phaseElapsed = now.Sub(d.started), now.Sub(d.phaseStarted)
+	if !d.failureReturnedAt.IsZero() {
+		observation.failureReturnElapsed = d.failureReturnedAt.Sub(d.started)
+		observation.failureReturnPhaseElapsed = d.failureReturnedAt.Sub(d.phaseStarted)
+		observation.deferredUnwindElapsed = now.Sub(d.failureReturnedAt)
+	}
 	observation.admission = admission
 	return &snapshotInstallError{cause: cause, diagnostic: observation}
 }
@@ -67,6 +87,16 @@ func snapshotFailureAttrs(err error) []any {
 		slog.Uint64("snapshot_staged_bytes", d.stagedBytes),
 		slog.Uint64("snapshot_live_frames_read", d.liveFramesRead),
 		slog.Bool("snapshot_cleanup_failed", d.cleanupFailed),
+		slog.Bool("snapshot_failure_return_observed", !d.failureReturnedAt.IsZero()),
+		slog.Bool("snapshot_seal_read_attempted", d.sealReadAttempted),
+		slog.Uint64("snapshot_seal_read_bytes", d.sealReadBytes),
+		slog.Bool("snapshot_seal_read_eof", d.sealReadEOF),
+	}
+	if !d.failureReturnedAt.IsZero() {
+		attrs = append(attrs,
+			slog.Duration("snapshot_failure_return_elapsed", d.failureReturnElapsed),
+			slog.Duration("snapshot_failure_return_phase_elapsed", d.failureReturnPhaseElapsed),
+			slog.Duration("snapshot_deferred_unwind_elapsed", d.deferredUnwindElapsed))
 	}
 	if d.admission.Reason != "" {
 		attrs = append(attrs, slog.String("snapshot_last_admission_check", d.admission.Reason),
