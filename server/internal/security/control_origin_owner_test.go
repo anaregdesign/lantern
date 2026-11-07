@@ -9,7 +9,70 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
+
+func TestAuthorityOriginFactsRefusalTracePreservesBoundaryAndPrivacy(t *testing.T) {
+	for _, reason := range []string{"configuration", "kernel", "chosen", "facts"} {
+		t.Run(reason, func(t *testing.T) {
+			_, origins, _ := authorityTestComposite(t)
+			o := origins[1]
+			k := o.network.kernel
+			k.gate.Lock()
+			slot := k.replayState.slot
+			switch reason {
+			case "configuration":
+				k.config.configured = &ConfiguredTrust{}
+			case "kernel":
+				k.unknown = errS2CUnknown
+			case "chosen":
+				k.chosen = &s2cMessage{}
+			}
+			k.gate.Unlock()
+			const secret = "SYNTHETIC_PRIVATE_CREDENTIAL_FAILURE"
+			privateError := errors.New(secret)
+			producerCalls, nativeCalls := 0, 0
+			producer := authorityPublicProducerFunc(func(context.Context, CurrentCredentialView) (CurrentCredentialFacts, error) {
+				producerCalls++
+				return CurrentCredentialFacts{}, privateError
+			})
+			sample := o.network.timeOwner.producer.sample
+			o.network.timeOwner.producer.sample = func() (authorityTimeStamp, error) { nativeCalls++; return sample() }
+			_, _, baselineErr := o.verifyFacts(t.Context(), producer)
+			baselineNativeCalls := nativeCalls
+			nativeCalls, producerCalls = 0, 0
+			capture := decisiontrace.Start(16)
+			if capture == nil {
+				t.Fatal("capture already owned")
+			}
+			defer capture.Stop()
+			_, _, err := o.verifyFacts(t.Context(), producer)
+			capture.Stop()
+			events, dropped := capture.Drain()
+			var refusals []decisiontrace.Event
+			for _, event := range events {
+				if event.Kind == "public_refusal" {
+					refusals = append(refusals, event)
+				}
+			}
+			wantErr, wantCalls := error(ErrAuthorityUnavailable), 0
+			if reason == "facts" {
+				wantErr, wantCalls = privateError, 1
+			}
+			if !errors.Is(baselineErr, wantErr) || !errors.Is(err, wantErr) || producerCalls != wantCalls || baselineNativeCalls != 1 || nativeCalls != baselineNativeCalls || dropped != 0 || len(refusals) != 1 || refusals[0].Stage != "verify_facts" || refusals[0].Reason != reason {
+				t.Fatal("refusal trace changed boundary/error/sample order", err, producerCalls, nativeCalls, events, dropped)
+			}
+			if reason != "facts" && refusals[0].Turn != slot {
+				t.Fatal("trace lost already-held installed slot", events)
+			}
+			raw, err := json.Marshal(events)
+			if err != nil || bytes.Contains(raw, []byte(secret)) {
+				t.Fatal("refusal trace disclosed credential error", err)
+			}
+		})
+	}
+}
 
 func TestAuthorityOriginKeyInlineSource(t *testing.T) {
 	n, _, _ := authorityTestComposite(t)

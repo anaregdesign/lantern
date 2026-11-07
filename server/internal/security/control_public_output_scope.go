@@ -241,6 +241,9 @@ func (o *CurrentAuthority) BindPublicMetadata(ctx context.Context, kind CurrentP
 
 func (r *currentOutputRequest) authorize(ctx context.Context, g currentOutputGrant) (authorityCurrentTime, error) {
 	if ctx.Err() != nil || g.kind == "" || g.resource == [32]byte{} {
+		if r != nil && r.owner != nil && r.owner.owner != nil {
+			r.owner.owner.origin.tracePublicRefusal("output", "grant_or_context", 0)
+		}
 		return authorityCurrentTime{}, ErrAuthorityUnavailable
 	}
 	if g.kind == "public" || g.kind == "public-failure" {
@@ -251,7 +254,16 @@ func (r *currentOutputRequest) authorize(ctx context.Context, g currentOutputGra
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
-	if !o.configuredReadyLocked() || k.readyLocked() != nil || k.chosen != nil {
+	if !o.configuredReadyLocked() {
+		o.tracePublicRefusal("output", "configuration", k.replayState.slot)
+		return authorityCurrentTime{}, ErrAuthorityUnavailable
+	}
+	if k.readyLocked() != nil {
+		o.tracePublicRefusal("output", "kernel", k.replayState.slot)
+		return authorityCurrentTime{}, ErrAuthorityUnavailable
+	}
+	if k.chosen != nil {
+		o.tracePublicRefusal("output", "chosen", k.replayState.slot)
 		return authorityCurrentTime{}, ErrAuthorityUnavailable
 	}
 	if g.kind == "registration" || g.kind == "registration-session" {
@@ -294,9 +306,14 @@ func (r *currentOutputRequest) authorize(ctx context.Context, g currentOutputGra
 		return now, nil
 	}
 	if g.admission == nil || g.admission.owner != r.owner.owner || g.projection != k.replayState.projection.snapshot {
+		o.tracePublicRefusal("output", "admission_or_projection", k.replayState.slot)
 		return authorityCurrentTime{}, ErrPermissionDenied
 	}
 	// The typed resource compilation used this identical immutable snapshot.
 	// Full-cut/lineage/credential/renewal are checked again at the native event.
-	return o.authorizeCurrentCredentialLocked(ctx, g.admission.credential)
+	now, err := o.authorizeCurrentCredentialLocked(ctx, g.admission.credential)
+	if err != nil {
+		o.tracePublicRefusal("output", "authority", k.replayState.slot)
+	}
+	return now, err
 }
