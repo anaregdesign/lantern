@@ -1,21 +1,16 @@
 # Security Policy
 
-## Supported Versions
+## Project Status
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+Lantern is a pre-production beta and has not reached v1.0.0.
+Before v1.0.0, releases make no backward-compatibility guarantees.
+See [Versioning & compatibility](CONTRIBUTING.md#versioning--compatibility-pre-v100).
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+Report suspected security vulnerabilities privately using GitHub's
+[Report a vulnerability form](https://github.com/anaregdesign/lantern/security/advisories/new).
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+Include the affected component and version or commit, the potential impact,
+and steps to reproduce the problem. Do not include credentials or private data.
+Keep vulnerability details out of public Issues and Pull Requests.

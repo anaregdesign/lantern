@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.4.1
+
+- Refresh private generated operational-settings bindings and the repository-only
+  code-generation dependency lock. Public SDK facades remain unchanged.
+
 ## 0.4.0
 
 - Raise Tokio's minimum version to 1.53.3 to address RUSTSEC-2026-0386.
