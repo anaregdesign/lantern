@@ -446,12 +446,42 @@ func TestStagedPublicationHeldWALSentinelRejectsWaitingViews(t *testing.T) {
 			}()
 			runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
 			invoke, id, _ := stagedPublicationAdapterCall(t, f, runtime, operation)
+			var capture *decisiontrace.Capture
+			if operation == "graph mutation" {
+				capture = captureGraphMutationForTest(t)
+			}
+			failAdmission := func(outcome string, returned bool, callErr error) {
+				t.Helper()
+				var events []decisiontrace.Event
+				var dropped uint64
+				if capture != nil {
+					events, dropped = capture.Drain()
+				}
+				budgetErr, exactBudget := callErr.(*connect.Error)
+				exactBudget = exactBudget && budgetErr.Code() == connect.CodeResourceExhausted &&
+					budgetErr.Unwrap() == graphcache.ErrGraphMutationBudget
+				t.Fatalf("WAL not reached: outcome=%s returned=%v error=%v error_type=%T code=%v exact_graph_budget=%v caller_error=%v trace_dropped=%d trace=%v",
+					outcome, returned, callErr, callErr, connect.CodeOf(callErr), exactBudget, t.Context().Err(), dropped, events)
+			}
 			committed := make(chan error, 1)
 			go func() { committed <- invoke() }()
 			select {
 			case <-entered:
+				if capture != nil {
+					// Later mixed waiters are a different admission observation.
+					capture.Stop()
+				}
+			case err := <-committed:
+				failAdmission("returned_before_wal", true, err)
 			case <-time.After(time.Second):
-				t.Fatal("WAL not reached")
+				// Observe only what is already ready. A pending result or missing
+				// trace stage is not proof of nonexecution; keep the original limit.
+				select {
+				case err := <-committed:
+					failAdmission("deadline_result_ready", true, err)
+				default:
+					failAdmission("deadline_result_pending", false, nil)
+				}
 			}
 			if operation == "graph mutation" {
 				if _, err := f.service.MutateGraph(t.Context(), graphMutationTestRequest(t, runtime, 0x69)); connect.CodeOf(err) != connect.CodeResourceExhausted {
