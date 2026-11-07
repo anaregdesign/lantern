@@ -6702,9 +6702,10 @@ func TestInitialMixedWireAdmissionProof(t *testing.T) {
 				}
 				calls++
 				sent++
-				if tc.mode == "twice" {
+				switch tc.mode {
+				case "twice":
 					sent++
-				} else if tc.mode == "no send" {
+				case "no send":
 					sent--
 				}
 				refused := calls <= tc.refusals
@@ -6712,9 +6713,10 @@ func TestInitialMixedWireAdmissionProof(t *testing.T) {
 				if refused {
 					limit = 12
 				}
-				if tc.mode == "missing" {
+				switch tc.mode {
+				case "missing":
 					limit = 0
-				} else if tc.mode == "publication" {
+				case "publication":
 					limit = 18
 				}
 				object := decisiontrace.NextID()
@@ -6742,13 +6744,14 @@ func TestInitialMixedWireAdmissionProof(t *testing.T) {
 					cancel()
 				}
 				wireErr := connect.NewError(connect.CodeResourceExhausted, errors.New(graphcache.ErrGraphMutationBudget.Error()))
-				if tc.mode == "message" {
+				switch tc.mode {
+				case "message":
 					wireErr = connect.NewError(connect.CodeResourceExhausted, errors.New("different capacity refusal"))
-				} else if tc.mode == "sdk" {
+				case "sdk":
 					return client.GraphMutationResult{}, wireErr
-				} else if tc.mode == "unavailable" {
+				case "unavailable":
 					return client.GraphMutationResult{}, errors.Join(client.ErrUnavailable, connect.NewError(connect.CodeUnavailable, errors.New("unknown outcome")))
-				} else if tc.mode == "result" {
+				case "result":
 					return client.GraphMutationResult{Vertices: []client.VertexPutReceiptResult{{Key: "partial"}}}, errors.Join(client.ErrResourceExhausted, wireErr)
 				}
 				return client.GraphMutationResult{}, errors.Join(client.ErrResourceExhausted, wireErr)
