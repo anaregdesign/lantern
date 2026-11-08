@@ -43,7 +43,7 @@ values are integer nanoseconds, as with Go `time.Duration` JSON):
 | `CleanupBy` | Later explicit UTC deadline for joining and cleaning the owned runtime |
 | `Interval` | Early renewal cadence, e.g. `60000000000` for one minute |
 | `Lifetime` | e.g. `300000000000` for five minutes; at most ten minutes, with more than twice the cadence plus four seconds of overlap capacity |
-| `Streams` | Exactly one `control` and one `data` stream |
+| `Streams` | OIDC: exactly one `control` and one `data` stream. Public OFF: exactly one `data` stream whose verified signed domain has `auth_mode: "off"`. |
 
 Each stream has `Kind`, `KeyFile` (private Ed25519 PKCS#8 PEM), `RootsFile`,
 `Initial` (base64 of the exact initial signed manifest), `Targets` (canonical
@@ -53,6 +53,14 @@ The roots digest must match the signed configuration. Each leaf must match a
 member's SPKI and URI; both client/server chains must verify now and beyond
 `CleanupBy` plus the existing clock margin. These checks do not replace the
 server's own certificate and native-time admission.
+
+OFF uses the same journaled publisher and explicit `init`/`resume` lifecycle.
+Select the existing OFF domain's data operator key, roots, exact initial signed
+manifest, all selected node input targets and their workload certificates. It
+does not create a control cohort, change the signed domain, generate identities,
+or authorize a data-only OIDC configuration. No serving process receives the
+signing key or journal. Keep that one-stream configuration immutable, including
+its stream shape, when resuming or advancing its maintenance window.
 
 For ordinary unattended operation, choose `End` at the explicitly approved next
 maintenance date, for example a month away when the TLS chains cover it. There

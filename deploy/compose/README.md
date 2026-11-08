@@ -82,6 +82,25 @@ at its original selected path. Operator/CA signers and publisher state stay
 outside all Server mounts. Keep the external publisher running while nodes run
 or drain. Never use fixture generation as production trust provisioning.
 
+Use the normal `membershippublisher` with a Version 1 configuration containing
+one `data` stream for this signed OFF domain. Its `Initial` is the exact existing
+signed manifest, `Targets` are the three selected per-node membership input
+paths, and its operator key, roots and workload certificates are the original
+private-plane inputs. Follow the [publisher configuration and capacity
+checks](../../docs/live-membership-renewal.md#declare-and-provision-a-finite-window).
+Prepare the operator configuration and journal outside all Server mounts.
+Before first node initialization, start this separate owned process once:
+
+```sh
+membershippublisher -config /absolute/private/off/operator/publisher.json \
+  -state /absolute/private/off/operator/state.json -mode init
+```
+
+An ordinary publisher restart uses `-mode resume` with those same intact files;
+it never runs `init` again. Keep it live while stopping or restarting nodes, then
+join it only after their CLEAN shutdown. Retain its journal and lease sidecars.
+The fixture renewal command is not a substitute for this durable publisher.
+
 Supply independent metrics server leaves in
 `tls/metrics/lantern-N/{server.pem,server-key.pem,ca.pem}` and the separate
 Prometheus client leaf in `tls/metrics/client/{client.pem,client-key.pem,ca.pem}`.

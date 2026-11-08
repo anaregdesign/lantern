@@ -35,6 +35,7 @@ const maxStateBytes = 1 << 20
 
 // Config durations use Go's JSON integer nanoseconds. End bounds every new signature;
 // CleanupBy separately budgets orderly runtime shutdown before certificates end.
+// OIDC uses control and data streams; public OFF uses one data stream.
 type Config struct {
 	Version            uint32
 	End, CleanupBy     time.Time
@@ -252,7 +253,7 @@ func openOwned(configPath, statePath, mode string, now time.Time, additionalInpu
 // for an expired old window. It does not validate TLS at an obsolete date.
 func (p *Publisher) loadSigners() error {
 	c := p.config
-	if c.Version != 1 || len(c.Streams) != 2 || c.Interval < time.Second || c.Lifetime > peerauth.MaxMembershipLifetime || c.Lifetime <= 2*peerauth.ClockMargin || c.Interval >= (c.Lifetime-2*peerauth.ClockMargin)/2 || !validWindow(c) {
+	if c.Version != 1 || len(c.Streams) < 1 || len(c.Streams) > 2 || c.Interval < time.Second || c.Lifetime > peerauth.MaxMembershipLifetime || c.Lifetime <= 2*peerauth.ClockMargin || c.Interval >= (c.Lifetime-2*peerauth.ClockMargin)/2 || !validWindow(c) {
 		return ErrState
 	}
 	kinds := map[string]bool{}
@@ -297,6 +298,11 @@ func (p *Publisher) loadSigners() error {
 			}
 		}
 		if _, _, _, e = p.verify(i, s.Initial); e != nil {
+			return ErrState
+		}
+		// Omitting the control stream is supported only for a verified OFF
+		// domain. An OIDC publisher cannot silently become data-only.
+		if len(c.Streams) == 1 && (s.Kind != "data" || p.signers[i].data.Domain.AuthMode != "off") {
 			return ErrState
 		}
 		for _, path := range s.Targets {

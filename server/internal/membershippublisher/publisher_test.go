@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
 func TestPublisherPartialDistributionExactResumeAndBudget(t *testing.T) {
@@ -88,6 +91,105 @@ func TestPublisherPartialDistributionExactResumeAndBudget(t *testing.T) {
 	after, _ := os.ReadFile(state)
 	if !bytes.Equal(before, after) {
 		t.Fatal("budget generated another signature")
+	}
+}
+
+func TestPublisherDataOnlyOFFExactResume(t *testing.T) {
+	config, state, c, now := publisherFixture(t)
+	c.Streams = c.Streams[1:]
+	writePublisherConfig(t, config, c)
+	p, err := Open(config, state, "init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closePublisher(t, p)
+	rename := p.files.rename
+	p.files.rename = func(from, to string) error {
+		if to != state {
+			saved := readPublisherJournal(t, state)
+			if len(saved.Streams) != 1 || !saved.Streams[0].Pending || saved.Streams[0].Version != 2 {
+				t.Fatal("OFF publication preceded durable candidate")
+			}
+		}
+		if to == c.Streams[0].Targets[1] {
+			return errInjected
+		}
+		return rename(from, to)
+	}
+	if err = p.Step(now); !errors.Is(err, ErrPublication) {
+		t.Fatal("partial OFF publication", err)
+	}
+	saved := readPublisherJournal(t, state)
+	if len(saved.Streams) != 1 || !saved.Streams[0].Pending {
+		t.Fatal("OFF pending candidate not retained")
+	}
+	exact := append([]byte(nil), saved.Streams[0].Current...)
+	closePublisher(t, p)
+	p, err = Open(config, state, "resume")
+	if err != nil {
+		t.Fatal("OFF intact resume", err)
+	}
+	defer closePublisher(t, p)
+	// Even after expiry, complete the retained successor before issuing another.
+	if err = p.Step(now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range c.Streams[0].Targets {
+		raw, err := os.ReadFile(target)
+		if err != nil || !bytes.Equal(raw, exact) {
+			t.Fatal("OFF resume re-signed the pending candidate", err)
+		}
+	}
+	saved = readPublisherJournal(t, state)
+	if saved.Streams[0].Pending || saved.Streams[0].Version != 2 || len(saved.Streams[0].Previous) != 0 {
+		t.Fatal("OFF exact delivery not completed")
+	}
+	if err = p.Step(now.Add(time.Minute + time.Second)); err != nil || p.state.Streams[0].Version != 3 {
+		t.Fatal("OFF renewal did not advance after exact delivery", err)
+	}
+}
+
+func TestPublisherRejectsIncompleteStreamSets(t *testing.T) {
+	for _, name := range []string{"empty", "control only", "OIDC data only", "duplicate data", "extra stream"} {
+		t.Run(name, func(t *testing.T) {
+			config, state, c, _ := publisherFixture(t)
+			switch name {
+			case "empty":
+				c.Streams = nil
+			case "control only":
+				c.Streams = c.Streams[:1]
+			case "OIDC data only":
+				p := &Publisher{config: c}
+				if err := p.loadSigners(); err != nil {
+					t.Fatal(err)
+				}
+				defer closePublisher(t, p)
+				manifest := p.signers[1].data
+				manifest.Domain.AuthMode = "oidc"
+				manifest.Domain.SecurityGeneration = [16]byte{1}
+				manifest.Domain.CurrentProfile = "current-v2:" + strings.Repeat("01", 32)
+				raw, err := peerauth.SignManifest(manifest, p.signers[1].key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.Streams = c.Streams[1:]
+				c.Streams[0].Initial = raw
+				for _, target := range c.Streams[0].Targets {
+					if err = os.WriteFile(target, raw, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "duplicate data":
+				c.Streams = []Stream{c.Streams[1], c.Streams[1]}
+			case "extra stream":
+				c.Streams = append(c.Streams, c.Streams[1])
+			}
+			writePublisherConfig(t, config, c)
+			if p, err := Open(config, state, "init"); err == nil {
+				closePublisher(t, p)
+				t.Fatal("incomplete stream set accepted")
+			}
+		})
 	}
 }
 
