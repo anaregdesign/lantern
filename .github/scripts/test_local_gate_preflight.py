@@ -161,7 +161,7 @@ class PreflightTest(unittest.TestCase):
                     metadata.write_text(json.dumps({"frameworkVersion": framework, "frameworkRevision": "same"}))
                     with patch.object(preflight, "scratch_environment", return_value={}), \
                             patch.object(preflight, "executable", side_effect=lambda name, _: str(binpath / name)), \
-                            patch.object(preflight, "command", side_effect=["Dart SDK version: " + dart_version, revision]) as command:
+                            patch.object(preflight, "command", side_effect=["Dart SDK version: " + dart_version, "Dart SDK version: " + dart_pin, revision]) as command:
                         with self.assertRaisesRegex(ValueError, "expected=.*actual="):
                             preflight.check(ROOT, {}, [Step("example-test", ".", ("flutter", "test"))])
                         for call in command.call_args_list:
@@ -177,3 +177,37 @@ class PreflightTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not an installed native SDK"):
                     preflight.check(ROOT, {}, [Step("dart-test", ".", ("dart", "test"))])
                 command.assert_not_called()
+
+    def test_effective_go_scratch_precedes_invalid_inherited_tmpdir(self):
+        pin = preflight.exact_pin(ROOT, "go.mod", r"^go (\S+)$")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(preflight, "executable", return_value="/selected/go"), \
+                    patch.object(preflight, "command", side_effect=["go version go" + pin + " linux/amd64",
+                        json.dumps({"GOVERSION": "go" + pin, "GOROOT": "/go", "GOTMPDIR": directory})]):
+                result = preflight.check(ROOT, {"TMPDIR": directory + "/missing"}, [Step("go-build", ".", ("go", "build"))])
+                self.assertEqual(result["environment"]["compiler_scratch"], str(Path(directory).resolve()))
+
+    def test_split_flutter_cache_cannot_borrow_standalone_dart_validation(self):
+        pin = preflight.exact_pin(ROOT, ".github/workflows/current-sdk4.yml", r"^\s+sdk: (\d+\.\d+\.\d+)\s*$")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            standalone = root / "dart"
+            standalone.write_bytes(b"\x7fELFstandalone")
+            flutter = root / "flutter/bin/flutter"
+            flutter.parent.mkdir(parents=True)
+            flutter.write_text("#!/bin/sh\nexit 99\n")
+            cache = flutter.parent / "cache"
+            cache.mkdir()
+            (cache / "flutter.version.json").write_text("{}")
+            native = cache / "dart-sdk/bin/dart"
+            for state in ["missing", "wrong-version"]:
+                with self.subTest(state=state):
+                    if state != "missing":
+                        native.parent.mkdir(parents=True)
+                        native.write_bytes(b"\x7fELFother")
+                    with patch.object(preflight, "scratch_environment", return_value={}), \
+                            patch.object(preflight, "executable", side_effect=lambda name, _: str(standalone if name == "dart" else flutter)), \
+                            patch.object(preflight, "command", side_effect=["Dart SDK version: " + pin, "Dart SDK version: 0.0.1"]) as command:
+                        with self.assertRaisesRegex(ValueError, "Flutter cached Dart"):
+                            preflight.check(ROOT, {}, [Step("example-test", ".", ("flutter", "test"))])
+                        self.assertTrue(all(call.args[0][0] != str(flutter) for call in command.call_args_list))

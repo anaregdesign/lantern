@@ -60,7 +60,7 @@ def scratch_environment(environment):
 
 def check(root, environment, plan):
     started = time.monotonic()
-    result = {"tools": [], "environment": scratch_environment(environment)}
+    result = {"tools": []}
     names = {step.name for step in plan}
     # Go is also launched by harness contracts and SDK/browser children.
     needs_go = any(name.startswith(("go-", "server-", "harness-", "rust-", "admin-playwright"))
@@ -73,8 +73,8 @@ def check(root, environment, plan):
         require_version("go (local child)", path, match[1] if match else version, pin)
         settings = json.loads(command([path, "env", "-json", "GOVERSION", "GOROOT", "GOTOOLCHAIN", "GOENV", "GOTMPDIR"], root, environment))
         require_version("effective Go", path, settings.get("GOVERSION"), "go" + pin)
-        if settings.get("GOTMPDIR"):
-            result["environment"] = scratch_environment(dict(environment, GOTMPDIR=settings["GOTMPDIR"]))
+        result["environment"] = scratch_environment(
+            dict(environment, GOTMPDIR=settings.get("GOTMPDIR") or ""))
         work_pin = exact_pin(root, "go.work", r"^go (\d+\.\d+\.\d+)$")
         require_version("workspace Go pin", str(root / "go.work"), work_pin, pin)
         # Reject an automatic or explicitly different parent selection rather
@@ -95,6 +95,8 @@ def check(root, environment, plan):
             raise ValueError("preflight: parent GOTOOLCHAIN differs from source pin; use task-local GOTOOLCHAIN=local")
         result["tools"].append({"name": "go", "path": path, "resolved_path": str(Path(path).resolve()),
                                 "version": pin, "goroot": settings["GOROOT"]})
+    if not needs_go:
+        result["environment"] = scratch_environment(environment)
     if "go-lint" in names:
         pin = exact_pin(root, ".github/workflows/go.yml", r"^\s+version: v(2\.\d+\.\d+)\s*$")
         path = executable("golangci-lint", environment)
@@ -155,12 +157,23 @@ def check(root, environment, plan):
             pin = exact_pin(root, ".github/workflows/dart-sdk.yml", r"^\s+flutter-version: (\d+\.\d+\.\d+)\s*$")
             if not metadata.is_file():
                 raise ValueError("preflight: installed Flutter version metadata missing; no bootstrap attempted")
+            flutter_dart = flutter.parent / "cache/dart-sdk/bin/dart"
+            if not flutter_dart.is_file():
+                raise ValueError("preflight: selected Flutter cached Dart missing; no bootstrap attempted")
+            with flutter_dart.open("rb") as stream:
+                magic = stream.read(4)
+            if magic not in {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\x7fELF", b"\xca\xfe\xba\xbe"}:
+                raise ValueError("preflight: selected Flutter cached Dart is not a native SDK")
+            flutter_dart_version = command([str(flutter_dart), "--version"], root, environment)
+            match = re.search(r"Dart SDK version: (\d+\.\d+\.\d+)", flutter_dart_version)
+            dart_pin = exact_pin(root, ".github/workflows/current-sdk4.yml", r"^\s+sdk: (\d+\.\d+\.\d+)\s*$")
+            require_version("Flutter cached Dart", str(flutter_dart), match[1] if match else flutter_dart_version, dart_pin)
             version = json.loads(metadata.read_text())
             require_version("Flutter cached framework", str(flutter), version.get("frameworkVersion"), pin)
             revision = command([executable("git", environment), "rev-parse", "HEAD"], flutter.parent.parent, environment)
             require_version("Flutter framework revision", str(flutter), revision, version.get("frameworkRevision"))
             result["tools"].append({"name": "flutter", "path": str(flutter), "version": pin,
-                                    "framework_revision": revision, "inspection": "installed metadata and source HEAD"})
+                                    "framework_revision": revision, "dart_path": str(flutter_dart), "dart_version": dart_pin, "inspection": "installed metadata and source HEAD"})
     # Check direct tool availability before any dependency or harness work.
     # Do not invoke Flutter startup or rustup installation during inspection.
     for name in sorted({step.command[0] for step in plan} - {"go", "bun"}):
