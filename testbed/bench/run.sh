@@ -924,14 +924,14 @@ esac
 # Host-only #1960 prototype. Docker Config/Env is fingerprinted in memory;
 # only the fixed identity projection is retained. No Server option is added.
 goroutine_policy_profile() {
-  local out="$1" baseline="${2:-0}" observed
+  local out="$1" baseline="${2:-0}" passive_dir="${3:-$OUTDIR}" observed
   kill -0 "$DIAGNOSTICS_PID" 2>/dev/null || return 1
   kill -0 "$MEMBERSHIP_PID" 2>/dev/null || return 1
   observed="$(docker inspect "${receipt_container_ids[@]}")" || return 1
   python3 -c '
 import hashlib, json, os, re, sys
 from pathlib import Path
-out, baseline, root, fixture, binary, commit, tree, image, owner, project, ports, ready, bridge_pid, scenario, family = sys.argv[1:]
+out, baseline, root, fixture, binary, commit, tree, image, owner, project, ports, ready, bridge_pid, scenario, family, passive_dir = sys.argv[1:]
 raw = sys.stdin.buffer.read((16 << 20) + 1)
 if len(raw) > 16 << 20: raise ValueError("policy inspect bound")
 rows = json.loads(raw)
@@ -960,7 +960,7 @@ for i, (row, port) in enumerate(zip(rows, ports.split(","))):
  node = {"endpoint":"localhost:" + port, "container_id":row["Id"], "pid":state["Pid"],
          "started_at":state["StartedAt"], "expected_peers":[x for j,x in enumerate(origins) if j != i]}
  if baseline == "1":
-  p = root / ("goroutine_policy_pre_" + port + ".prom")
+  p = Path(passive_dir) / ("goroutine_policy_pre_" + port + ".prom")
   node["passive_metrics"] = {"path":str(p), "sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
  nodes.append(node)
 go_version = (root / "goroutine_policy_go_version.txt").read_text().split()[2]
@@ -983,7 +983,7 @@ with os.fdopen(fd,"w") as stream: json.dump(profile,stream,separators=(",",":"))
 ' "$out" "$baseline" "$OUTDIR" "$PEER_TLS_DIR/fixture.json" "$GOROUTINE_PROBE" \
     "$receipt_image_commit" "$EXPECTED_LANTERN_TREE" "$receipt_image_id" "$runtime_owner" \
     "$COMPOSE_PROJECT_NAME" "$(IFS=,; echo "${REPLICA_METRICS_PORTS[*]}")" \
-    "$NATIVE_WORK_DIR/diagnostics-ready.json" "$DIAGNOSTICS_PID" "$SCENARIO_NAME" "$target_driver" <<<"$observed"
+    "$NATIVE_WORK_DIR/diagnostics-ready.json" "$DIAGNOSTICS_PID" "$SCENARIO_NAME" "$target_driver" "$passive_dir" <<<"$observed"
 }
 
 goroutine_policy_barrier() {
@@ -1090,6 +1090,7 @@ for offset in (5,10):
 data = {"schema":1,"protocol":"receipt_goroutine_operational_v1",
         "pre":ref(root / "runtime_pre.json"),"steady":ref(root / "runtime_steady.json"),"legacy_post":ref(root / "runtime_post.json"),
         "baseline_profile":ref(root / "goroutine_policy_baseline_profile.json"),
+        "preparation":ref(root / "goroutine_policy_preparation.json"),
         "before_post_profile":ref(root / "goroutine_policy_before_post_profile.json"),
         "barrier":ref(root / "goroutine_policy_barrier.json"),"posts":posts,"workload_report":ref(root / "workload_gate.json"),
         "owner_evidence":[ref(source / p) for p in ("server/internal/security/control_renewal_network_test.go",
@@ -1099,6 +1100,63 @@ with os.fdopen(fd,"w") as stream: json.dump(data,stream,separators=(",",":")); s
 PY
   "$GOROUTINE_PROBE" evaluate-goroutine-policy -input "$OUTDIR/goroutine_policy_input.json" \
     -out "$OUTDIR/goroutine_policy.json"
+}
+
+# Five complete setup rounds at most; only well-formed topology-unready
+# observations permit another round. No performance or memory value is selected.
+goroutine_policy_pre_snapshot() {
+  local index attempt status
+  mkdir -m 700 "$OUTDIR/goroutine_policy_pre_attempts" || return 1
+  for index in 1 2 3 4 5; do
+    printf -v attempt '%s/goroutine_policy_pre_attempts/%03d' "$OUTDIR" "$index"
+    mkdir -m 700 "$attempt" || return 1
+    snapshot_runtime "$attempt/runtime_pre.json" "$attempt" || return 1
+    goroutine_policy_profile "$attempt/goroutine_policy_baseline_profile.json" 1 "$attempt" || return 1
+    status=0
+    "$GOROUTINE_PROBE" check-goroutine-pre -input "$attempt/goroutine_policy_baseline_profile.json" \
+      -out "$attempt/readiness.json" || status=$?
+    if [[ "$status" == 0 ]]; then
+      # Promote the FIRST eligible same-response round, without another scrape.
+      python3 - "$OUTDIR" "$index" <<'PREPY' || return 1
+import hashlib, json, os, sys
+from pathlib import Path
+root, selected = Path(sys.argv[1]), int(sys.argv[2])
+def ref(path):
+    return {"path":str(path),"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+def create(path, raw):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd,"wb") as stream: stream.write(raw)
+attempts = []
+for index in range(1, selected + 1):
+    attempt = root / "goroutine_policy_pre_attempts" / f"{index:03d}"
+    readiness = json.loads((attempt / "readiness.json").read_bytes())
+    if readiness.get("verdict") != ("eligible" if index == selected else "not_ready"):
+        raise ValueError("PRE selection was not first eligible round")
+    attempts.append({"index":index,"runtime":ref(attempt / "runtime_pre.json"),
+                     "profile":ref(attempt / "goroutine_policy_baseline_profile.json"),
+                     "readiness":ref(attempt / "readiness.json")})
+chosen = root / "goroutine_policy_pre_attempts" / f"{selected:03d}"
+create(root / "runtime_pre.json", (chosen / "runtime_pre.json").read_bytes())
+profile = json.loads((chosen / "goroutine_policy_baseline_profile.json").read_bytes())
+for node in profile["nodes"]:
+    source = Path(node["passive_metrics"]["path"])
+    raw = source.read_bytes()
+    if source.parent != chosen or hashlib.sha256(raw).hexdigest() != node["passive_metrics"]["sha256"]:
+        raise ValueError("PRE passive response changed before promotion")
+    destination = root / source.name
+    create(destination, raw)
+    node["passive_metrics"] = ref(destination)
+create(root / "goroutine_policy_baseline_profile.json", (json.dumps(profile,separators=(",",":")) + "\n").encode())
+create(root / "goroutine_policy_preparation.json", (json.dumps({"schema":1,
+    "protocol":"receipt_goroutine_operational_v1","selected_attempt":selected,"attempts":attempts},
+    separators=(",",":")) + "\n").encode())
+PREPY
+      return 0
+    fi
+    [[ "$status" == 3 ]] || return 1
+    if [[ "$index" != 5 ]]; then sleep 1; fi
+  done
+  return 1
 }
 
 # Extract a single Prom metric value from a /metrics text exposition.
@@ -1185,7 +1243,7 @@ snapshot_runtime() {
   # forced GC + scrape — and keep the per-metric MINIMUM: the live-set floor.
   # Transient spikes drop out, while a genuine leak raises the floor on every
   # round and is still caught. K defaults to 3; override via SNAPSHOT_ROUNDS.
-  local out="$1" port round
+  local out="$1" port round passive_dir="${2:-$OUTDIR}"
   local rounds="${SNAPSHOT_ROUNDS:-3}"
   # Protected admission rejects pprof. Use one fixed natural-GC sample;
   # neither an inaccessible profiling route nor a minimum-of-samples fallback.
@@ -1208,10 +1266,10 @@ snapshot_runtime() {
         text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
           die "OFF runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
       fi
-      if [[ "$goroutine_policy" == "1" && "$out" == "$OUTDIR/runtime_pre.json" ]]; then
+      if [[ "$goroutine_policy" == "1" && ( "$out" == "$OUTDIR/runtime_pre.json" || $# -gt 1 ) ]]; then
         # Reuse the exact old PRE response, retaining no arbitrary labels/data.
         (umask 077; awk '$1 ~ /^(lantern_changes_active_streams|lantern_subscribe_active_streams|lantern_peer_connected|lantern_anti_entropy_cycles_total)(\{|$)/ {print}' \
-          <<<"$text" > "$OUTDIR/goroutine_policy_pre_${port}.prom") ||
+          <<<"$text" > "$passive_dir/goroutine_policy_pre_${port}.prom") ||
           die "cannot retain goroutine policy PRE passive metrics"
       fi
       local rg rhi rha rho rvhe rvhw
@@ -1522,13 +1580,12 @@ if [[ "$semantic_kind" == "search" ]]; then
   fi
   semantic_verdict="pass"
 fi
-snapshot_runtime "$OUTDIR/runtime_pre.json"
-capture_retained_heap baseline
 if [[ "$goroutine_policy" == "1" ]]; then
-  if ! goroutine_policy_profile "$OUTDIR/goroutine_policy_baseline_profile.json" 1; then
-    log "goroutine policy baseline premise missing; policy will be INCOMPLETE"
-  fi
+  goroutine_policy_pre_snapshot || die "goroutine policy PRE topology unavailable; STEADY not started"
+else
+  snapshot_runtime "$OUTDIR/runtime_pre.json"
 fi
+capture_retained_heap baseline
 if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
   "$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" pre || log "pprof pre snapshot reported warnings"
 fi

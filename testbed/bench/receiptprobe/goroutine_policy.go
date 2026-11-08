@@ -150,6 +150,7 @@ type goroutinePolicyInput struct {
 	Steady            goroutineReference   `json:"steady"`
 	LegacyPost        goroutineReference   `json:"legacy_post"` // memory timing unchanged
 	BaselineProfile   goroutineReference   `json:"baseline_profile"`
+	Preparation       goroutineReference   `json:"preparation"`
 	BeforePostProfile goroutineReference   `json:"before_post_profile"`
 	Barrier           goroutineReference   `json:"barrier"`
 	Posts             []goroutinePostInput `json:"posts"` // ordered5,10, no replacements
@@ -548,6 +549,9 @@ func evaluateGoroutinePolicyInCase(input goroutinePolicyInput, caseRoot string) 
 	}
 	if validateGoroutineScenario(caseRoot, profile) != nil {
 		return missing("reviewed resolved workload profile differs")
+	}
+	if validateGoroutinePrePreparation(input.Preparation, caseRoot, profile, input.Pre) != nil {
+		return missing("first eligible PRE preparation incomplete or changed")
 	}
 	if goroutineDecode(input.BeforePostProfile, &before) != nil || validateGoroutineProfile(before, false) != nil || !sameGoroutineProfile(profile, before) {
 		return missing("post identity/configuration differs from baseline")

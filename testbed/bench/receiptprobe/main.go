@@ -147,6 +147,9 @@ type resultSet struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "check-goroutine-pre" {
+		os.Exit(runGoroutinePreCheck(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "collect-goroutine-post" {
 		os.Exit(runGoroutinePostCollection(os.Args[2:]))
 	}

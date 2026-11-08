@@ -4225,6 +4225,132 @@ go() {
 	return preamble, []string{"OUTDIR=" + dir, "REAL_PYTHON=" + python, "CLOCK_WRAPPER=" + filepath.Join(dir, "clock.py"), "FAKE_CLOCK=" + filepath.Join(dir, "clock"), "COLLECTOR_DRIVER=" + filepath.Join(dir, "collector.py")}
 }
 
+func TestReceiptGoroutinePreSnapshotFirstEligible(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		statuses string
+		attempts int
+		selected int
+	}{
+		{"transient then first eligible despite higher runtime values", "3,0,0", 2, 2},
+		{"never ready stops after five attempts", "3,3,3,3,3,0", 5, 0},
+		{"malformed capture stops without another attempt", "2,0", 1, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, env := goroutinePolicyShellFixture(t)
+			dir := strings.TrimPrefix(env[0], "OUTDIR=")
+			collector := `import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+assert args[0] == "check-goroutine-pre"
+def value(flag): return args[args.index(flag) + 1]
+index = int(Path(value("-input")).parent.name)
+status = int(os.environ["FIX_PRE_STATUSES"].split(",")[index - 1])
+verdict = {0:"eligible",3:"not_ready",2:"invalid"}[status]
+Path(value("-out")).write_text(json.dumps({"schema":1,"protocol":"receipt_goroutine_operational_v1","verdict":verdict}))
+raise SystemExit(status)
+`
+			if err := os.WriteFile(filepath.Join(dir, "collector.py"), []byte(collector), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture += `
+umask 077
+# These are fixture-only constructor outputs, not an attempted measured PRE.
+rm "$OUTDIR/runtime_pre.json" "$OUTDIR/goroutine_policy_pre_9390.prom" "$OUTDIR/goroutine_policy_pre_9391.prom" "$OUTDIR/goroutine_policy_pre_9392.prom"
+sleep() { [[ "$1" == 1 ]] || return 71; printf 'wait\n' >> "$OUTDIR/setup-waits"; }
+snapshot_runtime() {
+ python3 - "$1" "$2" <<'PRE_FIXTURE'
+import json, os, sys
+from pathlib import Path
+output, directory = Path(sys.argv[1]), Path(sys.argv[2])
+index = int(directory.name)
+# The first eligible attempt is deliberately larger than the rejected attempt
+# and the next hypothetical attempt. The coordinator must not choose a minimum.
+count, heap = (129, 1 << 30) if index == 2 else (1, 1)
+rows = [{"endpoint":f"localhost:{9390+i}","goroutines":count,"heap_alloc_bytes":heap} for i in range(3)]
+output.write_text(json.dumps(rows))
+status = int(os.environ["FIX_PRE_STATUSES"].split(",")[index - 1])
+for i in range(3):
+    peers = [f'https://lantern-{j}:6381' for j in range(3) if j != i]
+    passive = "lantern_subscribe_active_streams 2\nlantern_changes_active_streams 0\nlantern_anti_entropy_cycles_total 1\n"
+    passive += "".join(f'lantern_peer_connected{{peer="{peer}"}} {0 if status == 3 else 1}\n' for peer in peers)
+    (directory / f"goroutine_policy_pre_{9390+i}.prom").write_text(passive)
+PRE_FIXTURE
+}
+if goroutine_policy_pre_snapshot; then
+ printf 'steady\n' > "$OUTDIR/steady-started"
+else
+ exit 31
+fi
+`
+			env = append(env, "FIX_PRE_STATUSES="+test.statuses)
+			output, code, _ := runGoroutinePolicyShell(t, fixture, env...)
+			if (code == 0) != (test.selected != 0) {
+				t.Fatalf("setup exit=%d selected=%d output=%s", code, test.selected, output)
+			}
+			attemptRoot := filepath.Join(dir, "goroutine_policy_pre_attempts")
+			attempts, err := os.ReadDir(attemptRoot)
+			if err != nil || len(attempts) != test.attempts {
+				t.Fatalf("attempt count=%d want=%d err=%v output=%s", len(attempts), test.attempts, err, output)
+			}
+			for index, attempt := range attempts {
+				if !attempt.IsDir() || attempt.Name() != fmt.Sprintf("%03d", index+1) {
+					t.Fatalf("attempt ordering: %+v", attempts)
+				}
+				for _, name := range []string{"runtime_pre.json", "goroutine_policy_baseline_profile.json", "readiness.json", "goroutine_policy_pre_9390.prom", "goroutine_policy_pre_9391.prom", "goroutine_policy_pre_9392.prom"} {
+					if _, err := os.Stat(filepath.Join(attemptRoot, attempt.Name(), name)); err != nil {
+						t.Fatalf("attempt %s evidence %s: %v", attempt.Name(), name, err)
+					}
+				}
+			}
+			waits, err := os.ReadFile(filepath.Join(dir, "setup-waits"))
+			wantWaits := test.attempts - 1
+			if strings.Count(string(waits), "wait\n") != wantWaits || wantWaits > 0 && err != nil {
+				t.Fatalf("setup waits=%q want=%d err=%v", waits, wantWaits, err)
+			}
+			_, steadyErr := os.Stat(filepath.Join(dir, "steady-started"))
+			if test.selected == 0 {
+				if !os.IsNotExist(steadyErr) {
+					t.Fatal("failed setup started steady")
+				}
+				if _, err := os.Stat(filepath.Join(dir, "runtime_pre.json")); !os.IsNotExist(err) {
+					t.Fatal("failed setup promoted a canonical PRE")
+				}
+				return
+			}
+			if steadyErr != nil {
+				t.Fatal(steadyErr)
+			}
+			chosen := filepath.Join(attemptRoot, fmt.Sprintf("%03d", test.selected))
+			for _, name := range []string{"runtime_pre.json", "goroutine_policy_pre_9390.prom", "goroutine_policy_pre_9391.prom", "goroutine_policy_pre_9392.prom"} {
+				original, err := os.ReadFile(filepath.Join(chosen, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				promoted, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil || string(promoted) != string(original) {
+					t.Fatalf("selected response changed during promotion: %s %v", name, err)
+				}
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "goroutine_policy_preparation.json"))
+			var preparation struct {
+				Selected int               `json:"selected_attempt"`
+				Attempts []json.RawMessage `json:"attempts"`
+			}
+			if err != nil || json.Unmarshal(raw, &preparation) != nil || preparation.Selected != test.selected || len(preparation.Attempts) != test.attempts {
+				t.Fatalf("first-eligible preparation: %s %v", raw, err)
+			}
+			pre, err := os.ReadFile(filepath.Join(dir, "runtime_pre.json"))
+			var rows []struct {
+				Goroutines int64 `json:"goroutines"`
+			}
+			if err != nil || json.Unmarshal(pre, &rows) != nil || len(rows) != 3 || rows[0].Goroutines != 129 {
+				t.Fatalf("setup selected runtime counts instead of first eligible topology: %s %v", pre, err)
+			}
+		})
+	}
+}
+
 func TestReceiptGoroutinePolicyFamilyProfile(t *testing.T) {
 	for _, family := range []struct{ scenario, driver string }{
 		{"receipt_admission_lookup", "receipt_edge_delete"},

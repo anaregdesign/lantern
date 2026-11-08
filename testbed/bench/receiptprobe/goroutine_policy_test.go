@@ -72,7 +72,7 @@ func newGoroutinePolicyFixture(t *testing.T) *goroutinePolicyFixture {
 	f.scenario = goroutineReviewedScenario(t, "receipt_admission_lookup")
 	f.profile = goroutineProfile{Schema: 1, Protocol: goroutineOperationalProtocol, Scenario: "receipt_admission_lookup", Family: "receipt_edge_delete", ImageScope: "normal", MeasurementProtocol: "none", SourceCommit: strings.Repeat("a", 40), SourceTree: strings.Repeat("b", 40), ImageID: "sha256:" + strings.Repeat("c", 64), ConfigSHA256: strings.Repeat("d", 64), ScenarioSHA256: strings.Repeat("e", 64), ObserverSHA256: strings.Repeat("f", 64), ObserverGoVersion: "go1.27.3", MetricsTransport: "operator_docker_exec", BridgePID: 100, BridgePorts: []int{9390, 9391, 9392}, CPUSet: "0-3", RuntimeUser: "501:20"}
 	for i := 0; i < 3; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("passive-%d.txt", i))
+		path := filepath.Join(dir, fmt.Sprintf("goroutine_policy_pre_%d.prom", 9390+i))
 		data := []byte(goroutineTestPassive())
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
@@ -159,6 +159,43 @@ func (f *goroutinePolicyFixture) persist(t *testing.T) {
 		start := f.barrier.T0NS + int64(offset)*int64(time.Second)
 		f.input.Posts = append(f.input.Posts, goroutinePostInput{OffsetSeconds: offset, StartNS: start, EndNS: start + int64(2*time.Millisecond), Capture: capture, Profile: profile})
 	}
+	f.persistPreparation(t)
+}
+
+func (f *goroutinePolicyFixture) persistPreparation(t *testing.T) {
+	t.Helper()
+	attempt := filepath.Join(f.dir, "goroutine_policy_pre_attempts", "001")
+	if err := os.MkdirAll(attempt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	copyRef := func(source goroutineReference) goroutineReference {
+		t.Helper()
+		raw, err := os.ReadFile(source.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(attempt, filepath.Base(source.Path))
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(raw)
+		return goroutineReference{Path: path, SHA256: hex.EncodeToString(digest[:])}
+	}
+	runtimeRef := copyRef(f.input.Pre)
+	profile := f.profile
+	profile.Nodes = append([]goroutineNodeProfile(nil), profile.Nodes...)
+	for i, node := range profile.Nodes {
+		ref := copyRef(*node.PassiveMetrics)
+		profile.Nodes[i].PassiveMetrics = &ref
+	}
+	profileRef := goroutineFixtureRef(t, filepath.Join(attempt, "goroutine_policy_baseline_profile.json"), profile, 0o600)
+	readiness := goroutineFixtureRef(t, filepath.Join(attempt, "readiness.json"), map[string]any{
+		"schema": 1, "protocol": goroutineOperationalProtocol, "verdict": "eligible",
+	}, 0o600)
+	f.input.Preparation = goroutineFixtureRef(t, filepath.Join(f.dir, "goroutine_policy_preparation.json"), map[string]any{
+		"schema": 1, "protocol": goroutineOperationalProtocol, "selected_attempt": 1,
+		"attempts": []map[string]any{{"index": 1, "runtime": runtimeRef, "profile": profileRef, "readiness": readiness}},
+	}, 0o600)
 }
 
 func TestGoroutinePolicyOperationalBoundaries(t *testing.T) {
@@ -343,6 +380,7 @@ func TestGoroutinePolicyPreservesLegacyFailure(t *testing.T) {
 		row["metrics"] = map[string]any{"existing_optional_context": nil}
 	}
 	f.input.Pre = goroutineFixtureRef(t, f.input.Pre.Path, rows, 0o644)
+	f.persistPreparation(t)
 	if r := evaluateGoroutinePolicy(f.input); r.Verdict != "pass" {
 		t.Fatal("legacy optional context changed", r.MissingPremises)
 	}

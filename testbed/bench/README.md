@@ -727,7 +727,17 @@ fresh family-specific results. The allocation is neither a proven
 owner bound nor a statistical tail estimate. The +15 residual allowance retains
 the previous sensitivity; it does not assert that smaller leaks are absent.
 
-The collector uses the exact existing PRE and steady samples. It anchors t0
+After warmup, #2092 bounds normal receipt PRE setup by the declared peer/stream
+topology. It retains every attempt and accepts the first eligible three-replica
+capture before starting steady load. Eligibility never depends on goroutine
+counts, heap values or performance; the accepted runtime and passive values
+come from the same responses. Malformed evidence or an exhausted setup budget
+stops the run before steady. This adds no load, forced GC or threshold change,
+and does not change the tagged memory procedure or later capture windows.
+Previous failed results remain failed; release acceptance still requires fresh
+final-source results for all 16 cases, without carrying earlier case results.
+
+The collector uses the accepted PRE and exact existing steady samples. It anchors t0
 after the existing 10s cooldown, semantic verification and completion/reaping of
 the declared client work, immediately before the unchanged natural POST memory
 snapshot. That existing point is ordered after t0 and uses three sequential
