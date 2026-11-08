@@ -49,7 +49,11 @@ func TestEdgeCreateWALRestoresOriginalDecisionsWithoutResurrection(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned lease.Close: %v", err)
+		}
+	}(lease.Close)
 	config := runtime.receipt.policy
 	candidate, err := stageEffectCompleteReceiptWALCandidate(lease, config, time.Now(), mutationlog.Options{Capacity: 32}, time.Hour, func(g *graphcache.GraphCache[string, *pb.Vertex]) error {
 		g.EnablePrefixIndex(func(key string) string { return key })
@@ -89,7 +93,9 @@ func TestEdgeCreateWALRejectsMalformedOrDowngradedEvidence(t *testing.T) {
 	f := newReceiptEdgeDeleteFixture(t, nil)
 	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
 	for _, key := range []string{"a", "b"} {
-		f.cache.PutVertex(key, &pb.Vertex{Key: key})
+		if err := f.cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	req := &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 2}}, ReceiptContext: publicReceiptContext(t, runtime, 0x61, 1)}
 	if _, err := f.service.CreateEdges(t.Context(), req); err != nil {

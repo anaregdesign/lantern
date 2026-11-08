@@ -20,7 +20,11 @@ func writeReceiptWALClockJournal(t *testing.T, path string, config mutationrecei
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL path lease: %v", err)
+		}
+	}(lease.Close)
 	store, err := mutationreceipt.New(config)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +33,11 @@ func writeReceiptWALClockJournal(t *testing.T, path string, config mutationrecei
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt clock journal: %v", err)
+		}
+	}(journal.Close)
 	if err := journal.Advance(highWater); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +49,11 @@ func writeReceiptWALTipJournal(t *testing.T, path string, config mutationreceipt
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL path lease: %v", err)
+		}
+	}(lease.Close)
 	store, err := mutationreceipt.New(config)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +62,11 @@ func writeReceiptWALTipJournal(t *testing.T, path string, config mutationreceipt
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tip.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL tip journal: %v", err)
+		}
+	}(tip.Close)
 	if err := tip.VerifyAndCatchUp(lease.Path(), decodeReceiptWALUnion, validateReceiptWALUnionEntry); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +98,11 @@ func TestOpenLeasedReceiptWALCandidateKeepsClockAndPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL candidate owner: %v", err)
+		}
+	}(owner.Close)
 	if got := owner.state.receipts.Stats(); got.HighWaterMillis < forward || got.Entries != 0 {
 		t.Fatalf("recovered Store ignored durable expiry: %+v", got)
 	}
@@ -133,7 +153,11 @@ func TestOpenLeasedReceiptWALCandidateKeepsClockAndPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resumed.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close resumed receipt WAL candidate: %v", err)
+		}
+	}(resumed.Close)
 	if got := resumed.state.receipts.Stats().HighWaterMillis; got != abortedAt {
 		t.Fatalf("aborted Begin high-water was lost on second restart: got %d, want %d", got, abortedAt)
 	}
@@ -166,7 +190,11 @@ func TestOpenLeasedReceiptWALCandidateRejectsMissingOrInvalidJournal(t *testing.
 	if err != nil {
 		t.Fatalf("wrong-epoch candidate leaked path lease: %v", err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL path lease: %v", err)
+		}
+	}(lease.Close)
 }
 
 func TestOpenLeasedReceiptWALCandidateRejectsLegacyEffectsAndReleasesOwner(t *testing.T) {
@@ -183,7 +211,11 @@ func TestOpenLeasedReceiptWALCandidateRejectsLegacyEffectsAndReleasesOwner(t *te
 	if err != nil {
 		t.Fatalf("failed replay leaked path lease: %v", err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL path lease: %v", err)
+		}
+	}(lease.Close)
 }
 
 func TestOpenLeasedReceiptWALCandidateRejectsTipBindingAndLostSuffix(t *testing.T) {
@@ -209,7 +241,11 @@ func TestOpenLeasedReceiptWALCandidateRejectsTipBindingAndLostSuffix(t *testing.
 			if err != nil {
 				t.Fatalf("wrong binding leaked lease: %v", err)
 			}
-			defer lease.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close receipt WAL path lease: %v", err)
+				}
+			}(lease.Close)
 		})
 	}
 	t.Run("valid prefix loses committed suffix", func(t *testing.T) {
@@ -231,7 +267,11 @@ func TestOpenLeasedReceiptWALCandidateRejectsTipBindingAndLostSuffix(t *testing.
 		if err != nil {
 			t.Fatalf("lost suffix leaked lease: %v", err)
 		}
-		defer lease.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close receipt WAL path lease: %v", err)
+			}
+		}(lease.Close)
 	})
 }
 
@@ -239,8 +279,16 @@ func TestMatchingReceiptWALLogTailRejectsPayloadDrift(t *testing.T) {
 	first := auditGraphEntry(1)
 	staged := mutationlog.New(mutationlog.Options{})
 	live := mutationlog.New(mutationlog.Options{})
-	defer staged.Close()
-	defer live.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close staged mutation log: %v", err)
+		}
+	}(staged.Close)
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close live mutation log: %v", err)
+		}
+	}(live.Close)
 	if _, err := staged.Append(first.Op, first.HLC); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +301,11 @@ func TestMatchingReceiptWALLogTailRejectsPayloadDrift(t *testing.T) {
 	other := auditGraphEntry(1)
 	other.Op.(*pb.Mutation).GetOp().GetPutVertex().Vertex.Key = "different"
 	changed := mutationlog.New(mutationlog.Options{})
-	defer changed.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close changed mutation log: %v", err)
+		}
+	}(changed.Close)
 	if _, err := changed.Append(other.Op, other.HLC); err != nil {
 		t.Fatal(err)
 	}

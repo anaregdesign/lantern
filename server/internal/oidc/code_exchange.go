@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -21,7 +22,7 @@ func (t CodeTokens) IDToken() string     { return t.idToken }
 func (t CodeTokens) AccessToken() string { return t.accessToken }
 func (t CodeTokens) String() string      { return "[redacted OIDC tokens]" }
 
-func (f *Fetcher) ExchangeCode(ctx context.Context, trust Trust, discovery Discovery, registry *SecretRegistry, code, verifier string) (CodeTokens, error) {
+func (f *Fetcher) ExchangeCode(ctx context.Context, trust Trust, discovery Discovery, registry *SecretRegistry, code, verifier string) (tokens CodeTokens, err error) {
 	if !trust.Issuer.Enabled || !trust.Issuer.BrowserEnabled() || trust.Issuer.ClientID == "" || trust.Issuer.RedirectURI == "" ||
 		discovery.Issuer != trust.Issuer.URL || len(code) == 0 || len(code) > 4096 ||
 		len(verifier) < 43 || len(verifier) > 128 {
@@ -51,7 +52,16 @@ func (f *Fetcher) ExchangeCode(ctx context.Context, trust Trust, discovery Disco
 	if err != nil {
 		return CodeTokens{}, ErrFetch
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := closeFetchBody(response.Body); closeErr != nil {
+			tokens = CodeTokens{}
+			if err == nil {
+				err = closeErr
+			} else if !errors.Is(err, closeErr) {
+				err = errors.Join(err, closeErr)
+			}
+		}
+	}()
 	contentType, _, typeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if typeErr != nil || contentType != "application/json" || response.StatusCode != http.StatusOK || response.ContentLength > 64<<10 || response.Header.Get("Content-Encoding") != "" {
 		return CodeTokens{}, ErrFetch

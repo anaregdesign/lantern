@@ -196,6 +196,116 @@ type peerStreamEnd struct {
 	proto     int
 }
 
+type peerApplySnapshot struct {
+	ActiveSeq                      uint64
+	ActiveStart, ActiveAge         time.Duration
+	CompletedSeq, CompletedCalls   uint64
+	CompletedAt, CompletedAge      time.Duration
+	CompletedDuration              time.Duration
+	CompletedError                 bool
+	PreflightCalls                 uint64
+	PreflightTotal, PreflightMax   time.Duration
+	GateCalls                      uint64
+	GateWait, GateBody, GateUnlock time.Duration
+	PublicationWaiters             int64
+}
+
+// peerApplyObservation observes this fixture's serial receiver without holding
+// its mutex across the delegate. Completed calls and passive service callbacks
+// are separate counters; neither includes the age of an unfinished delegate.
+// All storage is fixed-size and contains no mutation keys or payloads.
+type peerApplyObservation struct {
+	mu                       sync.Mutex
+	start                    time.Time
+	now                      func() time.Time
+	activeStart, completedAt time.Time
+	state                    peerApplySnapshot
+	waiters                  func(string) int64
+}
+
+func (o *peerApplyObservation) clock() time.Time {
+	if o.now != nil {
+		return o.now()
+	}
+	return time.Now()
+}
+
+func (o *peerApplyObservation) apply(ctx context.Context, mutation *pb.Mutation, delegate func(context.Context, *pb.Mutation) error) error {
+	seq := mutation.GetSeq()
+	o.mu.Lock()
+	started := o.clock()
+	o.activeStart = started
+	o.state.ActiveSeq, o.state.ActiveStart = seq, started.Sub(o.start)
+	o.mu.Unlock()
+	err := delegate(ctx, mutation)
+	finished := o.clock()
+	o.mu.Lock()
+	o.completedAt = finished
+	o.state.CompletedSeq, o.state.CompletedAt = seq, finished.Sub(o.start)
+	o.state.CompletedDuration, o.state.CompletedError = finished.Sub(started), err != nil
+	o.state.CompletedCalls++
+	o.state.ActiveSeq, o.state.ActiveStart = 0, 0
+	o.activeStart = time.Time{}
+	o.mu.Unlock()
+	return err
+}
+
+func (o *peerApplyObservation) snapshot() peerApplySnapshot {
+	o.mu.Lock()
+	now, result, waiters := o.clock(), o.state, o.waiters
+	if result.ActiveSeq != 0 {
+		result.ActiveAge = now.Sub(o.activeStart)
+	}
+	if result.CompletedCalls != 0 {
+		result.CompletedAge = now.Sub(o.completedAt)
+	}
+	o.mu.Unlock()
+	// This executor-owned atomic is a separate passive sample, not a phase
+	// assertion tied to the active sequence or a callback into publication.
+	if waiters != nil {
+		result.PublicationWaiters = waiters("remote_apply")
+	}
+	return result
+}
+
+func (o *peerApplyObservation) BindPublicationWaiters(waiters func(string) int64) {
+	o.mu.Lock()
+	o.waiters = waiters
+	o.mu.Unlock()
+}
+
+func (o *peerApplyObservation) OnPublicationGate(category string, wait, body, unlock time.Duration) {
+	if category != "remote_apply" {
+		return
+	}
+	o.mu.Lock()
+	o.state.GateCalls++
+	o.state.GateWait += wait
+	o.state.GateBody += body
+	o.state.GateUnlock += unlock
+	o.mu.Unlock()
+}
+
+func (o *peerApplyObservation) OnPublicationApply(_, _ string, preflight time.Duration, _ bool, _ uint64, _ int) {
+	o.mu.Lock()
+	o.state.PreflightCalls++
+	o.state.PreflightTotal += preflight
+	o.state.PreflightMax = max(o.state.PreflightMax, preflight)
+	o.mu.Unlock()
+}
+
+func (*peerApplyObservation) OnPublicationRead(int, string, time.Duration) {}
+func (*peerApplyObservation) OnIlluminate(string, string, string, string, int, int, time.Duration, time.Duration) {
+}
+func (*peerApplyObservation) OnIlluminateResult(string, string, string, string, string, string) {
+}
+func (*peerApplyObservation) OnScan(string, int, time.Duration)           {}
+func (*peerApplyObservation) OnSearchExecution(service.SearchObservation) {}
+func (*peerApplyObservation) OnBatch(string, int)                         {}
+func (*peerApplyObservation) OnGetVertices(int, int)                      {}
+func (*peerApplyObservation) OnGetEdges(int, int)                         {}
+func (*peerApplyObservation) OnEdgeContribDeduped(int)                    {}
+
 type peerHeldApply struct {
 	*service.LanternService
 	entered                                        chan struct{}
@@ -209,6 +319,7 @@ type peerHeldApply struct {
 	applyCalls, applyNanos, lastApplyNanos         atomic.Uint64
 	applyError                                     atomic.Int64
 	observe                                        func(string, ...any)
+	observation                                    *peerApplyObservation
 }
 
 func (a *peerHeldApply) ApplyMutation(ctx context.Context, mutation *pb.Mutation) error {
@@ -222,7 +333,12 @@ func (a *peerHeldApply) ApplyMutation(ctx context.Context, mutation *pb.Mutation
 		}
 	}
 	started := time.Now()
-	err := a.LanternService.ApplyMutation(ctx, mutation)
+	var err error
+	if a.observation != nil {
+		err = a.observation.apply(ctx, mutation, a.LanternService.ApplyMutation)
+	} else {
+		err = a.LanternService.ApplyMutation(ctx, mutation)
+	}
 	elapsed := uint64(time.Since(started))
 	a.applyCalls.Add(1)
 	a.applyNanos.Add(elapsed)
@@ -366,6 +482,114 @@ func (l *peerPhaseLedger) dump(t *testing.T) {
 	}
 }
 
+func TestPeerApplyObservationSeparatesUnfinishedDelegate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{{name: "success"}, {name: "error", err: errors.New("held delegate failure")}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			start := time.Now()
+			var clockNanos, waiters atomic.Int64
+			observation := &peerApplyObservation{start: start, now: func() time.Time {
+				return start.Add(time.Duration(clockNanos.Load()))
+			}}
+			observation.BindPublicationWaiters(func(category string) int64 {
+				if category == "remote_apply" {
+					return waiters.Load()
+				}
+				return -1
+			})
+			if err := observation.apply(ctx, &pb.Mutation{Seq: 502}, func(context.Context, *pb.Mutation) error {
+				clockNanos.Store(int64(2 * time.Millisecond))
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			observation.OnPublicationGate("local_put", time.Millisecond, time.Millisecond, time.Millisecond)
+			observation.OnPublicationGate("remote_apply", 500*time.Microsecond, 500*time.Microsecond, 100*time.Microsecond)
+			observation.OnPublicationApply("new_sequence", "committed", 900*time.Microsecond, true, 1, 0)
+			clockNanos.Store(int64(3 * time.Millisecond))
+			entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			releaseHeld := func() { releaseOnce.Do(func() { close(release) }) }
+			result := make(chan error, 1)
+			var snapshotFinished <-chan struct{}
+			t.Cleanup(func() {
+				releaseHeld()
+				timer := time.NewTimer(5 * time.Second)
+				defer timer.Stop()
+				for _, done := range []<-chan struct{}{finished, snapshotFinished} {
+					if done == nil {
+						continue
+					}
+					select {
+					case <-done:
+					case <-timer.C:
+						t.Error("owned observation regression goroutine did not stop")
+						return
+					}
+				}
+			})
+			go func() {
+				defer close(finished)
+				result <- observation.apply(ctx, &pb.Mutation{Seq: 503}, func(context.Context, *pb.Mutation) error {
+					close(entered)
+					<-release
+					clockNanos.Store(int64(11 * time.Millisecond))
+					return tc.err
+				})
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("delegate did not enter", ctx.Err())
+			}
+			clockNanos.Store(int64(9 * time.Millisecond))
+			waiters.Store(1)
+			snapshots, snapshotDone := make(chan peerApplySnapshot, 1), make(chan struct{})
+			snapshotFinished = snapshotDone
+			go func() {
+				defer close(snapshotDone)
+				snapshots <- observation.snapshot()
+			}()
+			select {
+			case got := <-snapshots:
+				if got.ActiveSeq != 503 || got.ActiveStart != 3*time.Millisecond || got.ActiveAge != 6*time.Millisecond ||
+					got.CompletedSeq != 502 || got.CompletedCalls != 1 || got.CompletedAt != 2*time.Millisecond ||
+					got.CompletedDuration != 2*time.Millisecond || got.CompletedAge != 7*time.Millisecond || got.CompletedError {
+					t.Fatalf("unfinished delegate was mixed with completed call: %+v", got)
+				}
+				if got.PreflightCalls != 1 || got.PreflightTotal != 900*time.Microsecond || got.PreflightMax != 900*time.Microsecond ||
+					got.GateCalls != 1 || got.GateWait != 500*time.Microsecond || got.GateBody != 500*time.Microsecond ||
+					got.GateUnlock != 100*time.Microsecond || got.PublicationWaiters != 1 {
+					t.Fatalf("passive publication observations = %+v", got)
+				}
+			case <-ctx.Done():
+				t.Fatal("observation blocked behind the held delegate", ctx.Err())
+			}
+			releaseHeld()
+			select {
+			case err := <-result:
+				if err != tc.err {
+					t.Fatalf("delegate error = %v, want %v", err, tc.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("released delegate did not finish", ctx.Err())
+			}
+			clockNanos.Store(int64(13 * time.Millisecond))
+			waiters.Store(0)
+			got := observation.snapshot()
+			if got.ActiveSeq != 0 || got.ActiveStart != 0 || got.ActiveAge != 0 || got.CompletedSeq != 503 || got.CompletedCalls != 2 ||
+				got.CompletedAt != 11*time.Millisecond || got.CompletedDuration != 8*time.Millisecond || got.CompletedAge != 2*time.Millisecond ||
+				got.CompletedError != (tc.err != nil) || got.PublicationWaiters != 0 {
+				t.Fatalf("released delegate observation = %+v", got)
+			}
+		})
+	}
+}
+
 func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testing.T) {
 	const phaseTimeout = 15 * time.Second
 	for _, evict := range []bool{false, true} {
@@ -375,6 +599,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 		}
 		t.Run(name, func(t *testing.T) {
 			ledger := &peerPhaseLedger{start: time.Now()}
+			applyObservation := &peerApplyObservation{start: ledger.start}
 			defer func() { ledger.dump(t) }()
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -421,6 +646,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 				},
 				Mount: func(f *peerSecurityFixture, i int, runtime *service.ServingRuntime, mux *http.ServeMux) {
 					if i == 1 {
+						f.primary[i].WithHotPathMetrics(applyObservation)
 						receiveGraph = runtime.GraphCache()
 						return
 					}
@@ -459,11 +685,11 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					t.Fatal(err)
 				}
 			}
-			apply := &peerHeldApply{LanternService: f.primary[1], entered: make(chan struct{}), release: applyRelease, seed: make(chan struct{}), committed: make(chan uint64, 2048), installStarted: make(chan struct{}), installFinished: make(chan struct{}), installRelease: installRelease}
+			apply := &peerHeldApply{LanternService: f.primary[1], entered: make(chan struct{}), release: applyRelease, seed: make(chan struct{}), committed: make(chan uint64, 2048), installStarted: make(chan struct{}), installFinished: make(chan struct{}), installRelease: installRelease, observation: applyObservation}
 			apply.observe = ledger.add
 			var observedCursor, targetCursor uint64
 			defer func() {
-				ledger.add("apply_summary", "started", apply.applyStarted.Load(), "finished", apply.applyFinished.Load(), "calls", apply.applyCalls.Load(), "backend_nanos", apply.applyNanos.Load(), "last_backend_nanos", apply.lastApplyNanos.Load(), "error_code", apply.applyError.Load(), "last_observed_cursor", observedCursor, "target", targetCursor)
+				ledger.add("apply_summary", "started", apply.applyStarted.Load(), "finished", apply.applyFinished.Load(), "calls", apply.applyCalls.Load(), "backend_nanos", apply.applyNanos.Load(), "last_backend_nanos", apply.lastApplyNanos.Load(), "error_code", apply.applyError.Load(), "last_observed_cursor", observedCursor, "target", targetCursor, "backend_observation", fmt.Sprintf("%+v", applyObservation.snapshot()))
 			}()
 			transport, err := provider.NewWorkloadPeerTransport(f.runtimes[1])
 			if err != nil {
@@ -677,7 +903,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					select {
 					case <-apply.committed:
 					case <-recoveryCtx.Done():
-						ledger.add("retained_timeout", "cursor", observedCursor, "target", last, "apply_started", apply.applyStarted.Load(), "apply_finished", apply.applyFinished.Load())
+						ledger.add("retained_timeout", "cursor", observedCursor, "target", last, "apply_started", apply.applyStarted.Load(), "apply_finished", apply.applyFinished.Load(), "backend_observation", fmt.Sprintf("%+v", applyObservation.snapshot()))
 						stacks := make([]byte, 1<<20)
 						ledger.stacks = string(stacks[:runtime.Stack(stacks, true)])
 						t.Fatal("retained prefix did not converge", recoveryCtx.Err())

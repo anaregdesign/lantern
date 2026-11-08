@@ -513,9 +513,10 @@ func TestLanternListenerSubscribeCompressionPerFrame(t *testing.T) {
 			request.Header.Set("Content-Type", protocol.contentType)
 			request.Header.Set(protocol.acceptHeader, "gzip")
 			request.Header.Set("Accept-Encoding", "identity")
-			if protocol.name == "Connect" {
+			switch protocol.name {
+			case "Connect":
 				request.Header.Set("Connect-Protocol-Version", "1")
-			} else if protocol.name == "gRPC" {
+			case "gRPC":
 				request.Header.Set("Te", "trailers")
 			}
 			response, err := httpClient.Do(request)

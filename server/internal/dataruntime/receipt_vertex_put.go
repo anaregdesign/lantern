@@ -184,7 +184,7 @@ func vertexPutDigest(vertex *pb.Vertex, ifAbsent bool, namespace ...string) ([32
 	case *pb.Vertex_Nil:
 		canonical = append(canonical, 30)
 	default:
-		return [32]byte{}, errors.New("Vertex Put has an unknown value kind")
+		return [32]byte{}, errors.New("vertex Put has an unknown value kind")
 	}
 	if vertex.GetExpiration() == nil {
 		canonical = append(canonical, 0)
@@ -207,34 +207,34 @@ func vertexPutDigest(vertex *pb.Vertex, ifAbsent bool, namespace ...string) ([32
 func validateReceiptVertex(vertex *pb.Vertex) error {
 	if vertex == nil || vertex.GetKey() == "" || !utf8.ValidString(vertex.GetKey()) ||
 		len(vertex.GetKey()) > receiptVertexWALMaxBytes {
-		return errors.New("Vertex Put identity must be nonempty UTF-8")
+		return errors.New("vertex Put identity must be nonempty UTF-8")
 	}
 	if err := rejectProtoUnknownFields(vertex.ProtoReflect()); err != nil {
-		return fmt.Errorf("Vertex Put %w", err)
+		return fmt.Errorf("vertex Put %w", err)
 	}
 	if nilOneofWrapper(vertex.GetValue()) {
-		return errors.New("Vertex Put value has a typed-nil oneof")
+		return errors.New("vertex Put value has a typed-nil oneof")
 	}
 	switch value := vertex.GetValue().(type) {
 	case *pb.Vertex_String_:
 		if !utf8.ValidString(value.String_) {
-			return errors.New("Vertex Put string value must be UTF-8")
+			return errors.New("vertex Put string value must be UTF-8")
 		}
 	case *pb.Vertex_Timestamp:
 		if value.Timestamp == nil || value.Timestamp.CheckValid() != nil {
-			return errors.New("Vertex Put timestamp value is invalid")
+			return errors.New("vertex Put timestamp value is invalid")
 		}
 	case *pb.Vertex_Duration:
 		if value.Duration == nil || value.Duration.CheckValid() != nil {
-			return errors.New("Vertex Put duration value is invalid")
+			return errors.New("vertex Put duration value is invalid")
 		}
 	case *pb.Vertex_Nil:
 		if !value.Nil {
-			return errors.New("Vertex Put nil marker must be true")
+			return errors.New("vertex Put nil marker must be true")
 		}
 	}
 	if _, err := prototime.CheckedExpiration(vertex.GetExpiration()); err != nil {
-		return fmt.Errorf("Vertex Put %w", err)
+		return fmt.Errorf("vertex Put %w", err)
 	}
 	return nil
 }

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Provenance identifies the verified credential protocol, independently of
+// CredentialProvenance identifies the verified credential protocol, independently of
 // whether that credential represents an end-user or an OAuth client.
 type CredentialProvenance string
 

@@ -64,6 +64,11 @@ func (i *graphOnlySnapshotInstaller) Install(ctx context.Context, stream Snapsho
 	}
 	stage := &graphSnapshotStage{ctx: ctx, source: stream, maxFrameBytes: i.spool.MaxFrameBytes, file: file, digest: sha256.New(), complete: scratch.Close, diagnostic: diagnostic}
 	defer stage.release()
+	defer func() {
+		if err != nil {
+			diagnostic.observeFailureReturn(time.Now())
+		}
+	}()
 	identities, err := newSnapshotIdentityIndex(ctx, scratch)
 	if err != nil {
 		return SnapshotInstallResult{}, err
@@ -229,6 +234,14 @@ func (s *graphSnapshotStage) receiveStaged() bool {
 // have no directory link and their only writer is this owner; the source never
 // receives a handle. Per-frame digests additionally check each replay read.
 func (s *graphSnapshotStage) seal() error {
+	var read uint64
+	readAttempted, readEOF := false, false
+	defer func() {
+		if s.diagnostic != nil {
+			s.diagnostic.sealReadAttempted, s.diagnostic.sealReadEOF = readAttempted, readEOF
+			s.diagnostic.sealReadBytes = read
+		}
+	}()
 	if err := checkSnapshotContext(s.ctx); err != nil {
 		return err
 	}
@@ -240,15 +253,17 @@ func (s *graphSnapshotStage) seal() error {
 	}
 	verified := sha256.New()
 	var buffer [64 << 10]byte
-	var read uint64
 	for {
 		if err := checkSnapshotContext(s.ctx); err != nil {
 			return err
 		}
+		// This records the existing scratch Read call, not an OS-read probe.
+		readAttempted = true
 		n, err := s.file.Read(buffer[:])
 		read += uint64(n)
 		_, _ = verified.Write(buffer[:n])
 		if errors.Is(err, io.EOF) {
+			readEOF = true
 			break
 		}
 		if err != nil {

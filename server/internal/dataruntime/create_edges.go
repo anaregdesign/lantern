@@ -29,7 +29,7 @@ func (s *Executor) CreateEdges(ctx context.Context, req *pb.CreateEdgesRequest) 
 		return nil, ctxToConnect(err)
 	}
 	if s.edgeCreateHA {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("Edge Create requires standalone serving; cluster-wide absence arbitration is unavailable"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("edge Create requires standalone serving; cluster-wide absence arbitration is unavailable"))
 	}
 	if req == nil {
 		req = &pb.CreateEdgesRequest{}
@@ -38,7 +38,7 @@ func (s *Executor) CreateEdges(ctx context.Context, req *pb.CreateEdgesRequest) 
 		return nil, invalidReceiptRequest(err)
 	}
 	if len(req.GetEdges()) > receiptVertexWALMaxItems {
-		return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("Edge Create batch capacity exceeded"))
+		return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("edge Create batch capacity exceeded"))
 	}
 	if len(req.GetEdges()) == 0 {
 		if req.GetReceiptContext() != nil {
@@ -47,7 +47,7 @@ func (s *Executor) CreateEdges(ctx context.Context, req *pb.CreateEdgesRequest) 
 		return &pb.CreateEdgesResponse{}, nil
 	}
 	if proto.Size(req) > receiptVertexWALMaxBytes/2 {
-		return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("Edge Create request exceeds durable envelope capacity"))
+		return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("edge Create request exceeds durable envelope capacity"))
 	}
 	original := make([]*pb.Edge, len(req.GetEdges()))
 	items := make([]graphcache.EdgeItem[string], len(original))
@@ -75,7 +75,7 @@ func (s *Executor) CreateEdges(ctx context.Context, req *pb.CreateEdgesRequest) 
 	}
 	cache, ok := s.cache.(*graphcache.GraphCache[string, *pb.Vertex])
 	if !ok {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("Edge Create requires an owned staged GraphCache"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("edge Create requires an owned staged GraphCache"))
 	}
 	var runtime *receiptServingRuntime
 	var intents []mutationreceipt.Intent
@@ -194,7 +194,7 @@ func (s *Executor) CreateEdges(ctx context.Context, req *pb.CreateEdgesRequest) 
 	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("Edge Create origin sequence drift"))
+		return nil, connect.NewError(connect.CodeInternal, errors.New("edge Create origin sequence drift"))
 	}
 	defer originTx.Abort()
 	if storeTx != nil {
@@ -238,7 +238,7 @@ func (s *Executor) CreateEdge(ctx context.Context, req *pb.CreateEdgeRequest) (*
 		return nil, err
 	}
 	if len(resp.GetOutcomes()) != 1 || !validCreateEdgeOutcome(resp.GetOutcomes()[0]) {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("Edge Create outcome alignment drift"))
+		return nil, connect.NewError(connect.CodeInternal, errors.New("edge Create outcome alignment drift"))
 	}
 	return &pb.CreateEdgeResponse{Outcome: resp.GetOutcomes()[0]}, nil
 }

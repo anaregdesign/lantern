@@ -2,7 +2,7 @@ package securitytransport
 
 import "github.com/anaregdesign/lantern/server/internal/security"
 
-// The certified composition supplies observations from the actual local logger
+// LogSettingsObserver receives certified observations from the actual local logger
 // owner. They never come from request fields or imply another node's application.
 type LogSettingsObserver func(security.LogPolicyProjection) (LogSettingsObservation, error)
 

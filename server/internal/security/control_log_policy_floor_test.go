@@ -55,7 +55,11 @@ func TestLogPolicyFloorDurableOneTimeAndCompleteReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restored.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned restored.Close: %v", err)
+		}
+	}(restored.Close)
 	if restored.logPolicyFloor != floor || !bytes.Equal([]byte(restored.logPolicyFloorOriginal), []byte(h.raw)) {
 		t.Fatal("binary original or durable floor changed during recovery")
 	}
@@ -158,7 +162,11 @@ func TestLogPolicyFloorPreparationRefBoundToOriginalAndDetached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resumed.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned resumed.Close: %v", err)
+		}
+	}(resumed.Close)
 	if *resumed.logPolicyProjectionLocked().Preparation != expected {
 		t.Fatal("restart lost original actor/ID/intent preparation link")
 	}

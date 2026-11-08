@@ -470,8 +470,7 @@ func TestLanternService_PublicGraphReadRetrySerializesAndFailsClosed(t *testing.
 	if err := svc.withPublicGraphReadRetry(ctx, func() error {
 		attempts++
 		if attempts == 1 {
-			svc.replicationCutMu.Lock()
-			svc.replicationCutMu.Unlock()
+			completeTestPublicationInterval(t, svc)
 		}
 		return nil
 	}); err != nil || attempts != 2 {
@@ -482,8 +481,7 @@ func TestLanternService_PublicGraphReadRetrySerializesAndFailsClosed(t *testing.
 	err := svc.withPublicGraphReadRetry(ctx, func() error {
 		attempts++
 		if attempts <= 3 {
-			svc.replicationCutMu.Lock()
-			svc.replicationCutMu.Unlock()
+			completeTestPublicationInterval(t, svc)
 		}
 		return nil
 	})
@@ -494,8 +492,7 @@ func TestLanternService_PublicGraphReadRetrySerializesAndFailsClosed(t *testing.
 	attempts = 0
 	err = svc.withPublicGraphReadRetry(ctx, func() error {
 		attempts++
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
+		completeTestPublicationInterval(t, svc)
 		return captureErr
 	})
 	if !errors.Is(err, captureErr) || attempts != 1 {
@@ -505,8 +502,7 @@ func TestLanternService_PublicGraphReadRetrySerializesAndFailsClosed(t *testing.
 	attempts = 0
 	err = svc.withPublicGraphReadRetry(cancelledCtx, func() error {
 		attempts++
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
+		completeTestPublicationInterval(t, svc)
 		cancel()
 		return nil
 	})
@@ -542,8 +538,7 @@ func TestLanternService_PublicGraphReadFallbackBlocksPublication(t *testing.T) {
 		readDone <- svc.withPublicGraphReadRetry(context.Background(), func() error {
 			attempts++
 			if attempts <= 3 {
-				svc.replicationCutMu.Lock()
-				svc.replicationCutMu.Unlock()
+				completeTestPublicationInterval(t, svc)
 			} else {
 				close(entered)
 				<-release
@@ -558,8 +553,7 @@ func TestLanternService_PublicGraphReadFallbackBlocksPublication(t *testing.T) {
 	}
 	writerDone := make(chan struct{})
 	go func() {
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
+		completeTestPublicationInterval(t, svc)
 		close(writerDone)
 	}()
 	select {

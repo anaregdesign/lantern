@@ -92,7 +92,7 @@ func newNativeProviderFixture(t *testing.T, kind string) *nativeProviderFixture 
 			handler := p.exchange
 			p.mu.Unlock()
 			if handler == nil {
-				http.Error(w, "unavailable", 503)
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			} else {
 				handler(w, r)
 			}

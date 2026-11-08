@@ -232,7 +232,11 @@ func TestLogPolicyCandidateCannotMasqueradeAsOriginRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned owner.Close: %v", err)
+		}
+	}(owner.Close)
 	if err := owner.replayRecord(s2cPRecord{kind: s2cPOrigin, index: 3, raw: candidate.candidate}); err == nil {
 		t.Fatal("supported envelope entered bare origin replay grammar")
 	}
@@ -240,7 +244,11 @@ func TestLogPolicyCandidateCannotMasqueradeAsOriginRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer relay.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned relay.Close: %v", err)
+		}
+	}(relay.Close)
 	before := relay.pendingBytes
 	if _, err := relay.forwardedHistorical(candidate.candidate); err == nil || relay.pendingBytes != before {
 		t.Fatal("support bytes bypassed separate candidate ordering/accounting")

@@ -51,7 +51,7 @@ type Ready struct {
 	Identity Identity `json:"identity"`
 }
 
-// Only baseline/ordinal1 and post/ordinal2 are accepted. Files are named
+// Request accepts only baseline/ordinal1 and post/ordinal2. Files are named
 // baseline.request.json/post.request.json; completion and started use the same
 // phase prefix. A request is committed before SIGUSR1, never inferred from it.
 type Request struct {

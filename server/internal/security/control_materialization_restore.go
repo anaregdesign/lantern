@@ -205,7 +205,7 @@ func resumeS2LocalWithHooks(path string, scope s2LocalScope, genesis *s2TrustedG
 // Bound actual bytes and physical record count before decoding any payload.
 // This framing-only preflight does not replace the core CRC, path, complete
 // frame, sequence or canonical application validation passes.
-func s2LocalFiles(path string, policy s2LocalStoragePolicy) (uint64, uint64, error) {
+func s2LocalFiles(path string, policy s2LocalStoragePolicy) (usedBytes, recordCount uint64, err error) {
 	var used uint64
 	var walBytes int64
 	for _, p := range []string{path, path + ".tip"} {
@@ -234,7 +234,12 @@ func s2LocalFiles(path string, policy s2LocalStoragePolicy) (uint64, uint64, err
 	if err != nil {
 		return 0, 0, err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			usedBytes, recordCount = 0, 0
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	var header [8]byte
 	if _, err = io.ReadFull(f, header[:]); err != nil || string(header[:]) != "LNWAL01\n" {
 		return 0, 0, errS2LocalRecord

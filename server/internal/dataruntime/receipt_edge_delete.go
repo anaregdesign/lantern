@@ -168,7 +168,7 @@ func prepareEdgeDeleteReceiptCall(call receiptEdgeDeleteCall, namespace ...strin
 	intents := make([]mutationreceipt.Intent, len(call.Items))
 	for i, item := range call.Items {
 		if item.Tail == "" || item.Head == "" || !utf8.ValidString(item.Tail) || !utf8.ValidString(item.Head) {
-			return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("Edge Delete identity must be nonempty UTF-8"))
+			return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("edge Delete identity must be nonempty UTF-8"))
 		}
 		keys[i] = graphcache.EdgeKey[string]{Tail: item.Tail, Head: item.Head}
 		intents[i] = mutationreceipt.Intent{

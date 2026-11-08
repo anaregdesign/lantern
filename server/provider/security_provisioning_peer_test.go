@@ -158,7 +158,11 @@ func TestProvisionedDataTrustAllowsOnlySameOriginalTrustRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer publisher.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Error("close membership publisher", err)
+		}
+	}(publisher.Close)
 	// Publisher advances only signed revision and interval, never the pinned set.
 	raw, err := os.ReadFile(before.ManifestFile)
 	if err != nil {

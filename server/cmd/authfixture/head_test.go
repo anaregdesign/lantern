@@ -29,7 +29,11 @@ func TestHeadFixturePreservesNativeRoleAndPrivateCredentialBoundaries(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close Head credential file: %v", err)
+		}
+	}()
 	if err := privatefile.Check(file); err != nil {
 		t.Fatal(err)
 	}

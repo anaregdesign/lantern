@@ -23,6 +23,10 @@ func TestJWKSAlgorithms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ecPublic, err := ecKey.PublicKey.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
 	enc := base64.RawURLEncoding.EncodeToString
 	for _, tc := range []struct {
 		method jwt.SigningMethod
@@ -31,7 +35,7 @@ func TestJWKSAlgorithms(t *testing.T) {
 	}{
 		{jwt.SigningMethodRS256, rsaKey, jsonKey{Kind: "RSA", N: enc(rsaKey.N.Bytes()), E: enc(big.NewInt(int64(rsaKey.E)).Bytes())}},
 		{jwt.SigningMethodPS256, rsaKey, jsonKey{Kind: "RSA", N: enc(rsaKey.N.Bytes()), E: enc(big.NewInt(int64(rsaKey.E)).Bytes())}},
-		{jwt.SigningMethodES256, ecKey, jsonKey{Kind: "EC", Curve: "P-256", X: enc(ecKey.X.FillBytes(make([]byte, 32))), Y: enc(ecKey.Y.FillBytes(make([]byte, 32)))}},
+		{jwt.SigningMethodES256, ecKey, jsonKey{Kind: "EC", Curve: "P-256", X: enc(ecPublic[1:33]), Y: enc(ecPublic[33:])}},
 	} {
 		t.Run(tc.method.Alg(), func(t *testing.T) {
 			tc.jwk.ID, tc.jwk.Algorithm = "key", tc.method.Alg()
@@ -62,5 +66,24 @@ func TestJWKSRejectsAmbiguousAndWeakKeys(t *testing.T) {
 		if _, err := decodeKeys(keys, []string{"RS256", "ES256", "EdDSA"}); err == nil {
 			t.Fatal("ambiguous or weak JWKS accepted")
 		}
+	}
+	one := make([]byte, 32)
+	one[len(one)-1] = 1
+	for _, tc := range []struct {
+		name string
+		x, y []byte
+	}{
+		{"zero point", make([]byte, 32), make([]byte, 32)},
+		{"off curve", one, one},
+		{"coordinate outside field", elliptic.P256().Params().P.Bytes(), one},
+		{"short coordinate", one[1:], one},
+		{"oversized coordinate", one, append([]byte{0}, one...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := jsonKey{Kind: "EC", ID: "key", Algorithm: "ES256", Curve: "P-256", X: base64.RawURLEncoding.EncodeToString(tc.x), Y: base64.RawURLEncoding.EncodeToString(tc.y)}
+			if _, err := decodeKeys([]jsonKey{key}, []string{"ES256"}); err == nil {
+				t.Fatal("invalid P-256 point accepted")
+			}
+		})
 	}
 }

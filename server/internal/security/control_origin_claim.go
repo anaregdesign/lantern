@@ -130,11 +130,12 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 		if e.AuthTime.Numeric && (e.AuthTime.Time().After(e.IssuedAt.Time()) || low.Before(e.AuthTime.Time())) {
 			return false
 		}
-		if c.Kind == "access" {
+		switch c.Kind {
+		case "access":
 			if e.Mode != "access" || a.Provenance != RFC9068Bearer || command.Kind != S1Management || c.Enrollment == [32]byte{} || c.HumanNamespace == [32]byte{} {
 				return false
 			}
-		} else if c.Kind == "code" {
+		case "code":
 			if e.Mode != "code" || e.Code.Flow != "login" || a.Provenance != BrowserCode || c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} {
 				return false
 			}
@@ -146,7 +147,7 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 			if e.Code.ConsumedAt.Before(e.Code.CreatedAt) || !e.Code.ConsumedAt.Before(e.Code.ExpiresAt) || low.Before(e.Code.ConsumedAt) {
 				return false
 			}
-		} else {
+		default:
 			if e.Mode != "native-login" || a.Provenance != NativeProviderLogin || command.Kind != S1IssueSession || c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} || low.Before(e.Native.ConsumedAt) || !nativeExchangeTimesValid(e.Native, low) {
 				return false
 			}
@@ -176,13 +177,23 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 	default:
 		return false
 	}
-	return h.CredentialDeadline == authorityMinTime(expires, c.AdmissionDeadline) && s2cCanonicalTime(h.CredentialDeadline, false) && high.Before(h.CredentialDeadline)
+	switch h.CredentialDeadline {
+	case authorityMinTime(expires, c.AdmissionDeadline):
+	default:
+		return false
+	}
+	return s2cCanonicalTime(h.CredentialDeadline, false) && high.Before(h.CredentialDeadline)
 }
 
 func verifyAuthorityPurpose(h authorityHistoricalHeader, operation OperationIdentity) bool {
 	p := h.Purpose
 	if p == nil {
-		return h.PurposeEvidence == [32]byte{} && h.PurposeBinding == [32]byte{} && h.PurposeDeadline == (time.Time{})
+		switch h.PurposeDeadline {
+		case time.Time{}:
+			return h.PurposeEvidence == [32]byte{} && h.PurposeBinding == [32]byte{}
+		default:
+			return false
+		}
 	}
 	expected := authorityPurposeBinding{h.ID, h.OperationDigest, operation.reviewed, operation.actor, h.Authentication.IssuerConfigRevision, h.Lineage}
 	if p.Kind != "full-s1-operation" || p.Binding != expected || p.Authorization == [32]byte{} || p.Challenge == [32]byte{} || p.Origin != h.OriginDigest || p.Serial != h.Serial {
@@ -204,10 +215,15 @@ func verifyAuthorityPurpose(h authorityHistoricalHeader, operation OperationIden
 			return false
 		}
 	}
+	switch h.PurposeDeadline {
+	case p.ExpiresAt:
+	default:
+		return false
+	}
 	low, high := h.Time.utcTimes()
 	return p.ReviewAt.Before(p.NotBefore) && !e.Code.CreatedAt.Before(p.NotBefore) && !e.Code.ConsumedAt.Before(e.Code.CreatedAt) && e.Code.ConsumedAt.Before(e.Code.ExpiresAt) &&
 		!p.ApprovedAt.Before(e.Code.ConsumedAt) && !e.AuthTime.Time().Before(p.NotBefore) && !p.ApprovedAt.Before(e.AuthTime.Time()) && !e.AuthTime.Time().After(e.IssuedAt.Time()) &&
 		!low.Before(p.ApprovedAt) && !low.Before(authorityCredentialStart(authorityCredentialClaim{Token: &e}).Time()) &&
 		!p.ExpiresAt.After(p.ReviewAt.Add(10*time.Minute)) && !p.ExpiresAt.After(e.ExpiresAt.Time()) &&
-		h.PurposeDeadline == p.ExpiresAt && high.Before(h.PurposeDeadline) && h.PurposeBinding == s1PurposeBinding(h.ID, operation) && h.PurposeEvidence == s2cHash("current-purpose-evidence-v2", p)
+		high.Before(h.PurposeDeadline) && h.PurposeBinding == s1PurposeBinding(h.ID, operation) && h.PurposeEvidence == s2cHash("current-purpose-evidence-v2", p)
 }

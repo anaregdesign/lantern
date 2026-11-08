@@ -241,7 +241,7 @@ func s3aTestReconcileRelay(ctx context.Context, o *s3aOwner, proof s3aTestRelayP
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !(count == 1 && callErr == nil || count == 0 && callErr == context.DeadlineExceeded) {
+	if (count != 1 || callErr != nil) && (count != 0 || callErr != context.DeadlineExceeded) {
 		return fmt.Errorf("unexpected relay observation: count=%d err=%v", count, callErr)
 	}
 	// afterChosen runs after the P append, so an entered native operation may

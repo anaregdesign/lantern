@@ -172,9 +172,9 @@ func prefixScope(allow, deny []string) *Scope {
 			}
 			end := prefixEnd(deny[j])
 			if end == "" || upper != "" && end >= upper {
-				lower = upper
 				// An infinite Deny removes the remainder even when upper is
-				// also infinity; the separate flag avoids an empty-bound mixup.
+				// also infinity. Skip the trailing range without treating its
+				// empty upper endpoint as a lower bound.
 				goto exhausted
 			}
 			if end > lower {

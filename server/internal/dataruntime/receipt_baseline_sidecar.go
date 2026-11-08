@@ -140,7 +140,7 @@ func (s receiptBaselineSidecarStore) load(
 	format ReceiptBaselineFormat,
 	digest [sha256.Size]byte,
 	size uint64,
-) ([]byte, error) {
+) (raw []byte, err error) {
 	maxBytes := receiptBaselineMaxBytes(format)
 	if maxBytes == 0 || digest == ([sha256.Size]byte{}) || size == 0 || size > maxBytes {
 		return nil, fmt.Errorf("%w: invalid digest or size", errReceiptBaselineSidecar)
@@ -157,7 +157,12 @@ func (s receiptBaselineSidecarStore) load(
 	if err != nil {
 		return nil, fmt.Errorf("service: open baseline sidecar: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			raw = nil
+			err = errors.Join(err, fmt.Errorf("service: close baseline sidecar: %w", closeErr))
+		}
+	}()
 	after, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("service: stat baseline sidecar: %w", err)
@@ -165,7 +170,7 @@ func (s receiptBaselineSidecarStore) load(
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
 		return nil, fmt.Errorf("%w: sidecar identity changed while opening", errReceiptBaselineSidecar)
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, int64(size)+1))
+	raw, err = io.ReadAll(io.LimitReader(file, int64(size)+1))
 	if err != nil {
 		return nil, fmt.Errorf("service: read baseline sidecar: %w", err)
 	}

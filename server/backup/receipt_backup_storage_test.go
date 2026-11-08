@@ -448,14 +448,12 @@ func TestReceiptBackupSetCrashBoundariesNeverExposeMixedSet(t *testing.T) {
 			})
 		}
 	}
-	for _, point := range []crashPoint{
+	tests = append(tests, []crashPoint{
 		{name: "before member directory sync", operation: "directory sync", occurrence: 1},
 		{name: "after member directory sync", operation: "directory sync", occurrence: 1, after: true},
 		{name: "before manifest directory sync", operation: "directory sync", occurrence: 2, committed: true},
 		{name: "after manifest directory sync", operation: "directory sync", occurrence: 2, after: true, committed: true},
-	} {
-		tests = append(tests, point)
-	}
+	}...)
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

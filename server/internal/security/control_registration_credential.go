@@ -72,7 +72,12 @@ func registrationEvidenceTimesValid(c authorityCredentialClaim, low, high time.T
 		return false
 	}
 	e := c.Token
-	return e.ExpiresAt.Time().After(e.IssuedAt.Time()) && c.AdmissionDeadline == nativeEvidenceExpiry(*e).UTC().Round(0) &&
+	switch c.AdmissionDeadline {
+	case nativeEvidenceExpiry(*e).UTC().Round(0):
+	default:
+		return false
+	}
+	return e.ExpiresAt.Time().After(e.IssuedAt.Time()) &&
 		(!e.AuthTime.Numeric || !e.AuthTime.Time().After(e.IssuedAt.Time()) && !low.Before(e.AuthTime.Time())) &&
 		!low.Before(e.Native.ConsumedAt) && nativeExchangeTimesValid(e.Native, low)
 }

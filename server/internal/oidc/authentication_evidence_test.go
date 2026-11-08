@@ -19,6 +19,9 @@ import (
 func TestAuthenticationEvidenceSignedAccessFacts(t *testing.T) {
 	p := newTestProvider(t)
 	verifier := NewVerifierWithClock(NewKeyCacheWithClock(p.fetcher, p.now), p.now)
+	type jsonEnvelope struct {
+		Identity VerifiedIdentity `json:"identity"`
+	}
 	for _, tc := range []struct {
 		name    string
 		present bool
@@ -56,12 +59,12 @@ func TestAuthenticationEvidenceSignedAccessFacts(t *testing.T) {
 			if before != after {
 				t.Fatal("returned copy mutated retained evidence")
 			}
-			encoded, _ := json.Marshal(verified)
-			if string(encoded) != "{}" {
+			encoded, err := json.Marshal(jsonEnvelope{Identity: verified})
+			if err != nil || string(encoded) != `{"identity":{}}` {
 				t.Fatal("opaque producer exported facts")
 			}
-			var decoded VerifiedIdentity
-			if json.Unmarshal([]byte(`{"Identity":{"Subject":"forged"},"evidence":{"Mode":"code"}}`), &decoded) != nil || decoded != (VerifiedIdentity{}) {
+			var decoded jsonEnvelope
+			if json.Unmarshal([]byte(`{"identity":{"Identity":{"Subject":"forged"},"evidence":{"Mode":"code"}}}`), &decoded) != nil || decoded.Identity != (VerifiedIdentity{}) {
 				t.Fatal("JSON minted verifier evidence")
 			}
 		})

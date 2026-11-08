@@ -298,10 +298,12 @@ func TestNewGraphCacheSearchDocumentBudgetsCoverJSONAndBytes(t *testing.T) {
 
 func TestNewGraphCache_SearchEnabledIndexesKeyAndValue(t *testing.T) {
 	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: true})
-	gc.PutVertex("user.preferences.tone", &v1.Vertex{
+	if err := gc.PutVertex("user.preferences.tone", &v1.Vertex{
 		Key:   "user.preferences.tone",
 		Value: &v1.Vertex_String_{String_: "calm and concise"},
-	})
+	}); err != nil {
+		t.Fatal("seed searchable vertex", err)
+	}
 
 	// Match by value content.
 	if hits := gc.SearchVertices("calm", 10, ""); len(hits) == 0 {
@@ -315,10 +317,12 @@ func TestNewGraphCache_SearchEnabledIndexesKeyAndValue(t *testing.T) {
 
 func TestNewGraphCache_SearchJSONStringValueFiltersStructure(t *testing.T) {
 	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: true})
-	gc.PutVertex("user.profile", &v1.Vertex{
+	if err := gc.PutVertex("user.profile", &v1.Vertex{
 		Key:   "user.profile",
 		Value: &v1.Vertex_String_{String_: `{"role":"administrator","city":"Tokyo","score":9000,"active":true}`},
-	})
+	}); err != nil {
+		t.Fatal("seed JSON vertex", err)
+	}
 
 	// String values are searchable.
 	if hits := gc.SearchVertices("administrator", 10, ""); len(hits) == 0 {
@@ -333,10 +337,12 @@ func TestNewGraphCache_SearchJSONStringValueFiltersStructure(t *testing.T) {
 	// TestVertexSearchDocument; an end-to-end negative is verified here with
 	// bigram-disjoint tokens so the n-gram analyzer cannot produce an
 	// incidental partial-overlap hit through the key or the string values.
-	gc.PutVertex("zzzz", &v1.Vertex{
+	if err := gc.PutVertex("zzzz", &v1.Vertex{
 		Key:   "zzzz",
 		Value: &v1.Vertex_String_{String_: `{"qqqq":"hello","wwww":4242}`},
-	})
+	}); err != nil {
+		t.Fatal("seed JSON structure exclusion vertex", err)
+	}
 	if hits := gc.SearchVertices("qqqq", 10, ""); len(hits) != 0 {
 		t.Errorf("expected no hit searching JSON field name 'qqqq', got %d", len(hits))
 	}
@@ -347,10 +353,12 @@ func TestNewGraphCache_SearchJSONStringValueFiltersStructure(t *testing.T) {
 
 func TestNewGraphCache_SearchDisabledReturnsNil(t *testing.T) {
 	gc := NewGraphCache(CacheConfig{CacheSettings: CacheSettings{TTL: time.Minute}}, SearchConfig{Enabled: false})
-	gc.PutVertex("user.preferences.tone", &v1.Vertex{
+	if err := gc.PutVertex("user.preferences.tone", &v1.Vertex{
 		Key:   "user.preferences.tone",
 		Value: &v1.Vertex_String_{String_: "calm and concise"},
-	})
+	}); err != nil {
+		t.Fatal("seed unindexed vertex", err)
+	}
 
 	if hits := gc.SearchVertices("calm", 10, ""); hits != nil {
 		t.Errorf("expected nil hits when search index disabled, got %v", hits)

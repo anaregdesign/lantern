@@ -806,7 +806,9 @@ func TestEdgeDeleteReceiptCoordinatorReceiptOnlyPositionProjectsZeroKeys(t *test
 			}
 		}
 		cancel()
-		waitReceiptTest(t, "Subscribe cancellation", done)
+		if err := waitReceiptTest(t, "Subscribe cancellation", done); connect.CodeOf(err) != connect.CodeCanceled {
+			t.Fatalf("Subscribe cancellation = %v, want canceled", err)
+		}
 	}
 	peerLog := mutationlog.New(mutationlog.Options{Capacity: 8})
 	t.Cleanup(func() { _ = peerLog.Close() })
@@ -1057,7 +1059,9 @@ func TestEdgeDeleteReceiptCoordinatorHeldWALBlocksStagedReaders(t *testing.T) {
 		t.Fatalf("Subscribe after commit = %+v", frame)
 	}
 	streamCancel()
-	waitReceiptTest(t, "Subscribe cancel", streamDone)
+	if err := waitReceiptTest(t, "Subscribe cancel", streamDone); connect.CodeOf(err) != connect.CodeCanceled {
+		t.Fatalf("Subscribe cancellation = %v, want canceled", err)
+	}
 }
 
 func TestEdgeDeleteReceiptFollowerAppliesAndDeduplicates(t *testing.T) {

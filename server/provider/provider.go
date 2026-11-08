@@ -9,7 +9,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 )
 
-// These aliases preserve focused provider injection while operational value
+// NetConfig and the related aliases preserve focused provider injection while operational value
 // definitions are owned exclusively by internal/config.
 type NetConfig = config.NetConfig
 type RateLimitConfig = config.RateLimitConfig

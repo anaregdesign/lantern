@@ -72,3 +72,34 @@ func TestStartupSnapshotHasNoMutableReferences(t *testing.T) {
 	}
 	check(reflect.TypeFor[StartupSnapshot]())
 }
+
+func TestStartupCloseFailureRoundTripKeepsOnlyFixedLabels(t *testing.T) {
+	state := StartupSnapshot{Count: 1, PublishedAttempt: 1, StartedAttempt: 1, CompletedAttempt: 1, OwnerFailed: true,
+		AnchoringContext: ContextOtherError, IncomingContext: ContextLive, OwnerContext: ContextLive}
+	state.Attempts[0] = StartupAttempt{Attempt: 1, Stage: "close", Reason: "close", HasReadBudget: true,
+		ReadRemainingNS: 1_000_000_000, ExchangeContext: ContextLive, IncomingContext: ContextLive,
+		ReadCount: 1, FirstReadError: "none", FinalReadError: "none"}
+	var output bytes.Buffer
+	WriteStartupFailure(&output, startupErrorFixture{state})
+	decoded, ok := DecodeStartupRecord(bytes.TrimSpace(output.Bytes()))
+	if !ok || decoded != state || output.Len() > MaxStartupRecordBytes || bytes.Contains(output.Bytes(), []byte("private")) {
+		t.Fatal("close failure lost its bounded fixed-label record")
+	}
+	for _, field := range []string{"stage", "reason"} {
+		invalid := bytes.Replace(output.Bytes(), []byte(`"`+field+`":"close"`), []byte(`"`+field+`":"close/private-token"`), 1)
+		if _, ok := DecodeStartupRecord(bytes.TrimSpace(invalid)); ok {
+			t.Fatal("close label admitted arbitrary private text", field)
+		}
+		bad := state
+		if field == "stage" {
+			bad.Attempts[0].Stage = "close/private-token"
+		} else {
+			bad.Attempts[0].Reason = "close/private-token"
+		}
+		var rejected bytes.Buffer
+		WriteStartupFailure(&rejected, startupErrorFixture{bad})
+		if rejected.Len() != 0 {
+			t.Fatal("startup writer forwarded an unknown close label", field)
+		}
+	}
+}

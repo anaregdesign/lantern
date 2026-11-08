@@ -100,12 +100,12 @@ func requireLogPolicyCandidate(t *s2cTrust, state *S1ApplyState, h *s2cHistorica
 	return nil
 }
 
-func (k *s2cParticipant) installLogPolicyCandidateLocked(raw []byte) error {
-	candidate, err := verifyLogPolicyCandidate(k.trust, raw)
+func (o *s2cParticipant) installLogPolicyCandidateLocked(raw []byte) error {
+	candidate, err := verifyLogPolicyCandidate(o.trust, raw)
 	if err != nil {
 		return err
 	}
-	old := k.origins[candidate.digest()]
+	old := o.origins[candidate.digest()]
 	if old == nil || old.raw != candidate.raw {
 		return errS2CProtocol
 	}
@@ -115,15 +115,15 @@ func (k *s2cParticipant) installLogPolicyCandidateLocked(raw []byte) error {
 		}
 		return nil
 	}
-	if err := k.requireLocalLogPolicyCandidate(candidate); err != nil {
+	if err := o.requireLocalLogPolicyCandidate(candidate); err != nil {
 		return err
 	}
 	before, after := uint64(len(historicalWire(old))), uint64(len(historicalWire(candidate)))
-	if k.pending[candidate.digest()] == nil || k.pendingBytes < before || after > k.config.PendingBytes-(k.pendingBytes-before) {
+	if o.pending[candidate.digest()] == nil || o.pendingBytes < before || after > o.config.PendingBytes-(o.pendingBytes-before) {
 		return errS2CCapacity
 	}
-	k.origins[candidate.digest()], k.pending[candidate.digest()] = candidate, candidate
-	k.pendingBytes = k.pendingBytes - before + after
+	o.origins[candidate.digest()], o.pending[candidate.digest()] = candidate, candidate
+	o.pendingBytes = o.pendingBytes - before + after
 	return nil
 }
 
@@ -138,20 +138,20 @@ func logPolicyCandidateCertificate(t *s2cTrust, h *s2cHistoricalH) (*logPolicySu
 	return cloneLogPolicyCertificate(verified.logCertificate), nil
 }
 
-func (k *s2cParticipant) requireLocalLogPolicyCandidate(h *s2cHistoricalH) error {
-	if h == nil || !hasLogPolicyChange(h.handoff) || k.replayState.projection.snapshot.LogPolicy() != nil || h.handoff.operation.reviewed != k.replayState.projection.cut {
+func (o *s2cParticipant) requireLocalLogPolicyCandidate(h *s2cHistoricalH) error {
+	if h == nil || !hasLogPolicyChange(h.handoff) || o.replayState.projection.snapshot.LogPolicy() != nil || h.handoff.operation.reviewed != o.replayState.projection.cut {
 		return nil
 	}
-	cert, err := logPolicyCandidateCertificate(k.trust, h)
+	cert, err := logPolicyCandidateCertificate(o.trust, h)
 	if err != nil {
 		return err
 	}
-	if k.logPolicyFloor.Index == 0 {
+	if o.logPolicyFloor.Index == 0 {
 		return errLogPolicySupport
 	}
 	for _, proof := range cert.voters {
-		if proof.Signer == k.config.Member {
-			if proof.Floor.Scope != k.logPolicyFloor.Scope || proof.Floor.Index != k.logPolicyFloor.Index || k.logPolicyFloor.Chain != [32]byte{} && proof.Floor.Chain != k.logPolicyFloor.Chain {
+		if proof.Signer == o.config.Member {
+			if proof.Floor.Scope != o.logPolicyFloor.Scope || proof.Floor.Index != o.logPolicyFloor.Index || o.logPolicyFloor.Chain != [32]byte{} && proof.Floor.Chain != o.logPolicyFloor.Chain {
 				return errLogPolicySupport
 			}
 			return nil
@@ -160,11 +160,11 @@ func (k *s2cParticipant) requireLocalLogPolicyCandidate(h *s2cHistoricalH) error
 	return errLogPolicySupport
 }
 
-func (k *s2cParticipant) persistLogPolicyCandidateLocked(candidate *s2cHistoricalH) error {
+func (o *s2cParticipant) persistLogPolicyCandidateLocked(candidate *s2cHistoricalH) error {
 	if candidate == nil || candidate.candidate == "" {
 		return errLogPolicySupport
 	}
-	old := k.origins[candidate.digest()]
+	old := o.origins[candidate.digest()]
 	if old == nil || old.raw != candidate.raw {
 		return errS2CProtocol
 	}
@@ -175,17 +175,17 @@ func (k *s2cParticipant) persistLogPolicyCandidateLocked(candidate *s2cHistorica
 		return nil
 	}
 	before, after := uint64(len(historicalWire(old))), uint64(len(historicalWire(candidate)))
-	if k.pending[candidate.digest()] == nil || k.pendingBytes < before || after > k.config.PendingBytes-(k.pendingBytes-before) {
+	if o.pending[candidate.digest()] == nil || o.pendingBytes < before || after > o.config.PendingBytes-(o.pendingBytes-before) {
 		return errS2CCapacity
 	}
-	if err := k.requireLocalLogPolicyCandidate(candidate); err != nil {
+	if err := o.requireLocalLogPolicyCandidate(candidate); err != nil {
 		return err
 	}
-	if err := k.appendRecord(s2cPRecord{kind: s2cPLogPolicyCandidate, raw: candidate.candidate}, k.credit); err != nil {
+	if err := o.appendRecord(s2cPRecord{kind: s2cPLogPolicyCandidate, raw: candidate.candidate}, o.credit); err != nil {
 		return err
 	}
-	if err := k.installLogPolicyCandidateLocked([]byte(candidate.candidate)); err != nil {
-		k.unknown = err
+	if err := o.installLogPolicyCandidateLocked([]byte(candidate.candidate)); err != nil {
+		o.unknown = err
 		return errS2CUnknown
 	}
 	return nil

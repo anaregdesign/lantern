@@ -130,18 +130,18 @@ func (o *authorityOriginOwner) supportLogPolicyLocked(ctx context.Context, raw [
 	return response, nil
 }
 
-func (n *s3aOwner) logPolicySupportResponse(ctx context.Context, raw []byte, check func() error) ([]byte, error) {
-	if n.origin == nil || check == nil {
+func (o *s3aOwner) logPolicySupportResponse(ctx context.Context, raw []byte, check func() error) ([]byte, error) {
+	if o.origin == nil || check == nil {
 		return nil, ErrLogPolicyUnavailable
 	}
-	k := n.kernel
+	k := o.kernel
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
 	if check() != nil {
 		return nil, ErrAuthorityUnavailable
 	}
-	response, err := n.origin.supportLogPolicyLocked(ctx, raw)
+	response, err := o.origin.supportLogPolicyLocked(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -203,8 +203,8 @@ func (o *authorityOriginOwner) collectLogPolicySupport(ctx context.Context, h *s
 	return encodeLogPolicyCandidate(k.trust, h, raw)
 }
 
-func (n *s3aOwner) ensureLogPolicyCandidate(ctx context.Context, digest [32]byte) error {
-	k := n.kernel
+func (o *s3aOwner) ensureLogPolicyCandidate(ctx context.Context, digest [32]byte) error {
+	k := o.kernel
 	k.gate.Lock()
 	if k.readyLocked() != nil {
 		k.gate.Unlock()
@@ -216,10 +216,10 @@ func (n *s3aOwner) ensureLogPolicyCandidate(ctx context.Context, digest [32]byte
 		return nil
 	}
 	k.gate.Unlock()
-	if n.origin == nil {
+	if o.origin == nil {
 		return ErrLogPolicyUnavailable
 	}
-	candidate, err := n.origin.collectLogPolicySupport(ctx, h)
+	candidate, err := o.origin.collectLogPolicySupport(ctx, h)
 	if err != nil {
 		return err
 	}

@@ -105,7 +105,9 @@ func TestAuthorityOutputConnectUnaryAndStream(t *testing.T) {
 		if stream.Receive() || connect.CodeOf(stream.Err()) != code || len(stream.Err().Error()) > 128 || stream.ResponseTrailer().Get("Private-Oversize") != "" {
 			t.Fatal("unbounded stream metadata/error", input, stream.Err())
 		}
-		stream.Close()
+		if err := stream.Close(); err != nil {
+			t.Errorf("close completed stream: %v", err)
+		}
 	}
 	var events atomic.Int32
 	o.outputHooks.Store(&authorityOutputHooks{afterAuthorize: func() {
@@ -126,7 +128,9 @@ func TestAuthorityOutputConnectUnaryAndStream(t *testing.T) {
 	if events.Load() != 2 {
 		t.Fatal("authorization event count", events.Load())
 	}
-	stream.Close()
+	if err := stream.Close(); err != nil {
+		t.Errorf("close refused stream: %v", err)
+	}
 	// A refused Write closes the socket before serveOutput's deferred credit
 	// release. Client EOF/Close does not join that server-side cleanup. Every
 	// request above has entered its handler, and no new requests are started.
@@ -185,7 +189,11 @@ func TestAuthorityOutputBlockedTLSReaderCloseOwnsCredits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned stream.Close: %v", err)
+		}
+	}(stream.Close)
 	deadline := time.Now().Add(3 * time.Second)
 	stable := 0
 	for stable < 10 {
@@ -235,8 +243,7 @@ func (l authorityObservedListener) Accept() (net.Conn, error) {
 	}
 	if tcp, ok := c.(*net.TCPConn); ok {
 		if err := tcp.SetWriteBuffer(4096); err != nil {
-			c.Close()
-			return nil, err
+			return nil, errors.Join(err, c.Close())
 		}
 	}
 	return &authorityObservedConn{c, l.pending}, nil

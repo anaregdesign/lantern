@@ -133,3 +133,55 @@ func TestAuthorityPurposeOriginalPostReviewEvent(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorityCredentialRequiresExactCanonicalDeadline(t *testing.T) {
+	f, _ := authorityTestFixture(t, 3)
+	base, operation := authorityTestHeader(t, f)
+	command, err := operation.command()
+	if err != nil || command.Kind != S1Management {
+		t.Fatal("original credential fixture lost its bound management command", err)
+	}
+	if !verifyAuthorityCredential(base, operation, command) {
+		t.Fatal("original credential fixture refused")
+	}
+	for _, tc := range []struct {
+		name     string
+		deadline time.Time
+		want     bool
+	}{
+		{name: "original deadline", deadline: base.CredentialDeadline, want: true},
+		{name: "same-instant named UTC", deadline: base.CredentialDeadline.In(time.FixedZone("named-UTC", 0))},
+		{name: "earlier deadline", deadline: base.CredentialDeadline.Add(-time.Nanosecond)},
+		{name: "later deadline", deadline: base.CredentialDeadline.Add(time.Nanosecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := base
+			h.CredentialDeadline = tc.deadline
+			if got := verifyAuthorityCredential(h, operation, command); got != tc.want {
+				t.Fatalf("credential deadline accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthorityAbsentPurposeRequiresExactZeroDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		deadline time.Time
+		want     bool
+	}{
+		{name: "exact zero", want: true},
+		{name: "same-instant named zero", deadline: time.Time{}.In(time.FixedZone("named-zero", 0))},
+		{name: "nonzero", deadline: time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := authorityHistoricalHeader{PurposeDeadline: tc.deadline}
+			if got := verifyAuthorityPurpose(h, OperationIdentity{}); got != tc.want {
+				t.Fatalf("absent purpose deadline accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if verifyAuthorityPurpose(authorityHistoricalHeader{PurposeEvidence: [32]byte{1}}, OperationIdentity{}) || verifyAuthorityPurpose(authorityHistoricalHeader{PurposeBinding: [32]byte{1}}, OperationIdentity{}) {
+		t.Fatal("absent purpose accepted nonzero evidence or binding")
+	}
+}

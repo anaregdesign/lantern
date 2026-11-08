@@ -230,7 +230,11 @@ func (g *CurrentAuthorityGate) ExerciseOutput(p CurrentCredentialProducer) {
 	if err != nil {
 		g.t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			g.t.Errorf("close owned stream.Close: %v", err)
+		}
+	}(stream.Close)
 	count := 0
 	for stream.Receive() {
 		count++

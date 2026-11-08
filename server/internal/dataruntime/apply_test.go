@@ -524,7 +524,11 @@ func TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas(t *testing.
 		if err != nil {
 			t.Fatalf("Subscribe(%d): %v", seq, err)
 		}
-		defer cancel()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned cancel: %v", err)
+			}
+		}(cancel)
 		select {
 		case entry := <-ch:
 			if entry.Seq != seq {

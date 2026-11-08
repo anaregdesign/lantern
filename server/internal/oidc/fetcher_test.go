@@ -137,3 +137,56 @@ func mustFetcherRequest(t *testing.T, endpoint string) *http.Request {
 	}
 	return r
 }
+
+func TestFetcherResponseCleanupPreservesPrimaryAndHidesDetails(t *testing.T) {
+	privateClose := errors.New("private provider cleanup detail")
+	for _, tc := range []struct {
+		name, body string
+		closeErr   error
+		primary    error
+	}{
+		{"success", `{"keys":[]}`, nil, nil},
+		{"close failure", `{"keys":[]}`, privateClose, nil},
+		{"primary failure", `{`, nil, ErrInvalidDocument},
+		{"primary and close failure", `{`, privateClose, ErrInvalidDocument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher, transport := newCloseFaultFetcher(tc.body, tc.closeErr)
+			var document map[string]any
+			err := fetcher.GetJSON(t.Context(), "https://idp.example/metadata", &document)
+			if tc.primary == nil && tc.closeErr == nil {
+				if err != nil || document["keys"] == nil {
+					t.Fatal("complete response was rejected")
+				}
+			} else if tc.closeErr == nil {
+				if err != tc.primary {
+					t.Fatal("successful cleanup changed primary error identity")
+				}
+			} else {
+				if !errors.Is(err, ErrFetch) || tc.primary != nil && !errors.Is(err, tc.primary) {
+					t.Fatal("cleanup lost its sanitized failure or the primary error")
+				}
+				if tc.primary == nil && err != ErrFetch || strings.Contains(err.Error(), privateClose.Error()) {
+					t.Fatal("cleanup changed the fetch sentinel or exposed provider details")
+				}
+			}
+			if transport.calls != 1 || transport.body.closes != 1 {
+				t.Fatal("response ownership caused another dispatch or Close")
+			}
+		})
+	}
+}
+
+func TestFetcherTLSRefusalStillOwnsResponseCleanup(t *testing.T) {
+	privateClose := errors.New("private provider cleanup detail")
+	fetcher, transport := newCloseFaultFetcher(`{}`, privateClose)
+	now := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	fetcher.timeBounds = func() (time.Time, time.Time, error) { return now, now, nil }
+	response, err := fetcher.do(mustFetcherRequest(t, "https://idp.example/metadata"))
+	if response != nil || err != ErrFetch || strings.Contains(err.Error(), privateClose.Error()) {
+		t.Fatal("TLS/cleanup refusal changed its public failure boundary")
+	}
+	if transport.calls != 1 || transport.body.closes != 1 {
+		t.Fatal("TLS refusal did not close its one response")
+	}
+}

@@ -192,11 +192,16 @@ func TestProvisionSecurityInputBoundaries(t *testing.T) {
 			options := provisioningTestOptions(t)
 			materialRoot := provisioningTestMaterialRoot(t)
 			var setup securityConfigJSON
-			json.Unmarshal([]byte(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")), &setup)
+			if err := json.Unmarshal([]byte(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")), &setup); err != nil {
+				t.Fatal("decode original provisioning intent", err)
+			}
 			edit(&setup)
-			raw, _ := json.Marshal(setup)
+			raw, err := json.Marshal(setup)
+			if err != nil {
+				t.Fatal("encode invalid provisioning intent", err)
+			}
 			t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(raw))
-			err := ProvisionSecurity(t.Context(), options)
+			err = ProvisionSecurity(t.Context(), options)
 			if err == nil {
 				t.Fatal("invalid intent provisioned")
 			}
@@ -225,34 +230,48 @@ func TestProvisionSecurityTamperingAndMissingInputsFailClosed(t *testing.T) {
 			}
 			node := filepath.Join(provisioningTestMaterialRoot(t), "nodes", "node-1")
 			path := filepath.Join(node, "identity.json")
-			raw, _ := os.ReadFile(path)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal("read original identity material", err)
+			}
 			var doc securityMaterialDocument
-			json.Unmarshal(raw, &doc)
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				t.Fatal("decode original identity material", err)
+			}
+			writeTamperedDocument := func() {
+				t.Helper()
+				raw, err := json.Marshal(doc)
+				if err != nil {
+					t.Fatal("encode tampered identity material", err)
+				}
+				if err := os.WriteFile(path, raw, 0600); err != nil {
+					t.Fatal("write tampered identity material", err)
+				}
+			}
 			switch name {
 			case "completion":
-				os.Remove(filepath.Join(node, "COMPLETE"))
+				if err := os.Remove(filepath.Join(node, "COMPLETE")); err != nil {
+					t.Fatal("remove completion marker", err)
+				}
 			case "seed":
 				doc.InitialAdmin.Subject = "different-admin"
-				raw, _ = json.Marshal(doc)
-				os.WriteFile(path, raw, 0600)
+				writeTamperedDocument()
 			case "authority":
 				doc.Authority = []byte(`{}`)
-				raw, _ = json.Marshal(doc)
-				os.WriteFile(path, raw, 0600)
+				writeTamperedDocument()
 			case "path":
 				doc.Peer.State = filepath.Join(t.TempDir(), "new-state")
-				raw, _ = json.Marshal(doc)
-				os.WriteFile(path, raw, 0600)
+				writeTamperedDocument()
 			case "snapshot path":
 				doc.SnapshotSpool.Directory = filepath.Join(t.TempDir(), "other-spool")
-				raw, _ = json.Marshal(doc)
-				os.WriteFile(path, raw, 0600)
+				writeTamperedDocument()
 			case "snapshot quota":
 				doc.SnapshotSpool.MaxDiskBytes = 0
-				raw, _ = json.Marshal(doc)
-				os.WriteFile(path, raw, 0600)
+				writeTamperedDocument()
 			case "missing manifest":
-				os.Remove(filepath.Join(node, "membership", "control.json"))
+				if err := os.Remove(filepath.Join(node, "membership", "control.json")); err != nil {
+					t.Fatal("remove control membership manifest", err)
+				}
 			}
 			if _, err := loadSecurityConfigJSON(testEnvironmentReader(), os.Getenv("LANTERN_SECURITY_CONFIG_JSON")); err == nil {
 				t.Fatal("tampered/missing input accepted")

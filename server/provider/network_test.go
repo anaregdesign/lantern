@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -14,7 +15,9 @@ func TestNewListenerRequiresCertifiedReplicationSendLimit(t *testing.T) {
 	publicReceipts := publicReceiptsCertified{valid: true}
 	if listener, cleanup, err := NewListener(config, certified, publicReceipts, nil); err == nil {
 		cleanup()
-		listener.Close()
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Error("close unexpected listener after provider cleanup", err)
+		}
 		t.Fatal("NewListener accepted a send limit different from frame admission")
 	} else if !strings.Contains(err.Error(), "differs from certified replication frame admission") {
 		t.Fatalf("NewListener mismatch error = %v", err)

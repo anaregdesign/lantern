@@ -52,7 +52,11 @@ func TestProtectedMetricsExposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Error("close metrics response", err)
+		}
+	}(resp.Body.Close)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("metrics status = %s", resp.Status)
 	}

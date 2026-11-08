@@ -169,12 +169,12 @@ func validIdentity(raw string) bool {
 		return false
 	}
 	for _, ch := range u.Host {
-		if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '-' || ch == '_') {
+		if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '.' && ch != '-' && ch != '_' {
 			return false
 		}
 	}
 	for _, ch := range u.Path {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || strings.ContainsRune("/._-", ch)) {
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && !strings.ContainsRune("/._-", ch) {
 			return false
 		}
 	}

@@ -277,7 +277,11 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned cancel: %v", err)
+		}
+	}(cancel)
 	laterHighWater := image.capture.Policy.ClockHighWater.Add(2 * time.Minute)
 
 	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {

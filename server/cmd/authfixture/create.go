@@ -8,7 +8,7 @@ import (
 // It never introduces an independent Edge grant or overrides the HA guard.
 func addFixtureEdgeCreate(result *fixture) error {
 	if result == nil || len(result.Nodes) != 1 || result.Nodes[0].PeerOrigin != "" || result.Nodes[0].Environment["LANTERN_AUTH_MODE"] != "oidc" {
-		return errors.New("Create fixture requires standalone OIDC")
+		return errors.New("create fixture requires standalone OIDC")
 	}
 	if result.security == nil {
 		return errors.New("original OIDC input required")

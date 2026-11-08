@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,6 +146,56 @@ func TestAppleExchangeResponseLossIsNotRetried(t *testing.T) {
 	}
 	if p.exchanges.Load() != 1 {
 		t.Fatal("provider received code twice", p.exchanges.Load())
+	}
+}
+
+func TestAppleExchangeResponseCleanupPreservesSingleDispatch(t *testing.T) {
+	p := newNativeProviderFixture(t, security.AppleNative)
+	privateClose := errors.New("private provider cleanup detail")
+	for _, tc := range []struct {
+		name, body string
+		closeErr   error
+		primary    error
+	}{
+		{"success", `{"id_token":"fixture-id","access_token":"fixture-access","token_type":"Bearer"}`, nil, nil},
+		{"close failure", `{"id_token":"fixture-id","access_token":"fixture-access","token_type":"Bearer"}`, privateClose, nil},
+		{"primary failure", `{`, nil, ErrInvalidToken},
+		{"primary and close failure", `{`, privateClose, ErrInvalidToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start, attempt := p.begin(t)
+			credential, err := p.verifier.VerifyNativeCredential(t.Context(), attempt, NativeInput{Provider: "apple", IDToken: p.sign(t, p.claims(start)), AuthorizationCode: "one-time-code", State: start.State})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion, err := p.transactions.Consume(attempt, credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fetcher, transport := newCloseFaultFetcher(tc.body, tc.closeErr)
+			tokens, err := fetcher.ExchangeApple(t.Context(), completion, p.secrets)
+			if tc.primary == nil && tc.closeErr == nil {
+				if err != nil || tokens.idToken != "fixture-id" || tokens.accessToken != "fixture-access" {
+					t.Fatal("complete exchange was rejected")
+				}
+			} else {
+				if err == nil || tokens != (NativeTokens{}) || tc.primary != nil && !errors.Is(err, tc.primary) {
+					t.Fatal("failed exchange returned tokens or lost its primary error")
+				}
+				if tc.closeErr == nil && err != tc.primary {
+					t.Fatal("successful cleanup changed primary error identity")
+				}
+				if tc.closeErr != nil && (!errors.Is(err, ErrFetch) || tc.primary == nil && err != ErrFetch || strings.Contains(err.Error(), privateClose.Error())) {
+					t.Fatal("cleanup failure was lost or exposed private details")
+				}
+			}
+			if _, err := fetcher.ExchangeApple(t.Context(), completion, p.secrets); !errors.Is(err, ErrInvalidToken) {
+				t.Fatal("possibly dispatched Apple exchange was retried")
+			}
+			if transport.calls != 1 || transport.body.closes != 1 {
+				t.Fatal("response cleanup caused another dispatch or Close")
+			}
+		})
 	}
 }
 

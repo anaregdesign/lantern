@@ -6,9 +6,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -95,4 +97,30 @@ func (p *testProvider) sign(t *testing.T, claims jwt.MapClaims, typ string) stri
 		t.Fatal(err)
 	}
 	return raw
+}
+
+type closeFaultBody struct {
+	io.Reader
+	closeErr error
+	closes   int
+}
+
+func (b *closeFaultBody) Close() error {
+	b.closes++
+	return b.closeErr
+}
+
+type closeFaultTransport struct {
+	body  *closeFaultBody
+	calls int
+}
+
+func (t *closeFaultTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.calls++
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: t.body, Request: request}, nil
+}
+
+func newCloseFaultFetcher(raw string, closeErr error) (*Fetcher, *closeFaultTransport) {
+	transport := &closeFaultTransport{body: &closeFaultBody{Reader: strings.NewReader(raw), closeErr: closeErr}}
+	return &Fetcher{client: &http.Client{Transport: transport}}, transport
 }

@@ -604,7 +604,11 @@ func TestStageEffectCompleteReceiptWALCandidate(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		defer lease.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned lease.Close: %v", err)
+			}
+		}(lease.Close)
 		return stageEffectCompleteReceiptWALCandidate(lease, config, time.Now(), mutationlog.Options{}, time.Hour, configureGraph)
 	}
 	seed := recoveryGraphPutEffectEntry(t, 0x72, receiptEntry.HLC.WallNs-1,
@@ -1247,7 +1251,11 @@ func TestStageEffectCompleteReceiptWALCandidateReplaysRemoteEffectsBeyondLocalCa
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned lease.Close: %v", err)
+		}
+	}(lease.Close)
 	config := mutationreceipt.Config{
 		Epoch: mutationreceipt.Epoch{1}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
 	}
@@ -1432,7 +1440,11 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer lease.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned lease.Close: %v", err)
+			}
+		}(lease.Close)
 		if lease.Path() != canonicalPath {
 			t.Fatalf("resumed WAL lease path %q differs from certified path %q", lease.Path(), canonicalPath)
 		}
@@ -1446,7 +1458,11 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer wal.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned wal.Close: %v", err)
+			}
+		}(wal.Close)
 		if lastSeq == 0 {
 			t.Fatal("valid baseline has no committed WAL marker")
 		}
@@ -1454,7 +1470,11 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tip.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close owned tip.Close: %v", err)
+			}
+		}(tip.Close)
 		if err := tip.VerifyAndCatchUp(lease.Path(), decodeReceiptWALUnion, validateReceiptWALUnionEntry); err != nil {
 			t.Fatal(err)
 		}

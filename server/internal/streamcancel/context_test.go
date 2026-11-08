@@ -15,8 +15,11 @@ func TestInterruptWithdrawsOnlyOwnedRequest(t *testing.T) {
 	if got, ok := ctx.Deadline(); !ok || !got.Equal(bound) {
 		t.Fatal("interruption changed the existing deadline")
 	}
-	if !Interrupt(ctx) || !Interrupt(ctx) {
+	if !Interrupt(ctx) {
 		t.Fatal("owned interruption capability missing")
+	}
+	if !Interrupt(ctx) {
+		t.Fatal("repeated owned interruption capability missing")
 	}
 	if request.Err() != context.Canceled || parent.Err() != nil {
 		t.Fatal("interruption did not stay within the owned request")

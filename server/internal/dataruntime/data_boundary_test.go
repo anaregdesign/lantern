@@ -225,7 +225,9 @@ func TestInvokePublicSnapshotWaitDoesNotRetryMutationError(t *testing.T) {
 	defer cancel()
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	for _, key := range []string{"tail", "head"} {
-		cache.PutVertexWithExpiration(key, &pb.Vertex{Key: key}, time.Now().Add(time.Hour))
+		if err := cache.PutVertexWithExpiration(key, &pb.Vertex{Key: key}, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cache.PutEdgeWithExpiration("tail", "head", 2, time.Now().Add(time.Hour))
 	svc := NewExecutor(cache)
@@ -316,7 +318,9 @@ func TestInvokePublicSnapshotWaitReadsOnlyCompletedGraph(t *testing.T) {
 	defer cancel()
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	expiration := time.Now().Add(time.Hour)
-	cache.PutVertexWithExpiration("read", &pb.Vertex{Key: "read", Value: &pb.Vertex_String_{String_: "partial"}}, expiration)
+	if err := cache.PutVertexWithExpiration("read", &pb.Vertex{Key: "read", Value: &pb.Vertex_String_{String_: "partial"}}, expiration); err != nil {
+		t.Fatal(err)
+	}
 	svc := NewExecutor(cache)
 	finish, err := svc.BeginSnapshotInstallChecked(ctx, func() error { return nil })
 	if err != nil {
@@ -342,7 +346,9 @@ func TestInvokePublicSnapshotWaitReadsOnlyCompletedGraph(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("public read entered the partially installed graph")
 	}
-	cache.PutVertexWithExpiration("read", &pb.Vertex{Key: "read", Value: &pb.Vertex_String_{String_: "complete"}}, expiration)
+	if err := cache.PutVertexWithExpiration("read", &pb.Vertex{Key: "read", Value: &pb.Vertex_String_{String_: "complete"}}, expiration); err != nil {
+		t.Fatal(err)
+	}
 	if err := finish(true); err != nil {
 		t.Fatal(err)
 	}

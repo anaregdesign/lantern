@@ -4,8 +4,8 @@ package security
 
 import "github.com/anaregdesign/lantern/server/internal/authz"
 
-// Domain state and existing internal consumers share authz's exact types.
-// These aliases preserve the transition without a second policy model.
+// Action and the other aliases share authz's exact domain types.
+// They preserve the transition without a second policy model.
 type Action = authz.Action
 type ResourceKind = authz.ResourceKind
 type Effect = authz.Effect
@@ -54,6 +54,4 @@ func validateRoleBounds(roles []Role, limits PolicyLimits) error {
 	return authz.ValidateRoleBounds(roles, limits)
 }
 func validRoleID(id string) bool                        { return authz.ValidRoleID(id) }
-func grantableAction(action Action) bool                { return authz.GrantableAction(action) }
 func actionResource(action Action) (ResourceKind, bool) { return authz.ActionResource(action) }
-func edgeSelectorAction(action Action) bool             { return authz.EdgeSelectorAction(action) }

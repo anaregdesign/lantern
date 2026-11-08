@@ -70,7 +70,11 @@ func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer data.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Error("close graph-only runtime", err)
+				}
+			}(data.Close)
 			primary := data.NewExecutor(nil)
 			if err := certifyEdgeCreateTopology(primary, "oidc", provisioning.FixedVoterCount(), peer); err != nil {
 				t.Fatal(err)

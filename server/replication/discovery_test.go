@@ -32,13 +32,6 @@ func (f *fakeLookup) LookupHost(_ context.Context, _ string) ([]string, error) {
 	return out, nil
 }
 
-func (f *fakeLookup) set(hosts []string, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hosts = hosts
-	f.err = err
-}
-
 func TestStaticSource_Resolve_ReturnsCopy(t *testing.T) {
 	src := StaticSource{Peers: []string{"a:1", "b:2"}}
 	got, err := src.Resolve(context.Background())

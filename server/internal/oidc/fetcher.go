@@ -118,10 +118,21 @@ func (f *Fetcher) do(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if err := f.checkTLS(response.TLS); err != nil {
-		response.Body.Close()
+		if closeErr := closeFetchBody(response.Body); closeErr != nil && !errors.Is(err, closeErr) {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return response, nil
+}
+
+// Response cleanup errors can contain provider-controlled details. Preserve the
+// endpoint failure class without exposing those details to authentication callers.
+func closeFetchBody(body io.Closer) error {
+	if err := body.Close(); err != nil {
+		return ErrFetch
+	}
+	return nil
 }
 
 func endpointURL(raw string) (*url.URL, error) {
@@ -216,7 +227,7 @@ func (f *Fetcher) dialValidated(ctx context.Context, network, address string) (n
 	return nil, ErrFetch
 }
 
-func (f *Fetcher) GetJSON(ctx context.Context, endpoint string, target any) error {
+func (f *Fetcher) GetJSON(ctx context.Context, endpoint string, target any) (err error) {
 	if _, err := endpointURL(endpoint); err != nil {
 		return err
 	}
@@ -229,7 +240,15 @@ func (f *Fetcher) GetJSON(ctx context.Context, endpoint string, target any) erro
 	if err != nil {
 		return ErrFetch
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := closeFetchBody(response.Body); closeErr != nil {
+			if err == nil {
+				err = closeErr
+			} else if !errors.Is(err, closeErr) {
+				err = errors.Join(err, closeErr)
+			}
+		}
+	}()
 	contentType, _, typeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if response.StatusCode != http.StatusOK || response.ContentLength > maxDocumentBytes ||
 		response.Header.Get("Content-Encoding") != "" || typeErr != nil ||

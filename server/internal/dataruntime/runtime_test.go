@@ -827,7 +827,11 @@ func TestServingRuntimeDurableRejectsLeaseAndGenerationFaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer runtime.Close()
+		defer func() {
+			if err := runtime.Close(); err != nil {
+				t.Errorf("close owned runtime: %v", err)
+			}
+		}()
 		if second, err := OpenDurableReceiptWALServingRuntime(config); second != nil ||
 			!errors.Is(err, mutationlog.ErrFileWALLeaseBusy) {
 			if second != nil {
@@ -1109,7 +1113,11 @@ func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resumed.Close()
+	defer func() {
+		if err := resumed.Close(); err != nil {
+			t.Errorf("close resumed runtime: %v", err)
+		}
+	}()
 	if !resumed.GraphCache().RetainsDanglingEdgeHistory() {
 		t.Fatal("durable restart omitted history")
 	}

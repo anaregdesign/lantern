@@ -174,7 +174,6 @@ func TestS2CGateConcurrentProposersAndBoundedCatchup(t *testing.T) {
 			t.Fatal("duplicate choice appended either journal")
 		}
 	}
-	history = nil
 	n.queue = nil
 	n.restart(1)
 	// A stable proposer completes the next slot after the finite faults.
@@ -257,7 +256,6 @@ func TestS2CGateContiguousBoundedHistory(t *testing.T) {
 			t.Fatal("contiguous stable catch-up", err)
 		}
 	}
-	all, bounded = nil, nil
 	n.queue = nil
 	n.restart(3)
 	want, _, err := n.nodes[1].ReadLocalCut()

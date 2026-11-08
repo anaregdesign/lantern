@@ -13,7 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
-func readSecurityOperatorFile(path string, private bool, maxBytes int64) ([]byte, error) {
+func readSecurityOperatorFile(path string, private bool, maxBytes int64) (raw []byte, err error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("security operator file must have an absolute path")
 	}
@@ -25,12 +25,17 @@ func readSecurityOperatorFile(path string, private bool, maxBytes int64) ([]byte
 	if err != nil {
 		return nil, errors.New("security operator file unavailable")
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			raw = nil
+			err = errors.Join(err, errors.New("security operator file close failed"))
+		}
+	}()
 	opened, err := file.Stat()
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || private && privatefile.Check(file) != nil {
 		return nil, errors.New("security operator file changed or unsafe")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	raw, err = io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil || int64(len(raw)) > maxBytes {
 		return nil, errors.New("security operator file unavailable or oversized")
 	}

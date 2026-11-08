@@ -101,7 +101,9 @@ func TestCreateEdgesHAAndWALAbortFailClosed(t *testing.T) {
 		f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(entry mutationlog.Entry) error { return &mutationlog.DefiniteWALAbort{Cause: abort} }))
 		runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
 		for _, key := range []string{"a", "b"} {
-			f.cache.PutVertex(key, &pb.Vertex{Key: key})
+			if err := f.cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		req := &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1}}, ReceiptContext: publicReceiptContext(t, runtime, 0x31, 1)}
 		_, err := f.service.CreateEdges(t.Context(), req)

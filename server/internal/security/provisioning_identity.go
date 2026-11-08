@@ -113,12 +113,12 @@ func provisioningWorkloadURI(raw string) (*url.URL, error) {
 		return nil, errS3AConfig
 	}
 	for _, ch := range u.Host {
-		if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || strings.ContainsRune(".-_", ch)) {
+		if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && !strings.ContainsRune(".-_", ch) {
 			return nil, errS3AConfig
 		}
 	}
 	for _, ch := range u.Path {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || strings.ContainsRune("/._-", ch)) {
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && !strings.ContainsRune("/._-", ch) {
 			return nil, errS3AConfig
 		}
 	}
@@ -143,7 +143,7 @@ func provisioningOriginHost(raw string) (string, error) {
 		return ip.String(), nil
 	}
 	for _, ch := range host {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || strings.ContainsRune(".-_", ch)) {
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && !strings.ContainsRune(".-_", ch) {
 			return "", errS3AConfig
 		}
 	}

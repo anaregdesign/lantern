@@ -24,8 +24,16 @@ func TestAuthorityOutputWriterImmutableUnitAndNextWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			left, right := net.Pipe()
-			defer left.Close()
-			defer right.Close()
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned left.Close: %v", err)
+				}
+			}(left.Close)
+			defer func(closeOwned func() error) {
+				if err := closeOwned(); err != nil {
+					t.Errorf("close owned right.Close: %v", err)
+				}
+			}(right.Close)
 			conn := o.outputConnContext(context.Background(), left).Value(authorityOutputContextKey{}).(*authorityOutputConnection)
 			if !o.reserveOutput(conn) {
 				t.Fatal("reserve")

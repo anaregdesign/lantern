@@ -22,7 +22,7 @@ func ValidPersonalUID(uid string) bool {
 	nonzero := false
 	for i := range len(uid) {
 		c := uid[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 		nonzero = nonzero || c != '0'

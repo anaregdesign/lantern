@@ -69,10 +69,10 @@ func (o *CurrentAuthority) CurrentLogPolicy(ctx context.Context) (LogPolicyProje
 	return k.logPolicyProjectionLocked(), nil
 }
 
-func (k *s2cParticipant) logPolicyProjectionLocked() LogPolicyProjection {
-	p := LogPolicyProjection{Policy: k.replayState.projection.snapshot.LogPolicy(), Cut: k.replayState.projection.cut, VersionFloor: k.logPolicyFloor.Index != 0, Member: k.config.Member}
+func (o *s2cParticipant) logPolicyProjectionLocked() LogPolicyProjection {
+	p := LogPolicyProjection{Policy: o.replayState.projection.snapshot.LogPolicy(), Cut: o.replayState.projection.cut, VersionFloor: o.logPolicyFloor.Index != 0, Member: o.config.Member}
 	if p.VersionFloor {
-		preparation := k.logPolicyPreparation
+		preparation := o.logPolicyPreparation
 		p.Preparation = &preparation
 	}
 	return p

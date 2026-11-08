@@ -60,7 +60,11 @@ func TestTransportProbeScopeAndHostname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close probe credential file: %v", err)
+		}
+	}()
 	if err := privatefile.Check(file); err != nil {
 		t.Fatal(err)
 	}

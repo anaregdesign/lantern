@@ -85,16 +85,16 @@ func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID, namespa
 		!utf8.ValidString(edge.GetTail()) || !utf8.ValidString(edge.GetHead()) ||
 		len(edge.GetTail()) > receiptVertexWALMaxBytes ||
 		len(edge.GetHead()) > receiptVertexWALMaxBytes {
-		return [32]byte{}, fmt.Errorf("Edge Add identity must be nonempty bounded UTF-8")
+		return [32]byte{}, fmt.Errorf("edge Add identity must be nonempty bounded UTF-8")
 	}
 	if !edgeweight.IsFiniteSource(edge.GetWeight()) {
-		return [32]byte{}, fmt.Errorf("Edge Add weight must be finite")
+		return [32]byte{}, fmt.Errorf("edge Add weight must be finite")
 	}
 	if err := validateDurableGraphExpiration("Edge Add", edge.GetExpiration()); err != nil {
 		return [32]byte{}, err
 	}
 	if err := rejectProtoUnknownFields(edge.ProtoReflect()); err != nil {
-		return [32]byte{}, fmt.Errorf("Edge Add %w", err)
+		return [32]byte{}, fmt.Errorf("edge Add %w", err)
 	}
 	canonical := make([]byte, 0, 66+len(edge.GetTail())+len(edge.GetHead()))
 	canonical = append(canonical, byte(mutationreceipt.AddEdge))

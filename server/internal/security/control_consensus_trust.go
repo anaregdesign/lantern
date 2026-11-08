@@ -62,8 +62,6 @@ func (p s2cAdmissionProfile) valid() bool {
 	return p.Version == s2cVersion && (p.BrowserCode || p.HumanBearer) && p.CredentialContract != [32]byte{} && p.ConsumeContract != [32]byte{} && p.PurposeContract != [32]byte{}
 }
 
-func (p s2cAdmissionProfile) digest() [32]byte { return s2cHash("admission-profile", p) }
-
 type s2cOriginDescriptor struct {
 	ID          uint32
 	Member      uint32

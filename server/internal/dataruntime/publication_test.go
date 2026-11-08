@@ -269,11 +269,12 @@ func TestSnapshotInstallCheckedRejectsAuthorityWithdrawnAcrossPublicationWait(t 
 					var unlockRead func()
 					requested := make(chan struct{})
 					acquired := make(chan struct{})
-					if boundary == "public read latch" {
+					switch boundary {
+					case "public read latch":
 						svc.snapshotReadCutMu.RLock()
 						release = func() { releaseOnce.Do(svc.snapshotReadCutMu.RUnlock) }
 						tryRead, unlockRead = svc.snapshotReadCutMu.TryRLock, svc.snapshotReadCutMu.RUnlock
-					} else if boundary == "publication gate" {
+					case "publication gate":
 						svc.replicationCutMu.RLock()
 						release = func() { releaseOnce.Do(svc.replicationCutMu.RUnlock) }
 						tryRead, unlockRead = svc.replicationCutMu.TryRLock, svc.replicationCutMu.RUnlock
@@ -284,7 +285,7 @@ func TestSnapshotInstallCheckedRejectsAuthorityWithdrawnAcrossPublicationWait(t 
 							}
 							return time.Now()
 						}
-					} else {
+					default:
 						resume := make(chan struct{})
 						release = func() { releaseOnce.Do(func() { close(resume) }) }
 						var clockCalls atomic.Int32
@@ -710,7 +711,9 @@ func TestSnapshotInstall_FaultBlocksPublicGraphWritesUntilVerifiedRetry(t *testi
 			ctx := context.Background()
 			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 			expiration := time.Now().Add(time.Hour)
-			cache.PutVertexWithExpiration("kept", &pb.Vertex{Key: "kept", Value: &pb.Vertex_String_{String_: "original"}}, expiration)
+			if err := cache.PutVertexWithExpiration("kept", &pb.Vertex{Key: "kept", Value: &pb.Vertex_String_{String_: "original"}}, expiration); err != nil {
+				t.Fatal(err)
+			}
 			cache.PutEdgeWithExpiration("kept", "edge", 2, expiration)
 			probe := &countingCapacityBackend{Backend: cache}
 			svc := NewExecutor(probe).WithCapacityLimits(CapacityLimits{MaxVertices: 100, MaxEdges: 100})
@@ -1043,7 +1046,9 @@ func TestCanSkipSelfEchoRequiresCommittedLocalHistory(t *testing.T) {
 func TestPublishLocalDeleteRepairKeepsOriginalDeadline(t *testing.T) {
 	ctx := context.Background()
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-	cache.PutVertexWithExpiration("victim", &pb.Vertex{Key: "victim"}, time.Now().Add(time.Hour))
+	if err := cache.PutVertexWithExpiration("victim", &pb.Vertex{Key: "victim"}, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	wal := &heldPublicationWAL{}
 	wal.failed.Store(true)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8, WAL: wal})
@@ -1068,7 +1073,11 @@ func TestPublishLocalDeleteRepairKeepsOriginalDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
+	defer func(stop func() error) {
+		if err := stop(); err != nil {
+			t.Errorf("close repaired publication subscription: %v", err)
+		}
+	}(cancel)
 	repaired := mustGraphMutation(t, (<-entries).Op)
 	if repaired.GetSeq() != 1 || !repaired.GetTombstoneExpiration().AsTime().Equal(tombstones[0].Expiration) {
 		t.Fatalf("repaired Delete renewed deadline: %v", repaired)
@@ -1806,7 +1815,11 @@ func TestProductionGraphPublicationStrictRestartWithoutTombstones(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close receipt WAL path lease: %v", err)
+		}
+	}(lease.Close)
 	config := mutationreceipt.Config{
 		Epoch: mutationreceipt.Epoch{1}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
 	}

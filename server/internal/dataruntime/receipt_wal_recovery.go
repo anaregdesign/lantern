@@ -193,39 +193,37 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 			clear(previousReceipts[len(live):])
 			report.knownReceipts = live
 		}
-		if receiptRows != nil {
-			for _, receipt := range receiptRows {
-				// Check every committed row, including rows now expired.
-				// Snapshot restore only sees the retained subset below.
-				issued := int64(binary.BigEndian.Uint64(receipt.ID[17:25]))
-				if receipt.DeadlineMillis-issued != config.Retention.Milliseconds() {
-					return fmt.Errorf("receipt WAL local seq %d: %w: retention differs from policy", entry.Seq, errReceiptWALUnion)
-				}
-				if previous, duplicate := seenReceipts[receipt.ID]; duplicate {
-					if !sameReceiptWALDecision(previous, receipt) {
-						return fmt.Errorf("receipt WAL local seq %d: %w: conflicting duplicate operation ID %x", entry.Seq, mutationreceipt.ErrInvalidSnapshot, receipt.ID)
-					}
-					continue
-				}
-				copyOf := receipt
-				copyOf.Result = append([]byte(nil), receipt.Result...)
-				seenReceipts[receipt.ID] = copyOf
-				// Expired results are never returned as confirmed. The ID and
-				// retention policy still make them non-executable, but this
-				// audit cannot answer any absent-ID status.
-				if receipt.DeadlineMillis <= highWater {
-					continue
-				}
-				// Match the Store's current logical byte ledger before
-				// retaining another row; NewFromSnapshot verifies the ledger
-				// again at the end.
-				cost := receiptWALDecisionCost(receipt)
-				if len(report.knownReceipts) >= config.MaxEntries || cost > config.MaxBytes-knownBytes {
-					return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, mutationreceipt.ErrCapacity)
-				}
-				knownBytes += cost
-				report.knownReceipts = append(report.knownReceipts, copyOf)
+		for _, receipt := range receiptRows {
+			// Check every committed row, including rows now expired.
+			// Snapshot restore only sees the retained subset below.
+			issued := int64(binary.BigEndian.Uint64(receipt.ID[17:25]))
+			if receipt.DeadlineMillis-issued != config.Retention.Milliseconds() {
+				return fmt.Errorf("receipt WAL local seq %d: %w: retention differs from policy", entry.Seq, errReceiptWALUnion)
 			}
+			if previous, duplicate := seenReceipts[receipt.ID]; duplicate {
+				if !sameReceiptWALDecision(previous, receipt) {
+					return fmt.Errorf("receipt WAL local seq %d: %w: conflicting duplicate operation ID %x", entry.Seq, mutationreceipt.ErrInvalidSnapshot, receipt.ID)
+				}
+				continue
+			}
+			copyOf := receipt
+			copyOf.Result = append([]byte(nil), receipt.Result...)
+			seenReceipts[receipt.ID] = copyOf
+			// Expired results are never returned as confirmed. The ID and
+			// retention policy still make them non-executable, but this
+			// audit cannot answer any absent-ID status.
+			if receipt.DeadlineMillis <= highWater {
+				continue
+			}
+			// Match the Store's current logical byte ledger before
+			// retaining another row; NewFromSnapshot verifies the ledger
+			// again at the end.
+			cost := receiptWALDecisionCost(receipt)
+			if len(report.knownReceipts) >= config.MaxEntries || cost > config.MaxBytes-knownBytes {
+				return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, mutationreceipt.ErrCapacity)
+			}
+			knownBytes += cost
+			report.knownReceipts = append(report.knownReceipts, copyOf)
 		}
 		rows[origin] = originRow{seq: seq, hlc: entry.HLC}
 		report.lastLocalSeq = entry.Seq

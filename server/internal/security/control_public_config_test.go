@@ -269,7 +269,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	hosts := currentFixtureContainerHosts(t)
 	issuerIP, addressErr := netip.ParseAddr(u.Hostname())
-	if u.Scheme != "https" || u.Hostname() != "127.0.0.1" && !(issuerURL == "https://fixture-idp.invalid" && os.Getenv("LANTERN_CURRENT_FIXTURE_BOOTSTRAP_FILE") != "") && (len(hosts) != 3 || addressErr != nil || !issuerIP.IsPrivate()) {
+	if u.Scheme != "https" || u.Hostname() != "127.0.0.1" && (issuerURL != "https://fixture-idp.invalid" || os.Getenv("LANTERN_CURRENT_FIXTURE_BOOTSTRAP_FILE") == "") && (len(hosts) != 3 || addressErr != nil || !issuerIP.IsPrivate()) {
 		t.Fatal("loopback or declared private container TLS fixture issuer required")
 	}
 	count := 3

@@ -134,7 +134,7 @@ func prepareVertexDeleteReceiptCall(
 	for i, item := range call.Items {
 		if item.Key == "" || !utf8.ValidString(item.Key) || len(item.Key) > receiptVertexWALMaxBytes {
 			return nil, nil, connect.NewError(connect.CodeInvalidArgument,
-				errors.New("Vertex Delete identity must be nonempty UTF-8"))
+				errors.New("vertex Delete identity must be nonempty UTF-8"))
 		}
 		keys[i] = item.Key
 		intents[i] = mutationreceipt.Intent{

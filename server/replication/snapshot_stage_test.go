@@ -382,7 +382,11 @@ func TestGraphSnapshotStageReleasesPartialAndFailedFileOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer owner.Close()
+			defer func(closeOwned func() error, ownedPhase string) {
+				if err := closeOwned(); !snapshotStageCloseExpected(ownedPhase, err) {
+					t.Errorf("close owned Snapshot scratch: %v", err)
+				}
+			}(owner.Close, phase)
 			file, err := owner.create()
 			if err != nil {
 				t.Fatal(err)
@@ -424,7 +428,7 @@ func TestGraphSnapshotStageReleasesPartialAndFailedFileOwnership(t *testing.T) {
 			if used, files := owner.stats(); files != 0 || used != snapshotScratchMetadataBytes && used != 0 {
 				t.Fatalf("%s release retained a scratch extent: used=%d files=%d", phase, used, files)
 			}
-			if err := owner.Close(); err != nil && !errors.Is(err, context.Canceled) {
+			if err := owner.Close(); !snapshotStageCloseExpected(phase, err) {
 				t.Fatal(err)
 			}
 			assertSnapshotStageScratchReleased(t, owner, config)
@@ -512,6 +516,11 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 				scratch.readAt = func(file *os.File, data []byte, offset int64) (int, error) {
 					if file == canonical && !injected && (failure.name == "digest read" || failure.name == "live replay read" && apply.checkedBegins != 0) {
 						injected = true
+						if failure.name == "digest read" {
+							// A Reader may return bytes together with its error.
+							data[0] = 1
+							return 1, readFailure
+						}
 						return 0, readFailure
 					}
 					return readAt(file, data, offset)
@@ -554,6 +563,16 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 			if detail.phase != wantPhase || detail.liveStarted != failure.afterBegin || detail.elapsed < 0 || detail.phaseElapsed < 0 {
 				t.Fatalf("wrong failure boundary: got=%+v wantPhase=%s live=%t", detail, wantPhase, failure.afterBegin)
 			}
+			if detail.failureReturnedAt.IsZero() || detail.failureReturnElapsed < 0 || detail.failureReturnPhaseElapsed < 0 ||
+				detail.deferredUnwindElapsed < 0 || detail.failureReturnElapsed+detail.deferredUnwindElapsed != detail.elapsed {
+				t.Fatalf("failed return and deferred unwind were not observed separately: %+v", detail)
+			}
+			if failure.name == "digest read" && (!detail.sealReadAttempted || detail.sealReadBytes != 1 || detail.sealReadBytes >= detail.stagedBytes || detail.sealReadEOF) {
+				t.Fatalf("partial failed digest read lost bytes or claimed complete EOF: %+v", detail)
+			}
+			if failure.afterBegin && (!detail.sealReadAttempted || detail.sealReadBytes != detail.stagedBytes || !detail.sealReadEOF) {
+				t.Fatalf("completed seal progress was lost before live replay failure: %+v", detail)
+			}
 			if failure.afterBegin && (detail.stagedFrames != 3 || detail.stagedBytes == 0 || detail.liveFramesRead == 0) {
 				t.Fatalf("cleanup discarded completed stage/read counts: %+v", detail)
 			}
@@ -579,6 +598,16 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 }
 
 func TestGraphSnapshotStagingCancellationDuringDiskPassesReleasesOwnership(t *testing.T) {
+	t.Run("before canonical read", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		diagnostic := newSnapshotInstallDiagnostic(time.Now())
+		// A canceled seal must return before accessing even a file handle.
+		stage := &graphSnapshotStage{ctx: ctx, diagnostic: diagnostic}
+		if err := stage.seal(); !errors.Is(err, context.Canceled) || diagnostic.sealReadAttempted || diagnostic.sealReadBytes != 0 || diagnostic.sealReadEOF {
+			t.Fatalf("expired-before-read seal invented I/O progress: err=%v diagnostic=%+v", err, diagnostic)
+		}
+	})
 	for _, phase := range []string{"collection", "identity sort output", "canonical digest", "live replay"} {
 		t.Run(phase, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -640,6 +669,17 @@ func TestGraphSnapshotStagingCancellationDuringDiskPassesReleasesOwnership(t *te
 			result, err := installSnapshot(ctx, installer, stream)
 			if !interrupted || !errors.Is(err, context.Canceled) || result.Header != nil || len(apply.cutoffs) != 0 {
 				t.Fatalf("disk-pass cancellation was lost or verified: interrupted=%t result=%+v cutoffs=%v err=%v", interrupted, result, apply.cutoffs, err)
+			}
+			var diagnosed *snapshotInstallError
+			if !errors.As(err, &diagnosed) || diagnosed.diagnostic.failureReturnedAt.IsZero() {
+				t.Fatalf("canceled disk pass lacks a failure-return observation: %v", err)
+			}
+			detail := diagnosed.diagnostic
+			if phase == "canonical digest" && (!detail.sealReadAttempted || detail.sealReadBytes == 0 || detail.sealReadBytes > detail.stagedBytes || detail.sealReadEOF) {
+				t.Fatalf("interrupted digest did not retain its actual read progress: %+v", detail)
+			}
+			if phase == "live replay" && (!detail.sealReadAttempted || detail.sealReadBytes != detail.stagedBytes || !detail.sealReadEOF) {
+				t.Fatalf("live cancellation lost its completed seal observation: %+v", detail)
 			}
 			if phase == "live replay" {
 				if apply.checkedBegins != 1 || len(apply.finishes) != 1 || apply.finishes[0] || apply.releases != 1 {
@@ -761,6 +801,81 @@ func TestGraphSnapshotStagingPreservesTransportErrorBeforeNativeCapture(t *testi
 			_, err := installSnapshot(ctx, testGraphOnlySnapshotInstaller(t, apply, graph), stream)
 			if !errors.Is(err, status.want) || err.Error() != status.want.Error() || stream.receives != 1 || len(events) != 0 || len(apply.finishes) != 0 {
 				t.Fatalf("native proof handling masked source failure or began replay: receives=%d events=%v finishes=%v err=%v want=%v", stream.receives, events, apply.finishes, err, status.want)
+			}
+		})
+	}
+}
+
+// Scratch Close retains operational cancellation as well as cleanup failures.
+// Accept only the cancellation leaves expected by this one replay phase, never
+// a joined physical failure or a custom Is method claiming to be cancellation.
+func snapshotStageCloseExpected(phase string, err error) bool {
+	if err == nil {
+		return true
+	}
+	if phase != "canceled replay" {
+		return false
+	}
+	var canceledOnly func(error) bool
+	canceledOnly = func(candidate error) bool {
+		if candidate == context.Canceled {
+			return true
+		}
+		switch wrapped := candidate.(type) {
+		case interface{ Unwrap() []error }:
+			children := wrapped.Unwrap()
+			if len(children) == 0 {
+				return false
+			}
+			for _, child := range children {
+				if !canceledOnly(child) {
+					return false
+				}
+			}
+			return true
+		case interface{ Unwrap() error }:
+			return canceledOnly(wrapped.Unwrap())
+		default:
+			return false
+		}
+	}
+	return canceledOnly(err)
+}
+
+type snapshotStageCancellationImposter struct{}
+
+func (snapshotStageCancellationImposter) Error() string        { return "physical close failure" }
+func (snapshotStageCancellationImposter) Is(target error) bool { return target == context.Canceled }
+
+func TestSnapshotStageCloseClassifiesCancellationAndCleanupSeparately(t *testing.T) {
+	physical := errors.New("physical close failure")
+	imposter := snapshotStageCancellationImposter{}
+	if !errors.Is(imposter, context.Canceled) {
+		t.Fatal("custom-Is negative control did not claim cancellation")
+	}
+	for _, tc := range []struct {
+		name  string
+		phase string
+		err   error
+		want  bool
+	}{
+		{name: "clean", phase: "partial replay", want: true},
+		{name: "canceled replay clean", phase: "canceled replay", want: true},
+		{name: "cancellation", phase: "canceled replay", err: context.Canceled, want: true},
+		{name: "wrapped cancellation", phase: "canceled replay", err: fmt.Errorf("replay: %w", context.Canceled), want: true},
+		{name: "joined cancellations", phase: "canceled replay", err: errors.Join(context.Canceled, context.Canceled), want: true},
+		{name: "cancellation and physical", phase: "canceled replay", err: errors.Join(context.Canceled, physical)},
+		{name: "wrapped joined physical", phase: "canceled replay", err: fmt.Errorf("replay: %w", errors.Join(context.Canceled, physical))},
+		{name: "custom Is physical", phase: "canceled replay", err: imposter},
+		{name: "physical", phase: "canceled replay", err: physical},
+		{name: "other operational deadline", phase: "canceled replay", err: context.DeadlineExceeded},
+		{name: "partial collection cannot cancel", phase: "partial collection", err: context.Canceled},
+		{name: "source error cannot cancel", phase: "source error", err: context.Canceled},
+		{name: "partial replay cannot cancel", phase: "partial replay", err: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := snapshotStageCloseExpected(tc.phase, tc.err); got != tc.want {
+				t.Fatalf("Close expected = %v, want %v", got, tc.want)
 			}
 		})
 	}

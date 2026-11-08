@@ -461,7 +461,7 @@ type authorityStartupRecord struct {
 
 func authorityStartupLabel(value string) string {
 	switch value {
-	case "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "measured",
+	case "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "close", "measured",
 		"binding", "rtt", "source_bound", "transmit", "receive", "reference", "overflow", "interval", "native_install",
 		"elapsed", "age", "anchor_interval", "utc_window", "width", "contradiction", "installed",
 		"ok", "read_timeout", "rate", "deny", "source_fault", "install_rejected", "native_terminal":
@@ -581,6 +581,30 @@ func TestAuthorityStartupFailureRecordAllowlist(t *testing.T) {
 	}
 	if len(authorityStartupFailureRecords(errors.New("ordinary startup failure"))) != 0 {
 		t.Fatal("ordinary failure acquired invented time observations")
+	}
+}
+
+func TestAuthorityStartupCloseFailurePreservesFixedRecord(t *testing.T) {
+	snapshot := decisiontrace.StartupSnapshot{Count: 1, PublishedAttempt: 1, StartedAttempt: 1, CompletedAttempt: 1, OwnerFailed: true,
+		AnchoringContext: decisiontrace.ContextOtherError, IncomingContext: decisiontrace.ContextLive, OwnerContext: decisiontrace.ContextLive}
+	snapshot.Attempts[0] = decisiontrace.StartupAttempt{Attempt: 1, Stage: "close", Reason: "close", HasReadBudget: true,
+		ReadRemainingNS: 1_000_000_000, ExchangeContext: decisiontrace.ContextLive, IncomingContext: decisiontrace.ContextLive,
+		ReadCount: 1, FirstReadError: "none", FinalReadError: "none"}
+	var output strings.Builder
+	decisiontrace.WriteStartupFailure(&output, authorityStartupErrorFixture{snapshot})
+	decoded, ok := decisiontrace.DecodeStartupRecord([]byte(strings.TrimSpace(output.String())))
+	if !ok || decoded != snapshot || strings.Contains(output.String(), "private") {
+		t.Fatal("close failure lost its content-free startup round trip")
+	}
+	records := authorityStartupFailureRecords(authorityStartupErrorFixture{decoded})
+	if len(records) != 3 || records[0].Attempt != 1 || records[0].Stage != "close" || records[0].Reason != "close" ||
+		records[1].Reason != "owner_failed" || records[2].Stage != "startup_wait" {
+		t.Fatal("close failure was lost or promoted to a successful startup", records)
+	}
+	for _, unknown := range []string{"close/private-token", "private endpoint", "CLOSE"} {
+		if got := authorityStartupLabel(unknown); got != "unclassified" {
+			t.Fatal("startup close label forwarded unknown text", got)
+		}
 	}
 }
 

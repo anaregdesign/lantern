@@ -32,7 +32,14 @@ func TestAuthorityOutputPoolOwnsFiniteConnectionsAndEncoders(t *testing.T) {
 	var connections []*authorityOutputConnection
 	for range authorityOutputConnections {
 		a, b := net.Pipe()
-		t.Cleanup(func() { a.Close(); b.Close() })
+		t.Cleanup(func() {
+			if err := a.Close(); err != nil {
+				t.Errorf("close owned pipe a: %v", err)
+			}
+			if err := b.Close(); err != nil {
+				t.Errorf("close owned pipe b: %v", err)
+			}
+		})
 		ctx := o.outputConnContext(context.Background(), a)
 		c, _ := ctx.Value(authorityOutputContextKey{}).(*authorityOutputConnection)
 		if c == nil {
@@ -41,8 +48,16 @@ func TestAuthorityOutputPoolOwnsFiniteConnectionsAndEncoders(t *testing.T) {
 		connections = append(connections, c)
 	}
 	a, b := net.Pipe()
-	defer b.Close()
-	defer a.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned b.Close: %v", err)
+		}
+	}(b.Close)
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned a.Close: %v", err)
+		}
+	}(a.Close)
 	if c := o.outputConnContext(context.Background(), a).Value(authorityOutputContextKey{}); c != nil {
 		t.Fatal("connection bound bypass")
 	}

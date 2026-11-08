@@ -201,8 +201,9 @@ func NewGoogleDefaultHTTPClient(ctx context.Context, opts ...Option) (*http.Clie
 
 // NewGoogleServiceAccountHTTPClient returns an HTTP client that authenticates
 // requests with the provided Google service-account JSON for Vertex AI / Gemini.
+// The credentials JSON must declare the service_account type.
 func NewGoogleServiceAccountHTTPClient(ctx context.Context, credentialsJSON []byte, opts ...Option) (*http.Client, error) {
-	creds, err := google.CredentialsFromJSON(ctx, credentialsJSON, GoogleCloudPlatformScope)
+	creds, err := google.CredentialsFromJSONWithType(ctx, credentialsJSON, google.ServiceAccount, GoogleCloudPlatformScope)
 	if err != nil {
 		return nil, fmt.Errorf("llmauth: google service account credentials: %w", err)
 	}

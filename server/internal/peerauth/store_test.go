@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// closeStoreForTest reports owned lease cleanup failures without replacing the
+// test's original admission or persistence failure.
+func closeStoreForTest(t testing.TB, store *Store) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Errorf("close membership store: %v", err)
+	}
+}
+
 func TestStoreFixedTopologyRenewalRejectsLiveExpansionAndRemoval(t *testing.T) {
 	for _, change := range []string{"expand", "replace", "remove"} {
 		t.Run(change, func(t *testing.T) {
@@ -24,7 +33,7 @@ func TestStoreFixedTopologyRenewalRejectsLiveExpansionAndRemoval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.Close()
+			defer closeStoreForTest(t, store)
 			if store.FixedMemberCount() != len(m.Members) {
 				t.Fatal("original topology not pinned")
 			}
@@ -100,8 +109,14 @@ func TestStorePersistedVersionFloorAndExpiredRecovery(t *testing.T) {
 	}
 	m.Version = 2
 	newer := signFixture(t, m, key)
-	if s.Apply(newer) != nil || s.Apply(newer) != nil || s.Apply(raw) == nil {
-		t.Fatal("monotonic/idempotent apply failed")
+	if err := s.Apply(newer); err != nil {
+		t.Fatal("higher membership revision failed", err)
+	}
+	if err := s.Apply(newer); err != nil {
+		t.Fatal("idempotent membership replay failed", err)
+	}
+	if s.Apply(raw) == nil {
+		t.Fatal("older membership revision accepted")
 	}
 	equivocation := m
 	equivocation.ExpiresAt = equivocation.ExpiresAt.Add(time.Second)
@@ -268,7 +283,7 @@ func TestCurrentDataStoreUsesWholeTimeInterval(t *testing.T) {
 			candidate.Now = nil
 		}
 		if s, err := CreateStore(candidate, raw); err == nil {
-			s.Close()
+			closeStoreForTest(t, s)
 			t.Fatal("current clock fell back", missing)
 		}
 	}
@@ -290,7 +305,7 @@ func TestCurrentDataStoreUsesWholeTimeInterval(t *testing.T) {
 				sourceErr = errors.New("no qualified sample")
 			}
 			if s, err := CreateStore(options, raw); err == nil {
-				s.Close()
+				closeStoreForTest(t, s)
 				t.Fatal("invalid interval created membership")
 			}
 			if _, err := os.Stat(options.Path); !errors.Is(err, os.ErrNotExist) {
@@ -303,7 +318,7 @@ func TestCurrentDataStoreUsesWholeTimeInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer closeStoreForTest(t, s)
 	before, err := os.ReadFile(options.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +376,7 @@ func TestCurrentDataStoreUsesWholeTimeInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal("expired checkpoint floor was lost", err)
 	}
-	defer resumed.Close()
+	defer closeStoreForTest(t, resumed)
 	if _, _, err := resumed.Member(m.Members[0].Identity); err == nil || resumed.current.manifest.Version != m.Version {
 		t.Fatal("expired resume authorized or lost its floor")
 	}
@@ -380,9 +395,9 @@ func TestCurrentDataIntervalCannotRepairPermanentStoreFault(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s.Close()
+			defer closeStoreForTest(t, s)
 			if fault == "closed" {
-				s.Close()
+				closeStoreForTest(t, s)
 			} else {
 				if err := os.Remove(options.Path); err != nil {
 					t.Fatal(err)

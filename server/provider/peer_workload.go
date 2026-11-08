@@ -41,24 +41,24 @@ func NewWorkloadPeerTransport(peer *PeerIdentityRuntime) (*replication.PeerTrans
 
 // bindWorkload joins the exact independently authenticated data-plane profile
 // to the security owner before public certification. Consensus has its own owner.
-func (runtime *SecurityRuntime) bindWorkload(peer *PeerIdentityRuntime) error {
-	if runtime == nil || runtime.peer != nil {
+func (r *SecurityRuntime) bindWorkload(peer *PeerIdentityRuntime) error {
+	if r == nil || r.peer != nil {
 		return errors.New("missing or already-bound security runtime")
 	}
 	if peer != nil && peer.CheckWorkload(context.Background()) != nil {
 		return errors.New("public serving requires a current authenticated data workload")
 	}
-	if runtime.mode == "oidc" {
-		if runtime.current == nil {
+	if r.mode == "oidc" {
+		if r.current == nil {
 			return errors.New("OIDC requires its owned quorum authority")
 		}
 		if peer != nil {
-			d, p := peer.store.Domain(), runtime.current.Profile()
+			d, p := peer.store.Domain(), r.current.Profile()
 			if d.AuthMode != "oidc" || d.CurrentProfile != p.Binding() || d.SecurityGeneration != p.Generation || d.WriterPublicKey != [32]byte{} {
 				return errors.New("data workload authority profile mismatch")
 			}
 		}
 	}
-	runtime.peer = peer
+	r.peer = peer
 	return nil
 }

@@ -361,8 +361,7 @@ func readReceiptRuntimeGenerationRecord(
 	epoch mutationreceipt.Epoch,
 	policy [sha256.Size]byte,
 	nodeID hlc.NodeID,
-) (receiptRuntimeGenerationRecord, error) {
-	var recordValue receiptRuntimeGenerationRecord
+) (recordValue receiptRuntimeGenerationRecord, err error) {
 	path := walPath + ".generation"
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -375,7 +374,12 @@ func readReceiptRuntimeGenerationRecord(
 	if err != nil {
 		return recordValue, fmt.Errorf("service: open receipt runtime generation: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			recordValue = receiptRuntimeGenerationRecord{}
+			err = errors.Join(err, fmt.Errorf("service: close receipt runtime generation: %w", closeErr))
+		}
+	}()
 	opened, err := file.Stat()
 	if err != nil {
 		return recordValue, fmt.Errorf("service: stat receipt runtime generation: %w", err)

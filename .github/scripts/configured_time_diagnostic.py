@@ -19,8 +19,8 @@ TEST = "TestAuthorityTimeDarwinConfiguredUpstream"
 FIELDS = {
     "factory": {"failed", "ready"},
     "source": {"not_checked", "mismatch", "expected"},
-    "stage": {"not_run", "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "measured"},
-    "reason": {"not_run", "ok", "dns", "random", "dial", "native_send", "send", "read", "read_timeout", "native_receive", "packet", "native_binding", "rate", "deny", "source_fault"},
+    "stage": {"not_run", "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "close", "measured"},
+    "reason": {"not_run", "ok", "dns", "random", "dial", "native_send", "send", "read", "read_timeout", "native_receive", "packet", "native_binding", "close", "rate", "deny", "source_fault"},
     "install": {"not_run", "binding", "rtt", "source_bound", "transmit", "receive", "reference", "overflow", "interval", "native_install", "age", "anchor_interval", "utc_window", "width", "native_binding", "elapsed", "contradiction", "installed"},
     "current": {"not_run", "closed", "native_terminal", "no_anchor", "native_sample", "native_binding", "elapsed", "age", "anchor_interval", "overflow", "utc_window", "width", "ok"},
     "verdict": {"pass", "fail"},

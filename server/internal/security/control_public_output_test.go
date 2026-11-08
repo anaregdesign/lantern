@@ -47,8 +47,16 @@ func TestCurrentPublicOutputCreditBeforeHandler(t *testing.T) {
 		connections = append(connections, c)
 	}
 	left, right := net.Pipe()
-	defer left.Close()
-	defer right.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned left.Close: %v", err)
+		}
+	}(left.Close)
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned right.Close: %v", err)
+		}
+	}(right.Close)
 	if p.connContext(context.Background(), left).Value(currentOutputConnectionKey{}) != nil {
 		t.Fatal("connection credit bypass")
 	}
@@ -216,7 +224,11 @@ func TestCurrentPublicOutputCloseJoinsBlockedSocketProducer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned conn.Close: %v", err)
+		}
+	}(conn.Close)
 	if _, err := io.WriteString(conn, "GET /blocked HTTP/1.1\r\nHost: current.test\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -256,8 +268,16 @@ func TestCurrentPublicOutputDecodeRefusalReleasesCredit(t *testing.T) {
 		t.Fatal(err)
 	}
 	left, right := net.Pipe()
-	defer left.Close()
-	defer right.Close()
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned left.Close: %v", err)
+		}
+	}(left.Close)
+	defer func(closeOwned func() error) {
+		if err := closeOwned(); err != nil {
+			t.Errorf("close owned right.Close: %v", err)
+		}
+	}(right.Close)
 	req := httptest.NewRequest(http.MethodPost, "/rpc", nil)
 	req = req.WithContext(p.connContext(req.Context(), left))
 	initial := p.bytes

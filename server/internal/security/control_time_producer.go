@@ -63,7 +63,7 @@ func parseAuthorityTimeSource(config []byte) (authorityTimeSource, error) {
 			return authorityTimeSource{}, errAuthorityTime
 		}
 		for _, c := range label {
-			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 				return authorityTimeSource{}, errAuthorityTime
 			}
 		}
@@ -139,6 +139,8 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	probe := decisiontrace.Event{Attempt: p.attempts, Turn: addressTurn, Stage: "dns", Reason: "ok"}
 	var readCount uint8
 	var firstReadError, finalReadError string
+	var readFailure error
+	var readDeadlineExceeded bool
 	started := time.Now()
 	p.workers.Add(1)
 	p.mu.Unlock()
@@ -152,7 +154,9 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 		if resultErr != nil {
 			probe.Reason = probe.Stage
 			var ne net.Error
-			if probe.Stage == "read" && (errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.As(resultErr, &ne) && ne.Timeout()) {
+			// Cleanup can add a timeout or consume the remaining deadline. Use
+			// only the failure and deadline observed at the final Read boundary.
+			if probe.Stage == "read" && (readDeadlineExceeded || errors.As(readFailure, &ne) && ne.Timeout()) {
 				probe.Reason = "read_timeout"
 			}
 			if errors.Is(resultErr, errAuthorityTimeRate) {
@@ -233,12 +237,22 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
-	defer conn.Close()
+	// Cancellation and ordinary completion share the same actual Close. The
+	// cached result is consumed after the callback has joined, including failures.
+	closeConnection := sync.OnceValue(conn.Close)
+	closeErrorReported := false
 	callbackDone := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); close(callbackDone) })
+	stop := context.AfterFunc(ctx, func() {
+		_ = closeConnection() // The deferred owner consumes this same cached result.
+		close(callbackDone)
+	})
 	defer func() {
 		if !stop() {
 			<-callbackDone
+		}
+		if closeErr := closeConnection(); closeErr != nil && !closeErrorReported {
+			measurement = authorityTimeMeasurement{}
+			resultErr = errors.Join(resultErr, closeErr)
 		}
 	}()
 	deadline, _ := ctx.Deadline()
@@ -278,6 +292,8 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 		n, err = conn.Read(raw[:])
 		readCount, finalReadError = 2, authorityTimeReadError(err)
 	}
+	readFailure = err
+	readDeadlineExceeded = errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
@@ -296,6 +312,12 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	if err != nil {
 		return authorityTimeMeasurement{}, err
 	}
+	endpoint := conn.RemoteAddr().String()
+	probe.Stage = "close"
+	if err := closeConnection(); err != nil {
+		closeErrorReported = true
+		return authorityTimeMeasurement{}, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -306,7 +328,7 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	}
 	p.sequence = sequence
 	probe.Stage = "measured"
-	return authorityTimeMeasurement{p.source, conn.RemoteAddr().String(), sent, received, packet, request, [48]byte(raw[:48]), sequence}, nil
+	return authorityTimeMeasurement{p.source, endpoint, sent, received, packet, request, [48]byte(raw[:48]), sequence}, nil
 }
 
 // Only copied classifications survive a Read; never expose net.OpError text,

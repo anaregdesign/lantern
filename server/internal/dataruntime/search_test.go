@@ -809,8 +809,7 @@ func TestSearchReaderRetriesReplaceResultsAndBackendErrors(t *testing.T) {
 					if fb.searchCalls == 1 {
 						// Force a completed publication interval across the first
 						// capture. The query adapter must replace this attempt.
-						svc.replicationCutMu.Lock()
-						svc.replicationCutMu.Unlock()
+						completeTestPublicationInterval(t, svc)
 						if firstError {
 							return nil, search.Stats{PostingVisits: 99}, search.ErrIndexIncomplete
 						}
@@ -867,8 +866,7 @@ func TestSearchReaderPageUsesOneShotPublicationCut(t *testing.T) {
 	calls := 0
 	err := (searchReader{service: svc}).ReadPage(func() error {
 		calls++
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
+		completeTestPublicationInterval(t, svc)
 		return nil
 	})
 	if calls != 1 || connect.CodeOf(err) != connect.CodeUnavailable {

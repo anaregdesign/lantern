@@ -26,7 +26,7 @@ const composeGraphSnapshotSpoolDirectory = "/var/lib/lantern-snapshot-spool"
 // the host. These fixtures never qualify clocks, providers or deployments.
 func exportComposeFixture(result *fixture, dir string) error {
 	if len(result.Nodes) != 3 {
-		return errors.New("Compose requires three nodes")
+		return errors.New("compose requires three nodes")
 	}
 	for _, node := range result.Nodes {
 		mode := node.Environment["LANTERN_RECEIPT_WAL_MODE"]

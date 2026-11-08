@@ -115,7 +115,7 @@ func (v *Verifier) VerifyAccess(ctx context.Context, raw string, trust Trust) (V
 	// auth_time is optional for ordinary API access. When present it is
 	// verified recent-auth evidence, never replaced by token issuance time.
 	if claims.AuthTime != nil {
-		if claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time) {
+		if claims.AuthTime.After(v.now()) || claims.AuthTime.After(claims.IssuedAt.Time) {
 			return VerifiedIdentity{}, ErrInvalidToken
 		}
 	}
@@ -142,7 +142,7 @@ func (v *Verifier) VerifyID(ctx context.Context, raw string, trust Trust, nonce 
 		return VerifiedIdentity{}, err
 	}
 	if claims.AuthTime != nil {
-		if claims.AuthTime.Time.IsZero() || claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time) {
+		if claims.AuthTime.IsZero() || claims.AuthTime.After(v.now()) || claims.AuthTime.After(claims.IssuedAt.Time) {
 			return VerifiedIdentity{}, ErrInvalidToken
 		}
 	}

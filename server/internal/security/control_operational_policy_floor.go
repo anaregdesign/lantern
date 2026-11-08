@@ -41,21 +41,21 @@ func operationalPolicyFloorSizeBound(originalBytes uint64, group operationalpoli
 	return s2CheckedAdd(uint64(len(header)), 4*((originalBytes+2)/3))
 }
 
-func (k *s2cParticipant) assessOperationalPolicyFloor(h *s2cHistoricalH) (S1Assessment, error) {
-	if h == nil || !operationalPolicySupportRequired(k.replayState, h) {
+func (o *s2cParticipant) assessOperationalPolicyFloor(h *s2cHistoricalH) (S1Assessment, error) {
+	if h == nil || !operationalPolicySupportRequired(o.replayState, h) {
 		return S1Assessment{}, errOperationalPolicySupport
 	}
 	command, err := h.handoff.operation.command()
 	if err != nil {
 		return S1Assessment{}, err
 	}
-	if h.handoff.operation.reviewed != k.replayState.projection.cut {
+	if h.handoff.operation.reviewed != o.replayState.projection.cut {
 		return S1Assessment{}, ErrRevisionConflict
 	}
-	if !s1CurrentAuthority(k.replayState.projection, h.handoff, command) {
+	if !s1CurrentAuthority(o.replayState.projection, h.handoff, command) {
 		return S1Assessment{}, ErrPermissionDenied
 	}
-	assessment, err := AssessS1(k.replayState.projection, h.handoff.operation)
+	assessment, err := AssessS1(o.replayState.projection, h.handoff.operation)
 	if err != nil || assessment.ProvenNonexpanding {
 		return S1Assessment{}, errOperationalPolicySupport
 	}
@@ -69,41 +69,41 @@ func operationalPolicyPreparationFor(h *s2cHistoricalH, group operationalpolicy.
 	return OperationalPolicyPreparation{Group: group, Version: operationalpolicy.Version, ChangeID: h.handoff.id, IntentDigest: h.handoff.operation.digest, ActorDigest: s2cHash("public-original-actor", h.handoff.operation.actor)}
 }
 
-func (k *s2cParticipant) replayOperationalPolicyFloor(r s2cPRecord) error {
+func (o *s2cParticipant) replayOperationalPolicyFloor(r s2cPRecord) error {
 	var record operationalPolicyFloorRecord
-	if s2StrictJSON([]byte(r.raw), &record, DefaultPolicyLimits()) != nil || !record.Group.Valid() || record.Version != operationalPolicySupportContractVersion || record.ApplicationVersion != operationalpolicy.Version || record.Contract != operationalPolicySupportContract(record.Group) || k.operationalFloors[record.Group] != nil {
+	if s2StrictJSON([]byte(r.raw), &record, DefaultPolicyLimits()) != nil || !record.Group.Valid() || record.Version != operationalPolicySupportContractVersion || record.ApplicationVersion != operationalpolicy.Version || record.Contract != operationalPolicySupportContract(record.Group) || o.operationalFloors[record.Group] != nil {
 		return errS2CProtocol
 	}
-	h, err := verifyAuthorityHistoricalH(k.trust, record.Original)
+	h, err := verifyAuthorityHistoricalH(o.trust, record.Original)
 	_, group, ok := operationalPolicyChangeForH(handoffOf(h))
-	if err != nil || !ok || group != record.Group || k.replayState.projection.snapshot.OperationalPolicies().Get(group) != nil {
+	if err != nil || !ok || group != record.Group || o.replayState.projection.snapshot.OperationalPolicies().Get(group) != nil {
 		return errS2CProtocol
 	}
-	assessment, err := k.assessOperationalPolicyFloor(h)
+	assessment, err := o.assessOperationalPolicyFloor(h)
 	if err != nil {
 		return err
 	}
-	if _, err = authoritySuccessorCharge(k, h.handoff.id, h.handoff.operation, assessment); err != nil {
+	if _, err = authoritySuccessorCharge(o, h.handoff.id, h.handoff.operation, assessment); err != nil {
 		return err
 	}
 	canonical, err := operationalPolicyFloorBytes(h)
 	if err != nil || !bytes.Equal(canonical, []byte(r.raw)) {
 		return errS2CProtocol
 	}
-	k.operationalFloors[group] = &operationalPolicyFloorState{floor: s2cJournalFloor{Scope: k.binding, Index: r.index}, original: h.raw, preparation: operationalPolicyPreparationFor(h, group)}
+	o.operationalFloors[group] = &operationalPolicyFloorState{floor: s2cJournalFloor{Scope: o.binding, Index: r.index}, original: h.raw, preparation: operationalPolicyPreparationFor(h, group)}
 	return nil
 }
 
-func (k *s2cParticipant) restoreOperationalPolicyFloors() error {
+func (o *s2cParticipant) restoreOperationalPolicyFloors() error {
 	var groups []operationalpolicy.Group
 	var indexes []uint64
 	for _, group := range operationalpolicy.Groups() {
-		if f := k.operationalFloors[group]; f != nil && f.floor.Chain == [32]byte{} {
+		if f := o.operationalFloors[group]; f != nil && f.floor.Chain == [32]byte{} {
 			groups, indexes = append(groups, group), append(indexes, f.floor.Index)
 		}
 	}
 	if len(groups) != 0 {
-		cuts, err := mutationlog.InspectFileWALCuts(k.config.PPath, indexes, s2cDecodeJournalPayload, func(e mutationlog.Entry) error {
+		cuts, err := mutationlog.InspectFileWALCuts(o.config.PPath, indexes, s2cDecodeJournalPayload, func(e mutationlog.Entry) error {
 			if _, ok := e.Op.(s2cJournalPayload); !ok {
 				return errS2CProtocol
 			}
@@ -116,61 +116,61 @@ func (k *s2cParticipant) restoreOperationalPolicyFloors() error {
 			if cut.ObservedLast < indexes[i] || cut.ChainSHA256 == [32]byte{} {
 				return errS2CProtocol
 			}
-			k.operationalFloors[groups[i]].floor.Chain = cut.ChainSHA256
+			o.operationalFloors[groups[i]].floor.Chain = cut.ChainSHA256
 		}
 	}
 	check := func(h *s2cHistoricalH) error {
 		if h == nil || h.candidate == "" || !hasOperationalPolicyChange(h.handoff) {
 			return nil
 		}
-		cert, err := operationalPolicyCandidateCertificate(k.trust, h)
+		cert, err := operationalPolicyCandidateCertificate(o.trust, h)
 		if err != nil {
 			return err
 		}
-		floor := k.operationalFloors[cert.statement.Group]
+		floor := o.operationalFloors[cert.statement.Group]
 		if floor == nil {
 			return errS2CProtocol
 		}
 		for _, proof := range cert.voters {
-			if proof.Signer == k.config.Member && proof.Floor != floor.floor {
+			if proof.Signer == o.config.Member && proof.Floor != floor.floor {
 				return errS2CProtocol
 			}
 		}
 		return nil
 	}
-	for _, h := range k.origins {
+	for _, h := range o.origins {
 		if err := check(h); err != nil {
 			return err
 		}
 	}
-	for _, m := range k.history {
+	for _, m := range o.history {
 		if err := check(m.h); err != nil {
 			return err
 		}
 	}
 	for _, group := range operationalpolicy.Groups() {
-		if k.replayState.projection.snapshot.OperationalPolicies().Get(group) != nil && k.operationalFloors[group] == nil {
+		if o.replayState.projection.snapshot.OperationalPolicies().Get(group) != nil && o.operationalFloors[group] == nil {
 			return errS2CProtocol
 		}
 	}
 	return nil
 }
 
-func (k *s2cParticipant) ensureOperationalPolicyFloorLocked(h *s2cHistoricalH, protected s2cCredit) error {
+func (o *s2cParticipant) ensureOperationalPolicyFloorLocked(h *s2cHistoricalH, protected s2cCredit) error {
 	_, group, ok := operationalPolicyChangeForH(handoffOf(h))
 	if !ok {
 		return errOperationalPolicySupport
 	}
-	if k.operationalFloors[group] != nil {
-		return k.restoreOperationalPolicyFloors()
+	if o.operationalFloors[group] != nil {
+		return o.restoreOperationalPolicyFloors()
 	}
 	raw, err := operationalPolicyFloorBytes(h)
 	if err != nil {
 		return err
 	}
-	if err = k.appendRecord(s2cPRecord{kind: s2cPOperationalPolicyFloor, raw: string(raw)}, s2cMaxCredit(k.credit, protected)); err != nil {
+	if err = o.appendRecord(s2cPRecord{kind: s2cPOperationalPolicyFloor, raw: string(raw)}, s2cMaxCredit(o.credit, protected)); err != nil {
 		return err
 	}
-	k.operationalFloors[group] = &operationalPolicyFloorState{floor: k.p.floor, original: h.raw, preparation: operationalPolicyPreparationFor(h, group)}
+	o.operationalFloors[group] = &operationalPolicyFloorState{floor: o.p.floor, original: h.raw, preparation: operationalPolicyPreparationFor(h, group)}
 	return nil
 }

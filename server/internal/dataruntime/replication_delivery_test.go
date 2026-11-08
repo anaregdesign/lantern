@@ -28,12 +28,20 @@ func TestReplicationDeliveryInterruptsBlockedSend(t *testing.T) {
 		t.Run(cause, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				log := mutationlog.New(mutationlog.Options{Capacity: 10000, SubscriberBuffer: 512})
-				defer log.Close()
+				defer func(closeOwned func() error) {
+					if err := closeOwned(); err != nil {
+						t.Errorf("close mutation log: %v", err)
+					}
+				}(log.Close)
 				subscription, err := log.SubscribeStream(1, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer subscription.Close()
+				defer func(closeOwned func() error) {
+					if err := closeOwned(); err != nil {
+						t.Errorf("close mutation subscription: %v", err)
+					}
+				}(subscription.Close)
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				entered, interrupted := make(chan struct{}), make(chan struct{})
@@ -91,12 +99,20 @@ func TestReplicationDeliveryInterruptsBlockedSend(t *testing.T) {
 func TestReplicationDeliveryChecksLossBeforeStartingSend(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		log := mutationlog.New(mutationlog.Options{Capacity: 10000, SubscriberBuffer: 512})
-		defer log.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close mutation log: %v", err)
+			}
+		}(log.Close)
 		subscription, err := log.SubscribeStream(1, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer subscription.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close mutation subscription: %v", err)
+			}
+		}(subscription.Close)
 		for i := 1; i <= 514; i++ {
 			if _, err := log.Append(i, hlc.Timestamp{}); err != nil {
 				t.Fatal(err)
@@ -119,7 +135,11 @@ func TestReplicationDeliveryChecksLossBeforeStartingSend(t *testing.T) {
 func TestReplicationDeliveryStopsWatcherBeforeNormalCleanup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		log := mutationlog.New(mutationlog.Options{})
-		defer log.Close()
+		defer func(closeOwned func() error) {
+			if err := closeOwned(); err != nil {
+				t.Errorf("close mutation log: %v", err)
+			}
+		}(log.Close)
 		subscription, err := log.SubscribeStream(1, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -131,7 +151,9 @@ func TestReplicationDeliveryStopsWatcherBeforeNormalCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		delivery.Close()
-		subscription.Close()
+		if err := subscription.Close(); err != nil {
+			t.Fatal(err)
+		}
 		synctest.Wait()
 		if interrupted.Load() != 0 {
 			t.Fatal("normal cleanup interrupted an already completed HTTP request")
