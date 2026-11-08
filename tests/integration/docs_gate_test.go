@@ -327,7 +327,7 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 				"gateway picker never selects that upstream", "certificate against that upstream hostname",
 				"LANTERN_ADMIN_SERVER_CA_FILE", "`trusted_proxy_ips` in that same JSON", "public Host/scheme",
 				"explicitly trusted exact gateway IP", "configured eligible authority origin", "#1608/#1609 S5 work",
-				"Missing upstream routes fail closed", "/auth/operations", "operations.read", "Only GET diagnostics",
+				"Missing upstream routes fail closed", "/auth/operations", "read Allow on the Operations resource", "Only GET diagnostics",
 				"Prometheus never receives cookies or Authorization", "browser local storage and Vite env",
 				"docs/oidc-operations.md#browser-and-diagnostics-boundary", "docs/ha-runbook.md",
 			},
@@ -356,7 +356,7 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		"docs/oidc-operations.md": {
 			required: []string{"OFF can serve the static Admin separately", "same configured HTTPS public origin",
 				"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "supplied JSON `trusted_proxy_ips`",
-				"Issuer-specific callback", "pinned eligible authority origin", "#1609 S5 remains incomplete", "operations.read",
+				"Issuer-specific callback", "pinned eligible authority origin", "#1609 S5 remains incomplete", "read Allow on the Operations resource",
 				"Subsequent bounded normal-TLS acceptance completed", "passed 4/4", "reached 8/8 at their recorded source revisions",
 				"Temporary trust, keys and owned fixture processes were cleaned up", "These historical results do not qualify a later final source",
 				"Historical, unexecuted DNS-01 proposal", "no DNS changes, ACME issuance or production setup were performed for it",

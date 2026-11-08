@@ -308,25 +308,29 @@ membership windows, or the independent native quorum expires. Diagnose transport
 and native admission separately; never reset an anchor or narrow its bounds to
 hide a network failure.
 
-The existing HA Compose contract has a concrete overlay:
+The renewable-membership operator profile is a standalone three-node example:
 
 ```sh
-docker compose -f deploy/compose/docker-compose.yml \
-  -f deploy/compose/docker-compose.ha.yml \
+docker compose --env-file /absolute/private/membership/compose.env \
   -f deploy/compose/docker-compose.membership.yml config
 ```
 
-Set existing HA env inputs and fixed image, plus `LANTERN_MEMBERSHIP_ROOT`
+Select the compatible immutable `LANTERN_IMAGE`, `LANTERN_MEMBERSHIP_ROOT`
 (the example supervisor uses `/srv/lantern`) and the pre-provisioned
 `LANTERN_SERVICE_UID`/`LANTERN_SERVICE_GID`. Each `node-0`/`node-1`/`node-2` has
-`static`, `renewable` and `state` directories. The static node config points to
+`static`, `renewable` and `state` directories, plus a complete root-level
+`node-0.env`/`node-1.env`/`node-2.env` for that workload. Each `static/ntp.conf`
+contains the admitted configured time source and is separately mounted read-only
+at `/etc/ntp.conf`. The static node config points to
 `/run/lantern-renewal/control.signed` and `data.signed`, with all mutable
-checkpoints/WAL/custody under `/state`. The inherited node-0 backup directory is
-also under `/state/backup`. Private directories/files remain 0700/0600; align
+checkpoints/WAL/custody under `/state`. Each node's backup directory is also
+under its exclusive `/state/backup`. Private directories/files remain 0700/0600; align
 actual host/container ownership rather than broadening modes. Validate the
-rendered mounts: the overlay uses Compose 2.24.4+
-[`!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value)
-so no broader inherited input mount remains. No missing host path is auto-created.
+rendered mounts: the standalone file exposes only that node's inputs and state.
+It does not inherit the canonical stack's mounts or diagnostics. No missing host
+path is auto-created. The optional OFF graph-only spool bind overlay adds a
+separate precreated `node-i/snapshot-spool` directory with the explicit workload
+owner and mode 0700; OIDC omits that overlay and all generic spool settings.
 
 `deploy/compose/membershippublisher.service` is the host supervisor example.
 Install the built binary at its configured path and supply the existing service

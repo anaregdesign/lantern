@@ -23,7 +23,7 @@ func TestMembershipContainerMounts(t *testing.T) {
 	// Require explicit false in our owned source overlays before accepting that
 	// representation; an absent source setting must never become a safe default.
 	for name, mounts := range map[string]int{
-		"docker-compose.membership.yml":                3,
+		"docker-compose.membership.yml":                4,
 		"docker-compose.graph-snapshot.membership.yml": 1,
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, "deploy/compose", name))
@@ -49,15 +49,16 @@ func TestMembershipContainerMounts(t *testing.T) {
 				environment = []byte("LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/var/lib/lantern-snapshot-spool\nLANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES=134217728\nLANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES=33554432\n")
 			}
 			for i := 0; i < 3; i++ {
-				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("lantern-%d.env", i)), environment, 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("node-%d.env", i)), environment, 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			files := []string{"docker-compose.yml", "docker-compose.ha.yml", "docker-compose.membership.yml"}
+			// This specialized publisher layout is standalone. The canonical
+			// stacks own a different complete mount/metrics contract.
+			files := []string{"docker-compose.membership.yml"}
 			if graph {
-				// The final bind overlay is independent of the image-owned
-				// named-volume overlay; the operator provisions this host leaf
-				// for the membership workload's explicit runtime UID.
+				// The operator provisions this separate host spool leaf for
+				// the membership workload's explicit runtime UID.
 				files = append(files, "docker-compose.graph-snapshot.membership.yml")
 			}
 			args := []string{"compose"}
@@ -70,13 +71,14 @@ func TestMembershipContainerMounts(t *testing.T) {
 					cmd.Env = append(cmd.Env, v)
 				}
 			}
-			cmd.Env = append(cmd.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_MEMBERSHIP_ROOT="+dir, "LANTERN_SERVICE_UID=1001", "LANTERN_SERVICE_GID=1001", "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380")
+			cmd.Env = append(cmd.Env, "LANTERN_IMAGE=lantern:render-only", "LANTERN_MEMBERSHIP_ROOT="+dir, "LANTERN_SERVICE_UID=1001", "LANTERN_SERVICE_GID=1001")
 			raw, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("render private mounts: %v: %s", err, raw)
 			}
 			var rendered struct {
 				Services map[string]struct {
+					Image       string
 					User        string
 					Restart     string
 					ReadOnly    bool `json:"read_only"`
@@ -93,23 +95,26 @@ func TestMembershipContainerMounts(t *testing.T) {
 			if err = json.Unmarshal(raw, &rendered); err != nil {
 				t.Fatal(err)
 			}
+			if len(rendered.Services) != 3 {
+				t.Fatal("membership operator profile must remain standalone")
+			}
 			for i := 0; i < 3; i++ {
 				node, ok := rendered.Services[fmt.Sprintf("lantern-%d", i)]
-				mounts := 3
+				mounts := 4
 				if graph {
 					mounts++
 				}
-				if !ok || node.User != "1001:1001" || node.Restart != "no" || !node.ReadOnly || len(node.Volumes) != mounts {
+				if !ok || node.Image != "lantern:render-only" || node.User != "1001:1001" || node.Restart != "no" || !node.ReadOnly || len(node.Volumes) != mounts {
 					t.Fatal("unsafe supervisor/mount defaults", i)
 				}
 				seen := map[string]bool{}
 				for _, mount := range node.Volumes {
-					parts := map[string]string{"/run/lantern-config": "static", "/run/lantern-renewal": "renewable", "/state": "state"}
+					parts := map[string]string{"/run/lantern-config": "static", "/run/lantern-renewal": "renewable", "/state": "state", "/etc/ntp.conf": "static/ntp.conf"}
 					if graph {
 						parts["/var/lib/lantern-snapshot-spool"] = "snapshot-spool"
 					}
 					part := parts[mount.Target]
-					if part == "" || mount.Type != "bind" || mount.Source != filepath.Join(dir, fmt.Sprintf("node-%d", i), part) || (mount.Bind.Create != nil && *mount.Bind.Create) || mount.ReadOnly != (part == "static" || part == "renewable") {
+					if part == "" || mount.Type != "bind" || mount.Source != filepath.Join(dir, fmt.Sprintf("node-%d", i), part) || (mount.Bind.Create != nil && *mount.Bind.Create) || mount.ReadOnly != (part == "static" || part == "renewable" || part == "static/ntp.conf") {
 						t.Fatal("broad, writable-input or auto-created mount", i, mount.Target)
 					}
 					seen[part] = true

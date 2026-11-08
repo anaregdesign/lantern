@@ -167,7 +167,10 @@ publisher remains live, confirm CLEAN state, then stop the publisher. Retain
 all volumes, receipt inputs, private keys and journals. Resume in the ordinary
 configuration; never use `down -v`, reinitialize, or reset trust to obtain a pass.
 
-The legacy generic HA/graph-snapshot overlays are advanced operator examples,
-not required overlays for either canonical stack. `docker-compose.off.yml`
+The redundant generic HA and named-spool overlays have been removed; both
+canonical stacks already own those resources. The standalone
+[`docker-compose.membership.yml`](docker-compose.membership.yml) retains the
+specialized static/renewable/state operator layout and its optional OFF spool
+bind addon; it is not merged with a canonical stack. `docker-compose.off.yml`
 remains an explicitly selected small standalone development example. Existing
 physical Dart, real-provider app and Kubernetes acceptance holds remain separate.

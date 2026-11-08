@@ -71,7 +71,7 @@ export interface CurrentChangePort {
   failure(error: unknown): SecurityFailure;
 }
 export interface SecurityAuthorizationWindow {
-  navigate(url: string): void;
+  navigate(url: string, attemptAffinity: string): void;
   close(): void;
 }
 export interface CurrentChangeState {
@@ -378,7 +378,7 @@ export class CurrentChangeController {
           currentProfileBinding(review.version.currentProfile)
       )
         throw new Error("Invalid operation authorization start.");
-      authorizationWindow.navigate(start.startUrl);
+      authorizationWindow.navigate(start.startUrl, start.attemptAffinity);
       this.publish({
         review: {
           ...starting,

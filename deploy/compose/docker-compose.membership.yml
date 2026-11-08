@@ -1,20 +1,39 @@
-# Same-host directory publication. Apply after docker-compose.yml and .ha.yml.
-# Compose >=2.24.4: replace inherited volumes, never append a broader mount.
+# Standalone same-host renewable-membership operator profile.
+# Do not merge with the canonical OFF/OIDC application stacks. This narrow
+# profile owns its distinct static/renewable/state layout and external signer.
 # All directories, private inputs and intact resume modes are operator provisioned.
 x-renewing-node: &renewing-node
+  image: ${LANTERN_IMAGE:?select the compatible immutable Server image}
   user: "${LANTERN_SERVICE_UID:?private input owner UID required}:${LANTERN_SERVICE_GID:?private input owner GID required}"
+  stop_grace_period: 45s
   restart: "no"
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   tmpfs: [/tmp:rw,nosuid,nodev,size=64m,mode=1777]
+  environment:
+    LANTERN_PORT: "6380"
+    LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+    LANTERN_DRAIN_DELAY_SECONDS: "5"
+    LANTERN_BACKUP_DIR: /state/backup
+  healthcheck:
+    test: [CMD, wget, -qO-, "http://127.0.0.1:9090/readyz"]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 50s
 
 services:
   lantern-0:
     <<: *renewing-node
-    environment:
-      LANTERN_BACKUP_DIR: /state/backup
-    volumes: !override
+    hostname: lantern-0
+    env_file: ["${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-0.env"]
+    volumes:
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-0/static/ntp.conf
+        target: /etc/ntp.conf
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-0/static
         target: /run/lantern-config
@@ -31,7 +50,14 @@ services:
         bind: {create_host_path: false}
   lantern-1:
     <<: *renewing-node
-    volumes: !override
+    hostname: lantern-1
+    env_file: ["${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-1.env"]
+    volumes:
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-1/static/ntp.conf
+        target: /etc/ntp.conf
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-1/static
         target: /run/lantern-config
@@ -48,7 +74,14 @@ services:
         bind: {create_host_path: false}
   lantern-2:
     <<: *renewing-node
-    volumes: !override
+    hostname: lantern-2
+    env_file: ["${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-2.env"]
+    volumes:
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-2/static/ntp.conf
+        target: /etc/ntp.conf
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-2/static
         target: /run/lantern-config

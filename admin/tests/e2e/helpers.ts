@@ -263,8 +263,10 @@ export async function securityUI(
   const primary = "https://admin.example";
   let approved = false;
   const authorizationPath = "/auth/management-authorization/" + "A".repeat(43);
+  const authorizationAffinity = `v2.1.${Buffer.alloc(32, 5).toString("base64url")}.${Buffer.alloc(32, 8).toString("base64url")}`;
+  const authorizationUrl = `${primary}${authorizationPath}?affinity=${authorizationAffinity}`;
   if (options.reauthentication)
-    await page.context().route(primary + authorizationPath, async (route) => {
+    await page.context().route(authorizationUrl, async (route) => {
       approved = true;
       await route.fulfill({
         contentType: "text/html",
@@ -555,9 +557,9 @@ export async function securityUI(
       if (method === "BeginSecurityChangeAuthorization")
         return json({
           authorizationId: Buffer.alloc(32, 8).toString("base64"),
-          startUrl: primary + authorizationPath,
+          startUrl: authorizationUrl,
           currentProfile: profile,
-          attemptAffinity: "node-process-attempt",
+          attemptAffinity: authorizationAffinity,
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
         });
       if (method === "GetSecurityChangeAuthorization")
@@ -660,5 +662,5 @@ export async function securityUI(
     const response = await page.request.get(local.href);
     return route.fulfill({ response });
   });
-  return { calls, primary };
+  return { calls, primary, authorizationUrl };
 }

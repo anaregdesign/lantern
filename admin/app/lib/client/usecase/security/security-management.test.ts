@@ -48,14 +48,15 @@ const expiry = {
   seconds: 3000000000n,
   nanos: 0,
 };
+const authorizationAffinity = `v2.1.${Buffer.alloc(32, 5).toString("base64url")}.${Buffer.alloc(32, 8).toString("base64url")}`;
 function begin(): BeginSecurityChangeAuthorizationResponse {
   return {
     $typeName: "graph.v1.BeginSecurityChangeAuthorizationResponse",
     authorizationId: bytes(32, 8),
-    startUrl: "https://admin.example/auth/management-authorization/example",
+    startUrl: `https://admin.example/auth/management-authorization/${"A".repeat(43)}?affinity=${authorizationAffinity}`,
     expiresAt: expiry,
     currentProfile: profile,
-    attemptAffinity: "node-process-attempt",
+    attemptAffinity: authorizationAffinity,
   };
 }
 function fixture(
@@ -115,7 +116,7 @@ function fixture(
     prepare: async (draft) => prepare(draft),
     beginAuthorization: async () => begin(),
     authorization: async (_review, id, affinity) => {
-      expect(affinity).toBe("node-process-attempt");
+      expect(affinity).toBe(authorizationAffinity);
       return {
         $typeName: "graph.v1.GetSecurityChangeAuthorizationResponse",
         authorizationId: id,
@@ -269,8 +270,9 @@ describe("current reviewed changes", () => {
         prepare: async (draft) =>
           prepare(draft, SecurityAuthorizationRequirement.REAUTHENTICATION),
         openAuthorization: () => ({
-          navigate: (url) => {
+          navigate: (url, affinity) => {
             navigated = url;
+            expect(affinity).toBe(authorizationAffinity);
           },
           close() {},
         }),
@@ -292,7 +294,7 @@ describe("current reviewed changes", () => {
     await c.apply();
     expect(sends).toBe(0);
     await c.authorize();
-    expect(navigated).toContain("/auth/");
+    expect(navigated).toBe(begin().startUrl);
     await c.checkAuthorization();
     await c.apply();
     expect(sends).toBe(1);

@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,8 +208,17 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 				cookies := response.Cookies()
 				csrf := browserCookieValue(cookies, "__Host-lantern-csrf")
 				browserControl := graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, issuer.server.URL+"/browser")
-				if roles, err := browserControl.ListRoles(t.Context(), connect.NewRequest(&pb.ListRolesRequest{})); err != nil || len(roles.Msg.Roles) != 1 {
+				roles, err := browserControl.ListRoles(t.Context(), connect.NewRequest(&pb.ListRolesRequest{}))
+				if err != nil {
 					t.Fatal("browser-only session failed real Connect read", err)
+				}
+				roleIDs := make([]string, len(roles.Msg.Roles))
+				for i, role := range roles.Msg.Roles {
+					roleIDs[i] = role.GetId()
+				}
+				slices.Sort(roleIDs)
+				if !slices.Equal(roleIDs, []string{"data_admin", "personal_user", "security_admin"}) {
+					t.Fatal("browser-only fresh seed Roles", roleIDs)
 				}
 				calls := issuer.fetches.Load()
 				if _, err := control.GetCurrentPrincipal(t.Context(), securityWireRequest(issuer.token(t, "admin", nil), &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated || issuer.fetches.Load() != calls {

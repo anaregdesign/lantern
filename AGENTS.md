@@ -221,6 +221,11 @@ Root/MCP release verification (#1899) gives Server and the five nonserver Go mod
 
 Write GitHub Issue titles, bodies, comments and updates in English.
 
+Owner standing authorization (2026-11-08): routine additions, edits and field
+updates in the existing `Lantern roadmap` are authorized without repeated
+confirmation. This does not expand release, production, credential, data-deletion
+or held provider/device/Kubernetes scope.
+
 The full release/CI/maintenance contract — issue triage, code-generation steps, the
 release tag order, the toolchain-bump checklist, and the doc-staleness sweep — lives in
 [CONTRIBUTING.md](CONTRIBUTING.md). Consult it whenever you take one of those actions.

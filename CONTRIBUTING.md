@@ -1125,8 +1125,8 @@ number rather than force-moving the tag.
   authority proof. Operational cutover and final qualification remain
   #1608/#1609 S5 work. Missing upstream routes fail closed
   instead of returning the SPA shell. The optional Prometheus proxy checks
-  `/auth/operations` first: OFF permits diagnostics; OIDC requires current
-  `operations.read` authority. Only GET diagnostics pass, and Prometheus never
+  `/auth/operations` first: OFF permits diagnostics; OIDC requires a current
+  read Allow on the Operations resource. Only GET diagnostics pass, and Prometheus never
   receives cookies or Authorization. See the [OIDC operations guide](docs/oidc-operations.md#browser-and-diagnostics-boundary)
   and [HA runbook](docs/ha-runbook.md) for the current deployment contract.
 - `sdks/node/vX.Y.Z` triggers the two-runtime real-wire `node-sdk.yml` gate and npm

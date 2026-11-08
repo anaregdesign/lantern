@@ -502,6 +502,7 @@ test("high-impact review keeps the Admin window active through operation approva
     .getByRole("button", { name: "Reauthenticate reviewed change" })
     .click();
   const popup = await popupPromise;
+  await expect(popup).toHaveURL(fixture.authorizationUrl);
   await expect(
     popup.getByText("Authentication recorded.", { exact: false }),
   ).toBeVisible();

@@ -383,11 +383,9 @@ printf 'image_id=%s\n' "$EXPECTED_LANTERN_IMAGE_ID" | tee -a "$EVIDENCE_DIR/host
 # On macOS the host generator is NOT in that Docker CPU set; state this
 # limitation on the tracking Issue. Use the same exact image for all 12 runs.
 export LANTERN_BENCH_CPUSET=0-3
-docker compose -f deploy/compose/docker-compose.yml \
-  -f testbed/bench/compose.override.yml \
-  -f testbed/bench/compose.cpuset.yml config --format json |
-  jq -e '.services as $services |
-    all(["lantern-0","lantern-1","lantern-2"][]; $services[.].cpuset == "0-3")' >/dev/null
+# run.sh renders testbed/bench/compose.native.yml with its profiling/spool and
+# compose.cpuset.yml overlays after preparing private native inputs, and checks
+# all three effective CPU sets before starting any benchmark workload.
 
 # Wait for the Docker VM's one-minute load to fall below half of the four
 # allocated CPUs. A busy host or another running container disqualifies

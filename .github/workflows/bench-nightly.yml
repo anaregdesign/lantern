@@ -218,10 +218,10 @@ jobs:
           set -euo pipefail
           for replica in lantern-0 lantern-1 lantern-2; do
             echo "replica=${replica}"
-            docker compose --project-name lantern-bench \
-              -f deploy/compose/docker-compose.yml \
-              -f testbed/bench/compose.override.yml \
-              logs --no-color --since 10m "$replica" |
+            container="$(docker ps -aq --filter label=com.docker.compose.project=lantern-bench \
+              --filter "label=com.docker.compose.service=$replica")"
+            [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || { echo 'exact retained diagnostic replica missing' >&2; exit 1; }
+            docker logs --since 10m "$container" 2>&1 |
               awk '
                 /replication pump: peer transition|replication pump: peer session error|anti-entropy: PeerStatus failed|anti-entropy: peer ahead, catching up|anti-entropy: Subscribe gapped|anti-entropy: catch-up failed|anti-entropy: caught up|local mutation log append failed/ {
                   matches++
@@ -239,7 +239,37 @@ jobs:
           done
       - name: Stop diagnostic cluster
         if: always() && (inputs.diagnostic_scenario == 'broad_rw' || inputs.diagnostic_scenario == 'broad_mutate') && steps.diagnostic.outcome != 'skipped'
-        run: docker compose --project-name lantern-bench -f deploy/compose/docker-compose.yml -f testbed/bench/compose.override.yml down -v --remove-orphans
+        run: |
+          set -euo pipefail
+          # run.sh owns this separate native benchmark topology, including
+          # private env files and spool volumes. Reconstruct its exact retained
+          # input location from the owned node; never compose the app stack.
+          container="$(docker ps -aq --filter label=com.docker.compose.project=lantern-bench \
+            --filter label=com.docker.compose.service=lantern-0)"
+          if [[ -z "$container" ]]; then
+            test -z "$(docker ps -aq --filter label=com.docker.compose.project=lantern-bench)"
+            test -z "$(docker volume ls -q --filter label=com.docker.compose.project=lantern-bench)"
+            test -z "$(docker network ls -q --filter label=com.docker.compose.project=lantern-bench)"
+            exit 0
+          fi
+          [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || exit 1
+          identity="$(docker inspect --format '{{json .}}' "$container")"
+          export LANTERN_IMAGE="$RECEIPT_IMAGE_ID" COMPOSE_PROJECT_NAME=lantern-bench
+          owner="$(jq -er --arg image "$LANTERN_IMAGE" '
+            select(.Image==$image and .Config.Labels["com.docker.compose.project"]=="lantern-bench" and
+              .Config.Labels["com.docker.compose.service"]=="lantern-0") | .Config.User |
+            select(test("^[1-9][0-9]*:[0-9]+$"))' <<<"$identity")"
+          input="$(jq -er '[.Mounts[]|select(.Type=="bind" and .Destination=="/run/lantern-config" and .RW==false)] |
+            select(length==1) | .[0].Source' <<<"$identity")"
+          [[ "$input" == "$GITHUB_WORKSPACE"/testbed/bench/out/.peer-tls.*/trust/lantern-0 ]] || exit 1
+          export LANTERN_BENCH_PEER_TLS_DIR="${input%/lantern-0}"
+          export LANTERN_BENCH_RUNTIME_UID="${owner%%:*}" LANTERN_BENCH_RUNTIME_GID="${owner#*:}"
+          for index in 0 1 2; do test -f "$LANTERN_BENCH_PEER_TLS_DIR/lantern-$index.env"; done
+          source testbed/bench/owned_compose.sh
+          down_owned_compose "$COMPOSE_PROJECT_NAME" \
+            -f testbed/bench/compose.native.yml \
+            -f testbed/bench/compose.override.yml \
+            -f testbed/bench/compose.graph-snapshot.yml
       - name: Run four receipt admission and lookup gates (blocking)
         if: inputs.diagnostic_scenario == ''
         env:

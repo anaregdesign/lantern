@@ -15,14 +15,22 @@ export function openSecurityAuthorizationWindow(
   if (!popup)
     throw new Error("Allow the reauthentication window, then try again.");
   return {
-    navigate(value) {
+    navigate(value, attemptAffinity) {
       const target = new URL(value);
+      // Server binds this one canonical query to member/process/attempt. A
+      // generic search allowlist would admit unrelated login parameters.
+      const affinity =
+        /^v2\.([1-9][0-9]{0,9})\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.exec(
+          attemptAffinity,
+        );
       if (
+        !affinity ||
+        Number(affinity[1]) > 0xffffffff ||
         target.origin !== origin ||
         !/^\/auth\/management-authorization\/[A-Za-z0-9_-]{43}$/.test(
           target.pathname,
         ) ||
-        target.search ||
+        value !== `${origin}${target.pathname}?affinity=${attemptAffinity}` ||
         target.hash ||
         target.username ||
         target.password
