@@ -11,11 +11,13 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 
 import 'automatic_diagnostics.dart';
+import 'resource_profile.dart';
 
 /// Adds one fixed automatic-session mode to the existing resource probes.
 /// Immediate deterministic wire replies measure client work, not Server speed.
 Future<Map<String, Object?>> automaticBaseline({
   AutomaticDiagnostics? diagnostics,
+  ResourceProfile profile = ResourceProfile.full,
   Future<Map<String, Object?>> Function()? stoppedSnapshot,
   required List<int> itemsPerScope,
   required Future<
@@ -29,6 +31,9 @@ Future<Map<String, Object?>> automaticBaseline({
   )
   open,
 }) async {
+  if (diagnostics != null && profile != ResourceProfile.full) {
+    throw ArgumentError('diagnostics cannot qualify parent contracts');
+  }
   final rss = ProcessInfo.currentRss;
   final sessions = <OfflineLanternSession>[];
   final inspectors = <Future<BaselineCounts> Function()>[];
@@ -210,6 +215,7 @@ Future<Map<String, Object?>> automaticBaseline({
     final rssDelta = max(0, ProcessInfo.currentRss - rss);
     final result = <String, Object?>{
       'baseline': 'initial-1766-automatic',
+      'resourceProfile': profile.label,
       'scopes': sessions.length,
       'items': count,
       'graphVertices': 64,
@@ -254,22 +260,28 @@ Future<Map<String, Object?>> automaticBaseline({
       }
     }
 
-    requireMeasurement(enqueue.elapsedMilliseconds <= 5000, 'enqueue_budget');
+    requireMeasurement(
+      profile.envelope(enqueue.elapsedMilliseconds <= 5000),
+      'enqueue_budget',
+    );
     requireMeasurement(settle.elapsedMilliseconds <= 30000, 'settle_budget');
     requireMeasurement(close.elapsedMilliseconds <= 5000, 'close_budget');
     requireMeasurement(
-      queryPhase.elapsedMilliseconds <= 5000,
+      profile.envelope(queryPhase.elapsedMilliseconds <= 5000),
       'traversal_phase_budget',
     );
     requireMeasurement(
-      [
-        ...entitySamples,
-        ...querySamples.values.expand((v) => v),
-      ].every((v) => v <= 1000000),
+      profile.envelope(
+        [
+          ...entitySamples,
+          ...querySamples.values.expand((v) => v),
+        ].every((v) => v <= 1000000),
+      ),
       'sample_budget',
     );
     requireMeasurement(
-      rssDelta <= 512 * 1024 * 1024 && retainedBytes <= 4 * 1024 * 1024,
+      profile.envelope(rssDelta <= 512 * 1024 * 1024) &&
+          retainedBytes <= 4 * 1024 * 1024,
       'memory_budget',
     );
     requireMeasurement(

@@ -108,12 +108,12 @@ func TestAuthorizationLoginStartRetainsMintedUpperBound(t *testing.T) {
 	}
 	start, err := manager.BeginAuthorization(trust, discovery, [32]byte{1})
 	minted := high
-	if err != nil || start.AuthorizationURL == "" || start.NotBefore() != minted ||
-		start.NotBefore() == low || start.ExpiresAt != minted.Add(LoginTransactionLifetime) {
+	if err != nil || start.AuthorizationURL == "" || !start.NotBefore().Equal(minted) ||
+		start.NotBefore().Equal(low) || !start.ExpiresAt.Equal(minted.Add(LoginTransactionLifetime)) {
 		t.Fatal("purpose start lost its exact original upper endpoint", err)
 	}
 	low, high = low.Add(time.Second), high.Add(time.Second)
-	if start.NotBefore() != minted {
+	if !start.NotBefore().Equal(minted) {
 		t.Fatal("NotBefore reread the later qualified interval")
 	}
 }

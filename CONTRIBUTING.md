@@ -210,6 +210,22 @@ are missing. Hosted functional, module, coverage and security checks remain
 independent; only the reviewed unrelated configured-source/native obligation is
 omitted for a known reader-only edit.
 
+Before either local mode starts its selected commands, a bounded passive preflight
+checks selected executable paths and existing authoritative tool pins, including
+Go with `GOTOOLCHAIN=local` as used by children, golangci-lint and cargo-audit.
+It runs before source export, dependency verification/installation and harness work.
+Version mismatches report expected/actual values; select already-installed pinned
+tools using task-local `PATH`/`GOTOOLCHAIN`, not global changes or automatic installs.
+Dart inspection uses the installed native SDK binary; Flutter inspection reads
+installed version metadata and checks its source HEAD without running its bootstrap.
+Scratch availability/free blocks and platform-exposed `noexec` flags are checked
+without executing a probe. The manifest records checks and elapsed preflight time.
+These checks are not native-time qualification: chosen-environment/VM boot binding
+and required final native receipts remain unchanged. Dependent container stages
+must retain their owned bounded lifecycle; do not disable host idle controls or
+adopt receipts from an earlier boot. Platforms without exposed mount flags report
+that limitation rather than claiming executable-scratch qualification.
+
 The complete 79-step plan remains available by omitting `--affected-base`.
 It runs bounded harness contracts before dependency setup and product work.
 The Go workflow requires early real-tool contracts for known harness changes,
@@ -326,6 +342,11 @@ the regenerated `sdks/dart/lib/src/gen/**` files. The supported toolchain source
 truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirror that
 decision and also runs the package at its declared minimum Dart floor. The workflow
 routes backend/search-only changes through the current-Dart unit and real-wire gates.
+The [Dart resource profile contract](sdks/dart/offline/docs/resource-gates.md)
+keeps child correctness, retention, watchdog, permit and cleanup checks on parent
+tag pushes while separating only pure latency/RSS envelopes. Source checks and
+child tags retain the default full profile; diagnostic results never qualify it.
+
 The separately tested `full` scope adds minimum Dart and package-quality checks for
 Dart SDK, proto, codegen/toolchain, workflow, release-tag and root Go dependency
 changes. The `mobile` scope requires Android and iOS for Dart/Flutter source
@@ -766,12 +787,16 @@ before reuse. Altering an output JSON or log cannot create a receipt.
 Missing/altered evidence, unknown paths, classification errors, policy/dependency/
 configuration changes or toolchain/environment changes force full execution.
 Ignored input detection covers Go, proto, shared fixture, root and policy inputs.
-Only the plan's named dependency/build output directories are exempt from that
+Only the plan's named dependency/build output directories and exact known outputs
+(`admin/tsconfig.tsbuildinfo`, the example iOS `Flutter/Generated.xcconfig`, and
+createprobe's `run`/`run_test` CPython cache files) are exempt from that
 presence guard: they are absent from the read-only export and their owning fresh
 gates still execute. A required ignored fixture cannot produce a successful
 eligible receipt. Unknown ignored inputs in the closure conservatively disable
 carry, even if a particular unit test does not read them.
-Changing the loaded runner/plan/classifier requires a restart and a new full run.
+Own-version-only release metadata remains under conservative manifest/lock fallback;
+this change does not relax release, dependency, policy or unknown-input selection.
+Changing the loaded runner/plan/classifier/preflight requires a restart and a new full run.
 Failures invalidate the baseline. A fresh component-carry session imports nothing
 and starts full; the separate explicit prose path does not import or create receipts.
 

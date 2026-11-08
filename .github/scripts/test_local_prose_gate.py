@@ -151,9 +151,14 @@ class ProseTest(unittest.TestCase):
                 self.assertEqual((result["executed"], result["carried"]), (1, 0))
 
     def test_classifier_error_routes_to_actual_full_control(self):
+        # This synthetic Python command borrows an eligible Go step label to
+        # exercise receipts/fallback, but has no Go manifests or toolchain.
+        # Real tool/environment admission is covered by the preflight suite.
+        self.session.preflight = lambda plan: {"fixture": True}
         self.session.plan = (Step("go-test-core", ".", (sys.executable, "-c", "print('full fixture')")),)
         with redirect_stdout(io.StringIO()):
-            self.assertTrue(self.session.qualify()["passed"])
+            baseline = self.session.qualify()
+            self.assertTrue(baseline["passed"], baseline)
         self.assertTrue(self.session.receipts)
         with patch.object(prose.ci_docs, "documentation_only", side_effect=RuntimeError("broken classifier")), \
              patch.object(sys, "argv", ["gate", str(self.root), str(self.session.evidence), "--prose-base", "origin/main"]), \

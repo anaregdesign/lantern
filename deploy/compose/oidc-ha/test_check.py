@@ -309,6 +309,71 @@ class WireTests(unittest.TestCase):
         with self.assertRaisesRegex(driver.CheckFailure, "^prometheus-targets$"):
             driver.prometheus_ready(http, "http://localhost:9091")
 
+    def test_prometheus_history_observation_table(self):
+        def row(node=0, *, instance=None, values=None):
+            return {"metric": {"node": f"lantern-{node}",
+                               "instance": instance if instance is not None else f"lantern-{node}:9443"},
+                    "values": values if values is not None else [[100, "1"], [115, "0"]]}
+
+        complete = [row(i) for i in range(3)]
+        total = [{"metric": {}, "values": [[100, "3"], [115, "0"]]}]
+        cases = [
+            ("empty", [], [], False),
+            ("one node", [row()], total, False),
+            ("two nodes", [row(0), row(2)], total, False),
+            ("no samples", [row(values=[])], total, False),
+            ("short node", [row(values=[[100, "1"]]), row(1), row(2)], total, False),
+            ("empty aggregate", complete, [], False),
+            ("short aggregate", complete, [{"metric": {}, "values": [[100, "3"]]}], False),
+            ("complete", complete, total, True),
+            ("unknown node", [row(3)], total, None),
+            ("extra node", complete + [row(3)], total, None),
+            ("duplicate node", [row(), row(instance="other:9443")], total, None),
+            ("duplicate instance", [row(), row(1, instance="lantern-0:9443")], total, None),
+            ("empty instance", [row(instance="")], total, None),
+            ("malformed instance", [row(instance={})], total, None),
+            ("whitespace instance", [row(instance="bad instance")], total, None),
+            ("malformed row", [row(values=[]), None], total, None),
+            ("malformed labels", [{"metric": [], "values": []}], total, None),
+            ("missing node", [{"metric": {"instance": "a"}, "values": []}], total, None),
+            ("malformed values after short row", [row(values=[]), {"metric": row(1)["metric"]}], total, None),
+            ("extra aggregate", complete, total + total, None),
+            ("invalid aggregate after partial nodes", [row()], [{"metric": {}, "values": [[100, "-1"]]}], None),
+        ]
+        for sample in ([100], [100, "1", "extra"], [100, 1], [100, "invalid"],
+                       [100, "-1"], [100, "NaN"], [100, "Inf"], [100, "-Inf"],
+                       [True, "1"], [float("nan"), "1"], [-1, "1"]):
+            cases.append((f"invalid sample {sample}", [row(values=[]), row(1, values=[sample])], total, None))
+        for name, replicas, aggregate, expected in cases:
+            with self.subTest(name=name):
+                http = mock.Mock()
+                http.call.side_effect = [
+                    (200, {}, json.dumps({"status": "success", "data": {
+                        "resultType": "matrix", "result": result}}).encode())
+                    for result in (replicas, aggregate)
+                ]
+                if expected is None:
+                    with self.assertRaisesRegex(driver.CheckFailure, "^prometheus-history$"):
+                        driver.prometheus_history_ready(http, "http://localhost:9091")
+                else:
+                    self.assertIs(driver.prometheus_history_ready(http, "http://localhost:9091"), expected)
+                    self.assertEqual(http.call.call_count, 2)
+                    queries = [parse.parse_qs(parse.urlsplit(call.args[0]).query) for call in http.call.call_args_list]
+                    self.assertEqual(queries[0]["query"], ['sum by (node, instance) (lantern_vertices{job="lantern_oidc_ha"})'])
+                    self.assertEqual(queries[1]["query"], ['sum(lantern_vertices{job="lantern_oidc_ha"})'])
+                    for query in queries:
+                        self.assertEqual(int(query["end"][0]) - int(query["start"][0]), 90)
+                        self.assertEqual(query["step"], ["15"])
+
+    def test_partial_history_polling_keeps_original_budget_and_interval(self):
+        self.assertEqual(driver.READINESS_SECONDS, 90)
+        probe = mock.Mock(side_effect=[False, True])
+        with mock.patch.object(driver.time, "monotonic", side_effect=[0, 0, 2]), \
+                mock.patch.object(driver.time, "sleep") as sleep:
+            driver.eventually(probe, driver.READINESS_SECONDS, "prometheus-history")
+        sleep.assert_called_once_with(2)
+        self.assertEqual(probe.call_count, 2)
+
     def test_remote_plaintext_userinfo_and_redirect_targets_are_not_allowed(self):
         for value in ("http://localhost:8443", "https://remote.example", "https://user:secret@localhost",
                       "https://localhost/#secret", "https://localhost/?token=secret", "https://localhost:0"):

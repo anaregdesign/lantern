@@ -55,6 +55,7 @@ class SessionTest(unittest.TestCase):
             Step("go-test-core", ".", (sys.executable, "-c", "print('fixture core pass')")),
             Step("rust-real-wire", ".", (sys.executable, "-c", "print('fixture wire pass')")),
             Step("final-clean", ".", ("git", "status", "--porcelain"), empty=True))
+        session.preflight = lambda plan: {"fixture": True}
         session.context = lambda: "fixture-toolchain-and-environment"
         return session
 
@@ -333,6 +334,47 @@ class SessionTest(unittest.TestCase):
         self.assertFalse(self.session.receipts)
         # Required ignored fixtures are unsupported: they are never copied into
         # the committed input namespace or silently granted a reusable receipt.
+
+    def test_preflight_refusal_precedes_snapshot_context_export_and_steps(self):
+        with patch.object(self.session, "preflight", side_effect=ValueError("wrong tool")), \
+                patch.object(self.session, "snapshot") as snapshot, \
+                patch.object(self.session, "context") as context, \
+                patch.object(self.session, "run") as run:
+            with redirect_stdout(io.StringIO()):
+                result = self.session.qualify()
+            self.assertFalse(result["passed"])
+            self.assertEqual(result["executed"], 0)
+            snapshot.assert_not_called()
+            context.assert_not_called()
+            run.assert_not_called()
+
+    def test_exact_outputs_allow_live_carry_but_nearby_inputs_refuse(self):
+        self.write(".gitignore", "*.tsbuildinfo\nGenerated.xcconfig\n*.pyc\n*.yaml\n")
+        self.commit()
+        self.qualify()
+        outputs = ["admin/tsconfig.tsbuildinfo",
+                   "sdks/dart/example/ios/Flutter/Generated.xcconfig",
+                   "testbed/bench/createprobe/__pycache__/run.cpython-314.pyc",
+                   "testbed/bench/createprobe/__pycache__/run_test.cpython-314.pyc"]
+        for path in outputs:
+            self.write(path, "ordinary output\n")
+        self.write("admin/app/view.tsx", "changed product\n")
+        self.commit()
+        result = self.qualify()
+        self.assertEqual(self.modes(result)["go-test-core"], "carried")
+        head, _, tree = self.session.snapshot()
+        with self.session.fixed_inputs(head, tree) as exported:
+            self.assertTrue(all(not (exported / p).exists() for p in outputs))
+        for path in ["testbed/bench/createprobe/__pycache__/other.cpython-314.pyc",
+                     "testbed/bench/createprobe/__pycache__/run.cpython-314.opt-1.pyc",
+                     "admin/unknown.yaml"]:
+            with self.subTest(path=path):
+                self.write(path, "unknown input\n")
+                self.assertTrue(self.session.ignored_inputs())
+                (self.root / path).unlink()
+        self.write("core/source.go", "changed Go\n")
+        self.commit()
+        self.assertEqual(self.modes(self.qualify())["go-test-core"], "executed")
 
     def test_ignored_guard_covers_shared_root_and_policy_inputs(self):
         self.write(".gitignore", "ignored-fixture\n")

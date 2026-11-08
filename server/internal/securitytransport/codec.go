@@ -237,15 +237,6 @@ func encodeSecurityRole(role security.Role) *pb.SecurityRole {
 	return result
 }
 
-func encodeSecurityAction(action security.Action) pb.SecurityAction {
-	for value, candidate := range securityActions {
-		if candidate == action {
-			return value
-		}
-	}
-	return pb.SecurityAction_SECURITY_ACTION_UNSPECIFIED
-}
-
 // Environment policy locks are response metadata, never client-owned grants.
 func encodeSecurityManagedRole(role security.Role, image security.Image) *pb.SecurityRole {
 	result := encodeSecurityRole(role)

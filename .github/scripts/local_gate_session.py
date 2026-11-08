@@ -24,6 +24,7 @@ import time
 
 import ci_docs
 import local_prose_gate
+import local_gate_preflight
 import validation_scope
 from local_gate_plan import Step, steps, affected_steps
 
@@ -65,6 +66,14 @@ QUALIFICATION_ENV_KEYS = frozenset({"LANTERN_TEST_CONFIGURED_TIME_UPSTREAM", "LA
                                    "LANTERN_QUERY_CLI_ARGS", "LANTERN_TEST_BENCH_HEAP_DIR",
                                    "LANTERN_BENCH_RETAINED_HEAP", "RUN_BENCH_LOCAL_TIME_GATE",
                                    "LANTERN_BENCH_LOCAL_TIME_MECHANISM", "LANTERN_BENCH_LOCAL_TIME_RESULT"})
+
+
+def generated_output(path: str) -> bool:
+    # Exact observed outputs only, not arbitrary tsbuildinfo/configuration/pyc.
+    return (path.startswith(BUILD_OUTPUT_DIRS)
+            or path in {"admin/tsconfig.tsbuildinfo",
+                        "sdks/dart/example/ios/Flutter/Generated.xcconfig"}
+            or re.fullmatch(r"testbed/bench/createprobe/__pycache__/run(?:_test)?\.cpython-[0-9]+\.pyc", path) is not None)
 
 
 def ordinary_environment(environment: Mapping[str, str]) -> dict[str, str]:
@@ -161,7 +170,10 @@ class Session:
         self.runner_hashes = {p: digest(p.read_bytes()) for p in (
             Path(__file__).resolve(), Path(__file__).with_name("local_gate_plan.py").resolve(),
             Path(ci_docs.__file__).resolve(), Path(local_prose_gate.__file__).resolve(),
-            Path(validation_scope.__file__).resolve())}
+            Path(validation_scope.__file__).resolve(), Path(local_gate_preflight.__file__).resolve())}
+
+    def preflight(self, plan):
+        return local_gate_preflight.check(self.root, self.env, plan)
 
     def git(self, *args: str) -> str:
         return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
@@ -246,7 +258,7 @@ class Session:
         ignored = subprocess.check_output(
             ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard"], cwd=self.root)
         paths = [p.decode("utf-8") for p in ignored.split(b"\0") if p]
-        return any(not p.startswith(BUILD_OUTPUT_DIRS)
+        return any(not generated_output(p)
                    and (policy(p) or p in ROOT_INPUTS or p.startswith(GO_DIRS + SHARED_DIRS) or "/" not in p)
                    for p in paths)
 
@@ -402,6 +414,7 @@ class Session:
         try:
             if any(digest(p.read_bytes()) != h for p, h in self.runner_hashes.items()):
                 raise ValueError("runner/classifier changed; restart")
+            result["preflight"] = self.preflight(selected)
             head, tree, snapshot = self.snapshot()
             result.update(head=head, tree=tree)
             self.eligible_root = self.root
@@ -438,6 +451,7 @@ class Session:
         try:
             if any(digest(p.read_bytes()) != h for p, h in self.runner_hashes.items()):
                 raise ValueError("runner/classifier changed; restart and execute full gate")
+            manifest["preflight"] = self.preflight(self.plan)
             head, source_tree, tree = self.snapshot()
             branch = subprocess.run(["git", "symbolic-ref", "--short", "HEAD"], cwd=self.root,
                                     capture_output=True, text=True, check=False).stdout.strip()

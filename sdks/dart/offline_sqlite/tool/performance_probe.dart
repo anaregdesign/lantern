@@ -8,10 +8,13 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../../offline/tool/automatic_baseline.dart';
 import '../../offline/tool/automatic_diagnostics.dart';
+import '../../offline/tool/resource_profile.dart';
 import 'sql_diagnostics.dart';
 
 /// Content-free host baseline, including logical WAL write amplification.
 Future<void> main(List<String> arguments) async {
+  arguments = [...arguments];
+  final profile = ResourceProfile.parse(arguments);
   if (arguments.isNotEmpty &&
       (arguments.length != 2 || arguments.first != '--diagnostic')) {
     throw ArgumentError('expected --diagnostic <sidecar>');
@@ -27,10 +30,10 @@ Future<void> main(List<String> arguments) async {
     'process': probeProcessCounters(),
   });
   if (diagnostics == null) {
-    await _runProbe(null);
+    await _runProbe(null, profile);
   } else {
     try {
-      await _runProbe(diagnostics);
+      await _runProbe(diagnostics, profile);
     } catch (_) {
       // SQL exceptions can contain arguments. The sidecar has the bounded
       // phase evidence; never export raw errors or stack traces in this mode.
@@ -42,7 +45,10 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
-Future<void> _runProbe(AutomaticDiagnostics? diagnostics) async {
+Future<void> _runProbe(
+  AutomaticDiagnostics? diagnostics,
+  ResourceProfile profile,
+) async {
   sqfliteFfiInit();
   final directory = await Directory.systemTemp.createTemp('sqlite-baseline-');
   final path = '${directory.path}/store.db';
@@ -123,6 +129,7 @@ Future<void> _runProbe(AutomaticDiagnostics? diagnostics) async {
     final lifecycleWalBytes = (await _size('$path-wal')) - lifecycleWalBefore;
     final result = {
       'contentFree': true,
+      'resourceProfile': profile.label,
       'platform': Platform.operatingSystem,
       'revision': Platform.environment['GITHUB_SHA'] ?? 'local-working-tree',
       'records': count,
@@ -145,12 +152,14 @@ Future<void> _runProbe(AutomaticDiagnostics? diagnostics) async {
     };
     diagnostics?.emit('legacyControl', result);
     // Broad host regression budgets, fixed before the initial measurement.
-    if (writes.any((us) => us > 1000000) ||
-        reads.any((us) => us > 1000000) ||
-        restartUs > 5000000 ||
+    if (!profile.envelope(
+          writes.every((us) => us <= 1000000) &&
+              reads.every((us) => us <= 1000000) &&
+              restartUs <= 5000000 &&
+              enqueue.elapsedMilliseconds <= 5000,
+        ) ||
         diskBytes > 8 * 1024 * 1024 ||
         walBytes > 64 * 1024 * 1024 ||
-        enqueue.elapsedMilliseconds > 5000 ||
         replay.elapsedMilliseconds > 30000 ||
         lifecycleWalBytes > 128 * 1024 * 1024) {
       throw StateError('baseline_budget');
@@ -158,6 +167,7 @@ Future<void> _runProbe(AutomaticDiagnostics? diagnostics) async {
     result['automatic'] = await _automaticBaseline(
       '${directory.path}/automatic.db',
       diagnostics,
+      profile,
     );
     if (diagnostics != null) result['qualifies'] = false;
     stdout.writeln(jsonEncode(result));
@@ -245,6 +255,7 @@ final class _WalFactory implements DatabaseFactory {
 Future<Map<String, Object?>> _automaticBaseline(
   String path,
   AutomaticDiagnostics? diagnostics,
+  ResourceProfile resourceProfile,
 ) async {
   final profile = diagnostics == null ? null : SqlProbeProfile(diagnostics);
   diagnostics?.phase = 'automatic-setup';
@@ -261,6 +272,7 @@ Future<Map<String, Object?>> _automaticBaseline(
   var peakWal = 0, retainedBytes = 0;
   final result = await automaticBaseline(
     diagnostics: diagnostics,
+    profile: resourceProfile,
     stoppedSnapshot: () => _stoppedSnapshot(factory.database),
     itemsPerScope: [100],
     open: (_, client, binding, schedule) async {
@@ -346,7 +358,10 @@ Future<Map<String, Object?>> _automaticBaseline(
   baselineRequire(bytes <= 8 * 1024 * 1024, 'database_bytes');
   baselineRequire(cacheWal <= 64 * 1024 * 1024, 'cache_wal_bytes');
   baselineRequire(settledWal! <= 128 * 1024 * 1024, 'lifecycle_wal_bytes');
-  baselineRequire(reopen.elapsedMilliseconds <= 5000, 'reopen_budget');
+  baselineRequire(
+    resourceProfile.envelope(reopen.elapsedMilliseconds <= 5000),
+    'reopen_budget',
+  );
   return {
     ...result,
     'journal': 'wal',

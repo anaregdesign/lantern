@@ -112,6 +112,13 @@ def classify_range(base: str, head: str) -> tuple[bool, bool]:
     return classify(paths, toolchain_changed=toolchain_changed)
 
 
+def resource_profile(event: str, ref: str) -> str:
+    """Only an immutable parent publication push omits pure child envelopes."""
+    if event == "push" and re.fullmatch(r"refs/tags/sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+", ref):
+        return "parent-contracts"
+    return "full"
+
+
 def main() -> None:
     github_ref = os.environ["GITHUB_REF"]
     evidence_only = False
@@ -141,6 +148,7 @@ def main() -> None:
             full, mobile = classify_range(base, head)
 
     output = (
+        f"resource_profile={resource_profile(os.environ['GITHUB_EVENT_NAME'], github_ref)}\n"
         f"full={str(full).lower()}\nmobile={str(mobile).lower()}\n"
         f"evidence_only={str(evidence_only).lower()}\n"
         f"docs_only={str(docs_only).lower()}\n"

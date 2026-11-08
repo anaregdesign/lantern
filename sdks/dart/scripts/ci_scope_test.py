@@ -68,6 +68,24 @@ def release_job_runs(expression, context, *, canceled=False):
     return value(parsed.body)
 
 
+class ResourceProfileTest(unittest.TestCase):
+    def test_parent_push_is_the_only_contract_profile(self):
+        for event in ("push", "pull_request", "workflow_dispatch", "schedule", ""):
+            for ref in ("refs/tags/sdks/dart/v0.5.0", "refs/tags/sdks/dart/offline/v0.6.0",
+                        "refs/heads/main", "refs/tags/sdks/dart/v", "refs/tags/sdks/dart/v0.5.0-extra", ""):
+                with self.subTest(event=event, ref=ref):
+                    expected = "parent-contracts" if event == "push" and ref == "refs/tags/sdks/dart/v0.5.0" else "full"
+                    self.assertEqual(ci_scope.resource_profile(event, ref), expected)
+
+    def test_both_resource_jobs_consume_classified_profile(self):
+        workflow = (Path(__file__).resolve().parents[3] / '.github/workflows/dart-sdk.yml').read_text()
+        self.assertIn('resource_profile: ${{ steps.scope.outputs.resource_profile }}', workflow)
+        self.assertEqual(workflow.count('RESOURCE_PROFILE: ${{ needs.changes.outputs.resource_profile }}'), 2)
+        self.assertEqual(workflow.count('dart run tool/performance_probe.dart --profile "$RESOURCE_PROFILE"'), 2)
+        diagnostic = workflow.split('  sqlite-diagnostic:', 1)[1].split('  offline-sqlite:', 1)[0]
+        self.assertNotIn('--profile', diagnostic)
+
+
 class ReleaseConditionsTest(unittest.TestCase):
     def test_preflight_survives_skipped_ancestor_and_requires_qualified_push(self):
         for job, prefix, other in (
@@ -342,7 +360,7 @@ class ScopeTest(unittest.TestCase):
                 ),
             ):
                 ci_scope.main()
-            self.assertEqual(output.read_text(), "full=true\nmobile=true\nevidence_only=false\ndocs_only=false\n")
+            self.assertEqual(output.read_text(), "resource_profile=full\nfull=true\nmobile=true\nevidence_only=false\ndocs_only=false\n")
             self.assertIn(
                 "Full Dart package matrix: True; Android/iOS native matrix: True",
                 summary.read_text(),
@@ -368,7 +386,7 @@ class ScopeTest(unittest.TestCase):
                 patch.object(ci_scope.ci_docs, "classify", return_value=(False, None)),
             ):
                 ci_scope.main()
-            self.assertEqual(output.read_text(), "full=false\nmobile=false\nevidence_only=true\ndocs_only=false\n")
+            self.assertEqual(output.read_text(), "resource_profile=full\nfull=false\nmobile=false\nevidence_only=true\ndocs_only=false\n")
             self.assertIn("evidence-only PR: True", summary.read_text())
 
     def test_go_directives_ignore_dependency_changes(self):

@@ -28,7 +28,7 @@ GROUPS = {
     "bench-time": ("test_bench_time_profile", "test_retained_heap_pair",
                    "test_local_release_qualification"),
     "release-binaries": ("test_verify_root_release_binaries", "test_ci_efficiency"),
-    "git-fixture": ("test_git_test_fixture", "test_local_gate_session", "test_verify_go_sdk_release",
+    "git-fixture": ("test_git_test_fixture", "test_local_gate_session", "test_local_gate_preflight", "test_verify_go_sdk_release",
                     "test_local_prose_gate", "test_native_login_gate", "test_ci_docs",
                     "test_current_sdk4_gate", "test_validation_scope"),
 }
