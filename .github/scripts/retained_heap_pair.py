@@ -730,17 +730,24 @@ def _policy_profile(value, baseline, expected, scenario, scenario_sha):
     return stripped
 
 
-def _policy_passive(value, node):
+def _policy_passive_ready(value, node):
     _policy_keys(value, ("subscribe_active", "changes_active", "anti_entropy_cycles", "peers"))
-    need(integer(value["subscribe_active"]) and value["subscribe_active"] == 2
-         and integer(value["changes_active"]) and value["changes_active"] == 0
-         and integer(value["anti_entropy_cycles"]) and type(value["peers"]) is dict
+    need(all(integer(value[key]) and value[key] <= 9223372036854775807
+             for key in ("subscribe_active", "changes_active", "anti_entropy_cycles"))
+         and type(value["peers"]) is dict
          and set(value["peers"]) == set(node["expected_peers"])
-         and all(type(x) is int and x == 1 for x in value["peers"].values()),
+         and all(type(x) is int and x in (0, 1) for x in value["peers"].values()),
+         "goroutine passive metric structure differs")
+    return value["subscribe_active"] == 2 and value["changes_active"] == 0 and all(
+        x == 1 for x in value["peers"].values())
+
+
+def _policy_passive(value, node):
+    need(_policy_passive_ready(value, node),
          "goroutine passive peer/stream profile differs")
 
 
-def _policy_passive_text(raw, node):
+def _policy_passive_text(raw, node, *, require_ready=True):
     selected, peers = {}, {}
     names = {"lantern_subscribe_active_streams": "subscribe_active",
              "lantern_changes_active_streams": "changes_active",
@@ -768,7 +775,61 @@ def _policy_passive_text(raw, node):
             need(peer not in peers, "duplicate passive peer")
             peers[peer] = int(number)
     selected["peers"] = peers
-    _policy_passive(selected, node)
+    eligible = _policy_passive_ready(selected, node)
+    if require_ready:
+        need(eligible, "goroutine passive peer/stream profile differs")
+    return selected
+
+
+def _policy_preparation(root, ref, baseline, identity, expected, scenario, scenario_sha, pre):
+    preparation = _policy_ref(root, ref, name="goroutine_policy_preparation.json")
+    _policy_keys(preparation, ("schema", "protocol", "selected_attempt", "attempts"))
+    selected, attempts = preparation["selected_attempt"], preparation["attempts"]
+    need(type(preparation["schema"]) is int and preparation["schema"] == 1
+         and preparation["protocol"] == GOROUTINE_PROTOCOL and integer(selected, 1) and selected <= 5
+         and isinstance(attempts, list) and len(attempts) == selected,
+         "bounded PRE preparation differs")
+    parent = root / "goroutine_policy_pre_attempts"
+    fd = directory(parent)
+    try:
+        need(sorted(os.listdir(fd)) == [f"{index:03d}" for index in range(1, selected + 1)],
+             "PRE attempt inventory differs")
+    finally:
+        os.close(fd)
+    for index, attempt in enumerate(attempts, 1):
+        _policy_keys(attempt, ("index", "runtime", "profile", "readiness"))
+        need(type(attempt["index"]) is int and attempt["index"] == index, "PRE attempt order differs")
+        attempt_root = parent / f"{index:03d}"
+        fd = directory(attempt_root)
+        os.close(fd)
+        runtime = _policy_ref(attempt_root, attempt["runtime"], private=False, name="runtime_pre.json")
+        need(isinstance(runtime, list) and len(runtime) == 3
+             and all(type(row) is dict for row in runtime)
+             and [row.get("endpoint") for row in runtime] == list(ENDPOINTS)
+             and all(integer(row.get("goroutines"), 1) and integer(row.get("heap_alloc_bytes"), 1)
+                     for row in runtime), "PRE attempt runtime incomplete")
+        profile = _policy_ref(attempt_root, attempt["profile"], name="goroutine_policy_baseline_profile.json")
+        need(_policy_equal(_policy_profile(profile, True, expected, scenario, scenario_sha), identity),
+             "PRE attempt process/config profile changed")
+        readiness = _policy_ref(attempt_root, attempt["readiness"], name="readiness.json")
+        _policy_keys(readiness, ("schema", "protocol", "verdict"), ("error",))
+        need(type(readiness["schema"]) is int and readiness["schema"] == 1
+             and readiness["protocol"] == GOROUTINE_PROTOCOL and readiness.get("error", "") == "",
+             "PRE readiness protocol or error differs")
+        eligible = True
+        for slot, node in enumerate(profile["nodes"]):
+            raw = _policy_ref(attempt_root, node["passive_metrics"], raw=True,
+                              name=f"goroutine_policy_pre_{9390+slot}.prom")
+            passive = _policy_passive_text(raw, node, require_ready=False)
+            eligible = _policy_passive_ready(passive, node) and eligible
+            if index == selected:
+                need(node["passive_metrics"]["sha256"] == baseline["nodes"][slot]["passive_metrics"]["sha256"],
+                     "selected PRE passive response changed")
+        chosen = index == selected
+        need(eligible is chosen and readiness["verdict"] == ("eligible" if chosen else "not_ready"),
+             "PRE round was not first eligible")
+        if chosen:
+            need(attempt["runtime"]["sha256"] == pre["sha256"], "selected PRE runtime changed")
     return selected
 
 
@@ -789,12 +850,14 @@ def _validate_normal_policy(root, scenario, expected, report):
     need(_policy_equal(resolved, scenario), "resolved goroutine scenario differs")
     input_ref = report.get("goroutine_policy_input")
     data = _policy_ref(root, input_ref, name="goroutine_policy_input.json")
-    _policy_keys(data, ("schema", "protocol", "pre", "steady", "legacy_post", "baseline_profile", "before_post_profile",
+    _policy_keys(data, ("schema", "protocol", "pre", "steady", "legacy_post", "baseline_profile", "preparation", "before_post_profile",
                         "barrier", "posts", "workload_report", "owner_evidence"))
     need(type(data["schema"]) is int and data["schema"] == 1 and data["protocol"] == GOROUTINE_PROTOCOL,
          "goroutine input protocol missing")
     baseline = _policy_ref(root, data["baseline_profile"], name="goroutine_policy_baseline_profile.json")
     identity = _policy_profile(baseline, True, expected, scenario, scenario_sha)
+    selected_attempt = _policy_preparation(root, data["preparation"], baseline, identity,
+                                          expected, scenario, scenario_sha, data["pre"])
     before = _policy_ref(root, data["before_post_profile"], name="goroutine_policy_before_post_profile.json")
     need(_policy_profile(before, False, expected, scenario, scenario_sha) == identity,
          "goroutine before-post process/config profile changed")
@@ -935,6 +998,7 @@ def _validate_normal_policy(root, scenario, expected, report):
     return {"protocol": GOROUTINE_PROTOCOL, "verdict": "pass", "sampled_peak_limit": 128, "post_residual_limit": 15,
             "sampled_peaks": peaks, "original_post_deltas": [post[i]["goroutines"] - bases[i] for i in range(3)],
             "fixed_post_deltas": residuals, "goroutine_policy_input": input_ref,
+            "preparation": data["preparation"], "selected_attempt": selected_attempt,
             "scope": "normal sampled ceiling and declared-client residual screen; source-test refs are not runtime joins"}
 
 

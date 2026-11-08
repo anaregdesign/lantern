@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -137,6 +138,49 @@ def refresh_policy(root):
     return value
 
 
+def preparation_fixture(root, attempts=1):
+    parent = root / "goroutine_policy_pre_attempts"
+    if parent.exists():
+        shutil.rmtree(parent)
+    baseline = json.loads((root / "goroutine_policy_baseline_profile.json").read_bytes())
+    rounds = []
+    for index in range(1, attempts + 1):
+        attempt_root = parent / f"{index:03d}"
+        attempt_root.mkdir(parents=True)
+        runtime = attempt_root / "runtime_pre.json"
+        runtime.write_bytes((root / "runtime_pre.json").read_bytes()); runtime.chmod(0o600)
+        profile = copy.deepcopy(baseline)
+        for node in profile["nodes"]:
+            source = Path(node["passive_metrics"]["path"])
+            path = attempt_root / source.name
+            raw = source.read_bytes()
+            if index < attempts:
+                raw = raw.replace(b"lantern_subscribe_active_streams 2\n", b"lantern_subscribe_active_streams 1\n")
+            path.write_bytes(raw); path.chmod(0o600)
+            node["passive_metrics"] = file_ref(path)
+        rounds.append({"index": index, "runtime": file_ref(runtime),
+            "profile": write(attempt_root / "goroutine_policy_baseline_profile.json", profile),
+            "readiness": write(attempt_root / "readiness.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
+                "verdict": "eligible" if index == attempts else "not_ready"})})
+    return write(root / "goroutine_policy_preparation.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
+        "selected_attempt": attempts, "attempts": rounds})
+
+
+def refresh_preparation(root):
+    path = root / "goroutine_policy_preparation.json"
+    value = json.loads(path.read_bytes())
+    for attempt in value["attempts"]:
+        profile_path = Path(attempt["profile"]["path"])
+        profile = json.loads(profile_path.read_bytes())
+        for node in profile["nodes"]:
+            node["passive_metrics"] = file_ref(Path(node["passive_metrics"]["path"]))
+        attempt["profile"] = write(profile_path, profile)
+        for key in ("runtime", "readiness"):
+            attempt[key] = file_ref(Path(attempt[key]["path"]))
+    write(path, value)
+    refresh_policy(root)
+
+
 def policy_fixture(root, expected, scenario):
     # Every retained raw reference is written independently; assertions call the
     # consumer on these files rather than accepting a supplied sidecar verdict.
@@ -170,6 +214,7 @@ def policy_fixture(root, expected, scenario):
         path.chmod(0o600)
         node["passive_metrics"] = file_ref(path)
     baseline_ref = write(root / "goroutine_policy_baseline_profile.json", baseline)
+    preparation = preparation_fixture(root)
     reports = []
     for i, phase in enumerate(("warmup", "steady")):
         count = 10 if phase == "warmup" else 20
@@ -208,6 +253,7 @@ def policy_fixture(root, expected, scenario):
     input_ref = write(root / "goroutine_policy_input.json", {"schema": 1, "protocol": pair.GOROUTINE_PROTOCOL,
         "pre": file_ref(root / "runtime_pre.json"), "steady": file_ref(root / "runtime_steady.json"),
         "legacy_post": file_ref(root / "runtime_post.json"), "baseline_profile": baseline_ref,
+        "preparation": preparation,
         "before_post_profile": before, "barrier": barrier, "posts": posts, "workload_report": workload, "owner_evidence": source_refs})
     report = json.loads((root / "leak_gate.json").read_bytes())
     report.pop("natural_checks_verdict", None)
@@ -602,6 +648,90 @@ class PairTest(unittest.TestCase):
         change(value)
         write(path, value)
         refresh_policy(self.normal)
+
+    def test_operative_preparation_uses_first_ready_round_within_five_without_count_selection(self):
+        for count in (1, 2, 5):
+            with self.subTest(count=count):
+                preparation_fixture(self.normal, count)
+                if count > 1:
+                    path = self.normal / "goroutine_policy_pre_attempts/001/runtime_pre.json"
+                    rows = json.loads(path.read_bytes())
+                    for row in rows:
+                        row.update(goroutines=129, heap_alloc_bytes=100 * pair.MIB)
+                    write(path, rows)
+                refresh_preparation(self.normal)
+                result = self.validate_policy()
+                self.assertEqual(result["verdict"], "pass")
+                self.assertEqual(result["selected_attempt"], count)
+
+    def test_operative_preparation_is_required_bounded_and_has_exact_attempt_inventory(self):
+        self.change_policy_file("goroutine_policy_input.json", lambda value: value.pop("preparation"))
+        with self.assertRaises(pair.Incomplete):
+            self.validate_policy()
+        cases = (
+            lambda value: value.update(selected_attempt=6),
+            lambda value: value.update(selected_attempt=True),
+            lambda value: value["attempts"].clear(),
+            lambda value: value["attempts"][0].update(index=2),
+        )
+        for change in cases:
+            with self.subTest(change=change):
+                policy_fixture(self.normal, self.expected, self.scenario)
+                self.change_policy_file("goroutine_policy_preparation.json", change)
+                with self.assertRaises(pair.Incomplete):
+                    self.validate_policy()
+        policy_fixture(self.normal, self.expected, self.scenario)
+        (self.normal / "goroutine_policy_pre_attempts/002").mkdir()
+        with self.assertRaisesRegex(pair.Incomplete, "inventory"):
+            self.validate_policy()
+
+    def test_operative_preparation_recomputes_prior_readiness_and_rejects_malformed_rounds(self):
+        for kind in ("skipped eligible", "forged readiness", "malformed passive", "malformed runtime"):
+            with self.subTest(kind=kind):
+                preparation_fixture(self.normal, 2)
+                root = self.normal / "goroutine_policy_pre_attempts/001"
+                if kind == "skipped eligible":
+                    for path in root.glob("*.prom"):
+                        path.write_bytes(path.read_bytes().replace(b"lantern_subscribe_active_streams 1\n",
+                                                                  b"lantern_subscribe_active_streams 2\n"))
+                elif kind == "forged readiness":
+                    value = json.loads((root / "readiness.json").read_bytes())
+                    value["verdict"] = "eligible"
+                    write(root / "readiness.json", value)
+                elif kind == "malformed passive":
+                    path = root / "goroutine_policy_pre_9390.prom"
+                    path.write_bytes(path.read_bytes() + b"lantern_subscribe_active_streams 1\n")
+                else:
+                    path = root / "runtime_pre.json"
+                    write(path, json.loads(path.read_bytes())[:2])
+                refresh_preparation(self.normal)
+                with self.assertRaises(pair.Incomplete):
+                    self.validate_policy()
+
+    def test_operative_preparation_binds_selected_raw_response_and_process_identity(self):
+        for kind in ("runtime", "passive", "process", "foreign passive"):
+            with self.subTest(kind=kind):
+                policy_fixture(self.normal, self.expected, self.scenario)
+                root = self.normal / "goroutine_policy_pre_attempts/001"
+                if kind == "runtime":
+                    path = root / "runtime_pre.json"
+                    value = json.loads(path.read_bytes()); value[0]["goroutines"] += 1
+                    write(path, value)
+                elif kind == "passive":
+                    path = root / "goroutine_policy_pre_9390.prom"
+                    path.write_bytes(path.read_bytes().replace(b"lantern_anti_entropy_cycles_total 1\n",
+                                                              b"lantern_anti_entropy_cycles_total 2\n"))
+                else:
+                    path = root / "goroutine_policy_baseline_profile.json"
+                    value = json.loads(path.read_bytes())
+                    if kind == "process":
+                        value["nodes"][0]["pid"] += 1
+                    else:
+                        value["nodes"][0]["passive_metrics"] = file_ref(self.normal / "goroutine_policy_pre_9390.prom")
+                    write(path, value)
+                refresh_preparation(self.normal)
+                with self.assertRaises(pair.Incomplete):
+                    self.validate_policy()
 
     def test_operative_four_family_profiles_and_legacy_interpretation_are_distinct(self):
         for name in ("receipt_admission_lookup", "receipt_vertex_put_admission_lookup",
