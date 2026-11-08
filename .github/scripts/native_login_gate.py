@@ -51,7 +51,7 @@ CASES = (
     "issued_response_loss_leaves_no_replay_or_credential_recovery",
     "concurrent_Apple_completion_issues_once",
     "native_logout_retained_status",
-    "current_Deny_suspension_and_active_stream_withdrawal",
+    "current_read_withdrawal_suspension_and_active_stream_withdrawal",
     "registration_Google_personal_data_and_account_isolation",
     "registration_personal_stream_closes_on_current_withdrawal",
     "registration_Apply_response_loss_and_fresh_original_recovery",

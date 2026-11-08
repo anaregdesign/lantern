@@ -572,8 +572,8 @@ func TestAuth_OIDCSecurityChangeCommitProofRealConnect(t *testing.T) {
 	unknown := proto.Clone(request).(*pb.GetSecurityChangeStatusRequest)
 	unknown.CurrentChangeId.Nonce = bytes.Repeat([]byte{99}, 16)
 	unresolved, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, unknown))
-	if err != nil || unresolved.Msg.CurrentResult.Progress != pb.CurrentSecurityProgress_CURRENT_SECURITY_PROGRESS_UNRESOLVED || unresolved.Msg.CurrentResult.Original != nil {
-		t.Fatal("absence became safe nonexecution", err)
+	if unresolved != nil || connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("fabricated original ID disclosed absence or safe nonexecution", err)
 	}
 }
 
