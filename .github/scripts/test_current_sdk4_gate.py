@@ -430,6 +430,8 @@ class SDK4ReceiptTest(unittest.TestCase):
             f"{gate.ROOT_TEST}/global_Edge_mode_shared_across_the_current_cohort",
             gate.FUNCTIONAL_VALIDATION_EDGE_RESTART,
             "TestAuth_OIDCReadWriteTypedResourcesRealConnect",
+            "TestAuth_OIDCBrowserEnrollmentRealConnect",
+            "TestAuth_OIDCVerifiedEmailBrowserRealConnect",
         )
         self.configure(gate.FUNCTIONAL_VALIDATION)
         complete = events(kind=gate.FUNCTIONAL_VALIDATION)

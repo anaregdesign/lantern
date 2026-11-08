@@ -9,6 +9,10 @@ import {
 import { EdgeEndpointMode, RegistrationProfileKind } from "lantern-sdk/web";
 import { FieldHelp } from "~/components/shared/FieldHelp";
 import {
+  PERMISSIONS,
+  RESOURCES,
+} from "~/lib/client/usecase/security/security-drafts";
+import {
   EDGE_MODES,
   enrollmentProfileKey,
 } from "~/lib/client/usecase/security/security-policy-drafts";
@@ -133,9 +137,10 @@ export function SecurityPolicySettings({
               />
             </Field>
             <p>
-              Joining Role: <strong>personal_user</strong> · intended scope:
-              users:&lt;trusted UID&gt;: · Read + Write, including Delete and
-              TTL changes.
+              Joining Role: <strong>personal_user</strong>. Fresh-install
+              default: Logical data Read + Write on users:&lt;trusted UID&gt;:,
+              including Delete and TTL changes. Its saved permissions may have
+              been narrowed or removed.
             </p>
             {!state.joiningRole ? (
               <p role="alert">
@@ -144,10 +149,39 @@ export function SecurityPolicySettings({
                 registration. Normal startup and registration never recreate it.
               </p>
             ) : (
-              <p>
-                Server checks the saved joining Role before enrollment. It
-                grants no management authority or another user&apos;s namespace.
-              </p>
+              <section aria-label="Saved joining Role permissions">
+                <p>
+                  <strong>Current saved permissions</strong>
+                </p>
+                <FieldHelp
+                  meaning="These are the saved personal_user rules returned by Server, including their exact scope. Registration does not restore or expand them."
+                  details="Read and Write are independent. A Read-only Role adds no Write grant; an empty Role adds no permissions. Narrower trusted-UID prefixes limit the namespace covered by each listed rule. Server validates the joining Role and decides actual access."
+                />
+                {state.joiningRole.rules.length === 0 ? (
+                  <p>No saved permissions; this Role adds no access.</p>
+                ) : (
+                  <ul>
+                    {state.joiningRole.rules.map((rule) => (
+                      <li key={rule.id}>
+                        {rule.id}: Allow{" "}
+                        {PERMISSIONS.find(
+                          ([permission]) => permission === rule.permission,
+                        )?.[1] ??
+                          `Unsupported permission (${rule.permission})`}{" "}
+                        on{" "}
+                        {RESOURCES.find(
+                          ([resource]) => resource === rule.resourceKind,
+                        )?.[1] ?? `Unsupported resource (${rule.resourceKind})`}
+                        {rule.resource.case === "prefix"
+                          ? ` · ${rule.resource.value || "all logical data keys (empty prefix)"}`
+                          : rule.resource.case === "principalUidPrefix"
+                            ? ` · ${rule.resource.value.literalBefore}<trusted UID>${rule.resource.value.literalAfter}`
+                            : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
             )}
             <fieldset className={styles.profiles}>
               <legend>Eligible enrollment profiles</legend>

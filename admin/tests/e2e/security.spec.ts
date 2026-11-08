@@ -1091,7 +1091,28 @@ for (const width of [1280, 390]) {
   test(`shared Edge and registration policies stage, review and read back at ${width}px`, async ({
     page,
   }) => {
-    const fixture = await securityUI(page);
+    const fixture = await securityUI(page, {
+      roles: [
+        {
+          id: "personal_user",
+          name: "Personal user",
+          rules:
+            width === 1280
+              ? [
+                  {
+                    id: "read-notes",
+                    permission: "SECURITY_PERMISSION_READ",
+                    resourceKind: "SECURITY_RESOURCE_DATA",
+                    principalUidPrefix: {
+                      literalBefore: "users:",
+                      literalAfter: ":notes:",
+                    },
+                  },
+                ]
+              : [],
+        },
+      ],
+    });
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`${fixture.primary}/security/roles`);
     await page
@@ -1104,6 +1125,19 @@ for (const width of [1280, 390]) {
       name: "Shared Security settings",
       exact: true,
     });
+    const joining = settings.getByRole("region", {
+      name: "Saved joining Role permissions",
+      exact: true,
+    });
+    await expect(
+      joining.getByText(
+        width === 1280
+          ? "read-notes: Allow Read on Logical data · users:<trusted UID>:notes:"
+          : "No saved permissions; this Role adds no access.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(joining.getByText(/Allow Write/)).toHaveCount(0);
     await expect(
       settings.getByText("Current: readable → readable", { exact: false }),
     ).toBeVisible();

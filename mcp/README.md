@@ -15,7 +15,8 @@ unit. Choose the upstream Server's public authentication mode separately:
 - **OIDC:** set `LANTERN_TOKEN` to an existing Role-bound machine credential
   or eligible signed API access token accepted by that Server, and use a
   verified HTTPS `LANTERN_ADDR`. The Server still enforces credential
-  validity and expiry, current Principal/Role state, and Deny rules. See
+  validity and expiry, current Principal/Role state, and typed resource
+  read/write Allows with default refusal. See
   [OIDC operations](../docs/oidc-operations.md) and the
   [API token contract](../docs/oidc-verification.md).
 

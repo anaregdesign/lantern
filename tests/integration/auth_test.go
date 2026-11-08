@@ -978,17 +978,17 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	}
 	readerToken := "lnt_m1_" + base64.RawURLEncoding.EncodeToString(readerSecret)
 	f := newOIDCControlWireFixtureConfigured(t, func(config *oidcFixtureBootstrap) {
-		if err := json.Unmarshal([]byte(`[{"id":"machine_reader","rules":[{"id":"read","effect":"allow","action":"vertex.read","resource":"data","prefix":"orders:"},{"id":"private","effect":"deny","action":"vertex.read","resource":"data","prefix":"orders:private:"}]},{"id":"machine_exporter","rules":[{"id":"export","effect":"allow","action":"export","resource":"data","prefix":"orders:"}]}]`), &config.Roles); err != nil {
+		if err := json.Unmarshal([]byte(`[{"id":"machine_reader","rules":[{"id":"read","permission":"read","resource":"data","prefix":"orders:public:"}]},{"id":"machine_archive_reader","rules":[{"id":"read","permission":"read","resource":"data","prefix":"archive:public:"}]}]`), &config.Roles); err != nil {
 			t.Fatal(err)
 		}
 		now := time.Now().UTC()
-		raw, err := json.Marshal([]map[string]any{{"name": "worker", "role_ids": []string{"machine_reader", "machine_exporter"}, "credentials": []map[string]any{{"token": token, "created_at": now, "expires_at": now.Add(time.Hour)}}}, {"name": "readonly", "role_ids": []string{"machine_reader"}, "credentials": []map[string]any{{"token": readerToken, "created_at": now, "expires_at": now.Add(time.Hour)}}}})
+		raw, err := json.Marshal([]map[string]any{{"name": "worker", "role_ids": []string{"machine_reader", "machine_archive_reader"}, "credentials": []map[string]any{{"token": token, "created_at": now, "expires_at": now.Add(time.Hour)}}}, {"name": "readonly", "role_ids": []string{"machine_reader"}, "credentials": []map[string]any{{"token": readerToken, "created_at": now, "expires_at": now.Add(time.Hour)}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		config.Machines = json.RawMessage(raw)
 	})
-	for key, value := range map[string]string{"orders:1": "visible", "orders:private:1": "hidden"} {
+	for key, value := range map[string]string{"orders:public:1": "visible", "orders:private:1": "visible private", "archive:public:1": "archived"} {
 		physical := "data:" + key
 		if err := f.graph.PutVertex(physical, &pb.Vertex{Key: physical, Value: &pb.Vertex_String_{String_: value}}); err != nil {
 			t.Fatal(err)
@@ -1001,21 +1001,26 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	if err != nil || principal.Msg.Identity.Kind != pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE || principal.Msg.Identity.MachineName != "worker" || principal.Msg.RecentAuthentication || principal.Msg.CsrfToken != "" || len(principal.Msg.Roles) != 2 {
 		t.Fatal("machine credential confused with browser or token-supplied Roles", err)
 	}
-	visible, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "orders:1"}))
-	if err != nil || visible.Msg.Vertex.Key != "orders:1" || visible.Msg.Vertex.GetString_() != "visible" {
+	visible, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "orders:public:1"}))
+	if err != nil || visible.Msg.Vertex.Key != "orders:public:1" || visible.Msg.Vertex.GetString_() != "visible" {
 		t.Fatal("scoped machine read", err)
 	}
-	// #1620: data-read collections are independent from the Query action.
+	if archived, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "archive:public:1"})); err != nil || archived.Msg.Vertex.GetString_() != "archived" {
+		t.Fatal("machine read did not combine its assigned Roles", archived, err)
+	}
+	if _, err := f.data.GetVertex(t.Context(), securityWireRequest(readerToken, &pb.GetVertexRequest{Key: "archive:public:1"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("machine inherited another principal's Role", err)
+	}
 	keys, err := f.data.ScanVertexKeys(t.Context(), securityWireRequest(token, &pb.ScanVertexKeysRequest{Prefix: "orders:", Limit: 10}))
-	if err != nil || len(keys.Msg.Keys) != 1 || keys.Msg.Keys[0] != "orders:1" {
-		t.Fatal("reader without Query could not scan its cache", keys, err)
+	if err != nil || len(keys.Msg.Keys) != 1 || keys.Msg.Keys[0] != "orders:public:1" {
+		t.Fatal("machine scan escaped its read scope", keys, err)
 	}
 	count, err := f.data.CountVerticesByPrefix(t.Context(), securityWireRequest(token, &pb.CountVerticesByPrefixRequest{Prefix: "orders:"}))
 	if err != nil || count.Msg.Count != 1 {
-		t.Fatal("reader without Query could not count", count, err)
+		t.Fatal("machine count escaped its read scope", count, err)
 	}
-	if _, err := f.data.SearchVertices(t.Context(), securityWireRequest(token, &pb.SearchVerticesRequest{Query: "visible", Prefix: "orders:"})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("data reader inherited Query", err)
+	if found, err := f.data.SearchVertices(t.Context(), securityWireRequest(token, &pb.SearchVerticesRequest{Query: "visible", Prefix: "orders:"})); err != nil || len(found.Msg.Hits) != 1 || found.Msg.Hits[0].Key != "orders:public:1" {
+		t.Fatal("machine read did not include scoped Query", found, err)
 	}
 	for _, key := range []string{"orders:private:1", "orders:private:missing", "other:1"} {
 		if response, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: key})); response != nil || connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -1023,29 +1028,31 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 		}
 	}
 
-	exported, err := f.data.BackupSnapshot(t.Context(), securityWireRequest(token, &pb.BackupSnapshotRequest{VertexPrefix: "orders:"}))
-	if err != nil {
-		t.Fatal("machine export open", err)
-	}
-	var exportedKeys []string
-	for exported.Receive() {
-		if vertex := exported.Msg().GetVertex(); vertex != nil {
-			exportedKeys = append(exportedKeys, vertex.Key)
+	for _, credential := range []string{token, readerToken} {
+		exported, err := f.data.BackupSnapshot(t.Context(), securityWireRequest(credential, &pb.BackupSnapshotRequest{VertexPrefix: "orders:"}))
+		if err != nil {
+			t.Fatal("machine read did not include export", err)
+		}
+		var exportedKeys []string
+		for exported.Receive() {
+			if vertex := exported.Msg().GetVertex(); vertex != nil {
+				exportedKeys = append(exportedKeys, vertex.Key)
+			}
+		}
+		if err := exported.Err(); err != nil || !reflect.DeepEqual(exportedKeys, []string{"orders:public:1"}) {
+			t.Fatal("machine export escaped scope or demanded recent auth", exportedKeys, err)
 		}
 	}
-	if err := exported.Err(); err != nil || !reflect.DeepEqual(exportedKeys, []string{"orders:1"}) {
-		t.Fatal("machine export escaped scope or demanded recent auth", exportedKeys, err)
-	}
-	denied, err := f.data.BackupSnapshot(t.Context(), securityWireRequest(readerToken, &pb.BackupSnapshotRequest{VertexPrefix: "orders:"}))
+	denied, err := f.data.BackupSnapshot(t.Context(), securityWireRequest(readerToken, &pb.BackupSnapshotRequest{VertexPrefix: "archive:public:"}))
 	if err == nil {
 		for denied.Receive() {
 		}
 		err = denied.Err()
 	}
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("data reader inherited export", err)
+		t.Fatal("machine export inherited another principal's read scope", err)
 	}
-	if _, err := f.data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "orders:1"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+	if _, err := f.data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "orders:public:1"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader wrote data", err)
 	}
 	if _, err := f.client.ListUsers(t.Context(), securityWireRequest(token, &pb.ListUsersRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -1063,8 +1070,8 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	// authority fixture. Protocol-only receipt fixtures below do not establish
 	// authentication, even when their client sends an Authorization header.
 	largeValue := "current-compression:" + strings.Repeat("payload-", 1024)
-	if err := f.graph.PutVertex("data:orders:compressed", &pb.Vertex{
-		Key: "data:orders:compressed", Value: &pb.Vertex_String_{String_: largeValue},
+	if err := f.graph.PutVertex("data:orders:public:compressed", &pb.Vertex{
+		Key: "data:orders:public:compressed", Value: &pb.Vertex_String_{String_: largeValue},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1073,9 +1080,9 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 		status                       int
 		compressed                   bool
 	}{
-		{"small current response", "orders:1", token, "visible", http.StatusOK, false},
-		{"large current response", "orders:compressed", token, largeValue, http.StatusOK, true},
-		{"invalid current Bearer", "orders:compressed", token + "=", "", http.StatusUnauthorized, false},
+		{"small current response", "orders:public:1", token, "visible", http.StatusOK, false},
+		{"large current response", "orders:public:compressed", token, largeValue, http.StatusOK, true},
+		{"invalid current Bearer", "orders:public:compressed", token + "=", "", http.StatusUnauthorized, false},
 	} {
 		t.Run("compression/"+test.name, func(t *testing.T) {
 			body, err := protojson.Marshal(&pb.GetVertexRequest{Key: test.key})
@@ -1138,7 +1145,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	if _, err := f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "orders:1"})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+	if _, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "orders:public:1"})); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatal("suspended machine still read data", err)
 	}
 }

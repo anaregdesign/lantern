@@ -80,3 +80,33 @@ func TestDefaultEdgePolicyAndCapturedIdentity(t *testing.T) {
 		t.Fatal("global policy omitted from access identity")
 	}
 }
+
+func BenchmarkGlobalEdgePolicy(b *testing.B) {
+	roles := []Role{{ID: "reader", Rules: []PermissionRule{dataRule(Read, "tail:"), dataRule(Read, "head:")}},
+		{ID: "writer", Rules: []PermissionRule{dataRule(Write, "tail:"), dataRule(Write, "head:")}}}
+	for _, mode := range []EdgeEndpointMode{EdgeReadRead, EdgeWriteWrite, EdgeReadWrite, EdgeWriteRead} {
+		b.Run(string(mode), func(b *testing.B) {
+			policy, err := CompileRolesWithEdgeMode(roles, DefaultPolicyLimits(), mode)
+			if err != nil {
+				b.Fatal(err)
+			}
+			access, err := policy.ForRoles([]string{"reader", "writer"})
+			if err != nil {
+				b.Fatal(err)
+			}
+			for _, tc := range []struct {
+				name, head string
+				allowed    bool
+			}{{"allowed", "head:one", true}, {"refused", "outside:one", false}} {
+				b.Run(tc.name, func(b *testing.B) {
+					b.ReportAllocs()
+					for b.Loop() {
+						if access.AllowsEdge(EdgeWrite, "tail:one", tc.head) != tc.allowed {
+							b.Fatal("unexpected endpoint authorization")
+						}
+					}
+				})
+			}
+		})
+	}
+}
