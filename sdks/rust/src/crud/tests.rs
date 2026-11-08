@@ -18,7 +18,7 @@ fn vertex_blind_replies_never_invent_outcomes_or_existence() {
         validate_vertex_put_response(
             &[vertex("v")],
             PutVerticesResponse {
-                acceptance: acceptance.clone(),
+                acceptance,
                 outcomes: vec![]
             }
         ),
@@ -28,7 +28,7 @@ fn vertex_blind_replies_never_invent_outcomes_or_existence() {
         validate_vertex_put_response(
             &[vertex("v")],
             PutVerticesResponse {
-                acceptance: acceptance.clone(),
+                acceptance,
                 outcomes: vec![PutOutcome::AppliedAndLive as i32]
             }
         ),
@@ -38,7 +38,7 @@ fn vertex_blind_replies_never_invent_outcomes_or_existence() {
         validate_delete_vertices(
             1,
             DeleteVerticesResponse {
-                acceptance: acceptance.clone(),
+                acceptance,
                 deleted: 0,
                 existed: vec![]
             }

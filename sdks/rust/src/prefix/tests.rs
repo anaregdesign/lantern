@@ -15,7 +15,7 @@ fn vertex_prefix_blind_reply_never_invents_a_count() {
         checked_vertex_deleted(
             DeleteVerticesByPrefixResponse {
                 deleted: 0,
-                acceptance: acceptance.clone()
+                acceptance
             },
             1
         ),
