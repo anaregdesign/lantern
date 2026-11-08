@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.5.0
+
+- Extend typed accepted-undisclosed mutation handling to Vertex Put, exact
+  Delete and prefix Delete. Keep undisclosed effects separate from known
+  outcomes and transport failures through the existing `MutationReply` adapter.
+- Keep each graph-restore flush within one SDK chunk so an undisclosed
+  acknowledgement cannot become a misleading disclosed progress count.
+- Refresh private bindings for the Allow-only typed-resource/read-write policy,
+  global Edge modes, browser enrollment and verified-email metadata. Consumer
+  builds still use checked-in bindings without a code generator.
+
 ## 0.4.1
 
 - Refresh private generated operational-settings bindings and the repository-only
