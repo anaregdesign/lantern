@@ -129,6 +129,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       full: ${{ steps.scope.outputs.full }}
+      resource_profile: ${{ steps.scope.outputs.resource_profile }}
       mobile: ${{ steps.scope.outputs.mobile }}
       evidence_only: ${{ steps.scope.outputs.evidence_only }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
@@ -529,8 +530,10 @@ jobs:
               test/real_wire_test.dart
 
       - name: Check reference-store resource baseline
+        env:
+          RESOURCE_PROFILE: ${{ needs.changes.outputs.resource_profile }}
         run: >-
-          dart run tool/performance_probe.dart
+          dart run tool/performance_probe.dart --profile "$RESOURCE_PROFILE"
           --output "$RUNNER_TEMP/lantern-offline-performance.json"
 
       - name: Upload sanitized offline performance evidence
@@ -721,8 +724,10 @@ jobs:
             dart run tool/crash_probe.dart --receipt
 
       - name: Check SQLite host resource baseline
+        env:
+          RESOURCE_PROFILE: ${{ needs.changes.outputs.resource_profile }}
         run: >-
-          dart run tool/performance_probe.dart
+          dart run tool/performance_probe.dart --profile "$RESOURCE_PROFILE"
           > "$RUNNER_TEMP/lantern-sqlite-baseline.json"
 
       - name: Upload sanitized SQLite host baseline

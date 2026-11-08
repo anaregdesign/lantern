@@ -326,6 +326,11 @@ the regenerated `sdks/dart/lib/src/gen/**` files. The supported toolchain source
 truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirror that
 decision and also runs the package at its declared minimum Dart floor. The workflow
 routes backend/search-only changes through the current-Dart unit and real-wire gates.
+The [Dart resource profile contract](sdks/dart/offline/docs/resource-gates.md)
+keeps child correctness, retention, watchdog, permit and cleanup checks on parent
+tag pushes while separating only pure latency/RSS envelopes. Source checks and
+child tags retain the default full profile; diagnostic results never qualify it.
+
 The separately tested `full` scope adds minimum Dart and package-quality checks for
 Dart SDK, proto, codegen/toolchain, workflow, release-tag and root Go dependency
 changes. The `mobile` scope requires Android and iOS for Dart/Flutter source

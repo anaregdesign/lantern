@@ -7,8 +7,11 @@ import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 
 import 'automatic_baseline.dart';
+import 'resource_profile.dart';
 
 Future<void> main(List<String> arguments) async {
+  arguments = [...arguments];
+  final profile = ResourceProfile.parse(arguments);
   final outputPath = _outputPath(arguments);
   final baseline =
       jsonDecode(await File('tool/performance_baseline.json').readAsString())
@@ -164,9 +167,10 @@ Future<void> main(List<String> arguments) async {
   await repository.dispose();
   disposeWatch.stop();
 
-  final contributionCodec = _contributionDeleteCodec(now, limits);
-  final boundAdmission = await _boundAdmissionBaseline(now, limits);
+  final contributionCodec = _contributionDeleteCodec(now, limits, profile);
+  final boundAdmission = await _boundAdmissionBaseline(now, limits, profile);
   final automatic = await automaticBaseline(
+    profile: profile,
     itemsPerScope: [500, 501],
     open: (index, client, binding, schedule) async {
       final store = MemoryOfflineStore(
@@ -246,6 +250,7 @@ Future<void> main(List<String> arguments) async {
     },
   );
   final metrics = <String, Object?>{
+    'resourceProfile': profile.label,
     'automatic': automatic,
     'contributionDeleteCodec': contributionCodec,
     'boundAdmission': boundAdmission,
@@ -313,6 +318,7 @@ Future<void> main(List<String> arguments) async {
     enqueueWatch.elapsedMilliseconds,
     limits['enqueueMillis'],
     'enqueue_millis',
+    profile: profile,
   );
   _within(
     replayWatch.elapsedMilliseconds,
@@ -323,6 +329,7 @@ Future<void> main(List<String> arguments) async {
     recoveryWatch.elapsedMilliseconds,
     limits['recoveryMillis'],
     'recovery_millis',
+    profile: profile,
   );
   _within(
     disposeWatch.elapsedMilliseconds,
@@ -333,13 +340,20 @@ Future<void> main(List<String> arguments) async {
     _percentile(readMicros, 0.99),
     limits['cacheReadP99Micros'],
     'cache_read_p99_micros',
+    profile: profile,
   );
   _within(
     _percentile(entityWatchMicros, 0.99),
     limits['entityWatchP99Micros'],
     'entity_watch_p99_micros',
+    profile: profile,
   );
-  _within(metrics['rssDeltaBytes'], limits['rssDeltaBytes'], 'rss_delta_bytes');
+  _within(
+    metrics['rssDeltaBytes'],
+    limits['rssDeltaBytes'],
+    'rss_delta_bytes',
+    profile: profile,
+  );
   _within(snapshotBytes, limits['snapshotBytes'], 'snapshot_bytes');
 
   final encoded = const JsonEncoder.withIndent('  ').convert(metrics);
@@ -353,6 +367,7 @@ Future<void> main(List<String> arguments) async {
 Map<String, int> _contributionDeleteCodec(
   DateTime now,
   Map<String, Object?> limits,
+  ResourceProfile profile,
 ) {
   Uint8List bytes(int count, int value) =>
       Uint8List.fromList(List.filled(count, value));
@@ -456,6 +471,7 @@ Map<String, int> _contributionDeleteCodec(
     watch.elapsedMilliseconds,
     limits['recoveryMillis'],
     'contribution_delete_codec_millis',
+    profile: profile,
   );
   _within(
     encodedBytes,
@@ -482,8 +498,13 @@ int _percentile(List<int> sorted, double percentile) {
   return sorted[index];
 }
 
-void _within(Object? actual, Object? limit, String label) {
-  if (actual is! int || limit is! int || actual > limit) {
+void _within(
+  Object? actual,
+  Object? limit,
+  String label, {
+  ResourceProfile profile = ResourceProfile.full,
+}) {
+  if (actual is! int || limit is! int || !profile.envelope(actual <= limit)) {
     throw StateError('offline_performance_baseline:$label');
   }
 }
@@ -546,6 +567,7 @@ final class _ImmediateRemote implements OfflineRemote {
 Future<Map<String, Object?>> _boundAdmissionBaseline(
   DateTime now,
   Map<String, Object?> limits,
+  ResourceProfile profile,
 ) async {
   var tokenCalls = 0;
   final rss = ProcessInfo.currentRss;
@@ -614,11 +636,15 @@ Future<Map<String, Object?>> _boundAdmissionBaseline(
   close.stop();
   final rssDelta = ProcessInfo.currentRss - rss;
   _require(
-    admission.elapsedMilliseconds <= (limits['enqueueMillis']! as int),
+    profile.envelope(
+      admission.elapsedMilliseconds <= (limits['enqueueMillis']! as int),
+    ),
     'bound enqueue latency',
   );
   _require(
-    _percentile(reads, .99) <= (limits['cacheReadP99Micros']! as int),
+    profile.envelope(
+      _percentile(reads, .99) <= (limits['cacheReadP99Micros']! as int),
+    ),
     'bound pending read latency',
   );
   _require(
@@ -626,7 +652,7 @@ Future<Map<String, Object?>> _boundAdmissionBaseline(
     'bound close latency',
   );
   _require(
-    rssDelta <= (limits['rssDeltaBytes']! as int),
+    profile.envelope(rssDelta <= (limits['rssDeltaBytes']! as int)),
     'bound memory resource',
   );
   return {
