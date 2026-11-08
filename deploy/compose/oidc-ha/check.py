@@ -255,6 +255,7 @@ def prometheus_ready(http: HTTP, url: str) -> bool:
 def prometheus_history_ready(http: HTTP, url: str) -> bool:
     """Require named replica history and the cluster sum, not just scrape health."""
     end = int(time.time())
+    ready = True
     for aggregate in (False, True):
         query = ('sum(lantern_vertices{job="lantern_oidc_ha"})' if aggregate else
                  'sum by (node, instance) (lantern_vertices{job="lantern_oidc_ha"})')
@@ -266,27 +267,39 @@ def prometheus_history_ready(http: HTTP, url: str) -> bool:
                 isinstance(body.get("data"), dict) and body["data"].get("resultType") == "matrix" and
                 isinstance(body["data"].get("result"), list), "prometheus-history")
         series = body["data"]["result"]
-        if not series:
-            return False
         require(all(isinstance(item, dict) and isinstance(item.get("metric"), dict)
                     for item in series), "prometheus-history")
         if aggregate:
-            require(len(series) == 1, "prometheus-history")
+            require(len(series) <= 1, "prometheus-history")
+            ready = ready and len(series) == 1
         else:
-            require(len(series) == 3 and {item.get("metric", {}).get("node") for item in series}
-                    == {"lantern-0", "lantern-1", "lantern-2"}, "prometheus-history")
-            require(len({item.get("metric", {}).get("instance") for item in series}) == 3,
-                    "prometheus-history")
+            nodes, instances = set(), set()
+            for item in series:
+                node, instance = item["metric"].get("node"), item["metric"].get("instance")
+                require(isinstance(node, str) and node in {"lantern-0", "lantern-1", "lantern-2"}
+                        and node not in nodes and isinstance(instance, str)
+                        and re.fullmatch(r"\S+", instance) is not None and instance not in instances,
+                        "prometheus-history")
+                nodes.add(node)
+                instances.add(instance)
+            ready = ready and len(nodes) == 3
         for item in series:
             values = item.get("values")
             require(isinstance(values, list), "prometheus-history")
-            if len(values) < 2:
-                return False
-            require(all(isinstance(pair, list) and len(pair) == 2 and
-                        isinstance(pair[0], (int, float)) and isinstance(pair[1], str) and
-                        math.isfinite(float(pair[1])) and float(pair[1]) >= 0 for pair in values),
-                    "prometheus-history")
-    return True
+            # Validate every observed sample, even in a short series or after a
+            # partial replica result. Invalid history must never become pending.
+            for pair in values:
+                require(isinstance(pair, list) and len(pair) == 2 and
+                        type(pair[0]) in (int, float) and isinstance(pair[1], str),
+                        "prometheus-history")
+                try:
+                    valid = (math.isfinite(pair[0]) and pair[0] >= 0 and
+                             math.isfinite(float(pair[1])) and float(pair[1]) >= 0)
+                except (ValueError, OverflowError):
+                    valid = False
+                require(valid, "prometheus-history")
+            ready = ready and len(values) >= 2
+    return ready
 
 
 class MCP:
