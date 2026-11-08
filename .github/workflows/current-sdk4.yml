@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Prepare container tools
         shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
           apt-get update
