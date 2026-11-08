@@ -9,10 +9,13 @@
   dispatch/publication fences; expose the shared bounded observation coordinator
   for storage owners, preserving the parent runtime dependency boundary.
 
-- Derive Head-managed Edge access on the Server and decode typed complete-call
-  mutation acceptance without exposing private effects. Primitive facades use
-  `MutationAcceptance`; `captureMutationReply` returns an explicit known-effect
-  or accepted-undisclosed reply. Partial batches retain their failure contract.
+- Follow the Server's Allow-only read/write grants on typed resources. Edge
+  edits use the cluster-wide endpoint mode: read/read by default, or write/write,
+  read/write or write/read. Read and write grants remain independent.
+- Decode typed complete-call Vertex and Edge mutation acceptance without exposing
+  private effects or inventing counts. Primitive, batch, receipt and indexed
+  facades preserve accepted-undisclosed replies and partial-batch failures;
+  `captureMutationReply` distinguishes known effects from undisclosed acceptance.
 - Decode known receipt `effectUndisclosed` status without original result bytes.
 - Require separate exact-source physical qualification, protected publication
   and hosted-archive equality; source preparation alone does not complete them.
