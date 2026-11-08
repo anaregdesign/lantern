@@ -1,8 +1,6 @@
 import { CurrentSecurityDisposition } from "lantern-sdk/web";
 import {
   Button,
-  Field,
-  Input,
   MessageBar,
   MessageBarBody,
   Spinner,
@@ -19,6 +17,11 @@ import { IssuerEditor } from "./IssuerEditor";
 import { UserEditor } from "./UserEditor";
 import { RoleMembers } from "./RoleMembers";
 import { RoleEditor } from "./RoleEditor";
+import { SecurityRecords } from "./SecurityRecords";
+import { SecurityRecordDetails } from "./SecurityRecordDetails";
+import { RoleTemplatePicker } from "./RoleTemplatePicker";
+import { SecurityPolicySettings } from "./SecurityPolicySettings";
+import { useSecurityPolicies } from "~/lib/client/usecase/security/use-security-policies";
 import { ChangeReview } from "./ChangeReview";
 import { AccessExplanation } from "./AccessExplanation";
 import styles from "./SecurityManagementView.module.css";
@@ -47,6 +50,7 @@ export function SecurityManagementView({
     owner,
   );
   const editor = useSecurityEditor(controller);
+  const policies = useSecurityPolicies(controller, state);
   const busy = state.mutation === "sending";
   const disabled =
     busy ||
@@ -56,6 +60,12 @@ export function SecurityManagementView({
     state.mutation === "pending" ||
     state.phase !== "ready" ||
     !state.version;
+  const inspectionDisabled =
+    busy ||
+    state.mutation === "unconfirmed" ||
+    state.mutation === "pending" ||
+    state.phase !== "ready";
+  const editing = editor.mode === "edit" || editor.mode === "create";
   return (
     <div className={styles.view}>
       {state.message && (
@@ -113,6 +123,7 @@ export function SecurityManagementView({
           Reload security state
         </Button>
         <Button
+          appearance="primary"
           disabled={disabled}
           onClick={() =>
             section === "issuers"
@@ -122,14 +133,22 @@ export function SecurityManagementView({
                 : editor.editRole()
           }
         >
-          New{" "}
           {section === "issuers"
-            ? "Issuer"
+            ? "Add Issuer"
             : section === "users"
-              ? "user"
-              : "Role"}
+              ? "Register user"
+              : "Create Role"}
+        </Button>
+        <Button disabled={inspectionDisabled} onClick={editor.showExplanation}>
+          Explain another user&apos;s access
         </Button>
       </div>
+      {!auth.state.canMutate && (
+        <p>
+          Read-only inspection. A supported human session with the required
+          write grant is needed to review changes.
+        </p>
+      )}
       {state.phase === "loading" && state.mutation !== "unconfirmed" && (
         <Spinner label="Loading security state" />
       )}
@@ -138,118 +157,109 @@ export function SecurityManagementView({
           Inspected policy cut {state.version.currentCut?.sequence.toString()}
         </p>
       )}
-      <div className={styles.records} aria-label={`${section} list`}>
-        {section === "issuers" &&
-          state.issuers.map((issuer) => (
-            <Button
-              key={issuer.issuer}
-              disabled={disabled}
-              onClick={() => editor.editIssuer(issuer)}
-            >
-              {issuer.issuer} ·{" "}
-              {issuer.deleted
-                ? "Deleted"
-                : issuer.enabled
-                  ? "Enabled"
-                  : "Disabled"}
-              {issuer.envOwned ? " · Environment-owned" : ""}
-              {issuer.hasSecretBinding ? " · Secret bound" : ""}
-            </Button>
-          ))}
-        {section === "users" &&
-          state.users.map((user) => (
-            <Button
-              key={JSON.stringify(user.identity)}
-              disabled={disabled}
-              onClick={() => editor.editUser(user)}
-            >
-              {user.identity?.subject || user.identity?.machineName} ·{" "}
-              {user.identity?.issuer} · {user.assignments.length} Roles
-            </Button>
-          ))}
-        {section === "roles" &&
-          state.roles.map((role) => (
-            <Button
-              key={role.id}
-              disabled={disabled}
-              onClick={() => editor.editRole(role)}
-            >
-              {role.name} ({role.id}) · {role.rules.length} rules
-              {role.envOwned ? " · Environment-owned" : ""}
-            </Button>
-          ))}
-      </div>
+      <SecurityRecords
+        section={section}
+        state={state}
+        editor={editor}
+        disabled={inspectionDisabled}
+      />
       {state.nextCursor && (
         <Button
-          disabled={disabled}
+          disabled={inspectionDisabled}
           onClick={() => {
+            editor.close();
             void controller.load(state.nextCursor);
           }}
         >
           Next {section} page
         </Button>
       )}
-      {section === "issuers" && (
-        <IssuerEditor editor={editor} disabled={disabled} />
-      )}
-      {section === "users" && (
-        <UserEditor editor={editor} disabled={disabled} />
-      )}
-      {section === "roles" && (
-        <>
-          <section className={styles.templates}>
-            <Title3>Role templates</Title3>
-            <Field
-              label="Template logical prefix"
-              hint="Choose the data scope before creating a Role."
-            >
-              <Input
-                value={editor.templatePrefix}
-                onChange={(_, data) => editor.setTemplatePrefix(data.value)}
-              />
-            </Field>
+      {editor.mode !== "list" && (
+        <section
+          className={styles.workspace}
+          aria-label="Selected security task"
+        >
+          <div className={styles.actions}>
             <Button
-              disabled={disabled}
-              onClick={() => {
-                void controller.loadTemplates(editor.templatePrefix);
-              }}
+              disabled={busy || state.mutation === "unconfirmed"}
+              onClick={editor.close}
             >
-              Load templates
+              Back to list
             </Button>
-            <div className={styles.records}>
-              {state.templates.map((role) => (
-                <Button
-                  key={role.id}
+          </div>
+          {(editor.mode === "details" || editor.mode === "members") && (
+            <SecurityRecordDetails editor={editor} disabled={disabled} />
+          )}
+          {editing && editor.selectedKind === "issuers" && (
+            <IssuerEditor editor={editor} disabled={disabled} />
+          )}
+          {editing && editor.selectedKind === "roles" && (
+            <>
+              {editor.mode === "create" && (
+                <RoleTemplatePicker
+                  editor={editor}
+                  state={state}
                   disabled={disabled}
-                  onClick={() => editor.useTemplate(role)}
-                >
-                  Use {role.name}
-                </Button>
-              ))}
-            </div>
-          </section>
-          <RoleEditor editor={editor} disabled={disabled} />
-          {editor.role.existing && (
-            <RoleMembers
-              roleId={editor.role.id}
-              members={state.memberRole === editor.role.id ? state.members : []}
-              cursor={
-                state.memberRole === editor.role.id ? state.memberCursor : ""
-              }
-              disabled={disabled}
-              load={(cursor) => {
-                void controller.loadRoleMembers(editor.role.id, cursor);
-              }}
+                  load={() => {
+                    void controller.loadTemplates(editor.templatePrefix);
+                  }}
+                />
+              )}
+              {(editor.mode !== "create" ||
+                editor.roleSource === "blank" ||
+                editor.templateName) && (
+                <RoleEditor editor={editor} disabled={disabled} />
+              )}
+            </>
+          )}
+          {(editing || editor.mode === "members") &&
+            editor.selectedKind === "users" && (
+              <UserEditor
+                editor={editor}
+                disabled={disabled}
+                roles={state.roles}
+                roleCursor={state.roleCursor}
+                loadRoles={() => {
+                  void controller.loadRoleChoices(state.roleCursor);
+                }}
+                membershipOnly={editor.mode === "members"}
+              />
+            )}
+          {editor.mode === "members" &&
+            editor.selectedKind === "roles" &&
+            editor.role.existing && (
+              <RoleMembers
+                roleId={editor.role.id}
+                members={
+                  state.memberRole === editor.role.id ? state.members : []
+                }
+                cursor={
+                  state.memberRole === editor.role.id ? state.memberCursor : ""
+                }
+                disabled={disabled}
+                load={(cursor) => {
+                  void controller.loadRoleMembers(editor.role.id, cursor);
+                }}
+                select={(user) => {
+                  editor.editUser(user);
+                }}
+              />
+            )}
+          {editor.mode === "explain" && (
+            <AccessExplanation
+              editor={editor}
+              result={state.explanation}
+              disabled={inspectionDisabled}
             />
           )}
-        </>
+        </section>
       )}
       {state.review && (
         <ChangeReview
           review={state.review}
           busy={busy}
           apply={() => {
-            void controller.apply();
+            void editor.apply();
           }}
           cancel={() => controller.cancelReview()}
           authorize={() => {
@@ -260,10 +270,11 @@ export function SecurityManagementView({
           }}
         />
       )}
-      <AccessExplanation
-        editor={editor}
-        result={state.explanation}
+      <SecurityPolicySettings
+        state={state}
+        policies={policies}
         disabled={disabled}
+        busy={busy}
       />
       <section className={styles.audit}>
         <Title3>Security audit</Title3>

@@ -164,6 +164,9 @@ export async function queryRange(
     throw PrometheusError.parse("response was not valid JSON");
   }
 
+  if (resp.status === 401 || resp.status === 403) {
+    throw PrometheusError.http(resp.status);
+  }
   if (envelope?.status === "error") {
     throw PrometheusError.status(envelope.error ?? "unknown error");
   }

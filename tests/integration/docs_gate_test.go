@@ -1720,7 +1720,7 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 				name           string
 				bench, receipt bool
 			}
-			profiles := []composeProfile{{name: "operator HA graph"}, {name: "native benchmark graph", bench: true}}
+			profiles := []composeProfile{{name: "native benchmark graph", bench: true}}
 			if mode == "oidc" {
 				profiles = append(profiles, composeProfile{name: "native benchmark receipt", bench: true, receipt: true})
 			}
@@ -1748,10 +1748,7 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.graph-snapshot.yml"))
 						}
 					} else {
-						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.ha.yml"))
-						if mode == "off" {
-							args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.graph-snapshot.yml"))
-						}
+						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"))
 					}
 					args = append(args, "config", "--format", "json")
 					command := exec.CommandContext(t.Context(), docker, args...)
@@ -1760,7 +1757,7 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							command.Env = append(command.Env, entry)
 						}
 					}
-					command.Env = append(command.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_BENCH_PEER_TLS_DIR="+dir, "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380", "LANTERN_BENCH_RECEIPT_MAX_BYTES=4194304", "LANTERN_BENCH_RECEIPT_MAX_ENTRIES=512", "LANTERN_BENCH_RECEIPT_RETENTION=1h")
+					command.Env = append(command.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_COMPOSE_SOURCE="+strings.Repeat("a", 40), "LANTERN_IMAGE=lantern:render-only", "LANTERN_ADMIN_IMAGE=lantern-admin:render-only", "LANTERN_MCP_IMAGE=lantern-mcp:render-only", "LANTERN_METRICS_RELAY_IMAGE=relay:render-only", "LANTERN_PUBLISHER_IMAGE=publisher:render-only", "LANTERN_EDGE_IMAGE=edge:render-only", "LANTERN_BENCH_PEER_TLS_DIR="+dir, "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380", "LANTERN_BENCH_RECEIPT_MAX_BYTES=4194304", "LANTERN_BENCH_RECEIPT_MAX_ENTRIES=512", "LANTERN_BENCH_RECEIPT_RETENTION=1h")
 					if profile.bench {
 						// This gate renders config only; use a fixed non-root
 						// publisher identity without depending on the CI host UID.
@@ -1951,12 +1948,102 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							}
 						}
 					}
-					if !profile.bench && len(rendered.Services["admin"].Ports) != 0 {
+					if mode == "oidc" && !profile.bench && len(rendered.Services["admin"].Ports) != 0 {
 						t.Fatal("protected Admin HTTP unexpectedly exposed")
 					}
 				})
 			}
 		})
+	}
+}
+
+func TestComposeCanonicalOFFStack(t *testing.T) {
+	docker, err := exec.LookPath("docker")
+	if err != nil || exec.CommandContext(t.Context(), docker, "compose", "version", "--short").Run() != nil {
+		t.Skip("Docker Compose is required for the deployment render gate")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	for i := range 3 {
+		if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("lantern-%d.env", i)), []byte("LANTERN_NODE_ID=render-only\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.CommandContext(t.Context(), docker, "compose", "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "config", "--format", "json")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "LANTERN_") && !strings.HasPrefix(entry, "COMPOSE_") {
+			command.Env = append(command.Env, entry)
+		}
+	}
+	command.Env = append(command.Env, "LANTERN_HA_CONFIG_DIR="+directory, "LANTERN_RUN_UID=1001", "LANTERN_RUN_GID=1001", "LANTERN_COMPOSE_SOURCE="+strings.Repeat("a", 40), "LANTERN_IMAGE=lantern:render-only", "LANTERN_ADMIN_IMAGE=lantern-admin:render-only", "LANTERN_MCP_IMAGE=lantern-mcp:render-only", "LANTERN_METRICS_RELAY_IMAGE=relay:render-only", "LANTERN_PUBLISHER_IMAGE=publisher:render-only", "LANTERN_EDGE_IMAGE=edge:render-only")
+	raw, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render canonical OFF: %v: %s", err, raw)
+	}
+	var rendered struct {
+		Services map[string]struct {
+			Image, User string
+			NetworkMode string `json:"network_mode"`
+			Profiles    []string
+			Environment map[string]string
+			Volumes     []struct {
+				Type, Source, Target string
+				ReadOnly             bool `json:"read_only"`
+				Bind                 struct {
+					CreateHostPath bool `json:"create_host_path"`
+				}
+			}
+			Ports []struct {
+				HostIP string `json:"host_ip"`
+				Target int
+			}
+		}
+	}
+	if err := json.Unmarshal(raw, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lantern-0", "lantern-1", "lantern-2", "admin", "lantern-mcp", "prometheus", "metrics-0", "metrics-1", "metrics-2"} {
+		service, ok := rendered.Services[name]
+		if !ok || len(service.Profiles) != 0 {
+			t.Fatal("canonical default is missing a runtime service", name)
+		}
+		for _, port := range service.Ports {
+			if port.HostIP != "127.0.0.1" {
+				t.Fatal("non-loopback publication", name)
+			}
+		}
+	}
+	owners := map[string]string{}
+	for i := range 3 {
+		name := fmt.Sprintf("lantern-%d", i)
+		node := rendered.Services[name]
+		if node.User != "1001:1001" || node.Environment["LANTERN_AUTH_MODE"] != "off" || node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" || node.Environment["LANTERN_PEER_MEMBERSHIP_MODE"] != "resume" || node.Environment["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" {
+			t.Fatal("OFF lost native resume/private metrics", name)
+		}
+		for _, target := range []string{"/state", "/data", "/var/lib/lantern-snapshot-spool"} {
+			found := false
+			for _, mount := range node.Volumes {
+				if mount.Target == target {
+					if mount.Type != "bind" || mount.ReadOnly || mount.Bind.CreateHostPath || owners[mount.Source] != "" {
+						t.Fatal("OFF storage is missing, auto-created or shared", name, target)
+					}
+					owners[mount.Source], found = name, true
+				}
+			}
+			if !found {
+				t.Fatal("OFF storage prerequisite omitted", name, target)
+			}
+		}
+		if rendered.Services[fmt.Sprintf("metrics-%d", i)].NetworkMode != "service:"+name {
+			t.Fatal("relay escaped its node's loopback namespace", name)
+		}
+	}
+	admin := rendered.Services["admin"]
+	if admin.Environment["LANTERN_ADMIN_PROMETHEUS_UPSTREAM"] != "http://prometheus:9090" || admin.Environment["LANTERN_ADMIN_SERVER_UPSTREAM"] != "h2c://lantern-0:6380" {
+		t.Fatal("Ops fixed upstreams missing")
 	}
 }
 
@@ -1992,13 +2079,13 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "mcp.env"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.CommandContext(t.Context(), docker, "compose", "-f", filepath.Join(root, "deploy/compose/docker-compose.oidc-ha.yml"), "--profile", "init", "--profile", "provision", "--profile", "prepare", "config", "--format", "json")
+	command := exec.CommandContext(t.Context(), docker, "compose", "-f", filepath.Join(root, "deploy/compose/docker-compose.oidc.yml"), "--profile", "init", "--profile", "provision", "--profile", "prepare", "config", "--format", "json")
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "LANTERN_") && !strings.HasPrefix(entry, "COMPOSE_") {
 			command.Env = append(command.Env, entry)
 		}
 	}
-	command.Env = append(command.Env, "LANTERN_HA_PRIVATE_DIRECTORY="+directory)
+	command.Env = append(command.Env, "LANTERN_HA_PRIVATE_DIRECTORY="+directory, "LANTERN_COMPOSE_SOURCE="+strings.Repeat("a", 40), "LANTERN_IMAGE=lantern:render-only", "LANTERN_ADMIN_IMAGE=lantern-admin:render-only", "LANTERN_MCP_IMAGE=lantern-mcp:render-only", "LANTERN_METRICS_RELAY_IMAGE=relay:render-only", "LANTERN_PUBLISHER_IMAGE=publisher:render-only", "LANTERN_EDGE_IMAGE=edge:render-only")
 	raw, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("render standalone OIDC HA: %v: %s", err, raw)
@@ -2015,6 +2102,7 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 	}
 	type service struct {
 		Image               string
+		Profiles            []string
 		Build               struct{ Context, Dockerfile string }
 		Healthcheck         struct{ Test []string }
 		User                string
@@ -2037,6 +2125,15 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 	}
 	if json.Unmarshal(raw, &rendered) != nil {
 		t.Fatal("invalid rendered Compose JSON")
+	}
+	for _, name := range []string{"lantern-0", "lantern-1", "lantern-2", "admin", "lantern-mcp", "prometheus", "metrics-0", "metrics-1", "metrics-2", "edge", "membershippublisher"} {
+		service, ok := rendered.Services[name]
+		if !ok || len(service.Profiles) != 0 {
+			t.Fatal("canonical OIDC default is missing a runtime service", name)
+		}
+	}
+	if rendered.Services["admin"].Environment["LANTERN_ADMIN_PROMETHEUS_UPSTREAM"] != "http://prometheus:9090" {
+		t.Fatal("OIDC Ops fixed Prometheus upstream missing")
 	}
 	// Compose cannot inject inline config content into a read-only service.
 	// Require the actual nonsecret file, preserving the read-only root/mount.
@@ -2090,7 +2187,7 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 		}
 	}
 	edge := rendered.Services["edge"]
-	if edge.Image != "lantern-edge:oidc-ha-local" || edge.Build.Context != root || edge.Build.Dockerfile != "deploy/compose/oidc-ha/edge.Dockerfile" || !edge.ReadOnly ||
+	if edge.Image != "edge:render-only" || edge.Build.Context != "" || edge.Build.Dockerfile != "" || !edge.ReadOnly ||
 		!reflect.DeepEqual(edge.Healthcheck.Test, []string{"CMD", "/usr/local/bin/lantern-edge-health"}) {
 		t.Fatal("edge readiness must use its source-built verified-TLS probe")
 	}

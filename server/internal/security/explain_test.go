@@ -1,59 +1,58 @@
 package security
 
-import "testing"
+import (
+	"github.com/anaregdesign/lantern/server/internal/authz"
+	"testing"
+)
 
-func TestExplainMatchesEffectiveDenyAndStableSources(t *testing.T) {
+func TestExplainEffectiveUnionAndStableSources(t *testing.T) {
 	image := testImage()
-	prefix := "orders:"
-	deny := "orders:private:"
-	image.Roles = append(image.Roles, Role{ID: "data", Rules: []PermissionRule{{ID: "read", Effect: Allow, Action: VertexRead, Resource: DataResource, Prefix: &prefix}, {ID: "private", Effect: Deny, Action: VertexRead, Resource: DataResource, Prefix: &deny}}})
+	prefix := "orders:public:"
+	image.Roles = append(image.Roles, Role{ID: "data", Rules: []PermissionRule{{ID: "read", Permission: Read, Resource: DataResource, Prefix: &prefix}}})
 	image.Principals[0].Assignments = append(image.Principals[0].Assignments, RoleAssignment{RoleID: "data"})
-	snapshot, err := CompileImage(image, DefaultPolicyLimits())
+	s, err := CompileImage(image, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := "orders:private:1"
-	allowed, matches, err := snapshot.Explain(testIdentity(), VertexRead, &key)
-	if err != nil || allowed || len(matches) != 2 || matches[0].RuleID != "read" || matches[1].RuleID != "private" {
+	allowed, matches, err := s.Explain(testIdentity(), VertexRead, &key)
+	if err != nil || allowed || len(matches) != 0 {
 		t.Fatal(allowed, matches, err)
 	}
 	key = "orders:public:1"
-	allowed, matches, err = snapshot.Explain(testIdentity(), VertexRead, &key)
-	if err != nil || !allowed || len(matches) != 1 {
+	allowed, matches, err = s.Explain(testIdentity(), Query, &key)
+	if err != nil || !allowed || len(matches) != 1 || matches[0].RuleID != "read" || matches[0].Permission != Read {
 		t.Fatal(allowed, matches, err)
 	}
-	if _, _, err = snapshot.Explain(testIdentity(), SecurityManage, &key); err == nil {
-		t.Fatal("global capability treated as data")
+	if _, _, err = s.Explain(testIdentity(), SecurityManage, &key); err == nil {
+		t.Fatal("global treated as data")
 	}
 }
-
-func TestExplainHeadAuthorityIncludesEndpointSourcesAndDeny(t *testing.T) {
+func TestExplainDerivedEndpointSources(t *testing.T) {
 	image := testImage()
-	image.Roles = append(image.Roles, Role{ID: "tails", Rules: []PermissionRule{dataRule(Allow, VertexRead, "users:")}}, Role{ID: "heads", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "profiles:"), dataRule(Deny, VertexWrite, "profiles:private:")}})
+	image.EdgePolicy = &EdgePolicy{Version: 1, Mode: authz.EdgeReadWrite}
+	image.Roles = append(image.Roles, Role{ID: "tails", Rules: []PermissionRule{dataRule(VertexRead, "users:")}}, Role{ID: "heads", Rules: []PermissionRule{dataRule(VertexWrite, "profiles:public:")}})
 	image.Principals[0].Assignments = append(image.Principals[0].Assignments, RoleAssignment{RoleID: "tails"}, RoleAssignment{RoleID: "heads"})
-	snapshot, err := CompileImage(image, DefaultPolicyLimits())
+	s, err := CompileImage(image, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
 		tail, head string
-		allowed    bool
+		want       bool
 		matches    int
-	}{{"users:a", "profiles:a", true, 2}, {"profiles:a", "users:a", false, 0}, {"users:a", "profiles:private:a", false, 3}} {
-		allowed, matches, err := snapshot.ExplainEdge(testIdentity(), EdgeCreate, tc.tail, tc.head)
-		if err != nil || allowed != tc.allowed || len(matches) != tc.matches {
-			t.Fatal(tc, allowed, matches, err)
+	}{{"users:a", "profiles:public:a", true, 2}, {"profiles:a", "users:a", false, 0}, {"users:a", "profiles:private:a", false, 1}} {
+		got, matches, err := s.ExplainEdge(testIdentity(), EdgeCreate, tc.tail, tc.head)
+		if err != nil || got != tc.want || len(matches) != tc.matches {
+			t.Fatal(tc, got, matches, err)
 		}
-		for _, match := range matches {
-			if match.Endpoint == "tail" && match.Action != VertexRead || match.Endpoint == "head" && match.Action != VertexWrite {
-				t.Fatal("wrong required endpoint action", match)
+		for _, m := range matches {
+			if m.Endpoint == "tail" && m.Permission != Read || m.Endpoint == "head" && m.Permission != Write {
+				t.Fatal(m)
 			}
 		}
 	}
-	if allowed, _, err := snapshot.ExplainEdge(testIdentity(), EdgeRead, "users:a", "profiles:a"); err != nil || allowed {
-		t.Fatal("write-only head inferred read", err)
-	}
-	if _, _, err := snapshot.ExplainEdge(testIdentity(), VertexRead, "users:a", "profiles:a"); err == nil {
-		t.Fatal("Edge explanation broadened to Vertex action")
+	if got, _, err := s.ExplainEdge(testIdentity(), EdgeRead, "users:a", "profiles:public:a"); err != nil || got {
+		t.Fatal("write inferred read", err)
 	}
 }

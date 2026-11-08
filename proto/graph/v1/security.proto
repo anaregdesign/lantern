@@ -16,6 +16,7 @@ service LanternSecurityService {
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc GetRegistrationPolicy(GetRegistrationPolicyRequest) returns (GetRegistrationPolicyResponse);
+  rpc GetEdgePolicy(GetEdgePolicyRequest) returns (GetEdgePolicyResponse);
   // Contacted-node application state; a committed policy is not all-node application.
   rpc GetLogSettings(GetLogSettingsRequest) returns (GetLogSettingsResponse);
   // Verified desired state and actual application of the eight closed groups.
@@ -102,20 +103,24 @@ enum SecurityAction {
   SECURITY_ACTION_SCHEMA_READ = 14;
   SECURITY_ACTION_MANAGE = 15;
   SECURITY_ACTION_EDGE_CREATE = 16;
-}
-enum SecurityEffect {
-  SECURITY_EFFECT_UNSPECIFIED = 0;
-  SECURITY_EFFECT_ALLOW = 1;
-  SECURITY_EFFECT_DENY = 2;
+  SECURITY_ACTION_SECURITY_READ = 17;
+  SECURITY_ACTION_SETTINGS_READ = 18;
+  SECURITY_ACTION_SETTINGS_WRITE = 19;
 }
 
-// Selectors use literal logical-key prefixes. Empty prefix explicitly means
-// all data. Pair is a retired diagnostic shape: Server rejects every pair
-// selector and independent Edge action in a Role. Edge permissions are derived
-// from Vertex grants; pair must never be interpreted as permission authority.
-message SecurityPrefixPair {
-  string tail_prefix = 1;
-  string head_prefix = 2;
+// Role grants expose exactly two independent verbs on typed resources.
+enum SecurityPermission {
+  SECURITY_PERMISSION_UNSPECIFIED = 0;
+  SECURITY_PERMISSION_READ = 1;
+  SECURITY_PERMISSION_WRITE = 2;
+}
+enum SecurityResource {
+  SECURITY_RESOURCE_UNSPECIFIED = 0;
+  SECURITY_RESOURCE_DATA = 1;
+  SECURITY_RESOURCE_SECURITY = 2;
+  SECURITY_RESOURCE_SETTINGS = 3;
+  SECURITY_RESOURCE_OPERATIONS = 4;
+  SECURITY_RESOURCE_SCHEMA = 5;
 }
 
 // Inserts the installed Principal's Server-owned UID between byte literals.
@@ -127,12 +132,12 @@ message SecurityPrincipalUIDPrefix {
 }
 message SecurityRule {
   string id = 1;
-  SecurityEffect effect = 2;
-  SecurityAction action = 3;
+  // New tags intentionally reject old effect/action bytes under strict decoding.
+  SecurityPermission permission = 8;
+  SecurityResource resource_kind = 9;
+  // Data requires exactly one selector. Other resources require no selector.
   oneof resource {
     string prefix = 4;
-    bool global = 5;
-    SecurityPrefixPair pair = 6;
     SecurityPrincipalUIDPrefix principal_uid_prefix = 7;
   }
 }
@@ -155,6 +160,8 @@ message SecurityUser {
   // Read-only, allocated once by explicit verified registration. Ordinary user
   // management never accepts this value as input; deleted tombstones retain it.
   optional string user_id = 4;
+  // Optional verified display metadata, never authentication or permission identity.
+  optional string verified_email = 5;
 }
 message SecurityIssuer {
   string issuer = 1;
@@ -217,6 +224,7 @@ message GetCurrentPrincipalResponse {
   // Immutable Server-installed user ID; absent for UID-less or machine Principals.
   // This self metadata requires no additional Role and never grants data access.
   optional string user_id = 7;
+  optional string verified_email = 8;
 }
 
 // Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
@@ -348,17 +356,18 @@ message SecurityEdgeIdentity {
 }
 message ExplainAccessRequest {
   SecurityIdentity identity = 1;
+  // Only derived Edge operation diagnostics use action + edge.
   SecurityAction action = 2;
-  // Omit both selectors for a global capability. Supplying both is invalid.
   optional string logical_key = 3;
   SecurityEdgeIdentity edge = 4;
+  SecurityPermission permission = 5;
+  SecurityResource resource_kind = 6;
 }
 message SecurityRuleMatch {
   string role_id = 1;
   string rule_id = 2;
-  SecurityEffect effect = 3;
-  // Actual grantable capability required by this part of the operation.
-  SecurityAction action = 4;
+  SecurityPermission permission = 3;
+  SecurityResource resource_kind = 4;
   // "tail" or "head" for a derived Edge check; empty for ordinary grants.
   string endpoint = 5;
 }
@@ -381,6 +390,12 @@ message SecurityUserStateChange {
 message SecurityRegistrationProfile {
   string issuer = 1;
   string client_profile_id = 2;
+  RegistrationProfileKind kind = 3;
+}
+enum RegistrationProfileKind {
+  REGISTRATION_PROFILE_KIND_UNSPECIFIED = 0;
+  REGISTRATION_PROFILE_KIND_NATIVE = 1;
+  REGISTRATION_PROFILE_KIND_BROWSER = 2;
 }
 
 // Default absent/disabled. Expansion requires operation-bound reauthentication.
@@ -393,6 +408,24 @@ message SecurityRegistrationPolicy {
 message GetRegistrationPolicyRequest {}
 message GetRegistrationPolicyResponse {
   SecurityRegistrationPolicy policy = 1;
+  SecurityVersion version = 2;
+}
+
+// One cluster-wide endpoint predicate, captured with the immutable Role cut.
+enum EdgeEndpointMode {
+  EDGE_ENDPOINT_MODE_UNSPECIFIED = 0;
+  EDGE_ENDPOINT_MODE_READ_READ = 1;
+  EDGE_ENDPOINT_MODE_WRITE_WRITE = 2;
+  EDGE_ENDPOINT_MODE_READ_WRITE = 3;
+  EDGE_ENDPOINT_MODE_WRITE_READ = 4;
+}
+message SecurityEdgePolicy {
+  uint32 version = 1;
+  EdgeEndpointMode mode = 2;
+}
+message GetEdgePolicyRequest {}
+message GetEdgePolicyResponse {
+  SecurityEdgePolicy policy = 1;
   SecurityVersion version = 2;
 }
 
@@ -719,6 +752,7 @@ message SecurityChange {
     SecurityRegistrationPolicy put_registration_policy = 11;
     ManagedLogPolicy put_log_policy = 12;
     OperationalPolicyChange put_operational_policy = 13;
+    SecurityEdgePolicy put_edge_policy = 14;
   }
 }
 enum SecurityEnforcementState {

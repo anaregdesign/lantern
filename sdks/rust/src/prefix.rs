@@ -2,6 +2,7 @@ use crate::{
     CallOptions, LanternClient, LanternError,
     generated::graph::v1::{
         CountVerticesByPrefixRequest, DeleteEdgesByPrefixRequest, DeleteVerticesByPrefixRequest,
+        DeleteVerticesByPrefixResponse,
     },
     mutation::accepted_undisclosed,
     transport::RetryClass,
@@ -70,7 +71,7 @@ impl LanternClient {
                 |service, request| Box::pin(service.delete_vertices_by_prefix(request)),
             )
             .await?;
-        checked_deleted(response.deleted, limit)
+        checked_vertex_deleted(response, limit)
     }
 
     /// Delete at most one bounded page of live edges matching both prefixes,
@@ -132,6 +133,16 @@ fn require_edge_prefix(tail: &str, head: &str) -> Result<(), LanternError> {
     } else {
         Ok(())
     }
+}
+
+fn checked_vertex_deleted(
+    response: DeleteVerticesByPrefixResponse,
+    limit: u32,
+) -> Result<u64, LanternError> {
+    if accepted_undisclosed(response.acceptance.as_ref(), response.deleted != 0)? {
+        return Err(LanternError::MutationAcceptedUndisclosed);
+    }
+    checked_deleted(response.deleted, limit)
 }
 
 fn checked_deleted(deleted: u64, limit: u32) -> Result<u64, LanternError> {

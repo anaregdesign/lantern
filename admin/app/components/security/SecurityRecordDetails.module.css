@@ -1,0 +1,32 @@
+.details {
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--colorNeutralStroke2);
+}
+.details p {
+  margin: 0;
+}
+.details dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.details dt {
+  font-weight: 600;
+}
+.details dd {
+  margin: 0 0 8px;
+}
+.actions,
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chips > * {
+  white-space: normal;
+  height: auto;
+}

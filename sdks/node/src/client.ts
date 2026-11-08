@@ -795,6 +795,7 @@ export class Lantern {
   async deleteVertex(key: string, signal?: AbortSignal): Promise<boolean> {
     return this.invoke(async () => {
       const resp = await this.client.deleteVertex({ key }, this.callOpts(signal));
+      checkMutationAcceptance(resp);
       return resp.existed;
     });
   }
@@ -845,6 +846,7 @@ export class Lantern {
     await this.runBatchWrite(prepared, async (chunk) => {
       const vertices = chunk.map((value) => fromJson(VertexSchema, value.json as JsonValue));
       const resp = await this.client.putVertices({ vertices }, this.callOpts(signal));
+      checkMutationAcceptance(resp);
       if (resp.outcomes.length !== chunk.length) {
         throw new LanternError(
           `server returned ${resp.outcomes.length} Put outcomes for ${chunk.length} vertices`,
@@ -904,6 +906,7 @@ export class Lantern {
         { vertices, ifAbsent: true },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(resp);
       if (resp.outcomes.length !== chunk.length) {
         throw new LanternError(
           `server returned ${resp.outcomes.length} Put outcomes for ${chunk.length} vertices`,
@@ -979,6 +982,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       if (response.outcomes.length !== prepared.vertices.length) {
         throw new LanternError(
           `server returned ${response.outcomes.length} receipt Put outcomes for ${prepared.vertices.length} vertices`,
@@ -1004,6 +1008,7 @@ export class Lantern {
     let total = 0;
     await this.runBatchWrite(keys, async (chunk) => {
       const resp = await this.client.deleteVertices({ keys: chunk }, this.callOpts(signal));
+      checkMutationAcceptance(resp);
       total += resp.deleted;
     });
     return total;
@@ -1033,6 +1038,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       if (response.existed.length !== normalizedKeys.length) {
         throw new LanternError(
           `server returned ${response.existed.length} receipt Delete results for ${normalizedKeys.length} vertices`,
@@ -1301,6 +1307,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(resp);
       return resp.deleted;
     });
   }
@@ -2253,6 +2260,13 @@ export class Lantern {
       const resp = await this.invoke(() =>
         this.client.putVertices({ vertices }, this.callOpts(signal)),
       );
+      try {
+        checkMutationAcceptance(resp);
+      } catch (error) {
+        if (!(error instanceof MutationAcceptance)) throw error;
+        undisclosed = true;
+        return;
+      }
       if (resp.outcomes.length !== vertices.length) {
         throw new LanternError(
           `server returned ${resp.outcomes.length} Put outcomes for ${vertices.length} vertices`,

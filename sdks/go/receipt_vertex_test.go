@@ -76,6 +76,17 @@ func (c *vertexReceiptClient) DeleteVertex(
 	return nil, errors.New("singular Vertex Delete RPC must not be called")
 }
 
+func TestVertexReceiptBlindResultsRemainTypedWithoutFabricatedItems(t *testing.T) {
+	acceptance := &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}
+	_, putErr := vertexPutReceiptResults([]VertexInput{{Key: "hidden"}}, nil, &pb.PutVerticesResponse{Acceptance: acceptance})
+	_, deleteErr := vertexDeleteReceiptResults([]string{"hidden"}, nil, &pb.DeleteVerticesResponse{Acceptance: acceptance})
+	for _, err := range []error{putErr, deleteErr} {
+		if _, accepted := err.(*MutationAcceptance); !accepted {
+			t.Fatal("receipt invented detail or failure", err)
+		}
+	}
+}
+
 func TestVertexPutWithReceiptReplaysByteIdenticalRequest(t *testing.T) {
 	capability := testReceiptCapability(0x80)
 	receiptContext := testReceiptContextForMutation(

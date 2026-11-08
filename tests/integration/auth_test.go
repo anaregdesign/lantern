@@ -612,8 +612,7 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 		t.Fatal("unregistered token enrolled itself", err)
 	}
 	role := &pb.SecurityRole{Id: "reader", Name: "Tenant reader", Rules: []*pb.SecurityRule{
-		{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}},
-		{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:private:"}},
+		{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:public:"}},
 	}}
 	prepared, err := prepareAuthorityWireReview(ctx, f.client, admin, initial, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
@@ -648,8 +647,8 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	// Grant schema.read explicitly in the isolated fixture: security.manage
 	// does not imply it. The registered data reader retains no schema grant.
 	schemaRole := &pb.SecurityRole{Id: "reflection_schema_reader", Rules: []*pb.SecurityRule{{
-		Id: "schema", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
-		Action: pb.SecurityAction_SECURITY_ACTION_SCHEMA_READ, Resource: &pb.SecurityRule_Global{Global: true},
+		Id:         "schema",
+		Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SCHEMA,
 	}}}
 	if _, err := f.applyChanges(t, ctx, admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: schemaRole}},
@@ -659,7 +658,7 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	}
 	// Exercise the certified production mounts with current schema authority.
 	schema, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{
-		Identity: principal.Msg.Identity, Action: pb.SecurityAction_SECURITY_ACTION_SCHEMA_READ,
+		Identity: principal.Msg.Identity, Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SCHEMA,
 	}))
 	if err != nil || !schema.Msg.Allowed {
 		t.Fatal("fixture lacks current schema authority", err)
@@ -693,22 +692,22 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 		}
 	}
 	for key, want := range map[string]bool{"tenant:public:1": true, "tenant:private:1": false, "other:1": false} {
-		result, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, LogicalKey: &key}))
+		result, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, LogicalKey: &key}))
 		if err != nil || result.Msg.Allowed != want {
 			t.Fatal("prefix policy", key, err)
 		}
 		for _, match := range result.Msg.Matches {
-			if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "" {
+			if match.Permission != pb.SecurityPermission_SECURITY_PERMISSION_READ || match.ResourceKind != pb.SecurityResource_SECURITY_RESOURCE_DATA || match.Endpoint != "" {
 				t.Fatal("key explanation lost its constituent action", match)
 			}
 		}
 	}
 	edgeExplanation, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_READ, Edge: &pb.SecurityEdgeIdentity{Tail: "tenant:public:1", Head: "tenant:private:1"}}))
-	if err != nil || edgeExplanation.Msg.Allowed || len(edgeExplanation.Msg.Matches) != 3 {
+	if err != nil || edgeExplanation.Msg.Allowed || len(edgeExplanation.Msg.Matches) != 1 {
 		t.Fatal("derived Edge explanation drift", edgeExplanation, err)
 	}
 	for _, match := range edgeExplanation.Msg.Matches {
-		if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "tail" && match.Endpoint != "head" {
+		if match.Permission != pb.SecurityPermission_SECURITY_PERMISSION_READ || match.ResourceKind != pb.SecurityResource_SECURITY_RESOURCE_DATA || match.Endpoint != "tail" && match.Endpoint != "head" {
 			t.Fatal("Edge explanation omitted its endpoint/action", match)
 		}
 	}
@@ -761,6 +760,209 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	}
 	if _, err := f.client.ListUsers(ctx, securityWireRequest(admin, &pb.ListUsersRequest{Limit: 1, Cursor: page.Msg.NextCursor})); connect.CodeOf(err) != connect.CodeAborted {
 		t.Fatal("cursor survived policy change", err)
+	}
+}
+
+// One real current-authority fixture exercises the public two-verb contract.
+// Separate Roles union their grants; selector-free management grants remain
+// independent from Data and write-only effects never become read authority.
+func TestAuth_OIDCReadWriteTypedResourcesRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	admin := f.token(t, "admin", nil)
+	if _, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{})); err != nil {
+		t.Fatal(err)
+	}
+	roles := []*pb.SecurityRole{
+		{Id: "read", Rules: wireDataRules([]string{"shared:"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)},
+		{Id: "write", Rules: wireDataRules([]string{"shared:"}, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)},
+		{Id: "empty"},
+		{Id: "typed", Rules: []*pb.SecurityRule{
+			{Id: "security", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SECURITY},
+			{Id: "settings", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SETTINGS},
+			{Id: "operations", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_OPERATIONS},
+			{Id: "schema", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SCHEMA},
+		}},
+	}
+	var changes []*pb.SecurityChange
+	for _, role := range roles {
+		changes = append(changes, &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: role}})
+	}
+	for subject, roleIDs := range map[string][]string{"reader": {"read"}, "writer": {"write"}, "union": {"read", "write"}, "ungranted": {"empty"}, "typed": {"typed"}} {
+		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: subject}
+		changes = append(changes, &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}})
+		for _, roleID := range roleIDs {
+			changes = append(changes, &pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: roleID}}})
+		}
+	}
+	if _, err := f.applyChanges(t, ctx, admin, changes); err != nil {
+		t.Fatal(err)
+	}
+	reader, writer, union := f.token(t, "reader", nil), f.token(t, "writer", nil), f.token(t, "union", nil)
+	if policy, err := f.client.GetEdgePolicy(ctx, securityWireRequest(admin, &pb.GetEdgePolicyRequest{})); err != nil || policy.Msg.Policy.Mode != pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_READ_READ {
+		t.Fatal("default global Edge RR", err)
+	}
+	for _, key := range []string{"shared:tail", "shared:head"} {
+		if result, err := f.data.PutVertex(ctx, securityWireRequest(union, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}})); err != nil || result.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE || result.Msg.GetAcceptance() != nil {
+			t.Fatal("union did not disclose authorized Put", err)
+		}
+	}
+	if _, err := f.data.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: "shared:tail"})); err != nil {
+		t.Fatal("read exact", err)
+	}
+	if count, err := f.data.CountVerticesByPrefix(ctx, securityWireRequest(reader, &pb.CountVerticesByPrefixRequest{Prefix: "shared:"})); err != nil || count.Msg.Count != 2 {
+		t.Fatal("read query", err)
+	}
+	for _, projection := range []pb.ChangeProjection{pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY, pb.ChangeProjection_CHANGE_PROJECTION_VALUE} {
+		stream, err := f.changes.WatchChanges(ctx, securityWireRequest(reader, &pb.WatchChangesRequest{Prefix: "shared:", Bootstrap: true, Projection: projection}))
+		if err != nil {
+			t.Fatal("read CDC", err)
+		}
+		if !stream.Receive() || !stream.Msg().Bootstrap {
+			t.Fatal("read CDC bootstrap", stream.Err())
+		}
+		_ = stream.Close()
+	}
+	if _, err := f.data.PutVertex(ctx, securityWireRequest(reader, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "shared:refused"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("read implied write", err)
+	}
+	if _, err := f.data.GetVertex(ctx, securityWireRequest(writer, &pb.GetVertexRequest{Key: "shared:tail"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("write implied read", err)
+	}
+	if _, err := f.data.ScanVertices(ctx, securityWireRequest(writer, &pb.ScanVerticesRequest{Prefix: "shared:"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("write implied query", err)
+	}
+	for _, subject := range []string{"ungranted", "typed"} {
+		token := f.token(t, subject, nil)
+		if _, err := f.data.GetVertex(ctx, securityWireRequest(token, &pb.GetVertexRequest{Key: "shared:tail"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatal("non-Data grants implied read", subject, err)
+		}
+		if _, err := f.data.PutVertex(ctx, securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "shared:refused"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatal("non-Data grants implied write", subject, err)
+		}
+	}
+	if _, err := f.client.ListRoles(ctx, securityWireRequest(union, &pb.ListRolesRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("Data implied Security", err)
+	}
+	if _, err := f.client.GetLogSettings(ctx, securityWireRequest(union, &pb.GetLogSettingsRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("Data implied Settings", err)
+	}
+	if _, err := f.data.GetServerStatus(ctx, securityWireRequest(union, &pb.GetServerStatusRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("Data implied Operations", err)
+	}
+	typed := f.token(t, "typed", nil)
+	if _, err := f.client.ListRoles(ctx, securityWireRequest(typed, &pb.ListRolesRequest{})); err != nil {
+		t.Fatal("typed Security read", err)
+	}
+	if _, err := f.client.GetLogSettings(ctx, securityWireRequest(typed, &pb.GetLogSettingsRequest{})); err != nil {
+		t.Fatal("typed Settings read", err)
+	}
+	if _, err := f.data.GetServerStatus(ctx, securityWireRequest(typed, &pb.GetServerStatusRequest{})); err != nil {
+		t.Fatal("typed Operations read", err)
+	}
+	httpClient := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
+	if names, err := currentReflectionServices(ctx, httpClient, f.server.URL, "v1", union); connect.CodeOf(err) != connect.CodePermissionDenied || len(names) != 0 {
+		t.Fatal("Data implied Schema", err)
+	}
+	if names, err := currentReflectionServices(ctx, httpClient, f.server.URL, "v1", typed); err != nil || len(names) == 0 {
+		t.Fatal("typed Schema read", err)
+	}
+	// Fresh RR permits a reader to mutate existing-endpoint Edges, while a
+	// writer lacking endpoint reads is refused. Edge reads still require reads.
+	if _, err := f.data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "shared:tail", Head: "shared:head", Weight: 2}})); err != nil {
+		t.Fatal("RR reader Edge mutation", err)
+	}
+	if _, err := f.data.AddEdge(ctx, securityWireRequest(writer, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "shared:tail", Head: "shared:head", Weight: 2}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("RR writer bypassed endpoint reads", err)
+	}
+	// Change the cluster policy through the same reviewed native transaction;
+	// status/replay recover the original change and stale cuts cannot replace it.
+	beforeMode, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modeChange := []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutEdgePolicy{PutEdgePolicy: &pb.SecurityEdgePolicy{Version: 1, Mode: pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_WRITE_WRITE}}}}
+	prepared, err := prepareAuthorityWireReview(ctx, f.client, admin, beforeMode.Msg.Version, modeChange)
+	if err != nil {
+		t.Fatal("global mode Prepare", err)
+	}
+	modeCommand := &pb.ApplySecurityChangesRequest{CurrentReview: prepared.CurrentReview}
+	applied, err := f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, modeCommand))
+	if err != nil {
+		t.Fatal("global mode Apply", err)
+	}
+	if err := f.waitForAppliedAuthority(t, ctx, applied.Msg.CurrentResult); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareAuthorityWireReview(ctx, f.client, admin, beforeMode.Msg.Version, modeChange); connect.CodeOf(err) != connect.CodeAborted {
+		t.Fatal("stale mode review accepted", err)
+	}
+	status, err := f.client.GetSecurityChangeStatus(ctx, securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{CurrentProfile: prepared.CurrentReview.Profile, CurrentChangeId: prepared.CurrentReview.ChangeId, CurrentIntentDigest: prepared.CurrentReview.IntentDigest}))
+	if err != nil || !proto.Equal(status.Msg.CurrentResult.Original, applied.Msg.CurrentResult.Original) {
+		t.Fatal("global mode status lost original", err)
+	}
+	replay, err := f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, modeCommand))
+	if err != nil || !proto.Equal(replay.Msg.CurrentResult.Original, applied.Msg.CurrentResult.Original) {
+		t.Fatal("global mode replay changed original", err)
+	}
+	if policy, err := f.client.GetEdgePolicy(ctx, securityWireRequest(admin, &pb.GetEdgePolicyRequest{})); err != nil || policy.Msg.Policy.Mode != pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_WRITE_WRITE {
+		t.Fatal("global mode did not become current", err)
+	}
+	if _, err := f.data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "shared:tail", Head: "shared:head", Weight: 2}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("old RR mode remained cached", err)
+	}
+
+	acceptance := &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}
+	if result, err := f.data.AddEdge(ctx, securityWireRequest(writer, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "shared:tail", Head: "shared:head", Weight: 2}})); err != nil || !proto.Equal(result.Msg, &pb.AddEdgeResponse{Acceptance: acceptance}) {
+		t.Fatal("global WW blind Edge result", err)
+	}
+
+	if result, err := f.data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "shared:blind", Expiration: timestamppb.New(time.Now().Add(time.Minute))}})); err != nil || !proto.Equal(result.Msg, &pb.PutVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("blind singular Put disclosed effect", err)
+	}
+	lifecycleKey := "shared:lifecycle"
+	if _, err := f.data.PutVertex(ctx, securityWireRequest(union, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: lifecycleKey, Value: &pb.Vertex_String_{String_: "original"}, Expiration: timestamppb.New(time.Now().Add(time.Hour))}})); err != nil {
+		t.Fatal(err)
+	}
+	shortened := timestamppb.New(time.Now().Add(time.Minute))
+	if result, err := f.data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: lifecycleKey, Value: &pb.Vertex_String_{String_: "shortened"}, Expiration: shortened}})); err != nil || !proto.Equal(result.Msg, &pb.PutVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("write-only TTL shortening disclosed/refused", err)
+	}
+	if value, err := f.data.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: lifecycleKey})); err != nil || value.Msg.Vertex.GetString_() != "shortened" || !proto.Equal(value.Msg.Vertex.Expiration, shortened) {
+		t.Fatal("write-only TTL shortening did not apply", err)
+	}
+	expired := timestamppb.New(time.Now().Add(-time.Minute))
+	if result, err := f.data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{IfAbsent: true, Vertex: &pb.Vertex{Key: lifecycleKey, Expiration: expired}})); err != nil || !proto.Equal(result.Msg, &pb.PutVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("write-only condition miss disclosed/refused", err)
+	}
+	if value, err := f.data.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: lifecycleKey})); err != nil || value.Msg.Vertex.GetString_() != "shortened" {
+		t.Fatal("blind if_absent miss changed live value", err)
+	}
+	if result, err := f.data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: lifecycleKey, Expiration: expired}})); err != nil || !proto.Equal(result.Msg, &pb.PutVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("write-only born-expired Put disclosed/refused", err)
+	}
+	if _, err := f.data.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: lifecycleKey})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatal("write-only born-expired Put did not remove value", err)
+	}
+
+	if result, err := f.data.PutVertices(ctx, securityWireRequest(writer, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "shared:blind"}, {Key: "shared:blind2"}}})); err != nil || !proto.Equal(result.Msg, &pb.PutVerticesResponse{Acceptance: acceptance}) {
+		t.Fatal("blind plural Put disclosed effect", err)
+	}
+	if result, err := f.data.DeleteVertex(ctx, securityWireRequest(writer, &pb.DeleteVertexRequest{Key: "shared:blind"})); err != nil || !proto.Equal(result.Msg, &pb.DeleteVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("blind singular Delete disclosed effect", err)
+	}
+	if result, err := f.data.DeleteVertices(ctx, securityWireRequest(writer, &pb.DeleteVerticesRequest{Keys: []string{"shared:blind2", "shared:missing"}})); err != nil || !proto.Equal(result.Msg, &pb.DeleteVerticesResponse{Acceptance: acceptance}) {
+		t.Fatal("blind plural Delete disclosed effect", err)
+	}
+	if result, err := f.data.DeleteVerticesByPrefix(ctx, securityWireRequest(writer, &pb.DeleteVerticesByPrefixRequest{Prefix: "shared:blind", DryRun: true})); err != nil || !proto.Equal(result.Msg, &pb.DeleteVerticesByPrefixResponse{Acceptance: acceptance}) {
+		t.Fatal("blind prefix Delete disclosed count", err)
+	}
+	if _, err := f.data.PutVertices(ctx, securityWireRequest(writer, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "shared:atomic"}, {Key: "outside:refused"}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("outside mixed batch admitted", err)
+	}
+	if _, err := f.data.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: "shared:atomic"})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatal("refused batch partially wrote", err)
 	}
 }
 
@@ -817,7 +1019,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	}
 	for _, key := range []string{"orders:private:1", "orders:private:missing", "other:1"} {
 		if response, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: key})); response != nil || connect.CodeOf(err) != connect.CodePermissionDenied {
-			t.Fatal("Deny/existence boundary", key, err)
+			t.Fatal("ungranted/existence boundary", key, err)
 		}
 	}
 
@@ -964,16 +1166,12 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
-		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}})
-	}
-	private := &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:private:"}}
+	rules := wireDataRules([]string{"orders:1", "orders:a", "orders:b"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "receipt_writer"}
 	other := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "other"}
 	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
-		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: append(append([]*pb.SecurityRule(nil), rules...), private)}}},
-		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_other", Rules: rules}}},
+		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: rules}}},
+		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_other", Rules: wireDataRules([]string{"orders:"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "receipt_writer"}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: other, RoleId: "receipt_other"}}},
@@ -1044,21 +1242,21 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 	if before != after {
 		t.Fatal("receipt replay appended mutation")
 	}
-	var withoutDelete []*pb.SecurityRule
-	for _, rule := range append(append([]*pb.SecurityRule(nil), rules...), private) {
-		if rule.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE {
-			withoutDelete = append(withoutDelete, rule)
+	var withoutWrite []*pb.SecurityRule
+	for _, rule := range rules {
+		if rule.Permission != pb.SecurityPermission_SECURITY_PERMISSION_WRITE {
+			withoutWrite = append(withoutWrite, rule)
 		}
 	}
-	_, err = f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: withoutDelete}}})
+	_, err = f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: withoutWrite}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status, err := f.data.GetReceiptStatus(t.Context(), securityWireRequest(token, &pb.GetReceiptStatusRequest{OperationId: long.ReceiptContext.OperationIds[0]})); err != nil || status.Msg.Status.State != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
-		t.Fatal("ordinary live Put invented a Delete requirement", err)
+	if _, err := f.data.GetReceiptStatus(t.Context(), securityWireRequest(token, &pb.GetReceiptStatusRequest{OperationId: long.ReceiptContext.OperationIds[0]})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("original write receipt disclosed after write loss", err)
 	}
 	if _, err := f.data.GetReceiptStatus(t.Context(), securityWireRequest(token, &pb.GetReceiptStatusRequest{OperationId: short.ReceiptContext.OperationIds[0]})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("original TTL reduction disclosed after Delete loss", err)
+		t.Fatal("original TTL reduction disclosed after write loss", err)
 	}
 	if _, err := f.data.PutVertex(t.Context(), securityWireRequest(token, short)); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("replay recomputed effect against shortened graph", err)
@@ -1079,22 +1277,11 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
-		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
-	}
-	readerRules := []*pb.SecurityRule{rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:")}
-	identityRules := []*pb.SecurityRule{
-		rule("identity", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-		rule("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
-		rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-		rule("private-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
-	}
-	valueOnlyRules := append(append([]*pb.SecurityRule(nil), readerRules...), rule("value", pb.SecurityAction_SECURITY_ACTION_CDC_VALUE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"))
-	valueRules := append(append([]*pb.SecurityRule(nil), valueOnlyRules...), rule("identity", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"))
-	var writerRules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE} {
-		writerRules = append(writerRules, rule(fmt.Sprintf("write%d", i), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""))
-	}
+	readerRules := wireDataRules([]string{"orders:1", "orders:2"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)
+	identityRules := wireDataRules([]string{"orders:1", "orders:2"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)
+	valueOnlyRules := wireDataRules([]string{"orders:1", "orders:2"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)
+	valueRules := wireDataRules([]string{"orders:1", "orders:2"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)
+	writerRules := wireDataRules([]string{""}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
 	roles := map[string][]*pb.SecurityRule{"reader": readerRules, "identity": identityRules, "values": valueRules, "value_only": valueOnlyRules, "writer": writerRules, "identity2": identityRules}
 	var changes []*pb.SecurityChange
 	for subject, rules := range roles {
@@ -1120,8 +1307,8 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 		return stream
 	}
 	denied := open("reader", pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY, nil)
-	if denied.Receive() || connect.CodeOf(denied.Err()) != connect.CodePermissionDenied {
-		t.Fatal("reader inherited CDC", denied.Err())
+	if !denied.Receive() || !denied.Msg().Bootstrap {
+		t.Fatal("data read must include scoped CDC", denied.Err())
 	}
 	identityStream := open("identity", pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY, nil)
 	if !identityStream.Receive() || !identityStream.Msg().Bootstrap || len(identityStream.Msg().Cursor) == 0 || len(identityStream.Msg().Invalidations) != 0 {
@@ -1137,8 +1324,8 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 		t.Fatal("same-policy Principal stole cursor", stolen.Err())
 	}
 	wrongProjection := open("value_only", pb.ChangeProjection_CHANGE_PROJECTION_VALUE, nil)
-	if wrongProjection.Receive() || connect.CodeOf(wrongProjection.Err()) != connect.CodePermissionDenied {
-		t.Fatal("value capability omitted required identity grant", wrongProjection.Err())
+	if !wrongProjection.Receive() || !wrongProjection.Msg().Bootstrap {
+		t.Fatal("read must include both supported CDC projections", wrongProjection.Err())
 	}
 	writer := f.token(t, "writer", nil)
 	if _, err := f.data.PutVertices(ctx, securityWireRequest(writer, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "orders:1", Value: &pb.Vertex_String_{String_: "visible"}}, {Key: "orders:private:1", Value: &pb.Vertex_String_{String_: "hidden"}}, {Key: "other:1", Value: &pb.Vertex_String_{String_: "outside"}}}})); err != nil {
@@ -1204,7 +1391,7 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	}
 	readerToken := f.token(t, "reader", nil)
 	if count, err := f.data.CountVerticesByPrefix(ctx, securityWireRequest(readerToken, &pb.CountVerticesByPrefixRequest{Prefix: "orders:"})); err != nil || count.Msg.Count != 0 {
-		t.Fatal("read-only rebootstrap required Query", count, err)
+		t.Fatal("read-backed rebootstrap failed", count, err)
 	}
 	// Any policy cut change terminates an established stream while idle and
 	// invalidates its encrypted cursor, including an unrelated grant expansion.
@@ -1217,8 +1404,8 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	if !errors.As(resumed.Err(), &revoked) || revoked.Code != http2.ErrCodeInternal {
 		t.Fatal("established stream did not refuse the revoked final Write", resumed.Err())
 	}
-	if _, err := f.data.SearchVertices(ctx, securityWireRequest(readerToken, &pb.SearchVerticesRequest{Query: "visible", Prefix: "orders:"})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("reader inherited Query", err)
+	if _, err := f.data.SearchVertices(ctx, securityWireRequest(readerToken, &pb.SearchVerticesRequest{Query: "visible", Prefix: "orders:"})); err != nil {
+		t.Fatal("read grant did not include Query", err)
 	}
 }
 
@@ -1295,7 +1482,7 @@ func (f *oidcControlWireFixture) browserCallbackPath(t *testing.T, start *http.R
 		t.Fatal(err)
 	}
 	query := authorize.Query()
-	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("nonce") == "" || query.Get("state") == "" {
+	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid email" || query.Get("nonce") == "" || query.Get("state") == "" {
 		t.Fatal("code/nonce/PKCE missing")
 	}
 	if query.Get("max_age") == "0" {
@@ -1369,6 +1556,178 @@ func (r authWireRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 		req.AddCookie(cookie)
 	}
 	return r.next.RoundTrip(req)
+}
+
+func TestAuth_OIDCVerifiedEmailBrowserRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixture(t)
+	var cookies []*http.Cookie
+	for _, tc := range []struct {
+		name     string
+		email    any
+		verified any
+		want     string
+	}{
+		{"verified", "first@example.test", true, "first@example.test"},
+		{"changed", "changed@example.test", true, "changed@example.test"},
+		{"unverified", "unverified@example.test", false, ""},
+		{"malformed", "<script>@example.test", true, ""},
+		{"wrong verified type", "user@example.test", "true", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := f.browserLoginStart(t, cookies)
+			path := f.browserCallbackPath(t, start, "admin", false)
+			callback, _ := url.Parse(path)
+			f.mu.Lock()
+			code := f.codes[callback.Query().Get("code")]
+			code.email, code.emailVerified = tc.email, tc.verified
+			f.codes[callback.Query().Get("code")] = code
+			f.mu.Unlock()
+			response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, append(start.Cookies(), cookies...), ""))
+			if response.StatusCode != http.StatusSeeOther {
+				t.Fatal("optional display claims blocked valid identity", response.StatusCode)
+			}
+			cookies = nil
+			for _, cookie := range response.Cookies() {
+				if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+					cookies = append(cookies, cookie)
+				}
+			}
+			bootstrap := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
+			raw, err := io.ReadAll(bootstrap.Body)
+			var session pb.BrowserSession
+			if err != nil || bootstrap.StatusCode != http.StatusOK || protojson.Unmarshal(raw, &session) != nil || session.Principal == nil || session.Principal.GetVerifiedEmail() != tc.want || session.Principal.Identity.Subject != "admin" {
+				t.Fatal("current self metadata missing or identity changed", err)
+			}
+			current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(f.token(t, "admin", nil), &pb.GetCurrentPrincipalRequest{}))
+			if err != nil || current.Msg.GetVerifiedEmail() != tc.want {
+				t.Fatal("verified email did not survive independent current request", err)
+			}
+			users, err := f.client.ListUsers(t.Context(), securityWireRequest(f.token(t, "admin", nil), &pb.ListUsersRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, user := range users.Msg.Users {
+				if user.Identity.Subject == "admin" {
+					found = user.GetVerifiedEmail() == tc.want
+				}
+			}
+			if !found {
+				t.Fatal("authorized User view lost refreshed display metadata")
+			}
+		})
+	}
+	// A matching verified email cannot enroll or link an unknown identity.
+	start := f.browserLoginStart(t, nil)
+	path := f.browserCallbackPath(t, start, "unknown-same-email", false)
+	callback, _ := url.Parse(path)
+	f.mu.Lock()
+	code := f.codes[callback.Query().Get("code")]
+	code.email, code.emailVerified = "changed@example.test", true
+	f.codes[callback.Query().Get("code")] = code
+	f.mu.Unlock()
+	if response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), "")); response.StatusCode != http.StatusUnauthorized {
+		t.Fatal("email linked an unknown identity", response.StatusCode)
+	}
+	if _, err := f.client.ListUsers(t.Context(), securityWireRequest(f.token(t, "unknown-same-email", nil), &pb.ListUsersRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("unregistered identity enumerated protected email metadata", err)
+	}
+}
+
+func TestAuth_OIDCBrowserEnrollmentRealConnect(t *testing.T) {
+	f := newAuthorityWireFixtureSeeded(t, func(config *oidcFixtureBootstrap, issuer string) {
+		config.Roles = json.RawMessage(`[{"id":"personal_user","name":"Personal user","rules":[{"id":"read","permission":"read","resource":"data","principal_uid_prefix":{"literal_before":"users:","literal_after":":"}},{"id":"write","permission":"write","resource":"data","principal_uid_prefix":{"literal_before":"users:","literal_after":":"}}]}]`)
+		policy, err := json.Marshal(map[string]any{"version": 2, "enabled": true, "role_id": "personal_user", "profiles": []map[string]string{{"issuer": issuer, "kind": "browser", "client_profile_id": "browser"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.RegistrationPolicy = policy
+	}, false, false)
+	login := func(subject string) (*pb.BrowserSession, string) {
+		t.Helper()
+		start := f.browserLoginStart(t, nil)
+		callback := f.browserCallbackPath(t, start, subject, false)
+		response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+		if response.StatusCode != http.StatusSeeOther {
+			t.Fatal("browser first login did not create a session after durable enrollment", response.StatusCode)
+		}
+		bootstrap := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", response.Cookies(), ""))
+		raw, err := io.ReadAll(bootstrap.Body)
+		var session pb.BrowserSession
+		if err != nil || bootstrap.StatusCode != http.StatusOK || protojson.Unmarshal(raw, &session) != nil || session.Principal == nil || session.Principal.Identity.Subject != subject || len(session.Principal.GetUserId()) != 32 {
+			t.Fatal("browser enrollment omitted stable self UID", err)
+		}
+		return &session, callback
+	}
+	alice, callback := login("browser-alice")
+	aliceToken := f.token(t, "browser-alice", nil)
+	uid := alice.Principal.GetUserId()
+	prefix := "users:" + uid + ":"
+	if _, err := f.data.PutVertices(t.Context(), securityWireRequest(aliceToken, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: prefix + "profile", Value: &pb.Vertex_String_{String_: "Alice"}}}})); err != nil {
+		t.Fatal("personal_user did not grant personal writes", err)
+	}
+	if _, err := f.data.GetVertex(t.Context(), securityWireRequest(aliceToken, &pb.GetVertexRequest{Key: "users:other:profile"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("new registration accessed another personal area", err)
+	}
+	if _, err := f.client.ListUsers(t.Context(), securityWireRequest(aliceToken, &pb.ListUsersRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("new registration gained management permission", err)
+	}
+	if replay := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, nil, "")); replay.StatusCode != http.StatusUnauthorized {
+		t.Fatal("consumed Code transaction replay accepted", replay.StatusCode)
+	}
+	repeated, _ := login("browser-alice")
+	if repeated.Principal.GetUserId() != uid {
+		t.Fatal("repeat browser login changed stable UID")
+	}
+	admin := f.token(t, "admin", nil)
+	// Drop the complete callback output, including cookies. A fresh Code
+	// transaction must observe the one durable Principal rather than register
+	// another UID or recover a raw credential from the lost output.
+	lostStart := f.browserLoginStart(t, nil)
+	lostCallback := f.browserCallbackPath(t, lostStart, "browser-lost-output", false)
+	lost := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, lostCallback, lostStart.Cookies(), ""))
+	if lost.StatusCode != http.StatusSeeOther {
+		t.Fatal("lost-output fixture callback did not finish", lost.StatusCode)
+	}
+	_, _ = io.Copy(io.Discard, lost.Body)
+	_ = lost.Body.Close()
+	users, err := f.client.ListUsers(t.Context(), securityWireRequest(admin, &pb.ListUsersRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lostUID string
+	for _, user := range users.Msg.Users {
+		if user.Identity.Subject == "browser-lost-output" {
+			lostUID = user.GetUserId()
+		}
+	}
+	recovered, _ := login("browser-lost-output")
+	if lostUID == "" || recovered.Principal.GetUserId() != lostUID {
+		t.Fatal("fresh login after callback-output loss changed installed UID")
+	}
+	identity := alice.Principal.Identity
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
+		{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "personal_user"}}},
+		{Operation: &pb.SecurityChange_PutRegistrationPolicy{PutRegistrationPolicy: &pb.SecurityRegistrationPolicy{Version: 2, RoleId: "personal_user"}}},
+	})
+	if err != nil {
+		t.Fatal("close registration and withdraw first assignment", err)
+	}
+	known, _ := login("browser-alice")
+	if known.Principal.GetUserId() != uid {
+		t.Fatal("registration OFF prevented existing identity login")
+	}
+	if _, err := f.data.GetVertex(t.Context(), securityWireRequest(aliceToken, &pb.GetVertexRequest{Key: prefix + "profile"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("repeat login repaired withdrawn assignment", err)
+	}
+	start := f.browserLoginStart(t, nil)
+	unknown := f.browserCallbackPath(t, start, "browser-off-unknown", false)
+	if response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, unknown, start.Cookies(), "")); response.StatusCode != http.StatusUnauthorized {
+		t.Fatal("registration OFF enrolled unknown browser identity", response.StatusCode)
+	}
+	if _, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(f.token(t, "browser-off-unknown", nil), &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("refused browser enrollment left an active partial identity", err)
+	}
 }
 
 func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
@@ -1545,14 +1904,7 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE} {
-		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
-	}
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE} {
-		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("deny%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
-	}
-	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
+	rules := wireDataRules([]string{"users:1", "users:permanent", "users:rollback", "users:expired", "users:mixed", "users:a", "users:b"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "writer"}
 	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "writer", Rules: rules}}},
@@ -1574,20 +1926,20 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 		t.Fatal("write without Delete", err)
 	}
 	if _, err := put("users:1", "extension", time.Now().Add(2*time.Hour)); err != nil {
-		t.Fatal("TTL extension incorrectly needs Delete", err)
+		t.Fatal("write did not permit TTL extension", err)
 	}
-	if _, err := put("users:1", "shortening", time.Now().Add(time.Minute)); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("TTL shortening bypassed Delete Deny", err)
+	if _, err := put("users:1", "shortening", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal("write must include TTL shortening", err)
 	}
 	got, err := f.data.GetVertex(t.Context(), securityWireRequest(writer, &pb.GetVertexRequest{Key: "users:1"}))
-	if err != nil || got.Msg.Vertex.GetString_() != "extension" {
-		t.Fatal("denied TTL overwrite changed value", err)
+	if err != nil || got.Msg.Vertex.GetString_() != "shortening" {
+		t.Fatal("authorized TTL shortening not applied", err)
 	}
 	if _, err := put("users:permanent", "keep", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := put("users:permanent", "finite", time.Now().Add(time.Hour)); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("permanent lifetime reduced without Delete", err)
+	if _, err := put("users:permanent", "finite", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal("write must permit reducing permanent lifetime", err)
 	}
 	if _, err := f.data.PutVertex(t.Context(), securityWireRequest(writer, &pb.PutVertexRequest{IfAbsent: true, Vertex: &pb.Vertex{Key: "users:permanent", Expiration: timestamppb.New(time.Now().Add(-time.Hour))}})); err != nil {
 		t.Fatal("condition miss invented a delete effect", err)
@@ -1597,15 +1949,15 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 		{Key: "users:rollback", Value: &pb.Vertex_String_{String_: "safe"}, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
 		{Key: "users:expired", Expiration: timestamppb.New(time.Now().Add(-time.Hour))},
 	}}))
-	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("mixed lifecycle batch admitted", err)
+	if err != nil {
+		t.Fatal("write must permit mixed live/expired batch", err)
 	}
-	if _, live := f.graph.GetVertex("data:users:rollback"); live {
-		t.Fatal("lifecycle failure partially wrote")
+	if _, live := f.graph.GetVertex("data:users:rollback"); !live {
+		t.Fatal("authorized live batch member missing")
 	}
 	after, _, _ := f.dataRuntime.MutationLogStats()
-	if after != before {
-		t.Fatal("denied lifecycle batch appended replication data")
+	if after <= before {
+		t.Fatal("authorized lifecycle batch omitted replication data")
 	}
 	for name, message := range map[string]*pb.GetVerticesRequest{
 		"hidden existing": {Keys: []string{"users:1", "users:private:existing"}},
@@ -1655,8 +2007,8 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 	if err != nil || edge.Msg.Edge.Weight != 9 {
 		t.Fatal("authorized Edge Put did not update the Edge", err)
 	}
-	if _, err := f.data.DeleteVertex(t.Context(), securityWireRequest(writer, &pb.DeleteVertexRequest{Key: "users:1"})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("direct Delete Deny bypassed", err)
+	if _, err := f.data.DeleteVertex(t.Context(), securityWireRequest(writer, &pb.DeleteVertexRequest{Key: "users:1"})); err != nil {
+		t.Fatal("write must include Delete", err)
 	}
 	if _, err := f.data.GetServerStatus(t.Context(), securityWireRequest(writer, &pb.GetServerStatusRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("namespace writer received deployment totals", err)
@@ -1677,12 +2029,7 @@ func TestAuth_OIDCScopedCollectionsRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "scoped"}
-	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
-		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
-	}
-	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
-	rules = append(rules, &pb.SecurityRule{Id: "private-write", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
+	rules := wireDataRules([]string{"users:1", "users:2", "users:z"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
 	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "scoped", Rules: rules}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
@@ -1777,11 +2124,7 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_QUERY} {
-		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
-	}
-	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}}, &pb.SecurityRule{Id: "blocked-vertex", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:blocked:"}})
+	rules := wireDataRules([]string{"users:search:", "users:seed", "users:a", "users:unreachable"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)
 	changes := []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "query", Rules: rules}}}}
 	for _, subject := range []string{"query1", "query2"} {
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: subject}
@@ -1924,7 +2267,7 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules = append(rules, &pb.SecurityRule{Id: "revoke-search", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:search:"}})
+	rules = wireDataRules([]string{"users:seed", "users:a", "users:unreachable"}, pb.SecurityPermission_SECURITY_PERMISSION_READ)
 	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "query", Rules: rules}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -2047,11 +2390,8 @@ func newScopedSDKFixtureTransport(t *testing.T, publicTLS bool, extraRules ...*p
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
-		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
-	}
-	rules := []*pb.SecurityRule{rule("cdc", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"), rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:")}
-	rules = append(rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:create:"))
+	rules := wireDataRules([]string{"orders:1", "orders:a", "orders:b", "orders:create:", "orders:probe-", "orders:tail", "orders:head"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
+	rules = append(rules, &pb.SecurityRule{Id: "all-order-writes", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}})
 	rules = append(rules, extraRules...)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "sdk"}
 	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
@@ -2186,9 +2526,9 @@ func TestAuth_OIDCGoScopedChangesFacadeRealConnect(t *testing.T) {
 		}
 		break
 	}
-	for _, err := range sdk.WatchChanges(ctx, client.WatchChangesOptions{Prefix: "orders:", Bootstrap: true, Projection: client.ChangeValue}) {
-		if connectCode(err) != connect.CodePermissionDenied {
-			t.Fatal("value projection inherited grant", err)
+	for frame, err := range sdk.WatchChanges(ctx, client.WatchChangesOptions{Prefix: "orders:", Bootstrap: true, Projection: client.ChangeValue}) {
+		if err != nil || !frame.Bootstrap {
+			t.Fatal("read did not include value projection", err)
 		}
 		break
 	}
@@ -2244,7 +2584,7 @@ func TestAuth_OIDCNodeScopedChangesFacadeRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	quoted, _ := json.Marshal(entry)
-	script := `import { connectWeb, LanternError, BatchError, mintReceiptOperationContext } from ` + string(quoted) + `;
+	script := `import { connectWeb, LanternError, BatchError, mintReceiptOperationContext, mutationReply } from ` + string(quoted) + `;
 const gatewayFetch = (input, init) => {
  const headers=new Headers(init?.headers); headers.set("X-Forwarded-Proto","https"); headers.set("X-Forwarded-Host",new URL(typeof input==="string" ? input : input.url).host);
  return fetch(input,{...init,headers});
@@ -2256,7 +2596,8 @@ try {
  for await (const frame of sdk.watchChanges({prefix:"orders:",bootstrap:true},cancellation.signal)) {
   if(frame.bootstrap) {
    if(!frame.cursor || frame.invalidations.length) throw new Error("invalid bootstrap"); bootstrapped=true;
-   await sdk.putVertices([{key:"orders:private:1",value:"hidden"},{key:"orders:1",value:"visible"}]); continue;
+   const seeded=await mutationReply(()=>sdk.putVertices([{key:"orders:private:1",value:"hidden"},{key:"orders:1",value:"visible"}]));
+   if(seeded.kind!=="acceptedUndisclosed") throw new Error("mixed write disclosed hidden effect"); continue;
   }
   if(!frame.invalidations.length) continue;
   if(!bootstrapped || frame.invalidations.length!==1 || frame.invalidations[0].key!=="orders:1" || frame.invalidations[0].current!==undefined) throw new Error("private data disclosed");
@@ -2276,8 +2617,9 @@ try {
  try {await sdk.createEdge({tail:input.tail,head:"outside:denied",weight:1}); throw new Error("outside Head authorized");}
  catch(error) {const cause=error instanceof BatchError?error.cause:error; if(!(cause instanceof LanternError) || cause.cause?.code!==7) throw error;}
 
- try { for await(const frame of sdk.watchChanges({prefix:"orders:",projection:"value",bootstrap:true})) throw new Error("value projection inherited grant"); }
- catch(error) { if(!(error instanceof LanternError) || error.cause?.code!==7) throw error; }
+ for await(const frame of sdk.watchChanges({prefix:"orders:",projection:"value",bootstrap:true})) {
+  if(!frame.bootstrap) throw new Error("read did not include value projection"); break;
+ }
 } finally { cancellation.abort(); sdk.close(); }
 `
 	file := filepath.Join(t.TempDir(), "scoped-wire.ts")
@@ -2303,7 +2645,7 @@ func TestAuth_OIDCAdminVertexCountRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	admin := f.token(t, "admin", nil)
 	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
-	if err != nil || len(principal.Msg.Roles) != 1 || principal.Msg.Roles[0].Id != "security_admin" || len(principal.Msg.Roles[0].Rules) != 1 || principal.Msg.Roles[0].Rules[0].Action != pb.SecurityAction_SECURITY_ACTION_MANAGE {
+	if err != nil || len(principal.Msg.Roles) != 1 || principal.Msg.Roles[0].Id != "security_admin" || len(principal.Msg.Roles[0].Rules) != 4 || principal.Msg.Roles[0].Rules[0].ResourceKind != pb.SecurityResource_SECURITY_RESOURCE_SECURITY {
 		t.Fatal("bootstrap must have management authority without data grants", err)
 	}
 	if err := f.graph.PutVertex("data:tenant:a", &pb.Vertex{Key: "data:tenant:a", Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
@@ -2384,7 +2726,7 @@ try {
 		}
 	}
 	run("denied")
-	role := &pb.SecurityRole{Id: "data_reader", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}}}}
+	role := &pb.SecurityRole{Id: "data_reader", Rules: []*pb.SecurityRule{{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}}}}
 	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}},
@@ -2403,7 +2745,7 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 	if err != nil {
 		t.Skip("Bun is required for the Admin Add recovery wire gate")
 	}
-	for _, phase := range []string{"receipt", "legacy-none", "legacy-other"} {
+	for _, phase := range []string{"receipt", "opt-out"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newOIDCControlWireFixtureOptions(t, nil, true)
 			admin := f.token(t, "admin", nil)
@@ -2411,23 +2753,8 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
-				return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
-			}
-			role := &pb.SecurityRole{Id: "admin_data", Rules: []*pb.SecurityRule{
-				rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-				rule("audit", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "audit:"),
-				rule("query", pb.SecurityAction_SECURITY_ACTION_QUERY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-				rule("deny", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
-				rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-			}}
-			if phase != "legacy-none" {
-				receiptPrefix := "orders:"
-				if phase == "legacy-other" {
-					receiptPrefix = "audit:"
-				}
-				role.Rules = append(role.Rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, receiptPrefix))
-			}
+			role := &pb.SecurityRole{Id: "admin_data", Rules: wireDataRules([]string{"audit:", "orders:tail", "orders:head"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)}
+
 			_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 				{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
 				{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: current.Msg.Identity, RoleId: role.Id}}},
@@ -2436,13 +2763,10 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 				t.Fatal(err)
 			}
 			capability, capErr := f.data.GetReceiptCapability(t.Context(), securityWireRequest(admin, &pb.GetReceiptCapabilityRequest{}))
-			if phase == "legacy-none" {
-				if connect.CodeOf(capErr) != connect.CodePermissionDenied {
-					t.Fatal("missing ReceiptRead must reject capability", capErr)
-				}
-			} else if capErr != nil || !capability.Msg.Enabled {
-				t.Fatal("receipt capability", capErr)
+			if capErr != nil || !capability.Msg.Enabled {
+				t.Fatal("data read receipt capability", capErr)
 			}
+
 			for _, key := range []string{"orders:tail", "orders:head", "orders:private:hidden", "audit:read"} {
 				if err := f.graph.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
 					t.Fatal(err)
@@ -2456,7 +2780,7 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 			script := `import { connectWeb, connectSecurityWeb } from ` + module("admin/node_modules/lantern-sdk/dist/web.js") + `;
 import { createAddRecoveryGateway } from ` + module("admin/app/lib/client/infrastructure/api/add-recovery.ts") + `;
 import { AddRecoveryStore } from ` + module("admin/app/lib/client/usecase/add-recovery/add-recovery.ts") + `;
-import { scopeOptions, BROWSE_SCOPE_ACTIONS, QUERY_SCOPE_ACTIONS, receiptSuggestedForEdge } from ` + module("admin/app/lib/client/usecase/data-scope/scope-options.ts") + `;
+import { scopeOptions, receiptSuggestedForEdge } from ` + module("admin/app/lib/client/usecase/data-scope/scope-options.ts") + `;
 const check = (value, message) => { if (!value) throw new Error(message); };
 let adds=0, statuses=0, capabilities=0, dropStatus=true;
 const ids=[];
@@ -2478,12 +2802,12 @@ let raw=null;
 const storage={read:()=>raw,write:value=>{raw=value;},newID:()=>"original-add"};
 try {
  const principal=await connectSecurityWeb(process.env.LANTERN_SDK_URL,{token:process.env.LANTERN_SDK_CREDENTIAL,transportOptions:{fetch:gatewayFetch}}).getCurrentPrincipal();
- const browse=scopeOptions(principal.roles,BROWSE_SCOPE_ACTIONS);
- const query=scopeOptions(principal.roles,QUERY_SCOPE_ACTIONS);
- check(JSON.stringify(browse.map(o=>o.prefix))===JSON.stringify(["audit:","orders:"]),"Server Role browse scopes lost");
- check(query.length===1 && query[0].prefix==="orders:" && query[0].denied.includes("orders:private:"),"Query intersection or Deny lost");
- const visible=await client.scanVertices("orders:"); check(!visible.vertices.some(v=>v.key.startsWith("orders:private:")),"Deny leaked");
- const gateway=createAddRecoveryGateway(client,input=>receiptSuggestedForEdge(principal.roles,input.tail,input.head));
+ const browse=scopeOptions(principal.roles,principal.identity?.userId);
+ const query=scopeOptions(principal.roles,principal.identity?.userId);
+ check(JSON.stringify(browse.map(o=>o.prefix))===JSON.stringify(["audit:","orders:head","orders:tail"]),"Server Role browse scopes lost");
+ check(JSON.stringify(query)===JSON.stringify(browse),"read-backed query scope suggestions differ");
+ const visible=await client.scanVertices("orders:"); check(!visible.vertices.some(v=>v.key.startsWith("orders:private:")),"outside scope leaked");
+ const gateway=createAddRecoveryGateway(client,input=>process.env.LANTERN_ADMIN_ADD_WIRE_PHASE==="receipt" && receiptSuggestedForEdge(principal.roles,input.tail,input.head,principal.identity?.userId));
  const input={tail:"orders:tail",head:"orders:head",weight:7};
  let store=new AddRecoveryStore(storage);
  await store.add("actor",input,gateway).then(()=>{throw new Error("lost Add accepted as known");},()=>{});
@@ -2737,16 +3061,13 @@ func TestAuth_FlutterDataDemoRealConnect(t *testing.T) {
 	var changes []*pb.SecurityChange
 	for _, subject := range []string{"demo", "query-denied", "data-denied"} {
 		var rules []*pb.SecurityRule
-		for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
-			if subject == "query-denied" && action == pb.SecurityAction_SECURITY_ACTION_QUERY {
-				continue
-			}
-			effect := pb.SecurityEffect_SECURITY_EFFECT_ALLOW
-			if subject == "data-denied" {
-				effect = pb.SecurityEffect_SECURITY_EFFECT_DENY
-			}
-			rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("rule-%d", i), Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: "flutter-demo:"}})
+		switch subject {
+		case "demo":
+			rules = wireDataRules([]string{"flutter-demo:"}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
+		case "query-denied":
+			rules = wireDataRules([]string{"flutter-demo:"}, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
 		}
+
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: subject}
 		changes = append(changes,
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: subject, Rules: rules}}},
@@ -2780,14 +3101,14 @@ func TestAuth_DartOfflineScopedChangesRealConnect(t *testing.T) {
 		t.Skip("Flutter is required for the offline public CDC composition gate")
 	}
 	f := newScopedSDKFixtureTransport(t, true, &pb.SecurityRule{
-		Id: "app-query", Action: pb.SecurityAction_SECURITY_ACTION_QUERY,
-		Effect:   pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
-		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"},
+		Id: "app-query", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA,
+
+		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:create:app-"},
 	}, &pb.SecurityRule{
 		// The app replaces a previously unbounded Vertex with a finite TTL.
-		// That lifecycle reduction requires Delete authority as well as Write.
-		Id: "app-lifecycle", Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE,
-		Effect:   pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
+		// Write includes the lifecycle reduction.
+		Id: "app-lifecycle", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA,
+
 		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:create:app-"},
 	})
 	server, ca := scopedSDKTLSServer(t, f)
@@ -2812,45 +3133,19 @@ func TestAuth_OIDCHeadManagedEdgesRealConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, value string) *pb.SecurityRule {
-		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: value}}
-	}
-	readerRules := []*pb.SecurityRule{
-		prefix("read-users", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:"),
-		prefix("read-targets", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-		prefix("write-heads", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-		prefix("query", pb.SecurityAction_SECURITY_ACTION_QUERY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
-		prefix("export", pb.SecurityAction_SECURITY_ACTION_EXPORT, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
-		prefix("receipt-users", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:"),
-		prefix("receipt-targets", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-	}
-	for _, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
-		for i, denied := range []string{"targets:private:", "targets:secret:"} {
-			readerRules = append(readerRules, prefix(fmt.Sprintf("deny_%s_%d", strings.ToLower(action.String()), i), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, denied))
+	targetPrefixes := []string{"targets:1", "targets:2", "targets:new", "targets:later", "targets:missing"}
+	readerRules := append(wireDataRules([]string{"users:"}, pb.SecurityPermission_SECURITY_PERMISSION_READ), wireDataRules(targetPrefixes, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)...)
+	identityRules := append(wireDataRules([]string{"users:"}, pb.SecurityPermission_SECURITY_PERMISSION_READ), wireDataRules(targetPrefixes, pb.SecurityPermission_SECURITY_PERMISSION_READ)...)
+	creatorRules := append(wireDataRules([]string{"users:1"}, pb.SecurityPermission_SECURITY_PERMISSION_READ), wireDataRules(targetPrefixes, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)...)
+	// Rules from separate scopes need unique identities within each Role.
+	for _, rules := range [][]*pb.SecurityRule{readerRules, identityRules, creatorRules} {
+		for i, rule := range rules {
+			rule.Id = fmt.Sprintf("grant-%d", i)
 		}
 	}
-	var identityRules []*pb.SecurityRule
-	for _, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY} {
-		identityRules = append(identityRules,
-			prefix("users_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:"),
-			prefix("targets_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-			prefix("private_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:private:"),
-			prefix("secret_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"))
-	}
-	creatorRules := []*pb.SecurityRule{
-		prefix("own-tail-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1"),
-		prefix("head-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-		prefix("head-write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-		prefix("receipt-tail", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1"),
-		prefix("receipt-head", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-		prefix("secret-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"),
-		prefix("secret-write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"),
-	}
-	writerRules := []*pb.SecurityRule{
-		prefix("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
-		prefix("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
-	}
-	var changes []*pb.SecurityChange
+	writerRules := wireDataRules([]string{""}, pb.SecurityPermission_SECURITY_PERMISSION_READ, pb.SecurityPermission_SECURITY_PERMISSION_WRITE)
+
+	changes := []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutEdgePolicy{PutEdgePolicy: &pb.SecurityEdgePolicy{Version: 1, Mode: pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_READ_WRITE}}}}
 	for _, role := range []*pb.SecurityRole{{Id: "head_reader", Rules: readerRules}, {Id: "head_identity", Rules: identityRules}, {Id: "head_writer", Rules: writerRules}, {Id: "head_creator", Rules: creatorRules}} {
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: role.Id}
 		changes = append(changes,
@@ -3112,18 +3407,17 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 		t.Fatal(err)
 	}
 	prefix := func(id string, action pb.SecurityAction, value string) *pb.SecurityRule {
-		return &pb.SecurityRule{Id: id, Action: action, Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: value}}
+		return &pb.SecurityRule{Id: id, Permission: wirePermissionForAction(action), ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: value}}
 	}
 	blindRules := []*pb.SecurityRule{
 		prefix("tail-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, "tails:"),
 		prefix("head-write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, "heads:"),
-		prefix("receipts", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, ""),
 	}
 	roles := []*pb.SecurityRole{
 		{Id: "blind", Rules: blindRules},
 		{Id: "seed", Rules: []*pb.SecurityRule{prefix("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, ""), prefix("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, "")}},
 	}
-	var changes []*pb.SecurityChange
+	changes := []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutEdgePolicy{PutEdgePolicy: &pb.SecurityEdgePolicy{Version: 1, Mode: pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_READ_WRITE}}}}
 	for _, role := range roles {
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: role.Id}
 		changes = append(changes,
@@ -3179,9 +3473,6 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	}
 	if _, err := sdk.GetEdge(ctx, "tails:a", "heads:b"); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("Head write granted Edge read", err)
-	}
-	if _, err := sdk.PutVertex(ctx, "heads:b", "overwritten", 0); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("Head write granted endpoint value/TTL updates", err)
 	}
 	if _, err := sdk.DeleteVertex(ctx, "tails:a"); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("Head write granted VertexDelete", err)
@@ -3313,7 +3604,7 @@ func TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect(t *testing.T) {
 				}
 				role := &pb.SecurityRole{Id: "ordinary_data"}
 				for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
-					role.Rules = append(role.Rules, &pb.SecurityRule{Id: fmt.Sprintf("action_%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
+					role.Rules = append(role.Rules, &pb.SecurityRule{Id: fmt.Sprintf("action_%d", i), Permission: wirePermissionForAction(action), ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
 				}
 				review := &pb.CurrentSecurityReview{Profile: principal.Msg.Version.CurrentProfile, ExpectedCut: principal.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}}}}
 				prepared, err := client.PrepareSecurityChanges(t.Context(), securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: review}))

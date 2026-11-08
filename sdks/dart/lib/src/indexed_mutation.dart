@@ -207,6 +207,9 @@ extension _IndexedMutationAttempts on LanternClient {
     );
     final count = end - start;
     final acceptance = switch (response) {
+      $graph.PutVerticesResponse r => r.hasAcceptance() ? r.acceptance : null,
+      $graph.DeleteVerticesResponse r =>
+        r.hasAcceptance() ? r.acceptance : null,
       $graph.PutEdgesResponse r => r.hasAcceptance() ? r.acceptance : null,
       $graph.AddEdgesResponse r => r.hasAcceptance() ? r.acceptance : null,
       $graph.DeleteEdgesResponse r => r.hasAcceptance() ? r.acceptance : null,

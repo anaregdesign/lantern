@@ -13,6 +13,9 @@ import { checkMutationAcceptance } from "../src/mutation-acceptance.js";
 import {
   AddEdgesResponseSchema,
   DeleteEdgesResponseSchema,
+  PutVerticesResponseSchema,
+  DeleteVerticesResponseSchema,
+  DeleteVerticesByPrefixResponseSchema,
   LanternService,
   MutationAcceptanceKind,
   MutationAcceptanceSchema,
@@ -52,6 +55,14 @@ test("receipt mutations acknowledge without uncertainty wrapping or repeat dispa
               ReceiptMutationKind.CREATE_EDGE,
             ].sort((a, b) => a - b),
           };
+        },
+        putVertices() {
+          calls++;
+          return { acceptance };
+        },
+        deleteVertices() {
+          calls++;
+          return { acceptance };
         },
         addEdges() {
           calls++;
@@ -99,7 +110,17 @@ test("receipt mutations acknowledge without uncertainty wrapping or repeat dispa
   expect(
     await mutationReply(() => client.deleteEdgeContributionsWithReceipt([input], context)),
   ).toEqual({ kind: "acceptedUndisclosed" });
-  expect(calls).toBe(4);
+  const vertex = { key: "a", value: "value" };
+  expect(await mutationReply(() => client.putVerticesWithReceipt([vertex], context))).toEqual({
+    kind: "acceptedUndisclosed",
+  });
+  expect(
+    await mutationReply(() => client.putVerticesIfAbsentWithReceipt([vertex], context)),
+  ).toEqual({ kind: "acceptedUndisclosed" });
+  expect(await mutationReply(() => client.deleteVerticesWithReceipt(["a"], context))).toEqual({
+    kind: "acceptedUndisclosed",
+  });
+  expect(calls).toBe(7);
   const status = await client.getReceiptStatus(context.operationIds[0]!);
   expect(status).toEqual({ state: "effectUndisclosed", operationId: context.operationIds[0] });
   expect(status).not.toHaveProperty("receipt");
@@ -121,6 +142,9 @@ test("acceptance is exclusive, typed, and has no RPC failure status", async () =
     create(AddEdgesResponseSchema, { acceptance, written: 1 }),
     create(AddEdgesResponseSchema, { acceptance, effectiveWeights: [0] }),
     create(DeleteEdgesResponseSchema, { acceptance, existed: [false] }),
+    create(PutVerticesResponseSchema, { acceptance, outcomes: [PutOutcome.APPLIED_AND_LIVE] }),
+    create(DeleteVerticesResponseSchema, { acceptance, existed: [false] }),
+    create(DeleteVerticesByPrefixResponseSchema, { acceptance, deleted: 1n }),
     fromBinary(
       AddEdgesResponseSchema,
       new Uint8Array([...toBinary(AddEdgesResponseSchema, response), 0xa0, 0x06, 1]),
@@ -143,7 +167,16 @@ test("acceptance is exclusive, typed, and has no RPC failure status", async () =
   ).rejects.toBeInstanceOf(BatchError);
 });
 
-for (const operation of ["add", "put", "delete", "create", "contribution"] as const) {
+for (const operation of [
+  "add",
+  "put",
+  "delete",
+  "create",
+  "contribution",
+  "vertexPut",
+  "vertexIfAbsent",
+  "vertexDelete",
+] as const) {
   for (const failLast of [false, true]) {
     test(`${operation}: blind chunk handles each new input once; later failure=${failLast}`, async () => {
       const seen: string[] = [];
@@ -156,6 +189,14 @@ for (const operation of ["add", "put", "delete", "create", "contribution"] as co
       const client = Lantern.withTransport(
         createRouterTransport((router) =>
           router.service(LanternService, {
+            putVertices(request) {
+              return next(request.vertices[0]!.key)
+                ? { acceptance }
+                : { outcomes: [PutOutcome.APPLIED_AND_LIVE] };
+            },
+            deleteVertices(request) {
+              return next(request.keys[0]!) ? { acceptance } : { deleted: 1, existed: [true] };
+            },
             addEdges(request) {
               return next(request.edges[0]!.head)
                 ? { acceptance }
@@ -190,17 +231,23 @@ for (const operation of ["add", "put", "delete", "create", "contribution"] as co
         contribId: new Uint8Array(24).fill(1),
       }));
       const run = () =>
-        operation === "add"
-          ? client.addEdges(inputs)
-          : operation === "put"
-            ? client.putEdges(inputs)
-            : operation === "delete"
-              ? client.deleteEdges(inputs)
-              : operation === "create"
-                ? client.createEdges(
-                    inputs.map(({ tail, head, weight }) => ({ tail, head, weight })),
-                  )
-                : client.deleteEdgeContributions(inputs);
+        operation === "vertexPut"
+          ? client.putVertices(inputs.map(({ head }) => ({ key: head, value: "value" })))
+          : operation === "vertexIfAbsent"
+            ? client.putVerticesIfAbsent(inputs.map(({ head }) => ({ key: head, value: "value" })))
+            : operation === "vertexDelete"
+              ? client.deleteVertices(inputs.map(({ head }) => head))
+              : operation === "add"
+                ? client.addEdges(inputs)
+                : operation === "put"
+                  ? client.putEdges(inputs)
+                  : operation === "delete"
+                    ? client.deleteEdges(inputs)
+                    : operation === "create"
+                      ? client.createEdges(
+                          inputs.map(({ tail, head, weight }) => ({ tail, head, weight })),
+                        )
+                      : client.deleteEdgeContributions(inputs);
       if (failLast) {
         try {
           await mutationReply(run);

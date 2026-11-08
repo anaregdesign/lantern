@@ -108,10 +108,11 @@ export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
       {allError && (
         <MessageBar intent="warning" data-testid="ops-metrics-degraded">
           <MessageBarBody>
-            All metric panels failed to load. Verify the Prometheus endpoint (
-            <code>{prometheus.prometheusUrl}</code>) is reachable — on a local{" "}
-            <code>vite preview</code> build there is no Prometheus behind{" "}
-            <code>/api/prom</code>.
+            Metrics could not be loaded from{" "}
+            <code>{prometheus.prometheusUrl}</code>. See each panel for the
+            authentication, permission or upstream error. The operator must
+            configure Prometheus and its three scrape targets; an empty chart
+            does not establish that collection is healthy.
           </MessageBarBody>
         </MessageBar>
       )}

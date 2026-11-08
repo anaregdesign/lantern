@@ -98,6 +98,13 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getRegistrationPolicy, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.GetEdgePolicyResponse> getEdgePolicy(
+    $0.GetEdgePolicyRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getEdgePolicy, request, options: options);
+  }
+
   /// Contacted-node application state; a committed policy is not all-node application.
   $grpc.ResponseFuture<$0.GetLogSettingsResponse> getLogSettings(
     $0.GetLogSettingsRequest request, {
@@ -261,6 +268,11 @@ class LanternSecurityServiceClient extends $grpc.Client {
       '/graph.v1.LanternSecurityService/GetRegistrationPolicy',
       ($0.GetRegistrationPolicyRequest value) => value.writeToBuffer(),
       $0.GetRegistrationPolicyResponse.fromBuffer);
+  static final _$getEdgePolicy =
+      $grpc.ClientMethod<$0.GetEdgePolicyRequest, $0.GetEdgePolicyResponse>(
+          '/graph.v1.LanternSecurityService/GetEdgePolicy',
+          ($0.GetEdgePolicyRequest value) => value.writeToBuffer(),
+          $0.GetEdgePolicyResponse.fromBuffer);
   static final _$getLogSettings =
       $grpc.ClientMethod<$0.GetLogSettingsRequest, $0.GetLogSettingsResponse>(
           '/graph.v1.LanternSecurityService/GetLogSettings',
@@ -414,6 +426,15 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.GetRegistrationPolicyRequest.fromBuffer(value),
         ($0.GetRegistrationPolicyResponse value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.GetEdgePolicyRequest, $0.GetEdgePolicyResponse>(
+            'GetEdgePolicy',
+            getEdgePolicy_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.GetEdgePolicyRequest.fromBuffer(value),
+            ($0.GetEdgePolicyResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.GetLogSettingsRequest,
             $0.GetLogSettingsResponse>(
         'GetLogSettings',
@@ -618,6 +639,15 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
 
   $async.Future<$0.GetRegistrationPolicyResponse> getRegistrationPolicy(
       $grpc.ServiceCall call, $0.GetRegistrationPolicyRequest request);
+
+  $async.Future<$0.GetEdgePolicyResponse> getEdgePolicy_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetEdgePolicyRequest> $request) async {
+    return getEdgePolicy($call, await $request);
+  }
+
+  $async.Future<$0.GetEdgePolicyResponse> getEdgePolicy(
+      $grpc.ServiceCall call, $0.GetEdgePolicyRequest request);
 
   $async.Future<$0.GetLogSettingsResponse> getLogSettings_Pre(
       $grpc.ServiceCall $call,

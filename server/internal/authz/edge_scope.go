@@ -14,7 +14,7 @@ func (a *Access) AllowsEdgeAction(action Action, tail, head string) bool {
 }
 
 // EdgeCandidateScope is an endpoint superset for range seeks. A modification
-// uses the union of tail read and head write ranges; its final oriented endpoint
+// uses the union of the selected endpoint permission ranges; its final oriented endpoint
 // predicate is mandatory. This cache contains policy ranges, not ranking data.
 func (a *Access) EdgeCandidateScope(actions ...Action) *Scope {
 	if a == nil || len(actions) == 0 {
@@ -30,7 +30,8 @@ func (a *Access) EdgeCandidateScope(actions ...Action) *Scope {
 			compiled = a.cache.get(scopeCacheKey{action: EdgeWrite, setKey: a.setKey, edge: true}, func() *Scope {
 				// The builder owns the cache lock; compile without recursively
 				// entering that lock through Scope.
-				read, write := a.compileScope(VertexRead), a.compileScope(VertexWrite)
+				tailAction, headAction := a.EdgeEndpointActions()
+				read, write := a.compileScope(tailAction), a.compileScope(headAction)
 				if read.Empty() || write.Empty() {
 					return &Scope{}
 				}

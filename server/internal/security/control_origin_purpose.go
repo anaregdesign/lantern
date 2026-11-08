@@ -41,7 +41,7 @@ func authorityPurposeBindingFailure(b authorityPurposeBinding, p *S1Projection) 
 		return "actor_kind"
 	case !known || !i.Enabled || i.Deleted || i.ConfigRevision != b.IssuerConfigRevision:
 		return "issuer_binding"
-	case !active || !a.AllowsGlobal(SecurityManage):
+	case !active || !hasManagementWrite(a):
 		return "actor_access"
 	default:
 		return ""

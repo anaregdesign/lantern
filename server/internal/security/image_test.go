@@ -35,7 +35,7 @@ func TestImageIntegrity(t *testing.T) {
 		{"last admin Issuer disabled", func(i *Image) { i.Issuers[0].Enabled = false }, ErrLastAdministrator},
 		{"last admin removed", func(i *Image) { i.Principals[0].Assignments = nil }, ErrLastAdministrator},
 		{"last admin Role changed", func(i *Image) { i.Roles[0].Rules = nil }, ErrLastAdministrator},
-		{"last admin Deny", func(i *Image) { i.Roles[0].Rules = append(i.Roles[0].Rules, globalRule(Deny, SecurityManage)) }, ErrLastAdministrator},
+		{"last admin write removed", func(i *Image) { i.Roles[0].Rules = []PermissionRule{globalRule(SecurityRead)} }, ErrLastAdministrator},
 		{"orphan Session", func(i *Image) { i.Sessions = []Session{testSession()}; i.Sessions[0].Identity.Subject = "missing" }, ErrInvalidImage},
 		{"long Session", func(i *Image) {
 			i.Sessions = []Session{testSession()}
@@ -92,10 +92,12 @@ func TestImageUnknownAuthenticationTimeAndOldReaderBoundary(t *testing.T) {
 	if err != nil || !restored.Image().Sessions[0].AuthTime.IsZero() {
 		t.Fatal("unknown evidence changed after canonical recovery", err)
 	}
-	image.Version = 1
-	encoded, _ := json.Marshal(image)
-	if _, err := DecodeImage(encoded, DefaultPolicyLimits()); !errors.Is(err, ErrInvalidImage) {
-		t.Fatal("old image silently migrated", err)
+	for _, retiredVersion := range []int{1, 2} {
+		image.Version = retiredVersion
+		encoded, _ := json.Marshal(image)
+		if _, err := DecodeImage(encoded, DefaultPolicyLimits()); !errors.Is(err, ErrInvalidImage) {
+			t.Fatal("retired image silently reinterpreted", retiredVersion, err)
+		}
 	}
 }
 
@@ -120,7 +122,7 @@ func TestImageMembershipReuse(t *testing.T) {
 	if current != admin {
 		t.Fatal("account-only revision rebuilt the Role view")
 	}
-	image.Roles[0].Rules = append(image.Roles[0].Rules, dataRule(Allow, VertexRead, "public:"))
+	image.Roles[0].Rules = append(image.Roles[0].Rules, dataRule(VertexRead, "public:"))
 	changed, err := compileImage(image, DefaultPolicyLimits(), next)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +137,7 @@ func TestImageUIDBindingAndUniqueness(t *testing.T) {
 	const uidA = "11111111111111111111111111111111"
 	const uidB = "22222222222222222222222222222222"
 	image := testImage()
-	image.Roles = append(image.Roles, Role{ID: "personal", Rules: []PermissionRule{{Effect: Allow, Action: VertexRead, Resource: DataResource, PrincipalUIDPrefix: &authz.PrincipalUIDPrefix{LiteralBefore: "users:", LiteralAfter: ":"}}}})
+	image.Roles = append(image.Roles, Role{ID: "personal", Rules: []PermissionRule{{Permission: Read, Resource: DataResource, PrincipalUIDPrefix: &authz.PrincipalUIDPrefix{LiteralBefore: "users:", LiteralAfter: ":"}}}})
 	idA, idB := testIdentity(), testIdentity()
 	idA.Subject = "a"
 	idB.Subject = "b"

@@ -10,7 +10,7 @@ import (
 )
 
 func TestRegistrationPolicyCodecClosedShape(t *testing.T) {
-	wire := &pb.SecurityRegistrationPolicy{Version: 1, Enabled: true, RoleId: security.PersonalUserRoleID, Profiles: []*pb.SecurityRegistrationProfile{{Issuer: security.GoogleIssuer, ClientProfileId: "android"}}}
+	wire := &pb.SecurityRegistrationPolicy{Version: 2, Enabled: true, RoleId: security.PersonalUserRoleID, Profiles: []*pb.SecurityRegistrationProfile{{Issuer: security.GoogleIssuer, ClientProfileId: "android", Kind: pb.RegistrationProfileKind_REGISTRATION_PROFILE_KIND_NATIVE}}}
 	policy, err := decodeRegistrationPolicy(wire)
 	if err != nil || !proto.Equal(wire, encodeRegistrationPolicy(policy)) {
 		t.Fatal("policy round trip", err)
@@ -20,7 +20,10 @@ func TestRegistrationPolicyCodecClosedShape(t *testing.T) {
 		t.Fatal("policy change codec", err)
 	}
 	for name, edit := range map[string]func(*pb.SecurityRegistrationPolicy){
-		"unknown version":   func(p *pb.SecurityRegistrationPolicy) { p.Version = 2 },
+		"unknown version": func(p *pb.SecurityRegistrationPolicy) { p.Version = 999 },
+		"missing kind": func(p *pb.SecurityRegistrationPolicy) {
+			p.Profiles[0].Kind = pb.RegistrationProfileKind_REGISTRATION_PROFILE_KIND_UNSPECIFIED
+		},
 		"arbitrary role":    func(p *pb.SecurityRegistrationPolicy) { p.RoleId = "security_admin" },
 		"no exact profiles": func(p *pb.SecurityRegistrationPolicy) { p.Profiles = nil },
 		"duplicate profile": func(p *pb.SecurityRegistrationPolicy) {
@@ -52,7 +55,7 @@ func TestRegistrationReviewCodecRequiresExactContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	actor := security.Identity{Kind: security.OIDCPrincipal, Issuer: security.GoogleIssuer, Subject: "new-user"}
-	command := security.S1Command{Kind: security.S1RegisterPrincipal, Registration: &security.PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}}
+	command := security.S1Command{Kind: security.S1RegisterPrincipal, Registration: &security.PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", ProfileKind: security.NativeRegistrationProfile, IssuerConfigRevision: 1}}
 	op, err := security.NewS1Operation(actor, p.Cut(), command, security.DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -419,4 +420,29 @@ func createPrivateTestFile(path string, raw []byte) error {
 		err = io.ErrShortWrite
 	}
 	return errors.Join(err, file.Close())
+}
+
+// Fixture operation names retain original receipt intent; Role grants use only
+// the central two-verb mapping. These helpers never accept negative grants.
+func wirePermissionForAction(action pb.SecurityAction) pb.SecurityPermission {
+	switch action {
+	case pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE:
+		return pb.SecurityPermission_SECURITY_PERMISSION_WRITE
+	case pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_QUERY,
+		pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityAction_SECURITY_ACTION_CDC_VALUE,
+		pb.SecurityAction_SECURITY_ACTION_EXPORT, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ:
+		return pb.SecurityPermission_SECURITY_PERMISSION_READ
+	default:
+		return pb.SecurityPermission_SECURITY_PERMISSION_UNSPECIFIED
+	}
+}
+
+func wireDataRules(prefixes []string, permissions ...pb.SecurityPermission) []*pb.SecurityRule {
+	var rules []*pb.SecurityRule
+	for i, prefix := range prefixes {
+		for _, permission := range permissions {
+			rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("scope-%d-%d", i, permission), Permission: permission, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}})
+		}
+	}
+	return rules
 }

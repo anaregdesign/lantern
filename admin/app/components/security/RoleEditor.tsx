@@ -1,5 +1,6 @@
 import { Button, Field, Input, Title3 } from "@fluentui/react-components";
 import { RuleEditor } from "./RuleEditor";
+import { FieldHelp } from "~/components/shared/FieldHelp";
 import type { SecurityEditor } from "~/lib/client/usecase/security/use-security-editor";
 import styles from "./RoleEditor.module.css";
 
@@ -19,10 +20,16 @@ export function RoleEditor({
         editor.saveRole();
       }}
     >
-      <Title3>{draft.existing ? "Edit Role" : "Create Role"}</Title3>
+      <Title3>{draft.existing ? "Edit permissions" : "Create Role"}</Title3>
+      <p role="status">
+        {draft.existing
+          ? "Unsaved changes to the selected Role"
+          : "Unsaved draft"}
+        {editor.templateName && ` · From ${editor.templateName}`}
+      </p>
       <p>
-        Matching Deny rules take precedence across all assigned Roles. Role
-        changes affect every assigned user.
+        Matching Allows from assigned Roles combine by union. No matching Allow
+        means refusal. A Role grants access only after it is assigned.
       </p>
       {draft.locked && (
         <p>Environment-owned Role policy. Contact the operator to change it.</p>
@@ -31,17 +38,37 @@ export function RoleEditor({
         disabled={disabled || draft.locked || draft.id === "cluster_replica"}
         className={styles.fields}
       >
-        <Field label="Role ID" required>
+        <Field
+          label="Role ID"
+          required
+          validationMessage={editor.fieldError("Role ID")}
+          hint={
+            <FieldHelp
+              meaning="Choose a unique ID: 1–64 lowercase letters, numbers, hyphens or underscores. It cannot change after saving."
+              example="project-reader"
+            />
+          }
+        >
           <Input
             readOnly={draft.existing}
             value={draft.id}
-            onChange={(_, data) => editor.patchRole({ id: data.value })}
+            onChange={(_, value) => editor.patchRole({ id: value.value })}
           />
         </Field>
-        <Field label="Role name" required>
+        <Field
+          label="Role name"
+          required
+          validationMessage={editor.fieldError("Role name")}
+          hint={
+            <FieldHelp
+              meaning="A readable label for membership pickers and lists."
+              example="Project reader"
+            />
+          }
+        >
           <Input
             value={draft.name}
-            onChange={(_, data) => editor.patchRole({ name: data.value })}
+            onChange={(_, value) => editor.patchRole({ name: value.value })}
           />
         </Field>
         {draft.rules.map((rule, index) => (
@@ -49,6 +76,7 @@ export function RoleEditor({
             key={index}
             rule={rule}
             index={index}
+            error={editor.error}
             change={editor.patchRule}
             remove={editor.removeRule}
           />
@@ -64,11 +92,17 @@ export function RoleEditor({
         </div>
       </fieldset>
       <p>
-        Reading does not enable CDC or export. Security administration grants no
-        implicit graph access. In-use Roles cannot be deleted; remove or replace
-        memberships in Users first. The Server protects the last usable security
-        administrator.
+        Read on both endpoints may allow Edge edits under the shared readable →
+        readable policy. Writable modes may allow blind edits. Ask Server to
+        explain actual access.
       </p>
+      <p>
+        Role changes affect every assigned user. In-use Roles cannot be deleted.
+        The Server protects the last usable security administrator.
+      </p>
+      <Button disabled={disabled} onClick={editor.cancel}>
+        Cancel draft
+      </Button>
     </form>
   );
 }

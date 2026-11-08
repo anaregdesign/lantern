@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { diagnosticsError } from "../diagnostics-error";
 
 import {
   queryRange,
@@ -136,7 +137,7 @@ export function useMetrics({
               type: "PANEL_ERROR",
               epoch,
               id: panel.id,
-              error: errorMessage(err),
+              error: diagnosticsError(err, prometheusUrl),
             });
           }
         }),
@@ -163,9 +164,4 @@ export function useMetrics({
   }, [fetchRound, pollMs, refreshNonce]);
 
   return { state, range, setRange, aggMode, setAggMode };
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }

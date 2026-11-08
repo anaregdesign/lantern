@@ -343,6 +343,9 @@ func vertexPutReceiptResults(
 	if response == nil {
 		return nil, receiptProtocolError("Vertex Put response is nil")
 	}
+	if err := mutationAcceptanceFromProto(response); err != nil {
+		return nil, err
+	}
 	if len(response.GetOutcomes()) != len(inputs) {
 		return nil, receiptProtocolError(
 			"Vertex Put outcome count %d does not match request count %d",
@@ -372,6 +375,9 @@ func vertexDeleteReceiptResults(
 ) ([]VertexDeleteReceiptResult, error) {
 	if response == nil {
 		return nil, receiptProtocolError("Vertex Delete response is nil")
+	}
+	if err := mutationAcceptanceFromProto(response); err != nil {
+		return nil, err
 	}
 	if len(response.GetExisted()) != len(keys) {
 		return nil, receiptProtocolError(

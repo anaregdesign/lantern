@@ -122,7 +122,7 @@ func (o *CurrentAuthority) OperationalPoliciesForAdmission(ctx context.Context, 
 	if err := o.currentAdmission(ctx, a, false); err != nil {
 		return OperationalPolicyProjection{}, err
 	}
-	if !a.Access().AllowsGlobal(SecurityManage) {
+	if !a.Access().AllowsGlobal(SettingsRead) {
 		return OperationalPolicyProjection{}, ErrPermissionDenied
 	}
 	p, err := o.CurrentOperationalPolicies(ctx)

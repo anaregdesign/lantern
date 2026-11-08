@@ -560,11 +560,12 @@ historical labels; current CLI and receipts accept only the descriptive names, w
 shorthand aliases.
 
 The [current-authority runner](.github/scripts/current_sdk4_gate.py) records separate
-receipt schema 3 with `functional-full-v4` and `source-cohort-v4` case contracts.
-Old v3 case contracts or three-row source receipts cannot qualify this lifecycle.
+receipt schema 3 with `functional-full-v5` and `source-cohort-v5` case contracts.
+Old v4/v3 case contracts or three-row source receipts cannot qualify this lifecycle.
 **`functional-validation`** owns complete
 mechanism/application behavior with controlled synthetic UTC: every retained functional
-root, all four public SDKs, the scoped Rust case and active export revocation.
+root, all four public SDKs, the scoped Rust case, shared three-member RR→WW Edge
+policy change and its existing intact member restart, and active export revocation.
 **`configured-source-integration`** owns integration with the configured time source
 using the normal build and one independently provisioned three-member cohort reused for
 SDK4, basic success/refusal, ordinary Apply/foreign retained-original status, native

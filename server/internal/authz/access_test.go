@@ -6,312 +6,143 @@ import (
 	"testing"
 )
 
-func TestAccessWholeDomainProof(t *testing.T) {
-	policy, err := CompileRoles([]Role{{ID: "all", Rules: []PermissionRule{dataRule(Allow, VertexRead, "")}}, {ID: "deny", Rules: []PermissionRule{dataRule(Deny, VertexRead, "private:")}}, {ID: "scoped", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:")}}}, DefaultPolicyLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, _ := policy.ForRoles([]string{"all"})
-	blocked, _ := policy.ForRoles([]string{"all", "deny"})
-	scoped, _ := policy.ForRoles([]string{"scoped"})
-	if !all.AllowsAll(VertexRead) || blocked.AllowsAll(VertexRead) || scoped.AllowsAll(VertexRead) || all.AllowsAll(VertexWrite) || all.AllowsAll(SecurityManage) {
-		t.Fatal("whole-domain proof ignored action or Deny")
-	}
-}
-
-func TestAccessDenyAndIsolation(t *testing.T) {
+func TestAccessUnionDefaultRefusalAndResourceIsolation(t *testing.T) {
 	roles := []Role{
-		{ID: "reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, ""), dataRule(Allow, VertexRead, "orders:private:allowed:")}},
-		{ID: "restricted", Rules: []PermissionRule{dataRule(Deny, VertexRead, "orders:private:")}},
-		{ID: "admin", Rules: []PermissionRule{globalRule(Allow, SecurityManage)}},
-		{ID: "block_admin", Rules: []PermissionRule{globalRule(Deny, SecurityManage)}},
-		{ID: "literal", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:*"), dataRule(Allow, VertexRead, "é:")}},
+		{ID: "read", Rules: []PermissionRule{dataRule(Read, "orders:"), dataRule(Read, "orders:public:")}},
+		{ID: "overlap", Rules: []PermissionRule{dataRule(Read, "orders:public:")}},
+		{ID: "write", Rules: []PermissionRule{dataRule(Write, "orders:public:")}},
+		{ID: "security", Rules: []PermissionRule{globalRule(SecurityResource, Write)}},
+		{ID: "ops", Rules: []PermissionRule{globalRule(OperationsResource, Read)}},
+		{ID: "literal", Rules: []PermissionRule{dataRule(Read, "orders:*"), dataRule(Read, "é:")}},
 	}
-	policy, err := CompileRoles(roles, DefaultPolicyLimits())
+	p, err := CompileRoles(roles, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, ids := range [][]string{{"reader", "restricted"}, {"restricted", "reader"}} {
-		access, err := policy.ForRoles(ids)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, key := range []string{"orders:1", "sys:1", "data:1"} {
-			if !access.Allows(VertexRead, key) {
-				t.Fatalf("read unexpectedly denied: %q", key)
-			}
-		}
-		for _, key := range []string{"orders:private:1", "orders:private:allowed:1"} {
-			if access.Allows(VertexRead, key) {
-				t.Fatalf("Deny bypass: %q", key)
-			}
-		}
-		if access.Allows(VertexWrite, "orders:1") || access.Allows(CDCIdentity, "orders:1") || access.Allows(Export, "orders:1") || access.AllowsGlobal(OperationsRead) {
-			t.Fatal("implicit permission hierarchy")
+	a, _ := p.ForRoles([]string{"read", "overlap", "write"})
+	for _, operation := range []Action{VertexRead, Query, CDCIdentity, CDCValue, Export, ReceiptRead} {
+		if !a.Allows(operation, "orders:private:1") || a.Allows(operation, "another:1") {
+			t.Fatal("read mapping", operation)
 		}
 	}
-	admin, _ := policy.ForRoles([]string{"admin"})
-	if !admin.AllowsGlobal(SecurityManage) || admin.Allows(VertexRead, "any") || admin.Allows(SecurityManage, "any") || admin.AllowsGlobal(VertexRead) {
-		t.Fatal("global/data capability confusion")
-	}
-	blocked, _ := policy.ForRoles([]string{"admin", "block_admin"})
-	if blocked.AllowsGlobal(SecurityManage) {
-		t.Fatal("global Deny bypass")
-	}
-	literal, _ := policy.ForRoles([]string{"literal"})
-	if !literal.Allows(VertexRead, "orders:*123") || literal.Allows(VertexRead, "orders:123") || literal.Allows(VertexRead, "e\u0301:1") || !literal.Allows(VertexRead, "é:1") {
-		t.Fatal("prefix normalized or treated as wildcard")
-	}
-	for _, ids := range [][]string{{"missing"}, {"reader", "missing"}} {
-		if _, err := policy.ForRoles(ids); !errors.Is(err, ErrUnknownRole) {
-			t.Fatalf("unknown Role: %v", err)
+	for _, operation := range []Action{VertexWrite, VertexDelete} {
+		if !a.Allows(operation, "orders:public:1") || a.Allows(operation, "orders:private:1") {
+			t.Fatal("write mapping", operation)
 		}
 	}
-	if _, err := policy.ForRoles([]string{"reader", "reader"}); !errors.Is(err, ErrInvalidPolicy) {
-		t.Fatal("duplicate assignment admitted")
+	for _, op := range []Action{SecurityRead, SecurityManage, SettingsRead, SettingsWrite, OperationsRead, SchemaRead} {
+		if a.AllowsGlobal(op) {
+			t.Fatal("data crossed resource", op)
+		}
 	}
-	empty, _ := policy.ForRoles(nil)
-	for _, access := range []*Access{nil, empty, admin} {
+	remaining, _ := p.ForRoles([]string{"overlap"})
+	if !remaining.Allows(VertexRead, "orders:public:1") || remaining.Allows(VertexRead, "orders:private:1") {
+		t.Fatal("membership removal lost union semantics")
+	}
+	write, _ := p.ForRoles([]string{"write"})
+	if write.Allows(VertexRead, "orders:public:1") || !write.Allows(VertexDelete, "orders:public:1") {
+		t.Fatal("write implied read")
+	}
+	security, _ := p.ForRoles([]string{"security"})
+	if !security.AllowsGlobal(SecurityManage) || security.AllowsGlobal(SecurityRead) || security.AllowsGlobal(SettingsWrite) || security.AllowsGlobal(OperationsRead) {
+		t.Fatal("typed global boundary")
+	}
+	literal, _ := p.ForRoles([]string{"literal"})
+	if !literal.Allows(VertexRead, "orders:*1") || literal.Allows(VertexRead, "orders:1") || literal.Allows(VertexRead, "e\u0301:1") || !literal.Allows(VertexRead, "é:1") {
+		t.Fatal("literal prefix changed")
+	}
+	empty, _ := p.ForRoles(nil)
+	for _, access := range []*Access{nil, empty, security} {
 		if access.Allows("unknown", "a") || access.Allows(VertexRead, "") || access.Allows(VertexRead, "\xff") || access.AllowsGlobal("cluster.replicate") {
-			t.Fatal("invalid access admitted")
+			t.Fatal("default refusal")
 		}
+	}
+	if _, err := p.ForRoles([]string{"missing"}); !errors.Is(err, ErrUnknownRole) {
+		t.Fatal(err)
+	}
+	if _, err := p.ForRoles([]string{"read", "read"}); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatal(err)
 	}
 }
 
-func TestAccessEdgeEndpoints(t *testing.T) {
-	rules := []PermissionRule{}
-	for _, action := range []Action{VertexRead, VertexWrite} {
-		rules = append(rules, dataRule(Allow, action, "orders:"))
-	}
-	roles := []Role{{ID: "editor", Rules: rules}, {ID: "restriction", Rules: []PermissionRule{dataRule(Deny, VertexWrite, "orders:protected:")}}}
-	policy, err := CompileRoles(roles, DefaultPolicyLimits())
+func TestAccessWholeDomainProof(t *testing.T) {
+	p, err := CompileRoles([]Role{{ID: "all", Rules: []PermissionRule{dataRule(Read, "")}}, {ID: "scoped", Rules: []PermissionRule{dataRule(Read, "orders:")}}}, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
-	access, _ := policy.ForRoles([]string{"editor", "restriction"})
-	for _, action := range []Action{EdgeRead, EdgeAdd, EdgeWrite, EdgeDelete} {
-		if !access.AllowsEdge(action, "orders:a", "orders:b") {
-			t.Fatalf("expected %s", action)
-		}
-		if access.AllowsEdge(action, "orders:a", "private:b") || access.AllowsEdge(action, "private:a", "orders:b") {
-			t.Fatal("cross-prefix endpoint bypass")
-		}
-	}
-	if access.AllowsEdge(EdgeAdd, "orders:a", "orders:protected:b") || access.AllowsEdge(EdgeWrite, "orders:a", "orders:protected:b") {
-		t.Fatal("head write Deny bypass")
-	}
-	if !access.AllowsEdge(EdgeRead, "orders:a", "orders:protected:b") || access.AllowsEdge(Query, "orders:a", "orders:b") {
-		t.Fatal("edge action confused")
-	}
-}
-
-func BenchmarkAccess(b *testing.B) {
-	for _, roleCount := range []int{1, 8, 32} {
-		b.Run(fmt.Sprintf("roles=%d", roleCount), func(b *testing.B) {
-			roles := make([]Role, roleCount)
-			ids := make([]string, roleCount)
-			for i := range roles {
-				ids[i] = fmt.Sprintf("r%d", i)
-				roles[i] = Role{ID: ids[i], Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:"), dataRule(Deny, VertexRead, "orders:private:")}}
-			}
-			policy, err := CompileRoles(roles, DefaultPolicyLimits())
-			if err != nil {
-				b.Fatal(err)
-			}
-			access, err := policy.ForRoles(ids)
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				if !access.Allows(VertexRead, "orders:123") {
-					b.Fatal("denied")
-				}
-			}
-		})
-	}
-}
-
-func TestAccessHeadManagedEdges(t *testing.T) {
-	roles := []Role{
-		{ID: "tails", Rules: []PermissionRule{dataRule(Allow, VertexRead, "tails:")}},
-		{ID: "heads", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "heads:")}},
-		{ID: "head_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "heads:")}},
-		{ID: "tail_deny", Rules: []PermissionRule{dataRule(Deny, VertexRead, "tails:private:")}},
-		{ID: "head_deny", Rules: []PermissionRule{dataRule(Deny, VertexWrite, "heads:protected:")}},
-	}
-	policy, err := CompileRoles(roles, DefaultPolicyLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	writer, err := policy.ForRoles([]string{"tails", "heads", "tail_deny", "head_deny"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, action := range []Action{EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete} {
-		t.Run(string(action), func(t *testing.T) {
-			if !writer.AllowsEdge(action, "tails:public", "heads:public") {
-				t.Fatal("tail read and head write did not authorize the modification")
-			}
-			for _, endpoints := range [][2]string{{"heads:public", "tails:public"}, {"tails:private:x", "heads:public"}, {"tails:public", "heads:protected:x"}} {
-				if writer.AllowsEdge(action, endpoints[0], endpoints[1]) {
-					t.Fatal("reverse orientation or cross-Role Deny was bypassed")
-				}
-			}
-		})
-	}
-	if writer.AllowsEdge(EdgeRead, "tails:public", "heads:public") || writer.Allows(VertexDelete, "heads:public") || writer.Allows(VertexWrite, "tails:public") {
-		t.Fatal("head modification authority implied data disclosure or Vertex mutation")
-	}
-	reader, err := policy.ForRoles([]string{"tails", "head_reader"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reader.AllowsEdge(EdgeRead, "tails:public", "heads:public") || reader.AllowsEdge(EdgeDelete, "tails:public", "heads:public") {
-		t.Fatal("both endpoint reads did not define independent base visibility")
+	a, _ := p.ForRoles([]string{"all"})
+	s, _ := p.ForRoles([]string{"scoped"})
+	if !a.AllowsAll(VertexRead) || !a.AllowsAll(Query) || a.AllowsAll(VertexWrite) || s.AllowsAll(VertexRead) || a.AllowsAll(SecurityRead) {
+		t.Fatal("whole-domain proof")
 	}
 }
 
 func TestAccessUIDBinding(t *testing.T) {
-	roles := []Role{{ID: "personal", Rules: []PermissionRule{
-		uidRule(Allow, VertexRead, "users:", ":"), uidRule(Allow, VertexWrite, "users:", ":"),
-		uidRule(Allow, Query, "users:", ":"), uidRule(Allow, CDCIdentity, "users:", ":"),
-		uidRule(Deny, VertexRead, "users:", ":private:"),
-		dataRule(Deny, VertexRead, "users:"+testUIDA+":blocked:"),
-	}}, {ID: "literal", Rules: []PermissionRule{dataRule(Allow, VertexRead, "users:<uid>:"), dataRule(Allow, VertexRead, "users:{uid}:*")}}}
-	policy, err := CompileRoles(roles, DefaultPolicyLimits())
+	p, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Read, "users:", ":"), uidRule(Write, "users:", ":")}}}, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, uid := range []string{"", "bad", "00000000000000000000000000000000"} {
-		if _, err := policy.BindRoles([]string{"personal"}, SubjectBindings{uid}); err == nil {
-			t.Fatal("missing/invalid UID admitted")
+		if _, err := p.BindRoles([]string{"personal"}, SubjectBindings{uid}); err == nil {
+			t.Fatal("invalid UID admitted")
 		}
 	}
-	if _, err := policy.ForRoles([]string{"literal"}); err != nil {
-		t.Fatal("legacy literal Role requires UID", err)
+	a, _ := p.BindRoles([]string{"personal"}, SubjectBindings{testUIDA})
+	b, _ := p.BindRoles([]string{"personal"}, SubjectBindings{testUIDB})
+	if a.setKey == b.setKey || a.BindingDigest() == b.BindingDigest() {
+		t.Fatal("UID binding collapsed")
 	}
-	a, err := policy.BindRoles([]string{"personal", "literal"}, SubjectBindings{testUIDA})
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := policy.BindRoles([]string{"literal", "personal"}, SubjectBindings{testUIDB})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.roles[0] != b.roles[0] || a.setKey == b.setKey || a.BindingDigest() == b.BindingDigest() {
-		t.Fatal("roles copied or subject binding collapsed")
-	}
-	for _, tc := range []struct {
-		key          string
-		wantA, wantB bool
-	}{
-		{"users:" + testUIDA + ":profile:name", true, false},
-		{"users:" + testUIDB + ":notes:1", false, true},
-		{"users:" + testUIDA + "x:item", false, false},
-		{"users:" + testUIDA, false, false},
-		{"users:" + testUIDA + ":private:secret", false, false},
-		{"users:" + testUIDA + ":blocked:1", false, false},
-		{"users:<uid>:literal", true, true},
-		{"users:{uid}:*literal", true, true},
-	} {
-		for _, actor := range []struct {
-			access *Access
-			want   bool
-		}{{a, tc.wantA}, {b, tc.wantB}} {
-			if got := actor.access.Allows(VertexRead, tc.key); got != actor.want {
-				t.Fatal("Allow", tc, got)
-			}
-			if got := actor.access.Scope(VertexRead).Contains(tc.key); got != actor.want {
-				t.Fatal("Scope", tc, got)
-			}
-			got, _, err := actor.access.Explain(VertexRead, &tc.key)
-			if err != nil || got != actor.want {
-				t.Fatal("Explain", tc, got, err)
-			}
+	for _, entry := range []struct {
+		key  string
+		want bool
+	}{{"users:" + testUIDA + ":private:1", true}, {"users:" + testUIDB + ":1", false}, {"users:" + testUIDA + "x:1", false}, {"users:" + testUIDA, false}} {
+		if a.Allows(VertexRead, entry.key) != entry.want || a.Scope(Query, CDCValue).Contains(entry.key) != entry.want {
+			t.Fatal(entry)
+		}
+		got, _, err := a.Explain(VertexRead, &entry.key)
+		if err != nil || got != entry.want {
+			t.Fatal(entry, err)
 		}
 	}
-	if a.AllowsAll(VertexRead) || b.AllowsAll(VertexWrite) || a.Scope(VertexRead).IsSubsetOf(b.Scope(VertexRead)) {
-		t.Fatal("personal access broadened or different subjects considered equivalent")
-	}
-	if a.Scope(VertexRead, Query, CDCIdentity).Contains("users:" + testUIDB + ":x") {
-		t.Fatal("CDC intersection leaked another user")
+	if a.AllowsAll(VertexRead) || a.Scope(VertexRead).IsSubsetOf(b.Scope(VertexRead)) {
+		t.Fatal("UID scope broadened")
 	}
 }
-
-func TestAccessUIDPublicReadSelfWriteFixture(t *testing.T) {
-	policy, err := CompileRoles([]Role{{ID: "public_read", Rules: []PermissionRule{dataRule(Allow, VertexRead, "public:users:")}},
-		{ID: "self_write", Rules: []PermissionRule{uidRule(Allow, VertexWrite, "public:users:", ":profile:"), uidRule(Deny, VertexWrite, "public:users:", ":profile:locked:")}},
-		{ID: "all", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "")}},
-	}, DefaultPolicyLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := policy.BindRoles([]string{"public_read", "self_write"}, SubjectBindings{testUIDA})
-	if err != nil {
-		t.Fatal(err)
-	}
-	own := "public:users:" + testUIDA + ":profile:entry"
-	other := "public:users:" + testUIDB + ":profile:entry"
-	if !a.Allows(VertexRead, other) || !a.Allows(VertexWrite, own) || a.Allows(VertexWrite, other) || a.Allows(VertexWrite, "public:users:"+testUIDA+":notes:1") {
-		t.Fatal("static read/self write mismatch")
-	}
-	if !a.AllowsEdge(EdgeWrite, other, own) || a.AllowsEdge(EdgeWrite, own, other) {
-		t.Fatal("head-managed direction changed")
-	}
-	if !a.EdgeCandidateScope(EdgeWrite).Contains(other) {
-		t.Fatal("candidate superset lost readable tail")
-	}
-	allowed, matches, err := a.ExplainEdge(EdgeWrite, other, own)
-	if err != nil || !allowed || len(matches) != 2 {
-		t.Fatal(allowed, matches, err)
-	}
-	all, err := policy.BindRoles([]string{"all", "self_write"}, SubjectBindings{testUIDA})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if all.AllowsAll(VertexWrite) || all.Allows(VertexWrite, "public:users:"+testUIDA+":profile:locked:1") {
-		t.Fatal("UID Deny lost to literal all-data Allow")
-	}
-	if _, err := policy.ForRoles([]string{"public_read"}); err != nil {
-		t.Fatal("UID-less read-only fixture failed", err)
-	}
-}
-
-func BenchmarkAccessUIDBinding(b *testing.B) {
-	policy, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Allow, VertexRead, "users:", ":"), uidRule(Deny, VertexRead, "users:", ":private:")}}}, DefaultPolicyLimits())
-	if err != nil {
-		b.Fatal(err)
-	}
-	access, err := policy.BindRoles([]string{"personal"}, SubjectBindings{testUIDA})
-	if err != nil {
-		b.Fatal(err)
-	}
-	key := "users:" + testUIDA + ":profile:name"
-	b.Run("bind", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			if _, err := policy.BindRoles([]string{"personal"}, SubjectBindings{testUIDA}); err != nil {
+func BenchmarkAccess(b *testing.B) {
+	for _, count := range []int{1, 8, 32} {
+		b.Run(fmt.Sprintf("roles=%d", count), func(b *testing.B) {
+			roles := make([]Role, count)
+			ids := make([]string, count)
+			for i := range roles {
+				ids[i] = fmt.Sprintf("r%d", i)
+				roles[i] = Role{ID: ids[i], Rules: []PermissionRule{dataRule(Read, "orders:")}}
+			}
+			p, err := CompileRoles(roles, DefaultPolicyLimits())
+			if err != nil {
 				b.Fatal(err)
 			}
-		}
-	})
-	b.Run("allows", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			if !access.Allows(VertexRead, key) {
-				b.Fatal("denied")
+			a, _ := p.ForRoles(ids)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if !a.Allows(VertexRead, "orders:1") {
+					b.Fatal("refused")
+				}
 			}
+		})
+	}
+}
+func BenchmarkAccessUIDBinding(b *testing.B) {
+	p, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Read, "users:", ":")}}}, DefaultPolicyLimits())
+	if err != nil {
+		b.Fatal(err)
+	}
+	a, _ := p.BindRoles([]string{"personal"}, SubjectBindings{testUIDA})
+	key := "users:" + testUIDA + ":1"
+	b.ReportAllocs()
+	for b.Loop() {
+		if !a.Allows(VertexRead, key) {
+			b.Fatal("refused")
 		}
-	})
-	b.Run("scope_warm", func(b *testing.B) {
-		access.Scope(VertexRead)
-		b.ReportAllocs()
-		for b.Loop() {
-			if !access.Scope(VertexRead).Contains(key) {
-				b.Fatal("scope denied")
-			}
-		}
-	})
+	}
 }

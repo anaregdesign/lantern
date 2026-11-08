@@ -86,8 +86,11 @@ environment source. Do not create an environment-specific managed-policy model.
 
 The pilot uses current-authority/OIDC management only. OFF keeps environment-owned
 startup behavior. It does not gain an unauthenticated settings store or writer.
-Initially reuse `security.manage`; adding a new grant is not necessary and live
-credential/grant changes are outside this work.
+The current Allow-only model uses Settings/read for observation and preview,
+and Settings/write for reviewed adoption/change. Security and data permissions
+do not imply Settings access. Mixed management batches require every affected
+resource write. The initial pilot used the retired `security.manage` Role
+action; that historical action is not part of the current grant schema.
 
 An absent policy in a verified current Image means unadopted. Admin shows the
 contacted node's effective environment/default value and requires the operator to

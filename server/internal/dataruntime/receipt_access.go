@@ -23,14 +23,11 @@ func allowsReceiptMutationResource(access *security.Access, receipt mutationrece
 		}
 		return access.Allows(action, resource.Key) && (resource.Head == "" || access.Allows(action, resource.Head))
 	}
-	if !allow(security.ReceiptRead) {
-		return false
-	}
 	switch receipt.Kind {
 	case mutationreceipt.PutVertex:
-		return resource.Head == "" && allow(security.VertexRead) && allow(security.VertexWrite) && ((!receipt.LifecycleReduction && resource != (mutationreceipt.ResourceIdentity{})) || allow(security.VertexDelete))
+		return resource.Head == "" && allow(security.VertexWrite) && ((!receipt.LifecycleReduction && resource != (mutationreceipt.ResourceIdentity{})) || allow(security.VertexDelete))
 	case mutationreceipt.DeleteVertex:
-		return resource.Head == "" && allow(security.VertexRead) && allow(security.VertexDelete)
+		return resource.Head == "" && allow(security.VertexDelete)
 	case mutationreceipt.CreateEdge:
 		return resource.Head != "" && allow(security.EdgeCreate)
 	case mutationreceipt.AddEdge, mutationreceipt.PutEdge:
@@ -66,15 +63,21 @@ func wholeReceiptAbsence(access *security.Access) bool {
 // Public mutation ingress is checked before resource lookup. Original replay
 // rows subsequently add the stored lifecycle-effect requirement.
 func authorizeReceiptRequest(access *security.Access, message proto.Message) error {
-	check := func(key, head string) error {
+	check := func(key, head string, action security.Action) error {
 		if head != "" {
-			if !access.AllowsEdgeAction(security.ReceiptRead, key, head) {
+			if !access.AllowsEdgeAction(action, key, head) {
 				return dataPermissionError()
 			}
-			return nil
-		}
-		if !access.Allows(security.ReceiptRead, key) {
+		} else if !access.Allows(action, key) {
 			return dataPermissionError()
+		}
+		return nil
+	}
+	checkEdges := func(edges []*pb.Edge, action security.Action) error {
+		for _, edge := range edges {
+			if err := check(edge.GetTail(), edge.GetHead(), action); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -82,61 +85,59 @@ func authorizeReceiptRequest(access *security.Access, message proto.Message) err
 	case *pb.MutateGraphRequest:
 		for _, item := range req.GetItems() {
 			if vertex := item.GetPutVertex(); vertex != nil {
-				if err := check(vertex.GetKey(), ""); err != nil {
+				if err := check(vertex.GetKey(), "", security.VertexWrite); err != nil {
+					return err
+				}
+			} else if add := item.GetAddEdge(); add != nil {
+				edge := add.GetEdge()
+				if err := check(edge.GetTail(), edge.GetHead(), security.EdgeAdd); err != nil {
 					return err
 				}
 			} else {
-				edge := item.GetAddEdge().GetEdge()
-				if err := check(edge.GetTail(), edge.GetHead()); err != nil {
-					return err
-				}
+				return dataPermissionError()
 			}
 		}
 	case *pb.PutVertexRequest:
-		return check(req.GetVertex().GetKey(), "")
+		return check(req.GetVertex().GetKey(), "", security.VertexWrite)
 	case *pb.PutVerticesRequest:
 		for _, v := range req.GetVertices() {
-			if err := check(v.GetKey(), ""); err != nil {
+			if err := check(v.GetKey(), "", security.VertexWrite); err != nil {
 				return err
 			}
 		}
 	case *pb.DeleteVertexRequest:
-		return check(req.GetKey(), "")
+		return check(req.GetKey(), "", security.VertexDelete)
 	case *pb.DeleteVerticesRequest:
 		for _, key := range req.GetKeys() {
-			if err := check(key, ""); err != nil {
+			if err := check(key, "", security.VertexDelete); err != nil {
 				return err
 			}
 		}
 	case *pb.CreateEdgeRequest:
-		return check(req.GetEdge().GetTail(), req.GetEdge().GetHead())
+		return checkEdges([]*pb.Edge{req.GetEdge()}, security.EdgeCreate)
 	case *pb.CreateEdgesRequest:
-		for _, edge := range req.GetEdges() {
-			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
-				return err
-			}
-		}
+		return checkEdges(req.GetEdges(), security.EdgeCreate)
 	case *pb.AddEdgeRequest:
-		return check(req.GetEdge().GetTail(), req.GetEdge().GetHead())
+		return checkEdges([]*pb.Edge{req.GetEdge()}, security.EdgeAdd)
 	case *pb.AddEdgesRequest:
-		for _, edge := range req.GetEdges() {
-			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
-				return err
-			}
-		}
+		return checkEdges(req.GetEdges(), security.EdgeAdd)
+	case *pb.PutEdgeRequest:
+		return checkEdges([]*pb.Edge{req.GetEdge()}, security.EdgeWrite)
+	case *pb.PutEdgesRequest:
+		return checkEdges(req.GetEdges(), security.EdgeWrite)
 	case *pb.DeleteEdgeRequest:
-		return check(req.GetTail(), req.GetHead())
+		return check(req.GetTail(), req.GetHead(), security.EdgeDelete)
 	case *pb.DeleteEdgesRequest:
 		for _, edge := range req.GetEdges() {
-			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
+			if err := check(edge.GetTail(), edge.GetHead(), security.EdgeDelete); err != nil {
 				return err
 			}
 		}
 	case *pb.DeleteEdgeContributionRequest:
-		return check(req.GetTail(), req.GetHead())
+		return check(req.GetTail(), req.GetHead(), security.EdgeDelete)
 	case *pb.DeleteEdgeContributionsRequest:
 		for _, edge := range req.GetContributions() {
-			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
+			if err := check(edge.GetTail(), edge.GetHead(), security.EdgeDelete); err != nil {
 				return err
 			}
 		}

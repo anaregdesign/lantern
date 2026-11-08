@@ -87,7 +87,7 @@ func runPhysicalFixtureServing(t *testing.T, ctx context.Context, provisionDir, 
 	}
 	stop()
 	_ = stream.Close()
-	head := "physical-head:heads:fixture-preflight"
+	head := "physical-head:heads:allowed:fixture-preflight"
 	tail := "physical-head:tails:fixture-preflight"
 	for _, key := range []string{head, tail} {
 		if _, err := data.PutVertex(ctx, securityWireRequest(observer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}})); err != nil {
@@ -102,15 +102,28 @@ func runPhysicalFixtureServing(t *testing.T, ctx context.Context, provisionDir, 
 	}
 	for _, key := range []string{tail, "physical-head:heads:denied:fixture-preflight"} {
 		if _, err := data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}})); connect.CodeOf(err) != connect.CodePermissionDenied {
-			t.Fatal("physical Head writer escaped write/Deny scope", err)
+			t.Fatal("physical Head writer escaped its positive write scope", err)
 		}
 	}
 	if _, err := data.PutEdge(ctx, securityWireRequest(writer, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: tail, Head: head, Weight: 1}})); err != nil {
 		t.Fatal("physical Head write-only edge", err)
 	}
-	if _, err := data.DeleteVertex(ctx, securityWireRequest(writer, &pb.DeleteVertexRequest{Key: head})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("physical Head writer gained VertexDelete", err)
+	// Data write also permits Vertex lifecycle changes. Prove the capability
+	// on a separate key so the Edge endpoint preservation check remains exact.
+	writerVertex := "physical-head:heads:allowed:vertex-preflight"
+	acceptance := &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}
+	put, err := data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: writerVertex}}))
+	if err != nil || !proto.Equal(put.Msg, &pb.PutVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("physical write-only Vertex Put disclosed effect", err)
 	}
+	deleted, err := data.DeleteVertex(ctx, securityWireRequest(writer, &pb.DeleteVertexRequest{Key: writerVertex}))
+	if err != nil || !proto.Equal(deleted.Msg, &pb.DeleteVertexResponse{Acceptance: acceptance}) {
+		t.Fatal("physical write-only Vertex Delete disclosed effect", err)
+	}
+	if _, err := data.GetVertex(ctx, securityWireRequest(observer, &pb.GetVertexRequest{Key: writerVertex})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatal("physical Vertex Delete did not apply", err)
+	}
+
 	if _, err := data.GetEdge(ctx, securityWireRequest(observer, &pb.GetEdgeRequest{Tail: tail, Head: head})); err != nil {
 		t.Fatal("physical independent observer cannot verify Head effect", err)
 	}

@@ -352,19 +352,19 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 			t.Fatal("status recovery replayed logout")
 		}
 	})
-	t.Run("current Deny suspension and active stream withdrawal", func(t *testing.T) {
+	t.Run("current read withdrawal suspension and active stream withdrawal", func(t *testing.T) {
 		got := googleLogin()
 		initial := inspect(got.Credential)
 		role := proto.Clone(initial.Roles[0]).(*pb.SecurityRole)
 		denied := proto.Clone(role).(*pb.SecurityRole)
-		denied.Rules = append(denied.Rules, &pb.SecurityRule{Id: "native-deny", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}})
+		denied.Rules = nil
 		apply(&pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: denied}})
 		fresh := inspect(got.Credential)
 		if proto.Equal(initial.Session.Version.CurrentCut, fresh.Session.Version.CurrentCut) {
 			t.Fatal("native inspection cached prior policy")
 		}
 		if _, err := data.GetVertex(ctx, securityWireRequest(got.Credential, &pb.GetVertexRequest{Key: "orders:native"})); connect.CodeOf(err) != connect.CodePermissionDenied {
-			t.Fatal("current native Deny ignored", err)
+			t.Fatal("current native read withdrawal ignored", err)
 		}
 		apply(&pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: role}})
 		_ = inspect(got.Credential)

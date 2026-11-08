@@ -65,6 +65,21 @@ function fixture(
   recoveryOwner = owner,
 ) {
   const port: SecurityManagementPort = {
+    edgePolicy: async () => ({
+      $typeName: "graph.v1.GetEdgePolicyResponse",
+      policy: { $typeName: "graph.v1.SecurityEdgePolicy", version: 1, mode: 1 },
+      version,
+    }),
+    registrationPolicy: async () => ({
+      $typeName: "graph.v1.GetRegistrationPolicyResponse",
+      version,
+    }),
+    role: async () => {
+      throw { code: "not-found" };
+    },
+    user: async () => {
+      throw { code: "not-found" };
+    },
     roles: async () => ({
       $typeName: "graph.v1.ListRolesResponse",
       roles: [],
@@ -868,6 +883,93 @@ describe("current reviewed changes", () => {
     expect(prepares).toBe(0);
     expect(sends).toBe(0);
     expect(backend.read()).toBe("corrupt original bytes");
+    c.dispose();
+  });
+});
+
+describe("new Role uniqueness and saved readback", () => {
+  test("a current existing ID or unavailable lookup cannot prepare an overwrite", async () => {
+    for (const exists of [true, false]) {
+      let prepares = 0;
+      const c = fixture({
+        role: async () => {
+          if (!exists) throw new Error("offline");
+          return {
+            $typeName: "graph.v1.GetRoleResponse",
+            version,
+            role: {
+              $typeName: "graph.v1.SecurityRole",
+              id: "reader",
+              name: "Reader",
+              rules: [],
+              envOwned: true,
+            },
+          };
+        },
+        prepare: async (review) => {
+          prepares++;
+          return prepare(review);
+        },
+      });
+      await c.load();
+      await c.reviewNewRole("Create reader", changes, "reader");
+      expect(prepares).toBe(0);
+      expect(c.getSnapshot().review).toBeUndefined();
+      expect(c.getSnapshot().message).toContain(
+        exists ? "already exists" : "could not be checked",
+      );
+      c.dispose();
+    }
+  });
+  test("confirmed absence allows Review; an intervening draft change cancels a slow check", async () => {
+    let finish!: () => void;
+    let prepares = 0;
+    const c = fixture({
+      role: async () => {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        throw new Error("not-found");
+      },
+      failure: () => "not-found",
+      prepare: async (review) => {
+        prepares++;
+        return prepare(review);
+      },
+    });
+    await c.load();
+    const first = c.reviewNewRole("Create", changes, "reader");
+    c.cancelReview();
+    finish();
+    await first;
+    expect(prepares).toBe(0);
+    const next = c.reviewNewRole("Create", changes, "reader");
+    finish();
+    await next;
+    // workflow.review starts its async preparation from the exact captured cut.
+    await Promise.resolve();
+    expect(prepares).toBe(1);
+    expect(c.getSnapshot().review?.approval).toBe("ordinary");
+    c.dispose();
+  });
+  test("saved Role readback publishes actual Server metadata", async () => {
+    const role = {
+      $typeName: "graph.v1.SecurityRole" as const,
+      id: "project-reader",
+      name: "Saved by Server",
+      rules: [],
+      envOwned: false,
+    };
+    const c = fixture({
+      role: async () => ({
+        $typeName: "graph.v1.GetRoleResponse",
+        role,
+        version,
+      }),
+    });
+    await c.load();
+    expect(await c.readSavedRole(role.id)).toEqual(role);
+    expect(c.getSnapshot().roles).toEqual([role]);
     c.dispose();
   });
 });

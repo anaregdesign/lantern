@@ -6,6 +6,7 @@ import {
   Select,
   Title3,
 } from "@fluentui/react-components";
+import { FieldHelp } from "~/components/shared/FieldHelp";
 import type { ManagedLogLevel } from "lantern-sdk/web";
 import {
   logLevelChoices,
@@ -19,6 +20,7 @@ export type LogLevelSettingsProps = {
   view: SettingsView;
   editLevel(level: ManagedLogLevel): void;
   review(): void;
+  cancelDraft(): void;
 };
 
 export function LogLevelSettings({
@@ -26,6 +28,7 @@ export function LogLevelSettings({
   view,
   editLevel,
   review,
+  cancelDraft,
 }: LogLevelSettingsProps) {
   return (
     <section aria-label="Log level settings" className={styles.panel}>
@@ -33,12 +36,6 @@ export function LogLevelSettings({
       <dl className={styles.values}>
         <dt>Connected node</dt>
         <dd>{view.member}</dd>
-        <dt>Effective level</dt>
-        <dd>{view.effective}</dd>
-        <dt>Source</dt>
-        <dd>{view.source}</dd>
-        <dt>Desired policy</dt>
-        <dd>{view.desired}</dd>
         <dt>Applied / desired generation</dt>
         <dd>{view.generation}</dd>
         <dt>Application</dt>
@@ -70,25 +67,61 @@ export function LogLevelSettings({
           adoption, environment changes will not replace the managed level.
         </p>
       )}
-      <Field label="New log level">
-        <Select
-          aria-label="New log level"
-          disabled={view.blocked}
-          value={String(state.draft)}
-          onChange={(_, data) =>
-            editLevel(Number(data.value) as ManagedLogLevel)
-          }
-        >
-          <option value="0">Choose a level</option>
-          {logLevelChoices.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      <div className={styles.tableWrap}>
+        <table className={styles.table}>
+          <caption>Log level values and unsaved draft</caption>
+          <thead>
+            <tr>
+              <th scope="col">Setting</th>
+              <th scope="col">Effective</th>
+              <th scope="col">Desired</th>
+              <th scope="col">Draft</th>
+              <th scope="col">Effective source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Log level</th>
+              <td data-label="Effective">{view.effective}</td>
+              <td data-label="Desired">{view.desired}</td>
+              <td data-label="Draft">
+                <Field
+                  label="New log level"
+                  hint={
+                    <FieldHelp
+                      meaning="Minimum severity recorded in structured logs. Higher levels record fewer events."
+                      example="Warn records warnings and errors."
+                      details="Choose Debug, Info, Warn, or Error. Fresh startup default: Info. Empty does not select a default. Changes apply to new log events after successful Apply; environment settings no longer override an adopted policy."
+                    />
+                  }
+                >
+                  <Select
+                    aria-label="New log level"
+                    disabled={view.blocked}
+                    value={String(state.draft)}
+                    onChange={(_, data) =>
+                      editLevel(Number(data.value) as ManagedLogLevel)
+                    }
+                  >
+                    <option value="0">Choose a level</option>
+                    {logLevelChoices.map(({ value, label }) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </td>
+              <td data-label="Effective source">{view.source}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <Button appearance="primary" disabled={!view.canReview} onClick={review}>
         Review log level change
+      </Button>
+      <Button disabled={view.blocked} onClick={cancelDraft}>
+        Cancel log level draft
       </Button>
     </section>
   );

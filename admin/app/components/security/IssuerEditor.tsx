@@ -7,6 +7,7 @@ import {
   Title3,
 } from "@fluentui/react-components";
 import type { SecurityEditor } from "~/lib/client/usecase/security/use-security-editor";
+import { FieldHelp } from "~/components/shared/FieldHelp";
 import styles from "./IssuerEditor.module.css";
 
 export function IssuerEditor({
@@ -32,7 +33,16 @@ export function IssuerEditor({
         </p>
       )}
       <fieldset disabled={disabled || draft.locked} className={styles.fields}>
-        <Field label="Issuer URL" required>
+        <Field
+          label="Issuer URL"
+          required
+          hint={
+            <FieldHelp
+              meaning="Exact HTTPS Issuer identifier from provider discovery; existing identities keep this value."
+              example="https://idp.example"
+            />
+          }
+        >
           <Input
             value={draft.issuer}
             readOnly={draft.existing}
@@ -41,7 +51,13 @@ export function IssuerEditor({
         </Field>
         <Field
           label="Browser client ID"
-          hint="Set with a redirect URI to enable browser sign-in."
+          hint={
+            <FieldHelp
+              meaning="OAuth client registered for browser Code/PKCE login. Set together with the exact callback URL."
+              example="lantern-admin-client"
+              details="This is not the API audience. An Issuer alone does not enable unknown-user enrollment."
+            />
+          }
         >
           <Input
             value={draft.clientId}
@@ -50,7 +66,13 @@ export function IssuerEditor({
         </Field>
         <Field
           label="API audience"
-          hint="Leave empty to reject external API tokens."
+          hint={
+            <FieldHelp
+              meaning="Expected audience for the separate external API-token profile. Empty refuses external API tokens."
+              example="https://lantern-api.example"
+              details="A browser cookie or provider ID/access token is not automatically an API credential."
+            />
+          }
         >
           <Input
             value={draft.apiAudience}
@@ -59,7 +81,16 @@ export function IssuerEditor({
             }
           />
         </Field>
-        <Field label="Browser redirect URI">
+        <Field
+          label="Browser redirect URI"
+          hint={
+            <FieldHelp
+              meaning="Exact HTTPS callback registered with the provider, including the Admin/Gateway origin and path."
+              example="https://lantern.example/auth/callback"
+              details="No wildcard, fragment or embedded credentials. Must match the deployed callback exactly."
+            />
+          }
+        >
           <Input
             value={draft.redirectUri}
             onChange={(_, data) =>
@@ -69,7 +100,13 @@ export function IssuerEditor({
         </Field>
         <Field
           label="Signing algorithms"
-          hint="Comma-separated: EdDSA, RS256, ES256"
+          hint={
+            <FieldHelp
+              meaning="Comma-separated, distinct accepted signature algorithms: EdDSA, RS256, ES256."
+              example="RS256"
+              details="Google requires exactly RS256. These constrain token verification; choose only algorithms supported by the configured provider."
+            />
+          }
         >
           <Input
             value={draft.algorithms}
@@ -78,7 +115,15 @@ export function IssuerEditor({
             }
           />
         </Field>
-        <Field label="Browser client secret binding">
+        <Field
+          label="Browser client secret binding"
+          hint={
+            <FieldHelp
+              meaning="Keep, replace or remove the operator-installed secret handle. Secret values are never displayed or entered here."
+              details="Removing browser login also requires clearing its retained binding. Replacement uses a preinstalled handle, not a client secret."
+            />
+          }
+        >
           <Select
             value={draft.secretMode}
             onChange={(_, data) =>
@@ -96,7 +141,12 @@ export function IssuerEditor({
           <Field
             label="Operator secret handle"
             required
-            hint="Enter an installed handle, never a client secret."
+            hint={
+              <FieldHelp
+                meaning="Installed operator handle: 1–64 lowercase letters, numbers, hyphens or underscores. Enter no secret value."
+                example="browser-client-binding"
+              />
+            }
           >
             <Input
               autoComplete="off"
@@ -107,13 +157,15 @@ export function IssuerEditor({
             />
           </Field>
         )}
-        <Checkbox
-          label="Enable this Issuer"
-          checked={draft.enabled}
-          onChange={(_, data) =>
-            editor.patchIssuer({ enabled: data.checked === true })
-          }
-        />
+        <Field hint="Disabled providers reject new authentication; disabling or deleting revokes their sessions. Enrollment is controlled separately.">
+          <Checkbox
+            label="Enable this Issuer"
+            checked={draft.enabled}
+            onChange={(_, data) =>
+              editor.patchIssuer({ enabled: data.checked === true })
+            }
+          />
+        </Field>
         <Field hint="For API access only. Enable after verifying that OAuth clients cannot use or impersonate enrolled human subjects. This trust change requires operation reauthentication.">
           <Checkbox
             label="Human and OAuth client subjects are qualified as separate"
@@ -138,6 +190,9 @@ export function IssuerEditor({
           )}
         </div>
       </fieldset>
+      <Button disabled={disabled} onClick={editor.cancel}>
+        Cancel draft
+      </Button>
     </form>
   );
 }

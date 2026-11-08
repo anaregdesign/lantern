@@ -1,4 +1,5 @@
-# Authenticated fixed three-node example; source-built, never a release claim.
+# Shared implementation of the canonical authenticated three-node stack.
+# Main artifacts are explicit compatible immutable inputs; helpers are source-built.
 # First prepare private inputs as documented in oidc-ha/README.md.
 name: lantern-oidc-ha
 
@@ -15,8 +16,7 @@ x-node-environment: &node-environment
   LANTERN_RECEIPT_MAX_BYTES: "16777216"
 
 x-node: &node
-  image: lantern:oidc-ha-local
-  build: {context: ../.., dockerfile: Dockerfile}
+  image: ${LANTERN_IMAGE:?select the compatible immutable Server image for this source}
   user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
   entrypoint: [/bin/sh, /example/read-config.sh]
   stop_grace_period: 45s
@@ -39,8 +39,7 @@ x-node: &node
     membershippublisher: {condition: service_started}
 
 x-relay: &relay
-  image: lantern-metrics-relay:oidc-ha-local
-  build: {context: ../.., dockerfile: deploy/compose/oidc-ha/metrics-relay.Dockerfile}
+  image: ${LANTERN_METRICS_RELAY_IMAGE:?select the immutable same-source metrics relay image}
   user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
   command: [--certificate, /metrics-tls/server.pem, --key, /metrics-tls/server-key.pem, --client-ca, /metrics-tls/ca.pem]
   read_only: true
@@ -51,7 +50,7 @@ x-relay: &relay
 
 services:
   prepare-state:
-    image: alpine:3.24
+    image: ${LANTERN_IMAGE:?select the compatible immutable Server image for this source}
     profiles: [prepare]
     user: "0:0"
     entrypoint: [/bin/sh, /example/prepare-state.sh]
@@ -66,8 +65,7 @@ services:
       - {type: volume, source: node-2-state, target: /state-2, volume: {nocopy: true}}
 
   provision-security:
-    image: lantern:oidc-ha-local
-    build: {context: ../.., dockerfile: Dockerfile}
+    image: ${LANTERN_IMAGE:?select the compatible immutable Server image for this source}
     profiles: [provision]
     user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
     entrypoint: [/bin/sh, /example/read-config.sh]
@@ -81,8 +79,7 @@ services:
       - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/operator", target: /operator, bind: {create_host_path: false}}
 
   membershippublisher:
-    image: lantern-membershippublisher:oidc-ha-local
-    build: {context: ../.., dockerfile: deploy/compose/oidc-ha/operator.Dockerfile}
+    image: ${LANTERN_PUBLISHER_IMAGE:?select the immutable same-source publisher image}
     user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
     command: [--config, "${LANTERN_PUBLISHER_CONFIG:-/operator/custody/publisher.json}", --state, /operator/custody/state.json, --mode, "${LANTERN_PUBLISHER_MODE:-resume}"]
     stop_grace_period: 45s
@@ -160,8 +157,7 @@ services:
     volumes: [{type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/metrics/lantern-2", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
 
   admin:
-    image: lantern-admin:oidc-ha-local
-    build: {context: ../.., dockerfile: admin/Dockerfile}
+    image: ${LANTERN_ADMIN_IMAGE:?select the compatible immutable Admin image for this source}
     user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
     read_only: true
     environment:
@@ -178,8 +174,7 @@ services:
     healthcheck: {test: [CMD, wget, -qO-, "http://127.0.0.1:8080/healthz"], interval: 5s, timeout: 3s, retries: 12}
 
   edge:
-    image: lantern-edge:oidc-ha-local
-    build: {context: ../.., dockerfile: deploy/compose/oidc-ha/edge.Dockerfile}
+    image: ${LANTERN_EDGE_IMAGE:?select the immutable same-source HTTPS edge helper image}
     user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
     read_only: true
     ports: ["127.0.0.1:${LANTERN_EDGE_PORT:-8443}:8443"]
@@ -218,8 +213,7 @@ services:
       metrics-2: {condition: service_started}
 
   lantern-mcp:
-    image: lantern-mcp:oidc-ha-local
-    build: {context: ../.., dockerfile: mcp/Dockerfile}
+    image: ${LANTERN_MCP_IMAGE:?select the compatible immutable MCP image for this source}
     user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
     read_only: true
     ports: ["127.0.0.1:${LANTERN_MCP_PORT:-6390}:6390"]

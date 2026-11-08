@@ -15,3 +15,8 @@ func (s *Snapshot) ExplainEdge(identity Identity, action Action, tail, head stri
 	access, _ := s.AccessFor(identity)
 	return access.ExplainEdge(action, tail, head)
 }
+
+func (s *Snapshot) ExplainResource(identity Identity, resource ResourceKind, permission Permission, key *string) (bool, []RuleMatch, error) {
+	access, _ := s.AccessFor(identity)
+	return access.ExplainResource(resource, permission, key)
+}

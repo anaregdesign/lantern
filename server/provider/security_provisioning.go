@@ -239,10 +239,27 @@ func initialSecurityImage(config SecurityConfig) (security.Image, error) {
 	if !found || admin.Subject == "" {
 		return security.Image{}, errSecurityProvisioning
 	}
+	empty := ""
 	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1, Issuers: config.Issuers,
-		Roles: []security.Role{{ID: "security_admin", Name: "Security administrator", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}},
+		EdgePolicy:         &security.EdgePolicy{Version: security.EdgePolicyVersion, Mode: "rr"},
+		RegistrationPolicy: &security.RegistrationPolicy{Version: security.RegistrationPolicyVersion, RoleID: security.PersonalUserRoleID},
+		Roles: []security.Role{
+			{ID: "security_admin", Name: "Security administrator", Rules: []security.PermissionRule{
+				{ID: "security-read", Permission: security.Read, Resource: security.SecurityResource},
+				{ID: "security-write", Permission: security.Write, Resource: security.SecurityResource},
+				{ID: "settings-read", Permission: security.Read, Resource: security.SettingsResource},
+				{ID: "settings-write", Permission: security.Write, Resource: security.SettingsResource},
+			}},
+			{ID: "data_admin", Name: "Data administrator", Rules: []security.PermissionRule{
+				{ID: "data-read", Permission: security.Read, Resource: security.DataResource, Prefix: &empty},
+				{ID: "data-write", Permission: security.Write, Resource: security.DataResource, Prefix: &empty},
+			}},
+			security.PersonalUserRole(),
+		},
 		Principals: []security.Principal{{Identity: security.Identity{Kind: security.OIDCPrincipal, Issuer: admin.Issuer, Subject: admin.Subject}, State: security.Active, HumanIssuerConfigRevision: 1,
-			Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}}}
+			Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}, {RoleID: "data_admin"}}}},
+	}
+
 	if _, err := security.CompileImage(image, security.DefaultPolicyLimits()); err != nil {
 		return security.Image{}, errSecurityProvisioning
 	}

@@ -70,7 +70,7 @@ func (s *Executor) denyVertexLifecycle(ctx context.Context, physical string) boo
 	}
 	admission, known := security.AdmissionFromContext(ctx)
 	logical, err := keyspace.LogicalKey(physical)
-	return !known || err != nil || !admission.Access().Allows(security.VertexDelete, logical) || !admission.Access().Allows(security.VertexRead, logical)
+	return !known || err != nil || !admission.Access().Allows(security.VertexDelete, logical)
 }
 func (s *Executor) denyEdgeLifecycle(ctx context.Context, tail, head string) bool {
 	if !s.dataAuthorization {

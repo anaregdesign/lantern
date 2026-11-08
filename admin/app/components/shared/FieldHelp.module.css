@@ -1,0 +1,12 @@
+.help {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.help p {
+  margin: 0;
+}
+.help summary {
+  cursor: pointer;
+  min-height: 24px;
+}

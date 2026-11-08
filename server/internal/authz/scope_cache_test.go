@@ -33,7 +33,7 @@ func TestScopeCacheBounds(t *testing.T) {
 func BenchmarkScopeCache(b *testing.B) {
 	var rules []PermissionRule
 	for i := 0; i < 64; i++ {
-		rules = append(rules, dataRule(Allow, VertexRead, fmt.Sprintf("tenant:%04d:", i)), dataRule(Deny, VertexRead, fmt.Sprintf("tenant:%04d:private:", i)))
+		rules = append(rules, dataRule(Read, fmt.Sprintf("tenant:%04d:", i)))
 	}
 	policy, err := CompileRoles([]Role{{ID: "reader", Rules: rules}}, DefaultPolicyLimits())
 	if err != nil {
@@ -61,7 +61,7 @@ func BenchmarkScopeCache(b *testing.B) {
 }
 
 func TestScopeCacheUIDChurn(t *testing.T) {
-	policy, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Allow, VertexRead, "users:", ":"), uidRule(Allow, VertexWrite, "users:", ":")}}}, DefaultPolicyLimits())
+	policy, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Read, "users:", ":"), uidRule(Write, "users:", ":")}}}, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

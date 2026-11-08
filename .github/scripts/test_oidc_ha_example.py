@@ -9,7 +9,7 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "deploy/compose/oidc-ha"
 
 def load_tests(loader, standard_tests, pattern):
     suite = unittest.TestSuite()
-    for name in ("prepare", "check"):
+    for name in ("prepare", "check", "image_matrix"):
         # Explicit unique module names avoid collisions with other discovered
         # test_check/test_prepare modules. A fresh loader keeps the enclosing
         # .github/scripts discovery's top-level directory unchanged.

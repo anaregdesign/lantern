@@ -8,9 +8,8 @@ import "github.com/anaregdesign/lantern/server/internal/authz"
 // They preserve the transition without a second policy model.
 type Action = authz.Action
 type ResourceKind = authz.ResourceKind
-type Effect = authz.Effect
+type Permission = authz.Permission
 type PermissionRule = authz.PermissionRule
-type PrefixPair = authz.PrefixPair
 type Role = authz.Role
 type PolicyLimits = authz.PolicyLimits
 type CompiledPolicy = authz.CompiledPolicy
@@ -19,26 +18,32 @@ type Scope = authz.Scope
 type Range = authz.Range
 
 const (
-	VertexRead     = authz.VertexRead
-	VertexWrite    = authz.VertexWrite
-	VertexDelete   = authz.VertexDelete
-	EdgeRead       = authz.EdgeRead
-	EdgeCreate     = authz.EdgeCreate
-	EdgeAdd        = authz.EdgeAdd
-	EdgeWrite      = authz.EdgeWrite
-	EdgeDelete     = authz.EdgeDelete
-	Query          = authz.Query
-	CDCIdentity    = authz.CDCIdentity
-	CDCValue       = authz.CDCValue
-	Export         = authz.Export
-	ReceiptRead    = authz.ReceiptRead
-	OperationsRead = authz.OperationsRead
-	SchemaRead     = authz.SchemaRead
-	SecurityManage = authz.SecurityManage
-	DataResource   = authz.DataResource
-	GlobalResource = authz.GlobalResource
-	Allow          = authz.Allow
-	Deny           = authz.Deny
+	VertexRead         = authz.VertexRead
+	VertexWrite        = authz.VertexWrite
+	VertexDelete       = authz.VertexDelete
+	EdgeRead           = authz.EdgeRead
+	EdgeCreate         = authz.EdgeCreate
+	EdgeAdd            = authz.EdgeAdd
+	EdgeWrite          = authz.EdgeWrite
+	EdgeDelete         = authz.EdgeDelete
+	Query              = authz.Query
+	CDCIdentity        = authz.CDCIdentity
+	CDCValue           = authz.CDCValue
+	Export             = authz.Export
+	ReceiptRead        = authz.ReceiptRead
+	OperationsRead     = authz.OperationsRead
+	SchemaRead         = authz.SchemaRead
+	SecurityManage     = authz.SecurityManage
+	DataResource       = authz.DataResource
+	SecurityResource   = authz.SecurityResource
+	SettingsResource   = authz.SettingsResource
+	OperationsResource = authz.OperationsResource
+	SchemaResource     = authz.SchemaResource
+	Read               = authz.Read
+	Write              = authz.Write
+	SecurityRead       = authz.SecurityRead
+	SettingsRead       = authz.SettingsRead
+	SettingsWrite      = authz.SettingsWrite
 )
 
 var (
@@ -55,3 +60,6 @@ func validateRoleBounds(roles []Role, limits PolicyLimits) error {
 }
 func validRoleID(id string) bool                        { return authz.ValidRoleID(id) }
 func actionResource(action Action) (ResourceKind, bool) { return authz.ActionResource(action) }
+
+func OperationPermission(action Action) (Permission, bool) { return authz.OperationPermission(action) }
+func ActionResource(action Action) (ResourceKind, bool)    { return authz.ActionResource(action) }

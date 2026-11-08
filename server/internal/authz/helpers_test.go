@@ -8,32 +8,29 @@ import (
 const testUIDA = "11111111111111111111111111111111"
 const testUIDB = "22222222222222222222222222222222"
 
-func uidRule(effect Effect, action Action, before, after string) PermissionRule {
-	return PermissionRule{Effect: effect, Action: action, Resource: DataResource,
-		PrincipalUIDPrefix: &PrincipalUIDPrefix{LiteralBefore: before, LiteralAfter: after}}
+func uidRule(permission Permission, before, after string) PermissionRule {
+	return PermissionRule{Permission: permission, Resource: DataResource, PrincipalUIDPrefix: &PrincipalUIDPrefix{LiteralBefore: before, LiteralAfter: after}}
 }
-
-func dataRule(effect Effect, action Action, prefix string) PermissionRule {
-	return PermissionRule{Effect: effect, Action: action, Resource: DataResource, Prefix: &prefix}
+func dataRule(permission Permission, prefix string) PermissionRule {
+	return PermissionRule{Permission: permission, Resource: DataResource, Prefix: &prefix}
 }
-func globalRule(effect Effect, action Action) PermissionRule {
-	return PermissionRule{Effect: effect, Action: action, Resource: GlobalResource}
+func globalRule(resource ResourceKind, permission Permission) PermissionRule {
+	return PermissionRule{Permission: permission, Resource: resource}
 }
-
 func referenceAllows(roles []Role, action Action, key string) bool {
 	if key == "" || !utf8.ValidString(key) {
 		return false
 	}
-	allow := false
+	permission, ok := OperationPermission(action)
+	if !ok {
+		return false
+	}
 	for _, role := range roles {
 		for _, rule := range role.Rules {
-			if rule.Action == action && rule.Resource == DataResource && strings.HasPrefix(key, *rule.Prefix) {
-				if rule.Effect == Deny {
-					return false
-				}
-				allow = true
+			if rule.Permission == permission && rule.Resource == DataResource && rule.Prefix != nil && strings.HasPrefix(key, *rule.Prefix) {
+				return true
 			}
 		}
 	}
-	return allow
+	return false
 }

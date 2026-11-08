@@ -380,7 +380,7 @@ func runNativeRegistrationWireGate(t *testing.T, ctx context.Context, f *nativeL
 			t.Fatal("registration removed old grant", e)
 		}
 		nativeWireApply(t, ctx, controls[0], admin, &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: s.Identity, RoleId: "personal_user"}}})
-		policy := &pb.SecurityRegistrationPolicy{Version: 1, Enabled: false, RoleId: "personal_user"}
+		policy := &pb.SecurityRegistrationPolicy{Version: 2, Enabled: false, RoleId: "personal_user"}
 		nativeWireApply(t, ctx, controls[0], admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutRegistrationPolicy{PutRegistrationPolicy: policy}})
 		ready(t)
 		closed, e := controls[0].GetRegistrationPolicy(ctx, securityWireRequest(admin, &pb.GetRegistrationPolicyRequest{}))

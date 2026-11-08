@@ -27,9 +27,8 @@ clearing. Scalar revision fields are wire metadata, not independent authority.
 
 Ordinary qualified-human management accepts missing or older signed
 `auth_time`; malformed, future or contradictory evidence still fails. Issuer
-trust changes and effective `security.manage` expansion require approval of the
-exact final reviewed operation. This includes Deny removal, Role deletion or
-unassignment and activation. Machines may perform granted reference/status
+trust changes and effective write-authority expansion on Security or Settings require approval of the
+exact final reviewed operation. This includes indirect expansion through Role or membership changes and activation. Machines may perform granted reference/status
 reads, but cannot mutate management or approve a human authentication event.
 
 Purpose approval binds the actor, original ID, canonical intent, full cut and
@@ -58,18 +57,29 @@ choices; deferred backup/clone/restore paths remain closed. See
 
 ## Role-only scopes
 
-Matching Deny wins across all active assigned Roles; otherwise a matching Allow
-is required. Prefixes are literal strings without wildcard, case or Unicode
-normalization. Empty-prefix access is an explicit all-keys choice. Edge access
-requires both endpoints. Actions are independent: reads do not imply Query,
-CDC, Export, mutation or security management.
+Effective access is the union of explicit read/write Allows from active assigned
+Roles. No matching Allow means refusal. Read and write are independent; write
+includes creation/update, deletion and all TTL edits. Prefixes are literal,
+without wildcard, case or Unicode normalization; the empty prefix explicitly
+selects all logical data keys. Trusted UID selectors bind only the installed UID.
 
-The compiled policy returns immutable disjoint key ranges for the intersection
-of requested actions. A bounded cache belongs to one immutable Role policy and
-coalesces equivalent Role sets, never ranking statistics. Old queries may retain
-their captured ranges safely. Server adapters translate ranges to Core
-constraints; Core does not interpret Roles, OIDC or policy rules. Role templates
-and explain output use the same effective Allow/Deny evaluation.
+Typed resources separate Data, Security, Settings, Operations and Schema.
+Data/read includes exact/scoped queries, CDC/export and permitted receipt
+disclosure; Data/write never grants a management resource. Operations and Schema
+currently support read only. The exhaustive mapping is in
+[the authorization model](authorization-model.md).
+
+Edge disclosure always requires both endpoint reads. Modification follows one
+cluster-wide RR/WW/RW/WR predicate captured with the immutable policy; fresh
+installations default to RR. RR intentionally permits eligible Edge edits by
+Vertex readers. Write-based modes can allow blind handling without revealing
+existence, TTL, weight, contribution identity or counts.
+
+The compiled policy supplies immutable disjoint ranges and bounded derived
+caches shared by equivalent Role/UID/policy bindings. Server adapters translate
+those ranges into Core constraints; Core does not interpret Roles or OIDC.
+Every query/cursor/output still requires its captured current-authority binding.
+Templates and Explain use the same positive union and selected endpoint rule.
 
 ## Serving authority
 
@@ -94,7 +104,7 @@ caches, streams and exports retain their policy/request/corpus bindings.
 
 ## Validation boundaries
 
-Paired tests cover Deny precedence, immutable policy scopes, original operation
+Paired tests cover positive union/default refusal and unsupported-format refusal, immutable policy scopes, original operation
 conflicts/replay, operator locks, human/machine classification, credential and
 session revocation, journal faults, original-H custody, quorum/time expiry,
 output ownership and intact restart. Root real-wire cases exercise production

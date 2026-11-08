@@ -25,7 +25,6 @@ import { JsonView } from "~/components/cli/JsonView/JsonView";
 import { TraversalResultCompanion } from "~/components/cli/TraversalResultCompanion/TraversalResultCompanion";
 import styles from "./CliPage.module.css";
 import { useDataScope } from "~/lib/client/usecase/data-scope/use-data-scope";
-import { QUERY_SCOPE_ACTIONS } from "~/lib/client/usecase/data-scope/scope-options";
 import { ScopeSelector } from "~/components/shared/ScopeSelector/ScopeSelector";
 import { useAddRecovery } from "~/lib/client/usecase/add-recovery/use-add-recovery";
 import { AddRecoveryNotice } from "~/components/shared/AddRecoveryNotice/AddRecoveryNotice";
@@ -47,7 +46,7 @@ const IlluminateCanvas = lazy(async () => {
  */
 export function CliPage() {
   const cli = useCli();
-  const scope = useDataScope(QUERY_SCOPE_ACTIONS);
+  const scope = useDataScope();
   const addRecovery = useAddRecovery();
   const { enqueueScript, runRaw } = cli;
   const [searchParams] = useSearchParams();

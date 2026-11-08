@@ -17,6 +17,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -o /out/membershippublisher ./server/cmd/membershippublisher
 FROM alpine:3.24
+ARG COMMIT=
+LABEL org.opencontainers.image.revision=${COMMIT}
 COPY --from=builder /out/membershippublisher /membershippublisher
 USER 65532:65532
 STOPSIGNAL SIGTERM

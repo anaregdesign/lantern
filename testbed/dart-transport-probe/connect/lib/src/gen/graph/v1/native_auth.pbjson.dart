@@ -776,7 +776,6 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetNativeSessionResponse': GetNativeSessionResponse$json,
   '.graph.v1.SecurityRole': $1.SecurityRole$json,
   '.graph.v1.SecurityRule': $1.SecurityRule$json,
-  '.graph.v1.SecurityPrefixPair': $1.SecurityPrefixPair$json,
   '.graph.v1.SecurityPrincipalUIDPrefix': $1.SecurityPrincipalUIDPrefix$json,
   '.graph.v1.PrepareNativeLogoutRequest': PrepareNativeLogoutRequest$json,
   '.graph.v1.PrepareNativeLogoutResponse': PrepareNativeLogoutResponse$json,

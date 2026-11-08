@@ -253,5 +253,5 @@ func (s *Executor) advertiseEdgeCreateReceipt(ctx context.Context) bool {
 		return true
 	}
 	admission, known := security.AdmissionFromContext(ctx)
-	return known && !admission.Access().EdgeCandidateScope(security.EdgeCreate, security.VertexRead).Empty()
+	return known && !admission.Access().EdgeCandidateScope(security.EdgeCreate).Empty()
 }

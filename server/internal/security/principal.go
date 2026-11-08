@@ -25,4 +25,7 @@ type Principal struct {
 	// UserUID is allocated once by verified registration. It survives deletion
 	// as a tombstone and is never accepted by ordinary Principal mutations.
 	UserUID string `json:"user_uid,omitempty"`
+	// Server-owned optional metadata from the most recent successful browser
+	// login. Never accepted by public Principal edits or used for authorization.
+	VerifiedEmail string `json:"verified_email,omitempty"`
 }

@@ -30,6 +30,9 @@ var securityActions = map[pb.SecurityAction]security.Action{
 	pb.SecurityAction_SECURITY_ACTION_OPERATIONS_READ: security.OperationsRead,
 	pb.SecurityAction_SECURITY_ACTION_SCHEMA_READ:     security.SchemaRead,
 	pb.SecurityAction_SECURITY_ACTION_MANAGE:          security.SecurityManage,
+	pb.SecurityAction_SECURITY_ACTION_SECURITY_READ:   security.SecurityRead,
+	pb.SecurityAction_SECURITY_ACTION_SETTINGS_READ:   security.SettingsRead,
+	pb.SecurityAction_SECURITY_ACTION_SETTINGS_WRITE:  security.SettingsWrite,
 }
 
 func strictSecurityMessage(message proto.Message) error {
@@ -142,8 +145,37 @@ func encodeSecurityIssuer(issuer security.Issuer) *pb.SecurityIssuer {
 	}
 	return result
 }
+
+var securityPermissions = map[pb.SecurityPermission]security.Permission{
+	pb.SecurityPermission_SECURITY_PERMISSION_READ:  security.Read,
+	pb.SecurityPermission_SECURITY_PERMISSION_WRITE: security.Write,
+}
+var securityResources = map[pb.SecurityResource]security.ResourceKind{
+	pb.SecurityResource_SECURITY_RESOURCE_DATA:       security.DataResource,
+	pb.SecurityResource_SECURITY_RESOURCE_SECURITY:   security.SecurityResource,
+	pb.SecurityResource_SECURITY_RESOURCE_SETTINGS:   security.SettingsResource,
+	pb.SecurityResource_SECURITY_RESOURCE_OPERATIONS: security.OperationsResource,
+	pb.SecurityResource_SECURITY_RESOURCE_SCHEMA:     security.SchemaResource,
+}
+
+func encodeSecurityPermission(permission security.Permission) pb.SecurityPermission {
+	for wire, value := range securityPermissions {
+		if value == permission {
+			return wire
+		}
+	}
+	return pb.SecurityPermission_SECURITY_PERMISSION_UNSPECIFIED
+}
+func encodeSecurityResource(resource security.ResourceKind) pb.SecurityResource {
+	for wire, value := range securityResources {
+		if value == resource {
+			return wire
+		}
+	}
+	return pb.SecurityResource_SECURITY_RESOURCE_UNSPECIFIED
+}
 func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
-	if role == nil || role.EnvOwned || len(role.Rules) > security.DefaultPolicyLimits().MaxRules {
+	if role == nil || role.EnvOwned || strictSecurityMessage(role) != nil || len(role.Rules) > security.DefaultPolicyLimits().MaxRules {
 		return security.Role{}, security.ErrInvalidPolicy
 	}
 	result := security.Role{ID: role.Id, Name: role.Name, Rules: make([]security.PermissionRule, len(role.Rules))}
@@ -151,44 +183,28 @@ func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 		if rule == nil {
 			return security.Role{}, security.ErrInvalidPolicy
 		}
-		action, known := securityActions[rule.Action]
-		if !known {
+		permission, known := securityPermissions[rule.Permission]
+		resourceKind, resourceKnown := securityResources[rule.ResourceKind]
+		if !known || !resourceKnown || !authz.ValidPermission(resourceKind, permission) {
 			return security.Role{}, security.ErrInvalidPolicy
 		}
-		switch action {
-		case security.EdgeRead, security.EdgeCreate, security.EdgeAdd, security.EdgeWrite, security.EdgeDelete:
-			return security.Role{}, security.ErrInvalidPolicy
-		}
-		target := security.PermissionRule{ID: rule.Id, Action: action}
-		switch rule.Effect {
-		case pb.SecurityEffect_SECURITY_EFFECT_ALLOW:
-			target.Effect = security.Allow
-		case pb.SecurityEffect_SECURITY_EFFECT_DENY:
-			target.Effect = security.Deny
-		default:
-			return security.Role{}, security.ErrInvalidPolicy
-		}
+		target := security.PermissionRule{ID: rule.Id, Permission: permission, Resource: resourceKind}
 		switch resource := rule.Resource.(type) {
 		case *pb.SecurityRule_Prefix:
-			if resource == nil {
+			if resource == nil || resourceKind != security.DataResource {
 				return security.Role{}, security.ErrInvalidPolicy
 			}
-			target.Resource = security.DataResource
 			prefix := resource.Prefix
 			target.Prefix = &prefix
-		case *pb.SecurityRule_Global:
-			if resource == nil || !resource.Global {
-				return security.Role{}, security.ErrInvalidPolicy
-			}
-			target.Resource = security.GlobalResource
 		case *pb.SecurityRule_PrincipalUidPrefix:
-			if resource == nil || resource.PrincipalUidPrefix == nil {
+			if resource == nil || resource.PrincipalUidPrefix == nil || resourceKind != security.DataResource {
 				return security.Role{}, security.ErrInvalidPolicy
 			}
-			target.Resource = security.DataResource
 			target.PrincipalUIDPrefix = &authz.PrincipalUIDPrefix{LiteralBefore: resource.PrincipalUidPrefix.LiteralBefore, LiteralAfter: resource.PrincipalUidPrefix.LiteralAfter}
-		case *pb.SecurityRule_Pair:
-			return security.Role{}, security.ErrInvalidPolicy
+		case nil:
+			if resourceKind == security.DataResource {
+				return security.Role{}, security.ErrInvalidPolicy
+			}
 		default:
 			return security.Role{}, security.ErrInvalidPolicy
 		}
@@ -199,14 +215,11 @@ func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 func encodeSecurityRole(role security.Role) *pb.SecurityRole {
 	result := &pb.SecurityRole{Id: role.ID, Name: role.Name, Rules: make([]*pb.SecurityRule, len(role.Rules))}
 	for i, rule := range role.Rules {
-		target := &pb.SecurityRule{Id: rule.ID, Effect: encodeSecurityEffect(rule.Effect)}
-		target.Action = encodeSecurityAction(rule.Action)
-		if rule.Pair != nil {
-			if rule.Prefix != nil || rule.PrincipalUIDPrefix != nil {
-				return nil
-			}
-			target.Resource = &pb.SecurityRule_Pair{Pair: &pb.SecurityPrefixPair{TailPrefix: rule.Pair.Tail, HeadPrefix: rule.Pair.Head}}
-		} else if rule.PrincipalUIDPrefix != nil {
+		if !authz.ValidPermission(rule.Resource, rule.Permission) {
+			return nil
+		}
+		target := &pb.SecurityRule{Id: rule.ID, Permission: encodeSecurityPermission(rule.Permission), ResourceKind: encodeSecurityResource(rule.Resource)}
+		if rule.PrincipalUIDPrefix != nil {
 			if rule.Prefix != nil || rule.Resource != security.DataResource {
 				return nil
 			}
@@ -216,11 +229,7 @@ func encodeSecurityRole(role security.Role) *pb.SecurityRole {
 				return nil
 			}
 			target.Resource = &pb.SecurityRule_Prefix{Prefix: *rule.Prefix}
-		} else if rule.Resource == security.GlobalResource {
-			target.Resource = &pb.SecurityRule_Global{Global: true}
-		} else {
-			// An absent/unknown data selector is never a Global grant. Stored
-			// Roles have already passed compilation; fail closed on misuse.
+		} else if rule.Resource == security.DataResource {
 			return nil
 		}
 		result.Rules[i] = target
@@ -253,12 +262,6 @@ func encodeSecurityManagedRole(role security.Role, image security.Image) *pb.Sec
 	}
 	return result
 }
-func encodeSecurityEffect(effect security.Effect) pb.SecurityEffect {
-	if effect == security.Deny {
-		return pb.SecurityEffect_SECURITY_EFFECT_DENY
-	}
-	return pb.SecurityEffect_SECURITY_EFFECT_ALLOW
-}
 func encodeSecurityUser(user security.Principal) *pb.SecurityUser {
 	state := pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE
 	if user.State == security.Suspended {
@@ -268,6 +271,9 @@ func encodeSecurityUser(user security.Principal) *pb.SecurityUser {
 		state = pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_DELETED
 	}
 	result := &pb.SecurityUser{Identity: encodeSecurityIdentity(user.Identity), State: state}
+	if user.VerifiedEmail != "" {
+		result.VerifiedEmail = &user.VerifiedEmail
+	}
 	if user.UserUID != "" {
 		result.UserId = &user.UserUID
 	}
@@ -283,6 +289,9 @@ func decodeSecurityChange(change *pb.SecurityChange) (security.Change, error) {
 	result := security.Change{}
 	var err error
 	switch op := change.Operation.(type) {
+	case *pb.SecurityChange_PutEdgePolicy:
+		result.Kind = security.PutEdgePolicy
+		result.EdgePolicy, err = decodeEdgePolicy(op.PutEdgePolicy)
 	case *pb.SecurityChange_PutOperationalPolicy:
 		result.Kind = security.PutOperationalPolicy
 		result.OperationalPolicy, err = decodeOperationalPolicy(op.PutOperationalPolicy)

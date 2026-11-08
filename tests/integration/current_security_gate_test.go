@@ -143,6 +143,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var managedLogGeneration uint64
 	var managedSlowGeneration uint64
 	var managedRateGeneration uint64
+	var managedEdgeMode pb.EdgeEndpointMode
 	var rateOwners []*provider.RateLimitInterceptor
 	var operationalNodes []*currentOperationalFixture
 	previousDefaultLogger := slog.Default()
@@ -635,7 +636,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	runCase := func(name string, body func(*testing.T)) {
 		if configuredSourceIntegration {
 			switch name {
-			case "public protocols and full binding", "ordinary review apply foreign status", "sdk and typed data response", "reader explicit Deny and no write grant", "original stop observation remains separate from Apply":
+			case "public protocols and full binding", "ordinary review apply foreign status", "sdk and typed data response", "reader scoped read and no write grant", "original stop observation remains separate from Apply":
 			default:
 				return
 			}
@@ -995,9 +996,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err == nil {
 			t.Fatal("last qualified admin removal accepted")
 		}
-		expansion, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Msg.Version.CurrentProfile, ExpectedCut: current.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "blocked_admin", Rules: []*pb.SecurityRule{{Id: "allow", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_MANAGE, Resource: &pb.SecurityRule_Global{Global: true}}}}}}}}}))
+		expansion, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Msg.Version.CurrentProfile, ExpectedCut: current.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "blocked_admin", Rules: []*pb.SecurityRule{{Id: "allow", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SECURITY}}}}}}}}))
 		if err != nil || expansion.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION {
-			t.Fatal("removing Deny hid effective manage expansion", err)
+			t.Fatal("typed Security write expansion did not require reauthentication", err)
 		}
 		after, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if err != nil || !proto.Equal(current.Msg.Version.CurrentCut, after.Msg.Version.CurrentCut) {
@@ -1014,7 +1015,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal(e)
 		}
 		c := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
-		if _, e = c.PutVertices(ctx, securityWireRequest(token, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "orders:a", Value: &pb.Vertex_String_{String_: "visible"}}, {Key: "orders:b", Value: &pb.Vertex_String_{String_: "second"}}}})); e != nil {
+		if _, e = c.PutVertices(ctx, securityWireRequest(token, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "orders:a", Value: &pb.Vertex_String_{String_: "visible"}}, {Key: "orders:b", Value: &pb.Vertex_String_{String_: "second"}}, {Key: "orders:public:a", Value: &pb.Vertex_String_{String_: "reader-visible"}}}})); e != nil {
 			t.Fatal(e)
 		}
 		got, e := c.GetVertices(ctx, securityWireRequest(token, &pb.GetVerticesRequest{Keys: []string{"orders:a", "orders:b"}}))
@@ -1050,20 +1051,80 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 		}
 	})
-	runCase("reader explicit Deny and no write grant", func(t *testing.T) {
+	runCase("reader scoped read and no write grant", func(t *testing.T) {
 		reader := f.token(t, "reader", func(c map[string]any) { c["iat"] = time.Now().Add(-time.Minute).Unix(); delete(c, "auth_time") })
 		c := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
-		if _, err := c.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: "orders:a"})); err != nil {
+		if _, err := c.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: "orders:public:a"})); err != nil {
 			t.Fatal("reader exact grant", err)
 		}
 		for _, key := range []string{"orders:private:hidden", "other:denied"} {
 			if _, err := c.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: key})); connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatal("reader Deny/prefix", err)
+				t.Fatal("reader ungranted prefix", err)
 			}
 		}
 		if _, err := c.PutVertex(ctx, securityWireRequest(reader, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "orders:reader-write"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatal("reader gained write", err)
 		}
+	})
+	runCase("global Edge mode shared across the current cohort", func(t *testing.T) {
+		// Reuse the existing controlled three-member owners. The normal-build
+		// configured-source family retains its frozen operation/acquisition plan.
+		reader := f.token(t, "reader", func(claims map[string]any) {
+			claims["iat"] = time.Now().Add(-time.Minute).Unix()
+			delete(claims, "auth_time")
+		})
+		for i, control := range controls {
+			policy, err := control.GetEdgePolicy(ctx, securityWireRequest(token, &pb.GetEdgePolicyRequest{}))
+			if err != nil || policy.Msg.GetPolicy().GetMode() != pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_READ_READ {
+				t.Fatal("cohort fresh RR mode", i+1, err)
+			}
+			data := graphv1connect.NewLanternServiceClient(transport, servers[i].URL)
+			tail, head := fmt.Sprintf("orders:public:edge-mode:%d:tail", i+1), fmt.Sprintf("orders:public:edge-mode:%d:head", i+1)
+			if _, err := data.PutVertices(ctx, securityWireRequest(token, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: tail}, {Key: head}}})); err != nil {
+				t.Fatal("cohort Edge endpoint seed", i+1, err)
+			}
+			// Warm each member's read-only Role/admission/cache at RR before
+			// changing only the global predicate, with the same caller token.
+			if _, err := data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: tail, Head: head, Weight: 1}})); err != nil {
+				t.Fatal("RR reader Edge mutation", i+1, err)
+			}
+		}
+		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{
+			Profile: current.Msg.Version.CurrentProfile, ExpectedCut: current.Msg.Version.CurrentCut,
+			Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutEdgePolicy{PutEdgePolicy: &pb.SecurityEdgePolicy{Version: 1, Mode: pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_WRITE_WRITE}}}},
+		}}))
+		if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+			t.Fatal("global Edge policy review", err)
+		}
+		review := prepared.Msg.CurrentReview
+		// Exactly one dispatch; status recovers its retained original.
+		_, _ = controls[0].ApplySecurityChanges(ctx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: review}))
+		original := awaitCurrentPublicOriginal(t, ctx, controls[0], token, review)
+		if original.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+			t.Fatal("global Edge policy not applied", original)
+		}
+		for i, control := range controls {
+			if observed := awaitCurrentPublicOriginal(t, ctx, control, token, review); !proto.Equal(observed, original) {
+				t.Fatal("cohort global policy original changed", i+1)
+			}
+			policy, err := control.GetEdgePolicy(ctx, securityWireRequest(token, &pb.GetEdgePolicyRequest{}))
+			if err != nil || policy.Msg.GetPolicy().GetMode() != pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_WRITE_WRITE {
+				t.Fatal("cohort WW mode", i+1, err)
+			}
+			data := graphv1connect.NewLanternServiceClient(transport, servers[i].URL)
+			edge := &pb.Edge{Tail: fmt.Sprintf("orders:public:edge-mode:%d:tail", i+1), Head: fmt.Sprintf("orders:public:edge-mode:%d:head", i+1), Weight: 2}
+			if _, err := data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: edge})); connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatal("old RR reader cache authorized WW edit", i+1, err)
+			}
+			if _, err := data.PutEdge(ctx, securityWireRequest(token, &pb.PutEdgeRequest{Edge: edge})); err != nil {
+				t.Fatal("WW combined grants failed", i+1, err)
+			}
+		}
+		managedEdgeMode = pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_WRITE_WRITE
 	})
 	runCase("machine data grants and management refusal", func(t *testing.T) {
 		raw, e := os.ReadFile(filepath.Join(dir, "machine.token"))
@@ -1472,6 +1533,23 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if operationalAcceptance != nil {
 			operationalAcceptance.AfterRestart(t, controls[1], operationalNodes[1], servers[1])
 		}
+		if managedEdgeMode != pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_UNSPECIFIED {
+			t.Run("global Edge mode survives intact member restart", func(t *testing.T) {
+				policy, err := controls[1].GetEdgePolicy(ctx, securityWireRequest(token, &pb.GetEdgePolicyRequest{}))
+				if err != nil || policy.Msg.GetPolicy().GetMode() != managedEdgeMode {
+					t.Fatal("restart replaced retained Edge mode", err)
+				}
+				reader := f.token(t, "reader", func(claims map[string]any) {
+					claims["iat"] = time.Now().Add(-time.Minute).Unix()
+					delete(claims, "auth_time")
+				})
+				data := graphv1connect.NewLanternServiceClient(transport, servers[1].URL)
+				if _, err := data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "orders:public:edge-mode:2:tail", Head: "orders:public:edge-mode:2:head", Weight: 3}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+					t.Fatal("restarted member revived RR reader edit", err)
+				}
+			})
+		}
+
 		if managedLogGeneration != 0 {
 			t.Run("managed log restart ignores conflicting environment", func(t *testing.T) {
 				state := awaitCurrentLogSettings(t, ctx, controls[1], token, managedLogGeneration)

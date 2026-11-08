@@ -8,6 +8,56 @@ use crate::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[test]
+fn vertex_blind_replies_never_invent_outcomes_or_existence() {
+    use crate::generated::graph::v1::{MutationAcceptance, MutationAcceptanceKind};
+    let acceptance = Some(MutationAcceptance {
+        kind: MutationAcceptanceKind::HandledEffectUndisclosed as i32,
+    });
+    assert!(matches!(
+        validate_vertex_put_response(
+            &[vertex("v")],
+            PutVerticesResponse {
+                acceptance: acceptance.clone(),
+                outcomes: vec![]
+            }
+        ),
+        Err(LanternError::MutationAcceptedUndisclosed)
+    ));
+    assert!(matches!(
+        validate_vertex_put_response(
+            &[vertex("v")],
+            PutVerticesResponse {
+                acceptance: acceptance.clone(),
+                outcomes: vec![PutOutcome::AppliedAndLive as i32]
+            }
+        ),
+        Err(LanternError::Protocol(_))
+    ));
+    assert!(matches!(
+        validate_delete_vertices(
+            1,
+            DeleteVerticesResponse {
+                acceptance: acceptance.clone(),
+                deleted: 0,
+                existed: vec![]
+            }
+        ),
+        Err(LanternError::MutationAcceptedUndisclosed)
+    ));
+    assert!(matches!(
+        validate_delete_vertices(
+            1,
+            DeleteVerticesResponse {
+                acceptance,
+                deleted: 0,
+                existed: vec![false]
+            }
+        ),
+        Err(LanternError::Protocol(_))
+    ));
+}
+
 struct DelayedToken(Duration);
 
 impl TokenProvider for DelayedToken {

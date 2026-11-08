@@ -2,7 +2,7 @@ package security
 
 import "testing"
 
-func TestRoleTemplatesSeparateDataCDCExportAndControl(t *testing.T) {
+func TestRoleTemplatesTypedPermissionsAndDetachedDrafts(t *testing.T) {
 	roles, err := RoleTemplates("tenant:1:")
 	if err != nil {
 		t.Fatal(err)
@@ -12,39 +12,40 @@ func TestRoleTemplatesSeparateDataCDCExportAndControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader, err := policy.ForRoles([]string{"read_only"})
-	if err != nil || !reader.Allows(VertexRead, "tenant:1:value") || !reader.Allows(Query, "tenant:1:value") || reader.Allows(VertexWrite, "tenant:1:value") || reader.Allows(CDCIdentity, "tenant:1:value") || reader.Allows(Export, "tenant:1:value") || reader.Allows(VertexRead, "tenant:2:value") {
-		t.Fatal("reader crossed a capability/scope boundary", err)
+	if err != nil || !reader.Allows(VertexRead, "tenant:1:value") || !reader.Allows(Query, "tenant:1:value") || !reader.Allows(CDCValue, "tenant:1:value") || !reader.Allows(Export, "tenant:1:value") || reader.Allows(VertexWrite, "tenant:1:value") || reader.Allows(VertexRead, "tenant:2:value") {
+		t.Fatal("reader typed map/scope", err)
 	}
-	identity, err := policy.ForRoles([]string{"cdc_identity"})
-	if err != nil || !identity.Allows(CDCIdentity, "tenant:1:value") || identity.Allows(CDCValue, "tenant:1:value") || identity.Allows(VertexRead, "tenant:1:value") {
-		t.Fatal("identity CDC acquired value access", err)
+	// RR deliberately lets readers modify Edges between readable endpoints.
+	if !reader.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") {
+		t.Fatal("RR consequence missing")
 	}
 	control, err := policy.ForRoles([]string{"security_admin"})
-	if err != nil || !control.AllowsGlobal(SecurityManage) || control.Allows(VertexRead, "tenant:1:value") || control.AllowsGlobal(OperationsRead) {
-		t.Fatal("security administrator acquired data/operations access", err)
+	if err != nil || !control.AllowsGlobal(SecurityRead) || !control.AllowsGlobal(SecurityManage) || !control.AllowsGlobal(SettingsRead) || !control.AllowsGlobal(SettingsWrite) || control.Allows(VertexRead, "tenant:1:value") || control.AllowsGlobal(OperationsRead) {
+		t.Fatal("Security/Settings boundary", err)
 	}
-	operations, err := policy.ForRoles([]string{"operations_reader"})
-	if err != nil || !operations.AllowsGlobal(OperationsRead) || operations.AllowsGlobal(SecurityManage) {
-		t.Fatal("operations access acquired management", err)
+	ops, err := policy.ForRoles([]string{"operations_reader"})
+	if err != nil || !ops.AllowsGlobal(OperationsRead) || ops.AllowsGlobal(SecurityManage) || ops.AllowsGlobal(SettingsRead) {
+		t.Fatal("Ops boundary", err)
 	}
 	writer, err := policy.ForRoles([]string{"application_writer"})
-	if err != nil || !writer.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:1:b") || !writer.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") || writer.Allows(VertexDelete, "tenant:1:a") {
-		t.Fatal("writer did not retain Head ownership without Vertex deletion", err)
+	if err != nil || !writer.Allows(VertexDelete, "tenant:1:a") || !writer.Allows(ReceiptRead, "tenant:1:b") {
+		t.Fatal("write/delete mapping", err)
 	}
-	manager, err := policy.ForRoles([]string{"head_relationship_manager"})
-	if err != nil || !manager.AllowsEdge(EdgeAdd, "tenant:1:a", "tenant:1:b") || !manager.Allows(ReceiptRead, "tenant:1:b") || manager.AllowsEdge(EdgeWrite, "tenant:1:a", "tenant:2:b") {
-		t.Fatal("head manager crossed capability/scope boundary", err)
+	blind, err := policy.ForRoles([]string{"write_only"})
+	if err != nil || !blind.Allows(VertexWrite, "tenant:1:a") || blind.Allows(VertexRead, "tenant:1:a") || blind.Allows(ReceiptRead, "tenant:1:a") {
+		t.Fatal("blind grant disclosed", err)
 	}
-	if _, err = policy.ForRoles([]string{"connection_creator"}); err == nil {
-		t.Fatal("obsolete create-only template survived")
+	for _, obsolete := range []string{"connection_creator", "cdc_identity", "cdc_values", "head_relationship_manager"} {
+		if _, err := policy.ForRoles([]string{obsolete}); err == nil {
+			t.Fatal("retired capability template survived", obsolete)
+		}
 	}
-	// Editor-owned templates are detached from a later caller and each other.
-	*roles[0].Rules[0].Prefix = "different:"
-	if *roles[0].Rules[1].Prefix != "tenant:1:" {
-		t.Fatal("editing one rule changed another")
+	*roles[1].Rules[0].Prefix = "different:"
+	if *roles[1].Rules[1].Prefix != "tenant:1:" {
+		t.Fatal("draft rules share mutable selector")
 	}
 	fresh, err := RoleTemplates("tenant:1:")
-	if err != nil || *fresh[0].Rules[0].Prefix != "tenant:1:" {
-		t.Fatal("template mutation escaped call", err)
+	if err != nil || *fresh[1].Rules[0].Prefix != "tenant:1:" {
+		t.Fatal("template caller mutation escaped", err)
 	}
 }

@@ -7,7 +7,7 @@ import (
 
 func encodeRegistrationReview(r security.CurrentReview) (*pb.NativeRegistrationReview, error) {
 	c, err := r.Command()
-	if err != nil || c.Kind != security.S1RegisterPrincipal || c.Registration == nil || security.RegistrationReviewBinding(r) == [32]byte{} {
+	if err != nil || c.Kind != security.S1RegisterPrincipal || c.Registration == nil || c.Registration.ProfileKind != security.NativeRegistrationProfile || security.RegistrationReviewBinding(r) == [32]byte{} {
 		return nil, security.ErrS1Contract
 	}
 	i := r.Operation.Digest()
@@ -35,7 +35,7 @@ func decodeRegistrationReview(owner *security.CurrentAuthority, r *pb.NativeRegi
 	if err != nil {
 		return security.CurrentReview{}, err
 	}
-	command := security.S1Command{Kind: security.S1RegisterPrincipal, Registration: &security.PrincipalRegistration{UserUID: r.UserId, ClientProfileID: r.ClientProfileId, IssuerConfigRevision: r.IssuerConfigRevision}}
+	command := security.S1Command{Kind: security.S1RegisterPrincipal, Registration: &security.PrincipalRegistration{UserUID: r.UserId, ClientProfileID: r.ClientProfileId, ProfileKind: security.NativeRegistrationProfile, IssuerConfigRevision: r.IssuerConfigRevision}}
 	return owner.DecodeReview(p, id, actor, cut, command, [32]byte(r.IntentDigest))
 }
 
@@ -48,7 +48,16 @@ func decodeRegistrationPolicy(p *pb.SecurityRegistrationPolicy) (*security.Regis
 		if profile == nil {
 			return nil, security.ErrInvalidImage
 		}
-		result.Profiles[n] = security.RegistrationProfile{Issuer: profile.Issuer, ClientProfileID: profile.ClientProfileId}
+		kind := ""
+		switch profile.Kind {
+		case pb.RegistrationProfileKind_REGISTRATION_PROFILE_KIND_NATIVE:
+			kind = security.NativeRegistrationProfile
+		case pb.RegistrationProfileKind_REGISTRATION_PROFILE_KIND_BROWSER:
+			kind = security.BrowserRegistrationProfile
+		default:
+			return nil, security.ErrInvalidImage
+		}
+		result.Profiles[n] = security.RegistrationProfile{Issuer: profile.Issuer, ClientProfileID: profile.ClientProfileId, Kind: kind}
 	}
 	if err := security.ValidateRegistrationPolicyConfiguration(result); err != nil {
 		return nil, err
@@ -62,7 +71,16 @@ func encodeRegistrationPolicy(p *security.RegistrationPolicy) *pb.SecurityRegist
 	}
 	result := &pb.SecurityRegistrationPolicy{Version: uint32(p.Version), Enabled: p.Enabled, RoleId: p.RoleID}
 	for _, profile := range p.Profiles {
-		result.Profiles = append(result.Profiles, &pb.SecurityRegistrationProfile{Issuer: profile.Issuer, ClientProfileId: profile.ClientProfileID})
+		var kind pb.RegistrationProfileKind
+		switch profile.Kind {
+		case security.NativeRegistrationProfile:
+			kind = pb.RegistrationProfileKind_REGISTRATION_PROFILE_KIND_NATIVE
+		case security.BrowserRegistrationProfile:
+			kind = pb.RegistrationProfileKind_REGISTRATION_PROFILE_KIND_BROWSER
+		default:
+			return nil
+		}
+		result.Profiles = append(result.Profiles, &pb.SecurityRegistrationProfile{Issuer: profile.Issuer, ClientProfileId: profile.ClientProfileID, Kind: kind})
 	}
 	return result
 }

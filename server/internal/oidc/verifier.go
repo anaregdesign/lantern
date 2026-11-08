@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -34,6 +35,10 @@ type tokenClaims struct {
 	AuthTime   *jwt.NumericDate `json:"auth_time"`
 	AccessHash string           `json:"at_hash"`
 	CodeHash   string           `json:"c_hash"`
+	// Optional display claims must never invalidate otherwise valid identity
+	// evidence when their type is unsupported or malformed.
+	Email         json.RawMessage `json:"email"`
+	EmailVerified json.RawMessage `json:"email_verified"`
 }
 
 type Verifier struct {
@@ -146,7 +151,17 @@ func (v *Verifier) VerifyID(ctx context.Context, raw string, trust Trust, nonce 
 			return VerifiedIdentity{}, ErrInvalidToken
 		}
 	}
+	verified.evidence.VerifiedEmail = verifiedDisplayEmail(claims)
 	return finishEvidence(verified, "id", "oidc-id")
+}
+
+func verifiedDisplayEmail(claims tokenClaims) string {
+	var verified bool
+	var email string
+	if json.Unmarshal(claims.EmailVerified, &verified) != nil || !verified || json.Unmarshal(claims.Email, &email) != nil || !security.ValidDisplayEmail(email) {
+		return ""
+	}
+	return email
 }
 
 // VerifyLogin additionally checks an optional signed at_hash against the

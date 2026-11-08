@@ -134,6 +134,47 @@ test.describe("Ops metrics section", () => {
     );
   });
 
+  for (const [status, message] of [
+    [401, "sign in again"],
+    [403, "read permission on Operations"],
+    [503, "diagnostics authorization or Prometheus is unavailable"],
+    [502, "could not complete authorization or reach Prometheus"],
+  ] as const) {
+    test(`explains metrics HTTP ${status} without showing an empty chart`, async ({
+      page,
+    }) => {
+      await page.route("**/api/prom/api/v1/query_range*", (route) =>
+        route.fulfill({ status, body: "diagnostics refused" }),
+      );
+      await page.goto("/ops");
+      await expect(
+        page.getByTestId("ops-metric-cache-size-error"),
+      ).toContainText(message);
+      await expect(
+        page.getByTestId("ops-metric-cache-size-summary"),
+      ).toHaveCount(0);
+    });
+  }
+
+  test("explains a refused status RPC as an Operations permission requirement", async ({
+    page,
+  }) => {
+    await page.route("**/graph.v1.LanternService/GetServerStatus", (route) =>
+      route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "permission_denied",
+          message: "public RPC request rejected",
+        }),
+      }),
+    );
+    await page.goto("/ops");
+    await expect(page.getByTestId("ops-server-error")).toContainText(
+      "read permission on Operations",
+    );
+  });
+
   test("renders charts when query_range is mocked", async ({ page }) => {
     await page.route("**/api/prom/api/v1/query_range*", async (route) => {
       const now = Math.floor(Date.now() / 1000);

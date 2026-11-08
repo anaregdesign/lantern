@@ -20,9 +20,6 @@ func (o *CurrentAuthority) CheckOriginalDisclosure(ctx context.Context, a *Admis
 	if err := o.currentAdmission(ctx, a, false); err != nil {
 		return err
 	}
-	if a.Access().AllowsGlobal(SecurityManage) {
-		return nil
-	}
 	k := o.origin.network.kernel
 	k.gate.Lock()
 	defer k.gate.Unlock()
@@ -49,6 +46,9 @@ func (o *CurrentAuthority) CheckOriginalDisclosure(ctx context.Context, a *Admis
 		}
 	}
 	command, err := op.command()
+	if err == nil && op.digest == intent && command.Kind == S1Management && canReadManagementChanges(a.Access(), command.Changes) {
+		return nil
+	}
 	selfOperation := command.Kind == S1IssueSession || command.Kind == S1RevokeSession || command.Kind == S1RegisterPrincipal && a.Authentication().Provenance == NativeEndUserSession
 	if err != nil || op.digest != intent || op.actor != a.Identity() || a.Authentication().Class != EndUser || !selfOperation {
 		return ErrPermissionDenied
@@ -94,7 +94,7 @@ func (o *CurrentAuthority) currentAdmission(ctx context.Context, a *Admission, m
 	if err := a.Check(ctx, time.Time{}); err != nil {
 		return err
 	}
-	if management && (!a.Access().AllowsGlobal(SecurityManage) || a.current.credential.browserReadOnly || a.Authentication().Class != EndUser) {
+	if management && (!hasManagementWrite(a.Access()) || a.current.credential.browserReadOnly || a.Authentication().Class != EndUser) {
 		return ErrPermissionDenied
 	}
 	return nil
@@ -107,6 +107,9 @@ func (o *CurrentAuthority) Prepare(ctx context.Context, a *Admission, producer C
 		return CurrentReview{}, false, ErrPermissionDenied
 	}
 	if o == nil || profile != o.Profile() || o.currentAdmission(ctx, a, command.Kind == S1Management) != nil || a.BrowserReadOnly() || a.Authentication().Class != EndUser {
+		return CurrentReview{}, false, ErrPermissionDenied
+	}
+	if command.Kind == S1Management && !CanManageChanges(a.Access(), command.Changes) {
 		return CurrentReview{}, false, ErrPermissionDenied
 	}
 	captured, _ := a.CurrentCut()
@@ -161,6 +164,10 @@ func (o *CurrentAuthority) ReviewRequirement(ctx context.Context, a *Admission, 
 	r, err := o.prepared(review)
 	if err != nil {
 		return false, err
+	}
+	command, err := r.operation.command()
+	if err != nil || command.Kind == S1Management && !CanManageChanges(a.Access(), command.Changes) {
+		return false, ErrPermissionDenied
 	}
 	k := o.origin.network.kernel
 	k.gate.Lock()

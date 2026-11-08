@@ -8,6 +8,14 @@ import (
 func TestS1ExecutionConfigurationCommitsAllInputs(t *testing.T) {
 	base := s1Fixture(t, s1Image())
 	initial := base.Configuration()
+	retiredExecution := s1Digest("execution-configuration", initial)
+	retiredPolicy := s1Digest("policy-configuration", struct {
+		Version uint16
+		Policy  PolicyLimits
+	}{S1Version, initial.Policy})
+	if initial.Digest() == retiredExecution || s1PolicyConfiguration(initial.Policy) == retiredPolicy {
+		t.Fatal("active model reused retired native execution/semantic policy fingerprint")
+	}
 	for _, tc := range []struct {
 		name   string
 		change func(*S1ExecutionConfig)

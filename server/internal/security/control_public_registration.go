@@ -69,7 +69,7 @@ func (o *CurrentAuthority) refreshRegistration(ctx context.Context, proof *Curre
 	if err != nil {
 		return authorityRegistrationCredential{}, err
 	}
-	if c.actor != proof.review.Operation.actor || c.claim.Verification != proof.verification || c.claim.Token.Native.Registration != proof.purpose || c.claim.AdmissionDeadline != proof.expires {
+	if c.actor != proof.review.Operation.actor || c.claim.Verification != proof.verification || registrationTokenPurpose(*c.claim.Token) != proof.purpose || c.claim.AdmissionDeadline != proof.expires {
 		return authorityRegistrationCredential{}, ErrPermissionDenied
 	}
 	return c, nil
@@ -80,7 +80,7 @@ func (o *CurrentAuthority) PrepareRegistration(ctx context.Context, producer Cur
 	if err != nil {
 		return nil, err
 	}
-	if c.claim.Token.Native.Registration.Kind != "registration" || !o.OriginEnabled() {
+	if registrationTokenPurpose(*c.claim.Token).Kind != "registration" || !o.OriginEnabled() {
 		return nil, ErrPermissionDenied
 	}
 	uid := c.state.UserUID
@@ -94,7 +94,8 @@ func (o *CurrentAuthority) PrepareRegistration(ctx context.Context, producer Cur
 		}
 		uid = hex.EncodeToString(raw[:])
 	}
-	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: uid, ClientProfileID: c.claim.Token.Native.ClientProfileID, IssuerConfigRevision: c.claim.Token.ConfigRevision}}
+	kind, id := registrationTokenProfile(*c.claim.Token)
+	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: uid, ClientProfileID: id, ProfileKind: kind, IssuerConfigRevision: c.claim.Token.ConfigRevision}}
 	r, err := o.origin.prepareUse(ctx, producer, c.cut, command, authorityOriginUse{kind: "registration"})
 	if err != nil {
 		return nil, err
@@ -112,7 +113,7 @@ func (o *CurrentAuthority) PrepareRegistration(ctx context.Context, producer Cur
 		return nil, err
 	}
 	review := CurrentReview{o.Profile(), r.id, r.operation}
-	return &CurrentRegistration{owner: o, review: review, verification: c.claim.Verification, purpose: c.claim.Token.Native.Registration, expires: c.claim.AdmissionDeadline}, nil
+	return &CurrentRegistration{owner: o, review: review, verification: c.claim.Verification, purpose: registrationTokenPurpose(*c.claim.Token), expires: c.claim.AdmissionDeadline}, nil
 }
 
 // RecoverRegistration only establishes disclosure for the original review.

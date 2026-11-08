@@ -29,6 +29,7 @@ type Session struct {
 	ExpiresAt            time.Time `json:"expires_at"`
 	AuthTime             time.Time `json:"auth_time"`
 	Revoked              bool      `json:"revoked"`
+	VerifiedEmail        string    `json:"verified_email,omitempty"`
 }
 
 // CredentialProfile interprets the historical empty profile as browser-cookie
@@ -42,14 +43,14 @@ func (s Session) CredentialProfile() string {
 
 func (s Session) valid() bool {
 	if !validHexDigest(s.Digest) || !s.Identity.valid() || s.Identity.Kind != OIDCPrincipal || s.CreatedAt.IsZero() ||
-		!s.ExpiresAt.After(s.CreatedAt) || s.ExpiresAt.Sub(s.CreatedAt) > MaxSessionLifetime || s.AuthTime.After(s.CreatedAt) {
+		!s.ExpiresAt.After(s.CreatedAt) || s.ExpiresAt.Sub(s.CreatedAt) > MaxSessionLifetime || s.AuthTime.After(s.CreatedAt) || s.VerifiedEmail != "" && !ValidDisplayEmail(s.VerifiedEmail) {
 		return false
 	}
 	switch s.CredentialProfile() {
 	case BrowserCookieProfile:
 		return s.ClientProfileID == "" && s.ServiceOrigin == "" && (s.CSRFDigest == "" || validHexDigest(s.CSRFDigest))
 	case NativeEndUserProfile:
-		return s.CSRFDigest == "" && validRoleID(s.ClientProfileID) && nativeServiceOrigin(s.ServiceOrigin) && s.IssuerConfigRevision != 0
+		return s.VerifiedEmail == "" && s.CSRFDigest == "" && validRoleID(s.ClientProfileID) && nativeServiceOrigin(s.ServiceOrigin) && s.IssuerConfigRevision != 0
 	default:
 		return false
 	}

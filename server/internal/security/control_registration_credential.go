@@ -33,6 +33,46 @@ type authorityRegistrationAuthorization struct {
 	State           authorityRegistrationState
 	ClientProfileID string
 	Original        *authorityRegistrationOriginal `json:",omitempty"`
+	ProfileKind     string
+}
+
+func registrationTokenPurpose(e TokenAuthenticationEvidence) NativeRegistrationPurpose {
+	if e.Mode == "code" && e.Code.Flow == "login" {
+		return NativeRegistrationPurpose{Kind: "registration"}
+	}
+	return e.Native.Registration
+}
+
+func registrationTokenProfile(e TokenAuthenticationEvidence) (kind, id string) {
+	if e.Mode == "code" && e.Code.Flow == "login" {
+		return BrowserRegistrationProfile, BrowserRegistrationProfileID
+	}
+	return NativeRegistrationProfile, e.Native.ClientProfileID
+}
+
+func registrationTokenMatches(e TokenAuthenticationEvidence, issuer Issuer) bool {
+	if e.Mode == "code" && e.Code.Flow == "login" {
+		return issuer.BrowserEnabled() && e.Identity.Issuer == issuer.URL && e.ConfigRevision == issuer.ConfigRevision
+	}
+	return e.Mode == "native-registration" && e.NativeBindingMatches(issuer)
+}
+
+func registrationTokenExpiry(e TokenAuthenticationEvidence) time.Time {
+	if e.Mode == "code" {
+		return authorityMinTime(e.ExpiresAt.Time(), e.Code.ExpiresAt)
+	}
+	return nativeEvidenceExpiry(e)
+}
+
+func registrationProvenance(kind string) CredentialProvenance {
+	switch kind {
+	case BrowserRegistrationProfile:
+		return BrowserProviderRegistration
+	case NativeRegistrationProfile:
+		return NativeProviderRegistration
+	default:
+		return ""
+	}
 }
 
 func captureRegistrationCredential(view CurrentCredentialView, facts CurrentCredentialFacts) (authorityRegistrationCredential, error) {
@@ -42,19 +82,23 @@ func captureRegistrationCredential(view CurrentCredentialView, facts CurrentCred
 	}
 	e := *facts.Token
 	commitment, err := e.Commitment()
-	if err != nil || e.Mode != "native-registration" || !e.Native.Registration.Valid() {
+	if err != nil || !registrationTokenPurpose(e).Valid() || e.Mode != "native-registration" && (e.Mode != "code" || e.Code.Flow != "login") {
 		return result, ErrPermissionDenied
 	}
 	issuer, known := view.Snapshot().Issuer(e.Identity.Issuer)
 	if !known || !issuer.Enabled || issuer.Deleted || e.Generation != view.Cut().Generation || e.ConfigRevision != issuer.ConfigRevision ||
-		e.Configuration != authorityIssuerCommitment(issuer, view.Cut().Generation) || !e.NativeBindingMatches(issuer) {
+		e.Configuration != authorityIssuerCommitment(issuer, view.Cut().Generation) || !registrationTokenMatches(e, issuer) {
 		return result, ErrPermissionDenied
 	}
 	low, high, err := view.TimeBounds()
 	if err != nil {
 		return result, err
 	}
-	c := authorityCredentialClaim{Kind: "native-registration", Token: &e, Verification: commitment, AdmissionDeadline: nativeEvidenceExpiry(e).UTC().Round(0)}
+	kind := "native-registration"
+	if e.Mode == "code" {
+		kind = "browser-registration"
+	}
+	c := authorityCredentialClaim{Kind: kind, Token: &e, Verification: commitment, AdmissionDeadline: registrationTokenExpiry(e).UTC().Round(0)}
 	c.DerivedStart = authorityCredentialStart(c)
 	if !registrationEvidenceTimesValid(c, low, high) {
 		return result, ErrPermissionDenied
@@ -73,13 +117,18 @@ func registrationEvidenceTimesValid(c authorityCredentialClaim, low, high time.T
 	}
 	e := c.Token
 	switch c.AdmissionDeadline {
-	case nativeEvidenceExpiry(*e).UTC().Round(0):
+	case registrationTokenExpiry(*e).UTC().Round(0):
 	default:
 		return false
 	}
-	return e.ExpiresAt.Time().After(e.IssuedAt.Time()) &&
+	valid := e.ExpiresAt.Time().After(e.IssuedAt.Time()) &&
 		(!e.AuthTime.Numeric || !e.AuthTime.Time().After(e.IssuedAt.Time()) && !low.Before(e.AuthTime.Time())) &&
-		!low.Before(e.Native.ConsumedAt) && nativeExchangeTimesValid(e.Native, low)
+		!low.Before(e.IssuedAt.Time())
+	if e.Mode == "code" {
+		return valid && e.Nonce != [32]byte{} && authorityOriginalTime(e.Code.CreatedAt) && authorityOriginalTime(e.Code.ConsumedAt) && authorityOriginalTime(e.Code.ExpiresAt) &&
+			!low.Before(e.Code.ConsumedAt) && !e.Code.ConsumedAt.Before(e.Code.CreatedAt) && e.Code.ConsumedAt.Before(e.Code.ExpiresAt)
+	}
+	return valid && !low.Before(e.Native.ConsumedAt) && nativeExchangeTimesValid(e.Native, low)
 }
 
 func (c authorityRegistrationCredential) matches(p *S1Projection) bool {
@@ -88,7 +137,7 @@ func (c authorityRegistrationCredential) matches(p *S1Projection) bool {
 	}
 	e := c.claim.Token
 	issuer, known := p.snapshot.Issuer(c.actor.Issuer)
-	if !known || !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != e.ConfigRevision || !e.NativeBindingMatches(issuer) {
+	if !known || !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != e.ConfigRevision || !registrationTokenMatches(*e, issuer) {
 		return false
 	}
 	principal, present := p.snapshot.principals[c.actor]

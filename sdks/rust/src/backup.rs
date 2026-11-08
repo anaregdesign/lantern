@@ -568,7 +568,10 @@ impl LanternClient {
                 edge_batch.len()
             };
             if count > 0
-                && (count >= options.batch_size
+                // Keep one restore flush within one SDK chunk. Otherwise an
+                // inner blind acknowledgement followed by a transport failure
+                // could be reduced to a misleading disclosed progress count.
+                && (count >= options.batch_size.min(self.batch_chunk_size())
                     || batch_bytes.saturating_add(size) > self.encode_limit())
             {
                 self.flush_restore(&mut vertex_batch, &mut edge_batch, progress)

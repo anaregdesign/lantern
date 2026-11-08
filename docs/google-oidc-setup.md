@@ -13,6 +13,12 @@ Start with the [placeholder configuration files](../deploy/examples/auth/README.
 for Server settings, OAuth clients and Android/iOS registration. Keep all actual
 validation-specific values, including normally public client IDs, outside Git.
 
+Fresh model-3 provisioning creates `security_admin`, `data_admin` and
+`personal_user`. The bootstrap identity receives the protected Security/Settings
+Role plus a removable all-logical-data read/write assignment. Registration stays
+OFF; new users never inherit either administrator Role. Older formats and native
+histories are unsupported and refused without rewriting or resetting them.
+
 ## Separate ordinary management from operation reauthentication
 
 Ordinary login uses Authorization Code, PKCE S256, state, nonce and verified
@@ -23,7 +29,7 @@ session replacement do not request `max_age`, `prompt=login` or essential
 `auth_time`. Neither operation makes old or unknown evidence recent. Future
 or contradictory signed authentication times are rejected.
 
-Ordinary management by a qualified human with current `security.manage`
+Ordinary management by a qualified human with current Security/write
 authority accepts old or missing signed authentication time. Issuer trust changes
 and effective expansion of management authority require a signed authentication
 event after the final reviewed operation, bound to its original ID, intent and
@@ -38,7 +44,8 @@ substitutes. Ordinary Google login and high-impact operation approval therefore
 have separate acceptance records.
 Bootstrap may create a mutable scoped data Role and assign it to the exact
 verified identity while preserving its environment-owned `security_admin`
-assignment. Bootstrap grants no data by itself. Data grants alone require no
+assignment. Fresh provisioning also assigns the separate removable `data_admin`
+Role; its all-data read/write does not grant management or Ops. Data grants alone require no
 additional authentication or extra initial provisioning. Current expiry,
 admission, CSRF, CAS, environment-owned locks and administrator invariants remain.
 Machines may perform authorized reference/status reads but no management mutation.
@@ -213,7 +220,7 @@ successful Google sign-in.
 
 From a clean exact candidate, verify the real callback/session flow, CSRF,
 unknown/revoked users, security-admin without graph access, Role edits and
-assignments, prefix Deny, scoped CDC and replica admission. Record ordinary
+assignments, positive-prefix refusal, scoped CDC and replica admission. Record ordinary
 login with missing/old `auth_time`, unchanged recent-auth eligibility after
 ordinary rotation, ordinary management without an age gate, and refusal of
 high-impact approval without a provable post-review event.

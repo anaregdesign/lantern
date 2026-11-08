@@ -7,7 +7,7 @@ import (
 )
 
 func TestCompileRolesValidation(t *testing.T) {
-	valid := Role{ID: "reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "")}}
+	valid := Role{ID: "reader", Rules: []PermissionRule{dataRule(Read, "")}}
 	tests := []struct {
 		name   string
 		roles  []Role
@@ -16,19 +16,19 @@ func TestCompileRolesValidation(t *testing.T) {
 		{"duplicate Role", []Role{valid, valid}, DefaultPolicyLimits()},
 		{"invalid ID", []Role{{ID: "Admin"}}, DefaultPolicyLimits()},
 		{"protected peer Role", []Role{{ID: "cluster_replica"}}, DefaultPolicyLimits()},
-		{"unknown action", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Allow, "read.*", "")}}}, DefaultPolicyLimits()},
-		{"peer action", []Role{{ID: "r", Rules: []PermissionRule{globalRule(Allow, "cluster.replicate")}}}, DefaultPolicyLimits()},
-		{"unknown effect", []Role{{ID: "r", Rules: []PermissionRule{dataRule("ALLOW", VertexRead, "")}}}, DefaultPolicyLimits()},
-		{"wrong resource", []Role{{ID: "r", Rules: []PermissionRule{globalRule(Allow, VertexRead)}}}, DefaultPolicyLimits()},
-		{"missing prefix", []Role{{ID: "r", Rules: []PermissionRule{{Effect: Allow, Action: VertexRead, Resource: DataResource}}}}, DefaultPolicyLimits()},
-		{"global prefix", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Allow, SecurityManage, "")}}}, DefaultPolicyLimits()},
-		{"invalid UTF8", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Allow, VertexRead, "\xff")}}}, DefaultPolicyLimits()},
-		{"oversize prefix", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Allow, VertexRead, strings.Repeat("a", 1025))}}}, DefaultPolicyLimits()},
+		{"unknown action", []Role{{ID: "r", Rules: []PermissionRule{dataRule("read.*", "")}}}, DefaultPolicyLimits()},
+		{"peer action", []Role{{ID: "r", Rules: []PermissionRule{globalRule("cluster", Read)}}}, DefaultPolicyLimits()},
+		{"unknown effect", []Role{{ID: "r", Rules: []PermissionRule{dataRule("READ", "")}}}, DefaultPolicyLimits()},
+		{"wrong resource", []Role{{ID: "r", Rules: []PermissionRule{globalRule(DataResource, Read)}}}, DefaultPolicyLimits()},
+		{"missing prefix", []Role{{ID: "r", Rules: []PermissionRule{{Permission: Read, Resource: DataResource}}}}, DefaultPolicyLimits()},
+		{"global prefix", []Role{{ID: "r", Rules: []PermissionRule{PermissionRule{Permission: Write, Resource: SecurityResource, Prefix: new(string)}}}}, DefaultPolicyLimits()},
+		{"invalid UTF8", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Read, "\xff")}}}, DefaultPolicyLimits()},
+		{"oversize prefix", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Read, strings.Repeat("a", 1025))}}}, DefaultPolicyLimits()},
 		{"oversize name", []Role{{ID: "r", Name: strings.Repeat("a", 257)}}, DefaultPolicyLimits()},
 		{"invalid limits", []Role{valid}, PolicyLimits{}},
 		{"too many Roles", []Role{valid, {ID: "second"}}, PolicyLimits{MaxRoles: 1, MaxRules: 1, MaxPrefixBytes: 1, MaxTotalBytes: 1, MaxAssignments: 1}},
 		{"too many rules", []Role{valid}, PolicyLimits{MaxRoles: 1, MaxPrefixBytes: 1, MaxTotalBytes: 1, MaxAssignments: 1}},
-		{"total bytes", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Allow, VertexRead, "aa"), dataRule(Deny, VertexRead, "bb")}}}, PolicyLimits{MaxRoles: 1, MaxRules: 2, MaxPrefixBytes: 3, MaxTotalBytes: 3, MaxAssignments: 1}},
+		{"total bytes", []Role{{ID: "r", Rules: []PermissionRule{dataRule(Read, "aa"), dataRule(Read, "bb")}}}, PolicyLimits{MaxRoles: 1, MaxRules: 2, MaxPrefixBytes: 3, MaxTotalBytes: 3, MaxAssignments: 1}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,7 +43,7 @@ func TestCompileRolesValidation(t *testing.T) {
 }
 
 func TestCompiledPolicyOwnsInput(t *testing.T) {
-	rules := []PermissionRule{dataRule(Allow, VertexRead, "orders:")}
+	rules := []PermissionRule{dataRule(Read, "orders:")}
 	roles := []Role{{ID: "reader", Rules: rules}}
 	policy, err := CompileRoles(roles, DefaultPolicyLimits())
 	if err != nil {
@@ -54,7 +54,7 @@ func TestCompiledPolicyOwnsInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	*rules[0].Prefix = "private:"
-	rules[0].Effect = Deny
+	rules[0].Permission = Write
 	roles[0].ID = "other"
 	if !access.Allows(VertexRead, "orders:1") || access.Allows(VertexRead, "private:1") {
 		t.Fatal("caller mutation changed compiled policy")
@@ -73,11 +73,11 @@ func FuzzPrefixPolicy(f *testing.F) {
 		prefixes := []string{"", "orders:", "orders:private:", "orders:a", "sys:", "data:", "日本語:", "*"}
 		roles := []Role{{ID: "a"}, {ID: "b"}}
 		for i, choice := range choices {
-			effect := Allow
+			permission := Read
 			if choice&8 != 0 {
-				effect = Deny
+				permission = Write
 			}
-			roles[i%2].Rules = append(roles[i%2].Rules, dataRule(effect, VertexRead, prefixes[int(choice)%len(prefixes)]))
+			roles[i%2].Rules = append(roles[i%2].Rules, dataRule(permission, prefixes[int(choice)%len(prefixes)]))
 		}
 		policy, err := CompileRoles(roles, DefaultPolicyLimits())
 		if err != nil {
@@ -100,29 +100,24 @@ func TestCompileRolesUIDSelectorValidation(t *testing.T) {
 		rule  PermissionRule
 		limit func(*PolicyLimits)
 	}{
-		{"empty before", uidRule(Allow, VertexRead, "", ":"), nil},
-		{"empty after", uidRule(Allow, VertexRead, "users:", ""), nil},
-		{"before delimiter", uidRule(Allow, VertexRead, "users", ":"), nil},
-		{"after delimiter", uidRule(Allow, VertexRead, "users:", "suffix"), nil},
-		{"before UTF8", uidRule(Allow, VertexRead, "\xff:", ":"), nil},
-		{"after UTF8", uidRule(Allow, VertexRead, "users:", ":\xff"), nil},
-		{"expanded length", uidRule(Allow, VertexRead, strings.Repeat("x", 991)+":", ":"), nil},
-		{"operator prefix cap", uidRule(Allow, VertexRead, "users:", ":"), func(l *PolicyLimits) { l.MaxPrefixBytes = 38 }},
-		{"operator total cap", uidRule(Allow, VertexRead, "users:", ":"), func(l *PolicyLimits) { l.MaxTotalBytes = 38 }},
+		{"empty before", uidRule(Read, "", ":"), nil},
+		{"empty after", uidRule(Read, "users:", ""), nil},
+		{"before delimiter", uidRule(Read, "users", ":"), nil},
+		{"after delimiter", uidRule(Read, "users:", "suffix"), nil},
+		{"before UTF8", uidRule(Read, "\xff:", ":"), nil},
+		{"after UTF8", uidRule(Read, "users:", ":\xff"), nil},
+		{"expanded length", uidRule(Read, strings.Repeat("x", 991)+":", ":"), nil},
+		{"operator prefix cap", uidRule(Read, "users:", ":"), func(l *PolicyLimits) { l.MaxPrefixBytes = 38 }},
+		{"operator total cap", uidRule(Read, "users:", ":"), func(l *PolicyLimits) { l.MaxTotalBytes = 38 }},
 		{"global UID selector", func() PermissionRule {
-			r := uidRule(Allow, SecurityManage, "users:", ":")
-			r.Resource = GlobalResource
+			r := uidRule(Write, "users:", ":")
+			r.Resource = SecurityResource
 			return r
 		}(), nil},
 		{"competing literal", func() PermissionRule {
-			r := uidRule(Allow, VertexRead, "users:", ":")
+			r := uidRule(Read, "users:", ":")
 			s := ""
 			r.Prefix = &s
-			return r
-		}(), nil},
-		{"retired pair", func() PermissionRule {
-			r := uidRule(Allow, VertexRead, "users:", ":")
-			r.Pair = &PrefixPair{}
 			return r
 		}(), nil},
 	} {
@@ -139,12 +134,12 @@ func TestCompileRolesUIDSelectorValidation(t *testing.T) {
 	t.Run("expanded total across rules", func(t *testing.T) {
 		limits := DefaultPolicyLimits()
 		limits.MaxTotalBytes = 77
-		if _, err := CompileRoles([]Role{{ID: "r", Rules: []PermissionRule{uidRule(Allow, VertexRead, "users:", ":"), uidRule(Allow, VertexWrite, "users:", ":")}}}, limits); !errors.Is(err, ErrInvalidPolicy) {
+		if _, err := CompileRoles([]Role{{ID: "r", Rules: []PermissionRule{uidRule(Read, "users:", ":"), uidRule(Write, "users:", ":")}}}, limits); !errors.Is(err, ErrInvalidPolicy) {
 			t.Fatal(err)
 		}
 	})
 	t.Run("exact byte bound and detached input", func(t *testing.T) {
-		rule := uidRule(Allow, VertexRead, strings.Repeat("x", 990)+":", ":")
+		rule := uidRule(Read, strings.Repeat("x", 990)+":", ":")
 		policy, err := CompileRoles([]Role{{ID: "r", Rules: []PermissionRule{rule}}}, DefaultPolicyLimits())
 		if err != nil {
 			t.Fatal(err)

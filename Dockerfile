@@ -35,6 +35,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # --- final stage ---------------------------------------------------------
 FROM alpine:3.24
+ARG COMMIT=
+LABEL org.opencontainers.image.revision=${COMMIT}
 
 RUN addgroup -S lantern && adduser -S -G lantern lantern
 

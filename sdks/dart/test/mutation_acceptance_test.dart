@@ -54,6 +54,30 @@ void main() {
             }
 
             final transport = FakeTransportBuilder()
+                .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+                  LanternService.putVertices,
+                  (request, context) =>
+                      accepted(request.vertices.map((v) => v.key).toList())
+                      ? graph.PutVerticesResponse(acceptance: _acceptance())
+                      : graph.PutVerticesResponse(
+                          outcomes: List.filled(
+                            request.vertices.length,
+                            graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+                          ),
+                        ),
+                )
+                .unary<
+                  graph.DeleteVerticesRequest,
+                  graph.DeleteVerticesResponse
+                >(
+                  LanternService.deleteVertices,
+                  (request, context) => accepted(request.keys)
+                      ? graph.DeleteVerticesResponse(acceptance: _acceptance())
+                      : graph.DeleteVerticesResponse(
+                          deleted: 0,
+                          existed: List.filled(request.keys.length, false),
+                        ),
+                )
                 .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
                   LanternService.addEdges,
                   (request, context) =>
@@ -192,6 +216,15 @@ void main() {
       final client = _client(
         FakeTransportBuilder()
             .unary<
+              graph.DeleteVerticesByPrefixRequest,
+              graph.DeleteVerticesByPrefixResponse
+            >(
+              LanternService.deleteVerticesByPrefix,
+              (request, context) => graph.DeleteVerticesByPrefixResponse(
+                acceptance: _acceptance(),
+              ),
+            )
+            .unary<
               graph.DeleteEdgesByPrefixRequest,
               graph.DeleteEdgesByPrefixResponse
             >(
@@ -209,9 +242,45 @@ void main() {
       );
     });
 
+    test('vertex prefix deletion never fabricates a count', () async {
+      final client = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.DeleteVerticesByPrefixRequest,
+              graph.DeleteVerticesByPrefixResponse
+            >(
+              LanternService.deleteVerticesByPrefix,
+              (request, context) => graph.DeleteVerticesByPrefixResponse(
+                acceptance: _acceptance(),
+              ),
+            )
+            .build(),
+      );
+      expect(
+        await captureMutationReply(
+          () => client.deleteVerticesByPrefix('users:'),
+        ),
+        isA<MutationAcceptedUndisclosed<BigInt>>(),
+      );
+    });
+
     test('receipt acknowledgements are terminal and never retried', () async {
       var calls = 0;
       final transport = FakeTransportBuilder()
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) {
+              calls++;
+              return graph.PutVerticesResponse(acceptance: _acceptance());
+            },
+          )
+          .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+            LanternService.deleteVertices,
+            (request, context) {
+              calls++;
+              return graph.DeleteVerticesResponse(acceptance: _acceptance());
+            },
+          )
           .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
             LanternService.addEdges,
             (request, context) {
@@ -252,6 +321,17 @@ void main() {
         contribId: Uint8List.fromList(List.filled(24, 1)),
       );
       final callsToMake = <Future<Object?> Function()>[
+        () => client.putVerticesWithReceipt([
+          VertexInput(key: "v", value: const NilValue()),
+        ], context: _context(ReceiptMutationKind.vertexPut)),
+        () => client.putVerticesWithReceipt(
+          [VertexInput(key: "v", value: const NilValue())],
+          context: _context(ReceiptMutationKind.vertexPut),
+          ifAbsent: true,
+        ),
+        () => client.deleteVerticesWithReceipt([
+          "v",
+        ], context: _context(ReceiptMutationKind.vertexDelete)),
         () => client.addEdgesWithReceipt([
           edge,
         ], context: _context(ReceiptMutationKind.edgeAdd)),
@@ -275,7 +355,7 @@ void main() {
           isA<MutationAcceptedUndisclosed<Object?>>(),
         );
       }
-      expect(calls, 4);
+      expect(calls, 7);
     });
 
     test('undisclosed receipt status has no original result', () async {
@@ -317,7 +397,16 @@ void main() {
   });
 }
 
-enum _Family { add, create, put, delete, contributionDelete }
+enum _Family {
+  add,
+  create,
+  put,
+  delete,
+  contributionDelete,
+  vertexPut,
+  vertexIfAbsent,
+  vertexDelete,
+}
 
 Future<Object?> _write(
   LanternClient client,
@@ -329,7 +418,19 @@ Future<Object?> _write(
     count,
     (i) => EdgeInput(tail: 'tail:$i', head: 'head:$i', weight: 1),
   );
+  final vertices = [
+    for (final edge in edges)
+      VertexInput(key: edge.tail, value: const NilValue()),
+  ];
   return switch (family) {
+    _Family.vertexPut => client.putVertices(vertices, batchSize: batchSize),
+    _Family.vertexIfAbsent => client.putVerticesIfAbsent(
+      vertices,
+      batchSize: batchSize,
+    ),
+    _Family.vertexDelete => client.deleteVertices([
+      for (final vertex in vertices) vertex.key,
+    ], batchSize: batchSize),
     _Family.add => client.addEdges(edges, batchSize: batchSize),
     _Family.create => client.createEdges(edges, batchSize: batchSize),
     _Family.put => client.putEdges(edges, batchSize: batchSize),

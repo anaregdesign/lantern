@@ -1,0 +1,9 @@
+# Apply ONCE to new OFF peer state, then CLEAN stop before ordinary up.
+# This creates no trust; the signed membership/certificates are provisioned separately.
+services:
+  lantern-0:
+    environment: {LANTERN_PEER_MEMBERSHIP_MODE: fresh}
+  lantern-1:
+    environment: {LANTERN_PEER_MEMBERSHIP_MODE: fresh}
+  lantern-2:
+    environment: {LANTERN_PEER_MEMBERSHIP_MODE: fresh}

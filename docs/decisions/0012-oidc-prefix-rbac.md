@@ -6,7 +6,7 @@
 
 The 2026-10-05 owner-approved #1672 policy removes the blanket five-minute
 authentication gate from ordinary management. Trust changes and effective
-`security.manage` expansion require per-operation reauthentication; machines
+Security/Settings `write` expansion require per-operation reauthentication; machines
 may perform authorized reference/status reads, but no management mutation.
 The implementation is described below; final exact-source and provider/browser
 qualification remain separate. The historical fixed-writer source
@@ -14,9 +14,11 @@ qualification remain separate. The historical fixed-writer source
 #1608 owns the leaderless design; its selected G1 Profile B freshness target
 and remaining proof/implementation are separate from that source history.
 
-The 2026-10-04 Head-managed Edge decision in #1626 supersedes configurable
-directed prefix-pair Roles. The prior candidate and its measurements remain
-historical evidence; they do not qualify the new policy. Kubernetes/Helm is
+The #2076/#2085 permission model uses Allow-only `read`/`write` rules on
+typed resources. #2084 replaces the former fixed Head predicate with one
+cluster-wide `rr`/`ww`/`rw`/`wr` Edge policy, defaulting to `rr` for fresh state.
+The 2026-10-04 Head-managed decision and its measurements remain historical
+evidence; they do not qualify the new policy. Kubernetes/Helm is
 deferred from this task; Docker/Compose/native and Server HA/security remain.
 
 #1820 retires the pre-production fixed-writer/replica-lease implementation.
@@ -75,8 +77,11 @@ undoes suspension or regrants permissions. No public desired revision is needed.
 Unknown subjects are never inferred from email, display name or IdP groups.
 See the [configuration guide](../../deploy/examples/auth/README.md#environment-json-startup).
 
-Environment-owned `security_admin` assignments grant no data rights. The full
-image preserves their locks, referential integrity and the last usable human
+Environment-owned `security_admin` assignments grant no data rights. Fresh
+provisioning separately creates `data_admin` with all-logical-data read/write and
+assigns it to the bootstrap identity as a removable, non-environment-owned
+membership. It also creates `personal_user` while keeping registration OFF.
+The full image preserves their locks, referential integrity and the last usable human
 administrator. A named machine uses canonical `lnt_m1_` credentials with a
 bounded positive lifetime at most 90 days. Only domain-separated token digests
 enter durable state; plaintext tokens stay private. Current Role loss and
@@ -162,55 +167,64 @@ alone cannot establish current grants/revocations or recover a lost origin key.
 
 ## Permission rules and evaluation
 
-A rule contains an explicit `allow` or `deny`, a known action and a resource
-kind. A data rule has a literal logical prefix; `""` explicitly means all
-logical keys. A global rule has no prefix. `*` has no special meaning in a
-prefix. There is no inheritance, user override, wildcard action or IdP claim
-mapping. Policy schema versions and limits are checked before publication.
+A rule contains `permission: read|write` and one typed resource:
+`data`, `security`, `settings`, `operations` or `schema`. There is no active
+Effect/Deny or independently grantable operation name. Data rules contain
+exactly one literal logical prefix or a trusted immutable user-UID prefix
+selector; `""` explicitly selects all logical keys and `*` is literal.
+Management resources have no prefix or personal selector. Operations/schema
+support `read` only because they expose no write operation.
 
-For each action/resource, any matching Deny across any assigned Role wins.
-Otherwise at least one matching Allow is required. More specific Allows
-cannot override a Deny. Unknown actions, resource kinds or Roles fail closed.
-Compile action-specific prefix ranges once per immutable revision; capture one
-coherent snapshot per RPC or exact batch before graph locks. Evaluation does
-not perform network access or persistence under graph locks.
+Matching positive rules from every assigned Role form a union. No matching
+rule means refusal. Unknown resources, permissions, obsolete rule fields and
+invalid resource/selector combinations fail before publication. Compile scopes
+once per immutable image and capture a coherent view before graph locks; no
+network or persistence lookup enters a graph lock. Internal operation names
+remain exact original receipt/admission identities and map exhaustively to the
+two grant permissions; they are never additional Role grants.
 
-### RPC / action / projection contract
+### RPC / permission / projection contract
 
-The independently grantable data actions are `vertex.read`, `vertex.write`,
-`vertex.delete`, `query`, `cdc.identity`, `cdc.value`, `export` and
-`receipt.read`. Edge operation names identify derived checks, not independent
-Role grants. Edge visibility requires `vertex.read` on both endpoints.
-Every Edge modification requires tail `vertex.read` AND head `vertex.write`.
-`vertex.read` includes a key's existence, value and TTL; `edge.read` includes
-existence, effective weight, TTL and contribution identity. Global actions are
-`operations.read`, `schema.read` and `security.manage`. Internal
-`cluster.replicate` is a protected machine capability outside user Role CRUD.
-
-| RPC family | Required actions and information boundary |
+| RPC family | Required permission and information boundary |
 | --- | --- |
-| GetVertex / GetVertices | `vertex.read` for every exact key, including missing results |
-| PutVertex / PutVertices | `vertex.write` and `vertex.read`; conditional state and outcomes are observable; effective lifetime reduction additionally requires `vertex.delete` |
-| DeleteVertex / DeleteVertices | `vertex.delete` and `vertex.read`; incident-edge cleanup is aggregate lifecycle maintenance |
-| GetEdge / GetEdges | `vertex.read` on both endpoints, including missing results |
-| CreateEdge(s), AddEdge(s), PutEdge(s), DeleteEdge(s), DeleteEdgeContribution(s) | Tail `vertex.read` AND head `vertex.write`; existing-state responses require a separate disclosure check; contribution Delete stays exact |
-| ScanVertices / ScanVertexKeys / CountVerticesByPrefix | Only the `vertex.read` subset, before limits, counts and cursor generation |
-| ScanEdges | Only the subset with `vertex.read` on both endpoints |
-| DeleteVerticesByPrefix | Delete only the `vertex.delete` plus `vertex.read` subset; dry-run/count/limit use the same subset |
-| DeleteEdgesByPrefix | Head-derived modification subset; dry-run, victim identities and actual counts additionally need both endpoint reads |
-| Illuminate / TopVerticesByDegree | `query` plus readable vertices/edges; restrict paths and actual degree to the authorized induced graph; TF-IDF/BM25 use shared corpus statistics |
-| SearchVertices | `query` plus `vertex.read`; restrict candidates before top-k; reuse this index's shared ranking statistics |
-| BackupSnapshot | `export` plus readable vertices/edges; include only the referentially closed authorized data subset |
-| Scoped CDC | Explicit `cdc.identity`; Edge identities require both endpoint reads; values additionally require `cdc.value` and ordinary data reads |
-| GetReceiptCapability | Current authority plus `receipt.read` and `vertex.read` within an applicable logical scope; supported capabilities only |
-| GetReceiptStatus(es) / receipt replay | `receipt.read` and current rights for every proven original resource; absence needs caller intent proof or fails closed |
-| GetServerStatus / GetReplicationStatus / metrics | `operations.read`; never inferred from data read |
-| Ordinary Principal / Role / assignment / session / audit management | Current `security.manage` and qualified end-user; no fixed authentication age; expected revision required on writes |
-| Issuer trust / effective `security.manage` expansion | Exact final reviewed operation approval with a signed post-review event; actor/ID/v1 intent/full cut bound |
-| Peer Subscribe / Snapshot / PeerStatus | Separate admitted peer identity and `cluster.replicate`; no human token or prefix filtering |
+| GetVertex(s), ScanVertex(s)/keys, Count, Search, Illuminate, TopVerticesByDegree | Data `read`; filter before ranking, paths, actual counts and pagination |
+| PutVertex(s), DeleteVertex(s) | Data `write` on every key, including lifetime reduction/deletion; detailed outcomes additionally need `read` on every key |
+| DeleteVerticesByPrefix | Select bounded victims using Data `write`; dry-run and actual count are undisclosed unless the entire selected policy range is readable |
+| GetEdge(s), ScanEdges | Data `read` on both endpoints, including missing results |
+| Every Edge modification, contribution deletion and Edge TTL change | One global endpoint mode: `rr` = tail read/head read, `ww` = write/write, `rw` = read/write, `wr` = write/read; both endpoint reads separately govern detailed responses |
+| DeleteEdgesByPrefix | The same selected endpoint mode before lookup and under the final view; dry-run/counts need both endpoint policy ranges readable |
+| BackupSnapshot and scoped CDC (identity/value) | Data `read`; the explicit requested projection limits output, with no independent export/CDC grant |
+| GetReceiptCapability | Current authority plus any nonempty Data `read` or `write` scope; static capability grants no resource/status disclosure |
+| Receipt-bearing mutation/replay | Current original mutation authority; no extra Data `read` prerequisite; detailed effects need ordinary read on all original resources |
+| GetReceiptStatus(es) | Separate Data `read` ingress plus current original-resource authority; unknown IDs need whole-domain read or fail closed |
+| Security references, users, Roles, assignments, audit, issuer/Edge/registration policy reads | Security `read`; authorized machines may perform reference/status reads |
+| Security/issuer/Role/assignment/session policy writes | Security `write`, qualified end-user, exact native CAS/original operation rules |
+| Log and operational policy reads/previews | Settings `read` |
+| Log and operational policy writes | Settings `write`, qualified end-user; mixed security/settings batches require both writes |
+| Issuer trust or effective Security/Settings write expansion | Operation-bound signed post-review approval, exact actor/original ID/intent/full cut |
+| GetServerStatus / GetReplicationStatus / metrics | Operations `read`; no implicit data grant |
+| Reflection | Schema `read` in OIDC; explicit OFF behavior |
+| Peer Subscribe / Snapshot / PeerStatus | Separate admitted peer identity; never a user Role grant |
 | Health | Auth-exempt, content-free liveness/readiness |
-| Reflection | `schema.read` in OIDC; explicit OFF behavior |
-| Any unclassified new RPC | Deny until the action matrix is extended |
+| Any unclassified new RPC | Refuse until the central mapping is extended |
+
+Write-only callers receive one complete-call `MutationAcceptance` with
+`HANDLED_EFFECT_UNDISCLOSED`; every outcome, existence flag, weight, count and
+unknown response field is empty. This depends only on the admitted policy and
+public request. Conditional conflicts/private receipt dispositions cannot
+reveal state through a separate success/error branch. Invalid input, authority,
+transport and durability failures retain their normal error semantics. Original
+receipt bytes remain private and unchanged. A mixed batch is wholly redacted
+if any selected item is unreadable.
+
+### Model version and retained state
+
+Image model 3, its deterministic execution/model fingerprint and the new wire
+rule schema are explicit compatibility boundaries. Previous Effect/action/Deny
+policies, old SDK wire rules, configuration and signed native histories are not
+accepted by this release. Startup fails closed; there is no automatic conversion,
+permission expansion, reset or deletion of retained state. Backward compatibility
+and a migration implementation are outside #2076's required scope.
 
 ### Management operation and actor policy
 
@@ -223,7 +237,7 @@ environment-owned locks and administrator invariants. Writes retain expected
 revision/CAS and immutable original Change-ID recovery (#1669/#1670).
 Authentication-time freshness is independent of policy freshness.
 
-| Operation / effective consequence | Fixed-writer `93d53789` | #1672 implementation |
+| Historical operation / consequence | Fixed-writer `93d53789` | Historical #1672 implementation |
 | --- | --- | --- |
 | Management reference/read/status, including audit | Current `security.manage`; no five-minute gate | Same authority; authorized machines may read/reference/status, without mutation rights |
 | Non-mutating ValidateIssuer network probe | Current `security.manage` plus five-minute signed evidence | Qualified end-user authority without an age gate; separate conservative probe admission excludes ambiguous/machine callers, whose probe qualification remains unresolved |
@@ -231,13 +245,13 @@ Authentication-time freshness is independent of policy freshness.
 | Change accepted Issuer/credential trust or expand effective `security.manage` | Blanket five-minute signed evidence | Separate purpose proof binds actor, original ID, canonical v1 intent and full policy cut to a signed post-review event |
 | Machine management mutation | No explicit human-only policy; a named machine's unknown authentication time fails the blanket gate | Explicitly prohibited, even if a machine has a Role containing `security.manage` |
 
-Classify the full proposed policy by effective consequences. Removing a Deny,
-deleting a Role or deleting an assignment can expand `security.manage`, including
-latent authority in another assigned Role. A data permission grant alone is
+Classify the full proposed policy by effective consequences. Any newly
+effective Security or Settings `write` grant is control-authority expansion. A data permission grant alone is
 ordinary; do not add a reauthentication requirement just because it expands
 data access. Bootstrap can create a mutable scoped data Role and assign it to
 its exact verified identity after #1672, preserving its environment-owned
-`security_admin` assignment and receiving no implicit data rights. Missing
+`security_admin` assignment. Its separate fresh `data_admin` membership supplies
+explicit data read/write and can be removed without ordinary restart restoring it. Missing
 `auth_time` alone no longer requires extra initial operator provisioning.
 
 Identity kind is not credential provenance. Both a verified browser Code/PKCE/
@@ -290,51 +304,29 @@ lifetime; it receives no implicit extension or automatic machine grant.
 An exact batch with any denied identity is rejected before lookup or mutation,
 including a batch mixing visible and denied keys. Responses must not reveal
 existence, missing keys, conditions, weight, TTL or receipt contents of denied
-resources. Collection APIs instead operate on an authorized subset, subtracting
-all Deny ranges before pagination, ranking, limits, counts and dry-run.
+resources. Collection APIs instead operate on the positive authorized subset
+before pagination, ranking, limits, counts and dry-run.
 
-A Vertex owns incident-edge lifetime. An authorized Vertex Delete or expiry
-removes incident edges as lifecycle maintenance. Head write does not authorize
-Vertex deletion or shortening a Vertex lifetime: Vertex lifetime reduction or
-born-expired Put still requires `vertex.delete` and cannot bypass its Deny.
-Edge lifetime reduction/deletion uses the same Head-derived modification
-predicate as other Edge changes. Already committed expiry and replication are protected
-system maintenance, not new actions by the original user's current Roles.
-If an operation cannot prove its effects safely, reject it before mutation.
+A Vertex owns incident-edge lifetime. Data `write` permits Vertex replacement,
+TTL/lifetime reduction and deletion on its selected key. Incident-edge cleanup
+is lifecycle maintenance. Already committed expiry and replication do not
+reevaluate the original user's current Roles.
 
-### Head-managed existing-endpoint connections (#1626)
+### Global-policy existing-endpoint connections (#2084)
 
-A separate plural-canonical `CreateEdges` / singular `CreateEdge` family uses
-tail read and head write, like Add/Put/Delete/contribution and Edge TTL changes.
-Both endpoint Vertices must exist and be live at the same atomic application-time
-cut as Edge absence. Neither endpoint read/write nor its existence is inferred
-from a caller's owner assertion. The operation
-never creates/resurrects a Vertex or changes its value/TTL. No omitted option
-may broaden this existing-endpoints-only default.
+Create/Add/Put/Delete/contribution and Edge TTL operations use the same captured
+global endpoint mode. Fresh mode `rr` allows a reader to edit connections among
+readable existing Vertices; it grants no Vertex write. Switching mode is a
+native Security-write CAS operation and invalidates old policy-bound output.
+Endpoint reads/writes may come from different Roles. There are no Role-specific
+pair selectors or independently grantable Edge operations. Reverse orientation
+uses the same selected tail/head order.
 
-Role selectors are literal prefixes or explicit global capabilities. Generalized
-directed pair configuration and independent Edge grants are withdrawn. Tail
-read and head write may come from different assigned Roles; each constituent
-check independently applies Deny precedence. Reversing an Edge changes which
-endpoint needs write. Tail read Deny or head write Deny defeats every mutation.
-Head write never grants VertexDelete or endpoint value/TTL updates. Obsolete
-pair/Edge-grant configuration must fail closed, not be converted into broader
-Vertex authority. No permanent alternative policy mode is introduced.
-
-Server derives generic endpoint/path constraints for Core. Graph exploration
-requires both endpoint reads and its independent Query capability. CDC,
-export and receipt capabilities stay independent and compose with base Edge
-visibility/current original-resource authorization. Admin edits Vertex grants
-and asks Server to explain the derived Edge check and its constituent rules.
-Client prefix/identity assertions grant nothing. Dynamic owner templates are
-outside this initial design.
-
-Legacy OFF Add/Put accumulation, replacement and endpoint auto-creation remain
-unchanged. Protected Edge writes cannot infer tail Vertex creation/update from
-head write. The OIDC mutation matrix must certify existing/live endpoints at
-application time for a new connection and must not resurrect endpoints or
-change their values/TTL through an Edge operation. These constraints have no
-OIDC/Role meaning inside Core.
+Protected Edge operations never create/resurrect Vertices or change endpoint
+values/TTLs. Both endpoints must be live under the final atomic application
+cut; the blind response hides a private liveness refusal. OFF retains its
+legacy implicit endpoint creation contract. Generic Core receives immutable
+endpoint filters, without learning the Role model or mode.
 
 Standalone outcomes are `CREATED_AND_LIVE`, `EDGE_EXISTS`, `ENDPOINT_NOT_LIVE`
 and `EXPIRED`, one per request position. Source weights must be finite and
@@ -345,7 +337,7 @@ endpoint/absence checks. A successful earlier duplicate makes later positions
 `EDGE_EXISTS`. Storage evaluates all conditions at one application-time cut.
 
 Internal conditional results are bounded creation/no-change outcomes.
-A head write-only caller cannot receive prior existence/collision details,
+A caller missing either endpoint read cannot receive prior existence/collision details,
 weights, TTLs, contributions or original receipt results. The user selected
 typed blind acceptance: policy-authorized input is handled, but the response
 does not assert mutation success, liveness, creation, deletion or collision.
@@ -371,32 +363,24 @@ The new family stays disabled in HA until the durable convergence guarantee is
 designed and verified (#1626). This restriction applies only to the new operation;
 existing Add/Put families keep their contracts. It does not waive cluster-wide
 create-if-absent guarantees or authorize replica-local absence as a substitute.
-Activation also requires matching SDK outcomes, Head-aware Admin explanations and
+Activation also requires matching SDK outcomes, mode-aware Admin explanations and
 real-wire/receipt/restart tests. Independent OIDC/RBAC deliveries continue while
 this gate remains closed.
 
 ### Practical Role templates
 
-Templates are explicit Roles with literal prefixes, not additional privilege
-mechanisms. Operators may copy them for a namespace and add Deny exceptions.
+Templates are explicit Roles, not extra privilege mechanisms. Operators select
+positive namespaces and review effective union across assignments.
 
 | Role | Scenario / permissions |
 | --- | --- |
-| `namespace_reader` | Vertex read and Query in explicit prefixes; readable Edges follow both endpoint reads; no mutation/CDC/export/global diagnostics |
-| `namespace_editor` | Reader plus Vertex write; manages incoming Edges whose tails are readable, including Edge Delete/TTL; no VertexDelete |
-| `namespace_maintainer` | Editor plus explicit VertexDelete and collection Vertex lifecycle operations |
-| `head_relationship_manager` | Tail-prefix VertexRead and head-prefix VertexWrite through explicit Roles; same base authority for every Edge mutation; head read is separately granted |
-| `cdc_identity_consumer` | Explicit identity invalidations; Edge events also require both endpoint reads; identity frames omit values/weights/raw cluster progress |
-| `cdc_value_consumer` | Identity consumer plus value CDC and normal reads for the same resources |
-| `backup_exporter` | Explicit export plus required reads; no mutations or raw peer Snapshot |
-| `operations_observer` | Global sanitized operational status/metrics; no implicit business reads |
-| `security_admin` | Global security management; high-impact operation proof; no implicit data read/write/export |
-| `cluster_replica` | Protected internal full replication, assigned by versioned peer trust; cannot be assigned to users through Admin |
-
-Examples include an analytics reader excluding `customers:private:`, a service
-editor on `orders:` with protected Delete, a maintainer on `cache:`, an offline
-identity-only CDC consumer, a migration exporter and a security administrator
-who cannot inspect application records.
+| `data_reader`, `app_reader` | Data `read` on an explicit prefix; includes query/CDC/export and Edge edits when global mode permits |
+| `app_writer`, `data_maintainer` | Data `read` and `write` on an explicit prefix |
+| `write_only` | Data `write`; mutation handling without effect disclosure |
+| `ops_reader` | Operations `read`, with no implicit business data access |
+| `settings_admin` | Settings `read`/`write`, with no security/data grant |
+| `security_admin` | Security and Settings `read`/`write`; no data/operations/schema grant |
+| `personal_user` | Data `read`/`write` using the trusted immutable assigned user UID |
 
 ## Queries, cursors, CDC and receipts
 
@@ -464,28 +448,22 @@ The staged Server records exact original logical Vertex/Edge identities in
 bounded native receipt rows, checks them against canonical mutation envelopes,
 and preserves them through active/retired Snapshot and backup recovery. Core
 owns only opaque comparable identities, byte bounds and original effect bytes.
-Status and replay require `receipt.read` and the current original mutation's
-authority for every proven original resource. Vertex receipts retain their
-ordinary Vertex read/write/delete requirements. Edge authority is tail read
-and head write; both endpoint reads additionally determine disclosure of the
-original result. A policy-authorized head write-only caller gets typed blind
-acceptance without the original result, existence, intent digest or effect
-count. A batch with any undisclosed Edge result gets a whole-batch blind
-acknowledgement, without revealing detailed results for its other positions.
-Stored original bytes are never replaced by the redacted response.
+Receipt-bearing mutations and confirmed original replay require the current
+original mutation's authority. Vertex receipts map Put/Delete/lifecycle reduction
+to Data `write`; Edge receipts use the selected global endpoint policy. Read
+is checked separately for detailed effects. Status ingress retains Data `read`;
+whole-domain absence needs whole-domain read. Any unreadable item redacts the
+complete response; no result, existence, intent digest or effect count survives.
+Stored original bytes are never replaced by the detached public projection.
 
-Legacy endpoint-creation effects require their own explicit Vertex authority;
-Head ownership cannot authorize them. The origin's application-time
-lifecycle-reduction bit preserves a Vertex Put's Delete requirement after
-Graph churn; an ordinary live Vertex Put does not acquire that requirement.
-Every Edge TTL/deletion effect uses the same Head mutation predicate. These
-checks use the captured local policy cut, fenced before publication.
-Unauthorized mixed-scope batches fail atomically with a generic policy error;
-an authorized blind batch must not execute and then fail on disclosure alone.
-Unknown/expired IDs without resource evidence fail closed for scoped callers,
-without returning absence or a result. Unproven legacy rows require explicit
-whole-domain original actions, including conservative Delete for legacy Put;
-whole-domain absence requires explicit whole-domain receipt/data reads.
+Historical endpoint-creation effects still require their own explicit Vertex
+write authority; a connection edit under `rr` cannot authorize endpoint changes.
+The retained lifecycle-reduction bit and internal operation identity remain
+original proof even though both Vertex write/delete map to the same grant.
+Checks use one captured local cut, fenced before publication. Unauthorized
+mixed-scope batches fail before effects; an authorized blind batch cannot
+execute and subsequently fail only because its result was not readable.
+Unknown/expired IDs without resource evidence fail closed for scoped callers.
 No client-supplied resource is accepted as status evidence, and public results
 omit resource/effect metadata. Production activation and final acceptance remain
 gated by #1613/#1610. Possibly sent operation IDs never change during namespace
@@ -540,7 +518,7 @@ Google Security bundle, extra Google claims and the associated app publication/
 verification are optional outside baseline implementation, acceptance and
 release gates. Ordinary Google login and actual provider-neutral ordinary
 management remain separately required evidence. Role-scoped data export uses
-explicit export/read grants and current admission; machine exporters do not
+Data `read` grants and current admission; machine exporters do not
 assert interactive recent authentication. Fixed session expiry, revocation and
 per-stream authority checks remain
 independent of JWT expiry. Passwords, MFA and account enrollment stay with the
@@ -643,15 +621,15 @@ that replay. Recovery applies only originally accepted positions, suppresses
 expired effects/missing endpoints/newer causal floors and rejects a live
 collision. Rejected original positions are never reevaluated after restore.
 
-Create needs tail `vertex.read` and head `vertex.write`, with both endpoints
-live at application time. It grants no endpoint mutation or VertexDelete.
-Receipt status/replay additionally requires explicit `receipt.read` and current
-original-resource authority; a head write-only caller receives only a typed
+Create uses the global endpoint mode, with both endpoints live at application
+time. It grants no endpoint mutation. Receipt replay uses current original-
+resource authority and status has separate read admission; a caller without
+both endpoint reads receives only a typed
 blind acknowledgement, never an original result that reveals ungranted Edge
 state. The public return contract above must be implemented before new-policy
 qualification; stored authoritative results remain private and unchanged.
 Standalone capability discovery advertises Create only to a captured admission
-with a nonempty Head-derived candidate scope; this is a family preflight, not
+with a nonempty global-mode candidate scope; this is a family preflight, not
 permission for a particular Edge or a promise that a later retry is allowed.
 HA capability discovery omits Create and HA ingress rejects it before effects.
 

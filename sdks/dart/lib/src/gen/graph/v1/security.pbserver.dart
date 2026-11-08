@@ -39,6 +39,8 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $1.GetUserRequest request);
   $async.Future<$1.GetRegistrationPolicyResponse> getRegistrationPolicy(
       $pb.ServerContext ctx, $1.GetRegistrationPolicyRequest request);
+  $async.Future<$1.GetEdgePolicyResponse> getEdgePolicy(
+      $pb.ServerContext ctx, $1.GetEdgePolicyRequest request);
   $async.Future<$1.GetLogSettingsResponse> getLogSettings(
       $pb.ServerContext ctx, $1.GetLogSettingsRequest request);
   $async.Future<$1.GetOperationalSettingsResponse> getOperationalSettings(
@@ -90,6 +92,8 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
         return $1.GetUserRequest();
       case 'GetRegistrationPolicy':
         return $1.GetRegistrationPolicyRequest();
+      case 'GetEdgePolicy':
+        return $1.GetEdgePolicyRequest();
       case 'GetLogSettings':
         return $1.GetLogSettingsRequest();
       case 'GetOperationalSettings':
@@ -147,6 +151,8 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
       case 'GetRegistrationPolicy':
         return getRegistrationPolicy(
             ctx, request as $1.GetRegistrationPolicyRequest);
+      case 'GetEdgePolicy':
+        return getEdgePolicy(ctx, request as $1.GetEdgePolicyRequest);
       case 'GetLogSettings':
         return getLogSettings(ctx, request as $1.GetLogSettingsRequest);
       case 'GetOperationalSettings':

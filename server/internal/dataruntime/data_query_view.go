@@ -38,6 +38,7 @@ func planDataQuery(ctx context.Context, message proto.Message, access *security.
 	var vertexPrefix, tailPrefix, headPrefix string
 	edgeCollection, needsEdges := false, false
 	headModification := false
+	tailAction, headAction := access.EdgeEndpointActions()
 	switch request := message.(type) {
 	case *pb.ScanVerticesRequest:
 		actions = []security.Action{security.VertexRead}
@@ -54,7 +55,7 @@ func planDataQuery(ctx context.Context, message proto.Message, access *security.
 		actions = []security.Action{security.VertexRead}
 		tailPrefix, headPrefix, edgeCollection, needsEdges = request.GetTailPrefix(), request.GetHeadPrefix(), true, true
 	case *pb.DeleteVerticesByPrefixRequest:
-		actions, vertexPrefix = []security.Action{security.VertexRead, security.VertexDelete}, request.GetPrefix()
+		actions, vertexPrefix = []security.Action{security.VertexDelete}, request.GetPrefix()
 	case *pb.DeleteEdgesByPrefixRequest:
 		actions, headModification = nil, true
 		tailPrefix, headPrefix, edgeCollection, needsEdges = request.GetTailPrefix(), request.GetHeadPrefix(), true, true
@@ -76,8 +77,8 @@ func planDataQuery(ctx context.Context, message proto.Message, access *security.
 	if headModification {
 		vertices = access.EdgeCandidateScope(security.EdgeDelete)
 		// Collection authority is proved from policy alone, before scanning
-		// hidden state. Each final Edge keeps its tail/read, head/write cut.
-		if access.Scope(security.VertexRead).Within(tailPrefix).Empty() || access.Scope(security.VertexWrite).Within(headPrefix).Empty() {
+		// hidden state. Each final Edge keeps the selected global endpoint cut.
+		if access.Scope(tailAction).Within(tailPrefix).Empty() || access.Scope(headAction).Within(headPrefix).Empty() {
 			return nil, nil, dataPermissionError()
 		}
 	}
@@ -100,8 +101,8 @@ func planDataQuery(ctx context.Context, message proto.Message, access *security.
 	var resources []security.PublicOutputResource
 	if headModification {
 		resources = append(resources,
-			security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: tailPrefix, Actions: []security.Action{security.VertexRead}},
-			security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: headPrefix, Actions: []security.Action{security.VertexWrite}})
+			security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: tailPrefix, Actions: []security.Action{tailAction}},
+			security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: headPrefix, Actions: []security.Action{headAction}})
 	} else {
 		resources = append(resources, security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: vertexPrefix, Actions: actions})
 	}
@@ -132,14 +133,14 @@ func planDataQuery(ctx context.Context, message proto.Message, access *security.
 	}
 	var filters []graphcache.EdgeRangeFilter
 	if headModification {
-		// Two independent generic filters avoid a read-ranges × write-ranges
-		// product. Core has no knowledge of which endpoint owns the Edge.
+		// Two independent generic filters avoid an endpoint range product.
+		// Core has no knowledge of the global authorization policy.
 		whole := physicalRange(security.Range{})
 		tails, heads := graphcache.EdgeRangeFilter{}, graphcache.EdgeRangeFilter{}
-		for _, r := range access.Scope(security.VertexRead).Ranges() {
+		for _, r := range access.Scope(tailAction).Ranges() {
 			tails.Included = append(tails.Included, graphcache.KeyPairRange{Tail: physicalRange(r), Head: whole})
 		}
-		for _, r := range access.Scope(security.VertexWrite).Ranges() {
+		for _, r := range access.Scope(headAction).Ranges() {
 			heads.Included = append(heads.Included, graphcache.KeyPairRange{Tail: whole, Head: physicalRange(r)})
 		}
 		filters = []graphcache.EdgeRangeFilter{tails, heads}

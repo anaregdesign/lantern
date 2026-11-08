@@ -358,7 +358,7 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 	}
 	if command.Kind == S1Management {
 		access, active := k.replayState.projection.snapshot.AccessFor(credential.actor)
-		if !active || !access.AllowsGlobal(SecurityManage) {
+		if !active || !CanManageChanges(access, command.Changes) {
 			return result, ErrPermissionDenied
 		}
 	}

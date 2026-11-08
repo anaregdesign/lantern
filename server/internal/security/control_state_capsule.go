@@ -195,8 +195,8 @@ func s2MeasureCapsule(s *S1ApplyState, roots s2CapsuleRoots, limits s2CapsuleLim
 	if uint64(len(s.ledger)) > uint64(h.Configuration.Capacity.LedgerEntries) {
 		return s2CapsuleMeasure{}, errS2Unpersistable
 	}
-	// Compile the entire closure again; legacy DecodeImage's admission fallback
-	// is intentionally unavailable to S2.
+	// Compile the entire current-model closure again, including qualified
+	// usable-human administration, before measuring materialized state.
 	snapshot, err := CompileImage(s.projection.Image(), h.Configuration.Policy)
 	if err != nil || !bytes.Equal(snapshot.image, s.projection.snapshot.image) {
 		return s2CapsuleMeasure{}, errS2Capsule

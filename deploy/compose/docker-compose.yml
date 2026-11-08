@@ -1,65 +1,134 @@
-# Zero-config OFF quick start. HA uses the explicit signed-membership overlay.
-x-lantern-common: &lantern-common
-  image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+# Canonical local-only OFF stack. Private peer trust/state must be provisioned explicitly.
+# Ordinary up resumes intact state; it never creates membership identity or repairs it.
+name: lantern-off-ha
+
+x-node: &node
+  image: ${LANTERN_IMAGE:?select the compatible immutable Server image for this source}
+  user: "${LANTERN_RUN_UID:?private OFF input owner UID required}:${LANTERN_RUN_GID:?private OFF input owner GID required}"
   stop_grace_period: 45s
-  environment:
+  restart: "no"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=8m"]
+  networks: [cluster, metrics]
+  environment: &node-environment
+    LANTERN_AUTH_MODE: "off"
     LANTERN_PORT: "6380"
-    LANTERN_METRICS_ADDR: ":9090"
-    LANTERN_DEFAULT_TTL_SECONDS: "3600"
-    LANTERN_LOG_FORMAT: "json"
+    LANTERN_METRICS_ADDR: "127.0.0.1:9090"
     LANTERN_DRAIN_DELAY_SECONDS: "5"
+    LANTERN_PEER_LISTEN_ADDR: ":6381"
+    LANTERN_PEER_MEMBERSHIP_STATE_FILE: /state/membership.state
+    LANTERN_PEER_MEMBERSHIP_MODE: resume
+    LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR: /var/lib/lantern-snapshot-spool
+    LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES: "134217728"
+    LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES: "33554432"
     LANTERN_BACKUP_ENABLED: "true"
     LANTERN_BACKUP_DIR: /data
-    LANTERN_BACKUP_INTERVAL: 5m
-    LANTERN_BACKUP_RETAIN: "3"
     LANTERN_BACKUP_RESTORE_ON_START: "true"
-  networks:
-    default:
-      aliases: [lantern]
   healthcheck:
-    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+    test: [CMD, wget, -qO-, "http://127.0.0.1:9090/readyz"]
     interval: 5s
-    timeout: 2s
+    timeout: 3s
     retries: 12
-    start_period: 10s
+    start_period: 50s
+
+x-relay: &relay
+  image: ${LANTERN_METRICS_RELAY_IMAGE:?select the immutable same-source metrics relay image}
+  user: "${LANTERN_RUN_UID:?}:${LANTERN_RUN_GID:?}"
+  command: [--certificate, /metrics-tls/server.pem, --key, /metrics-tls/server-key.pem, --client-ca, /metrics-tls/ca.pem]
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 256m
+  restart: "no"
 
 services:
   lantern-0:
-    <<: *lantern-common
+    <<: *node
     hostname: lantern-0
+    env_file: ["${LANTERN_HA_CONFIG_DIR:?private OFF peer configuration required}/lantern-0.env"]
     ports: ["127.0.0.1:6380:6380"]
-    volumes: [lantern-backup-0:/data]
+    volumes:
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/lantern-0", target: /run/lantern-config, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/lantern-0/ntp.conf", target: /etc/ntp.conf, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/state/lantern-0", target: /state, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/backup/lantern-0", target: /data, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/spool/lantern-0", target: /var/lib/lantern-snapshot-spool, bind: {create_host_path: false}}
+  lantern-1:
+    <<: *node
+    hostname: lantern-1
+    env_file: ["${LANTERN_HA_CONFIG_DIR:?private OFF peer configuration required}/lantern-1.env"]
+    ports: ["127.0.0.1:6381:6380"]
+    volumes:
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/lantern-1", target: /run/lantern-config, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/lantern-1/ntp.conf", target: /etc/ntp.conf, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/state/lantern-1", target: /state, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/backup/lantern-1", target: /data, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/spool/lantern-1", target: /var/lib/lantern-snapshot-spool, bind: {create_host_path: false}}
+  lantern-2:
+    <<: *node
+    hostname: lantern-2
+    env_file: ["${LANTERN_HA_CONFIG_DIR:?private OFF peer configuration required}/lantern-2.env"]
+    ports: ["127.0.0.1:6382:6380"]
+    volumes:
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/lantern-2", target: /run/lantern-config, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/lantern-2/ntp.conf", target: /etc/ntp.conf, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/state/lantern-2", target: /state, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/backup/lantern-2", target: /data, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/spool/lantern-2", target: /var/lib/lantern-snapshot-spool, bind: {create_host_path: false}}
+  metrics-0:
+    <<: *relay
+    network_mode: service:lantern-0
+    depends_on: {lantern-0: {condition: service_healthy, restart: true}}
+    volumes: [{type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/tls/metrics/lantern-0", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
+  metrics-1:
+    <<: *relay
+    network_mode: service:lantern-1
+    depends_on: {lantern-1: {condition: service_healthy, restart: true}}
+    volumes: [{type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/tls/metrics/lantern-1", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
+  metrics-2:
+    <<: *relay
+    network_mode: service:lantern-2
+    depends_on: {lantern-2: {condition: service_healthy, restart: true}}
+    volumes: [{type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/tls/metrics/lantern-2", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
   admin:
-    image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
+    image: ${LANTERN_ADMIN_IMAGE:?select the compatible immutable Admin image for this source}
     ports: ["127.0.0.1:8080:8080"]
     environment:
       LANTERN_ADMIN_SERVER_UPSTREAM: h2c://lantern-0:6380
-    depends_on:
-      lantern-0:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
+      LANTERN_ADMIN_PROMETHEUS_UPSTREAM: http://prometheus:9090
+    networks: [cluster, frontend]
+    depends_on: {lantern-0: {condition: service_healthy}}
+    healthcheck: {test: [CMD, wget, -qO-, "http://127.0.0.1:8080/healthz"], interval: 5s, timeout: 3s, retries: 12}
+
   lantern-mcp:
-    profiles: [tools]
-    image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
+    image: ${LANTERN_MCP_IMAGE:?select the compatible immutable MCP image for this source}
     ports: ["127.0.0.1:6390:6390"]
     environment:
-      LANTERN_MCP_HTTP_ADDR: 0.0.0.0:6390
       LANTERN_ADDR: http://lantern-0:6380
-    depends_on:
-      lantern-0:
-        condition: service_healthy
+      LANTERN_MCP_HTTP_ADDR: 0.0.0.0:6390
+    networks: [cluster]
+    depends_on: {lantern-0: {condition: service_healthy}}
+
   prometheus:
-    profiles: [diagnostics]
     image: prom/prometheus:v3.5.0
+    user: "${LANTERN_RUN_UID:?}:${LANTERN_RUN_GID:?}"
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus, --storage.tsdb.retention.time=1h, --storage.tsdb.retention.size=96MB]
+    read_only: true
     ports: ["127.0.0.1:9091:9090"]
-    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
-    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=1h"]
+    volumes:
+      - ./oidc-ha/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - {type: bind, source: "${LANTERN_HA_CONFIG_DIR:?}/tls/metrics/client", target: /metrics-client, read_only: true, bind: {create_host_path: false}}
+    tmpfs: ["/prometheus:rw,uid=${LANTERN_RUN_UID:?},gid=${LANTERN_RUN_GID:?},mode=0700,size=128m"]
+    mem_limit: 512m
+    networks: [metrics, frontend]
     depends_on:
-      lantern-0:
-        condition: service_healthy
-volumes:
-  lantern-backup-0:
+      metrics-0: {condition: service_started}
+      metrics-1: {condition: service_started}
+      metrics-2: {condition: service_started}
+
+networks:
+  cluster: {}
+  metrics: {internal: true}
+  frontend: {}

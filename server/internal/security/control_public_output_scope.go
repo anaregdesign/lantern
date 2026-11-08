@@ -74,7 +74,7 @@ func (a *Admission) BindCurrentGlobalOutput(ctx context.Context, action Action) 
 	if a == nil || a.current == nil {
 		return nil
 	}
-	if kind, known := actionResource(action); !known || kind != GlobalResource || !a.Access().AllowsGlobal(action) {
+	if kind, known := actionResource(action); !known || kind == DataResource || !a.Access().AllowsGlobal(action) {
 		return ErrPermissionDenied
 	}
 	return a.currentOutput(ctx, "global", s2cHash("public-global-output", action))

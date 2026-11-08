@@ -126,6 +126,9 @@ func (w *Workflow) CompleteCallback(ctx context.Context, input CallbackInput) (r
 			return result, ErrUnavailable
 		}
 	} else {
+		if e := w.current.EnrollBrowser(ctx, producer); e != nil {
+			return result, ErrUnauthenticated
+		}
 		issued, e := w.establishCurrentSession(ctx, completion, producer)
 		if e != nil {
 			return result, e

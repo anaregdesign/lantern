@@ -266,6 +266,9 @@ enum PutOutcome {
 message PutVertexResponse {
   // Server-authoritative result for vertex in the request.
   PutOutcome outcome = 1;
+  // Present when the caller can mutate but cannot read every selected key.
+  // In that case all effect fields are empty for the complete call.
+  MutationAcceptance acceptance = 2;
 }
 
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
@@ -288,6 +291,9 @@ message PutVerticesResponse {
   // mixed live/expired/conditional batches unambiguous even with duplicate
   // keys. An empty request returns an empty list.
   repeated PutOutcome outcomes = 1;
+  // Present when the caller can mutate but cannot read every selected key.
+  // In that case all effect fields are empty for the complete call.
+  MutationAcceptance acceptance = 2;
 }
 
 // One typed mixed item. All Vertex Puts precede all explicit-ID Edge Adds.
@@ -342,6 +348,9 @@ message DeleteVertexRequest {
 message DeleteVertexResponse {
   // existed is true if the vertex was present and removed by this call.
   bool existed = 1;
+  // Present when the caller can mutate but cannot read every selected key.
+  // In that case all effect fields are empty for the complete call.
+  MutationAcceptance acceptance = 2;
 }
 
 // DeleteVerticesRequest removes several vertices in one round trip. Same
@@ -363,6 +372,9 @@ message DeleteVerticesResponse {
   // found a stored vertex at its turn in the batch and passed causal admission;
   // absent, duplicate-after-delete, or causally rejected items are false.
   repeated bool existed = 2;
+  // Present when the caller can mutate but cannot read every selected key.
+  // In that case all effect fields are empty for the complete call.
+  MutationAcceptance acceptance = 3;
 }
 
 // ScanOrder selects the key order a ScanVertices / ScanVertexKeys page walks
@@ -592,6 +604,9 @@ message DeleteVerticesByPrefixRequest {
 
 message DeleteVerticesByPrefixResponse {
   uint64 deleted = 1;
+  // Present when the caller can mutate but cannot read every selected key.
+  // In that case all effect fields are empty for the complete call.
+  MutationAcceptance acceptance = 2;
 }
 
 // TopVerticesByDegreeRequest ranks the most-connected vertices under a key

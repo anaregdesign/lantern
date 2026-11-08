@@ -1,0 +1,68 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  overflow-wrap: anywhere;
+}
+.table caption {
+  text-align: start;
+  font-weight: 600;
+  padding-block: 8px;
+}
+.table th,
+.table td {
+  text-align: start;
+  vertical-align: top;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+.table button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+  justify-content: start;
+  min-height: 36px;
+  max-width: 100%;
+}
+.table small {
+  display: block;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chips > * {
+  white-space: normal;
+  height: auto;
+  min-height: 24px;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+@media (max-width: 650px) {
+  .table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .table,
+  .table caption,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
+    width: auto;
+  }
+  .table tr {
+    margin-block: 12px;
+    border: 1px solid var(--colorNeutralStroke2);
+  }
+  .table td::before {
+    content: attr(data-label);
+    display: block;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+}

@@ -34,18 +34,18 @@ func currentReceiptOutputResources(observations []mutationreceipt.Observation, b
 	resources := make([]security.PublicOutputResource, 0, len(observations))
 	for _, observation := range observations {
 		r := observation.Receipt
-		actions := []security.Action{security.ReceiptRead}
+		var actions []security.Action
 		if observation.Status != mutationreceipt.Confirmed {
-			actions = append(actions, security.VertexRead, security.EdgeRead)
+			actions = append(actions, security.ReceiptRead, security.VertexRead, security.EdgeRead)
 		} else {
 			switch r.Kind {
 			case mutationreceipt.PutVertex:
-				actions = append(actions, security.VertexRead, security.VertexWrite)
+				actions = append(actions, security.VertexWrite)
 				if r.LifecycleReduction || r.Resource == (mutationreceipt.ResourceIdentity{}) {
 					actions = append(actions, security.VertexDelete)
 				}
 			case mutationreceipt.DeleteVertex:
-				actions = append(actions, security.VertexRead, security.VertexDelete)
+				actions = append(actions, security.VertexDelete)
 			case mutationreceipt.CreateEdge:
 				actions = append(actions, security.EdgeCreate)
 			case mutationreceipt.AddEdge:
@@ -57,8 +57,13 @@ func currentReceiptOutputResources(observations []mutationreceipt.Observation, b
 			default:
 				return nil, dataPermissionError()
 			}
-			if !blind && r.Resource.Head != "" {
-				actions = append(actions, security.EdgeRead)
+			if !blind {
+				actions = append(actions, security.ReceiptRead)
+				if r.Resource.Head != "" {
+					actions = append(actions, security.EdgeRead)
+				} else {
+					actions = append(actions, security.VertexRead)
+				}
 			}
 		}
 		// Core owns bounded, copied canonical receipt rows. Include the exact

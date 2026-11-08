@@ -6,6 +6,34 @@ use crate::{EdgeInput, VertexInput, scans::EdgeScanOptions, test_server::GoServe
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
+fn vertex_prefix_blind_reply_never_invents_a_count() {
+    use crate::generated::graph::v1::{MutationAcceptance, MutationAcceptanceKind};
+    let acceptance = Some(MutationAcceptance {
+        kind: MutationAcceptanceKind::HandledEffectUndisclosed as i32,
+    });
+    assert!(matches!(
+        checked_vertex_deleted(
+            DeleteVerticesByPrefixResponse {
+                deleted: 0,
+                acceptance: acceptance.clone()
+            },
+            1
+        ),
+        Err(LanternError::MutationAcceptedUndisclosed)
+    ));
+    assert!(matches!(
+        checked_vertex_deleted(
+            DeleteVerticesByPrefixResponse {
+                deleted: 1,
+                acceptance
+            },
+            1
+        ),
+        Err(LanternError::Protocol(_))
+    ));
+}
+
+#[test]
 fn controlled_prefix_guards_and_bounded_response_counts() {
     assert!(matches!(
         require_edge_prefix("", ""),

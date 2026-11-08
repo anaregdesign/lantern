@@ -19,11 +19,12 @@ import (
 // These private host-side values are only independent original provisioning
 // input. They are never serialized into public fixture metadata or admissions.
 type fixtureAuthorityInput struct {
-	Issuer                         *security.Issuer `json:"issuer,omitempty"`
-	AdminSubjects                  []string         `json:"admin_subjects"`
-	HumanSubjectNamespaceQualified bool             `json:"human_subject_namespace_qualified"`
-	Roles                          []security.Role  `json:"roles"`
-	Machines                       []map[string]any `json:"machines"`
+	Issuer                         *security.Issuer     `json:"issuer,omitempty"`
+	AdminSubjects                  []string             `json:"admin_subjects"`
+	HumanSubjectNamespaceQualified bool                 `json:"human_subject_namespace_qualified"`
+	Roles                          []security.Role      `json:"roles"`
+	EdgePolicy                     *security.EdgePolicy `json:"edge_policy,omitempty"`
+	Machines                       []map[string]any     `json:"machines"`
 }
 
 func fixtureRepositoryRoot() (string, error) {

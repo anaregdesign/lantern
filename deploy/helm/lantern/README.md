@@ -138,7 +138,7 @@ configuration. An enabled OIDC Ingress requires TLS.
 
 `admin.prometheus.upstream` is optional. Each request first calls the fixed
 Server `/auth/operations` route; OFF permits it explicitly, OIDC requires a
-current `operations.read` Role. API/proxy errors never become the SPA shell.
+current read Allow on the Operations resource. API/proxy errors never become the SPA shell.
 Only GET diagnostics are proxied, and cookies/Bearer headers are stripped before
 reaching Prometheus.
 

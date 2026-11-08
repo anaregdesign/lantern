@@ -14,7 +14,7 @@ func TestMachineCredentialRoleStateAndRotation(t *testing.T) {
 	}
 	identity, expiry, valid := snapshot.MachineAccess(token, now)
 	access, active := snapshot.AccessFor(identity)
-	if !valid || !active || identity.Kind != MachinePrincipal || !expiry.Equal(now.Add(time.Hour)) || !access.Allows(VertexRead, "orders:1") || access.Allows(VertexRead, "orders:private:1") || access.AllowsGlobal(SecurityManage) {
+	if !valid || !active || identity.Kind != MachinePrincipal || !expiry.Equal(now.Add(time.Hour)) || !access.Allows(VertexRead, "orders:public:1") || access.Allows(VertexRead, "orders:private:1") || access.AllowsGlobal(SecurityManage) {
 		t.Fatal("credential bypassed named Role-only permissions")
 	}
 	if bytes.Contains(snapshot.image, []byte(token)) {

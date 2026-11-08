@@ -12,25 +12,17 @@ for (const width of [1280, 390]) {
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
-    const allow = (action: string, prefix: string) => ({
-      id: action + prefix,
-      action: "SECURITY_ACTION_" + action,
-      effect: "SECURITY_EFFECT_ALLOW",
+    const allow = (prefix: string) => ({
+      id: "read" + prefix,
+      permission: "SECURITY_PERMISSION_READ",
+      resourceKind: "SECURITY_RESOURCE_DATA",
       prefix,
     });
     const fixture = await securityUI(page, {
       roles: [
         {
           id: "scoped",
-          rules: [
-            allow("VERTEX_READ", "tenant:"),
-            allow("VERTEX_READ", "audit:"),
-            allow("QUERY", "tenant:"),
-            {
-              ...allow("VERTEX_READ", "tenant:private:"),
-              effect: "SECURITY_EFFECT_DENY",
-            },
-          ],
+          rules: [allow("tenant:"), allow("audit:")],
         },
       ],
     });
@@ -63,9 +55,10 @@ for (const width of [1280, 390]) {
     );
     await page.goto(`${fixture.primary}/vertices`);
     await expect(page.getByTestId("data-scope-select")).toBeVisible();
-    await expect(page.getByTestId("scope-deny-exceptions")).toContainText(
-      "tenant:private:",
+    await expect(page.getByTestId("data-scope-select")).toContainText(
+      "tenant:",
     );
+    await expect(page.getByTestId("data-scope-select")).toContainText("audit:");
     await page.getByTestId("data-scope-select").selectOption("audit:");
     await expect(
       page.getByRole("table", { name: "Vertices", exact: true }),
@@ -89,7 +82,7 @@ for (const width of [1280, 390]) {
       .click();
     await expect(
       page.getByTestId("data-scope-select").locator("option[value='audit:']"),
-    ).toHaveText("audit: (explicit prefix)");
+    ).toHaveText("audit:");
     await page.getByTestId("data-scope-select").selectOption("tenant:");
     await expect(
       page.getByRole("tab", { name: "Content search", exact: true }),
@@ -170,16 +163,14 @@ test("unavailable capabilities do not render data or OFF controls", async ({
 test("logout clears protected views", async ({ page }) => {
   const fixture = await securityUI(page);
   await page.goto(`${fixture.primary}/security/roles`);
-  await expect(
-    page.getByRole("button", { name: "Review Role change" }),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create Role" })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(
     page.getByRole("button", { name: "Sign in with Example" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Review Role change" }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create Role" })).toHaveCount(
+    0,
+  );
 });
 for (const width of [1280, 390]) {
   test(`ordinary session needs no generic step-up at ${width}px`, async ({
@@ -195,6 +186,9 @@ for (const width of [1280, 390]) {
     await expect(
       page.getByRole("button", { name: "Sign in with Example" }),
     ).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "Create Role", exact: true })
+      .click();
     await expect(
       page.getByRole("button", { name: "Review Role change" }),
     ).toBeVisible();

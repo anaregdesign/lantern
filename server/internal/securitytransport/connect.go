@@ -81,6 +81,13 @@ func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnect
 	return handler, err
 }
 func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*security.Admission, error) {
+	action := security.Action("")
+	if manage {
+		action = security.SecurityRead
+	}
+	return h.admissionAction(ctx, action)
+}
+func (h *SecurityConnectHandler) admissionAction(ctx context.Context, action security.Action) (*security.Admission, error) {
 	if h.current == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("security management is disabled"))
 	}
@@ -91,7 +98,7 @@ func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*s
 	if err := admission.Check(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
-	if manage && !admission.Access().AllowsGlobal(security.SecurityManage) {
+	if action != "" && !admission.Access().AllowsGlobal(action) {
 		return nil, connect.NewError(connect.CodePermissionDenied, security.ErrPermissionDenied)
 	}
 	profile, current := admission.CurrentProfile()
@@ -99,8 +106,8 @@ func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*s
 		return nil, connect.NewError(connect.CodeUnauthenticated, security.ErrPermissionDenied)
 	}
 	var bindErr error
-	if manage {
-		bindErr = admission.BindCurrentGlobalOutput(ctx, security.SecurityManage)
+	if action != "" {
+		bindErr = admission.BindCurrentGlobalOutput(ctx, action)
 	} else {
 		bindErr = admission.BindCurrentSelfOutput(ctx)
 	}
@@ -353,26 +360,28 @@ func (h *SecurityConnectHandler) ExplainAccess(ctx context.Context, req *connect
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	action, known := securityActions[req.Msg.Action]
-	if !known {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidPolicy)
-	}
 	var allowed bool
 	var matches []security.RuleMatch
 	if req.Msg.Edge != nil {
-		if req.Msg.LogicalKey != nil {
+		action, known := securityActions[req.Msg.Action]
+		if !known || req.Msg.LogicalKey != nil || req.Msg.Permission != pb.SecurityPermission_SECURITY_PERMISSION_UNSPECIFIED || req.Msg.ResourceKind != pb.SecurityResource_SECURITY_RESOURCE_UNSPECIFIED {
 			return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidPolicy)
 		}
 		allowed, matches, err = admission.Snapshot().ExplainEdge(identity, action, req.Msg.Edge.Tail, req.Msg.Edge.Head)
 	} else {
-		allowed, matches, err = admission.Snapshot().Explain(identity, action, req.Msg.LogicalKey)
+		permission, known := securityPermissions[req.Msg.Permission]
+		resource, resourceKnown := securityResources[req.Msg.ResourceKind]
+		if !known || !resourceKnown || req.Msg.Action != pb.SecurityAction_SECURITY_ACTION_UNSPECIFIED {
+			return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidPolicy)
+		}
+		allowed, matches, err = admission.Snapshot().ExplainResource(identity, resource, permission, req.Msg.LogicalKey)
 	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	response := &pb.ExplainAccessResponse{Allowed: allowed, Version: SecurityVersionForAdmission(admission)}
 	for _, match := range matches {
-		response.Matches = append(response.Matches, &pb.SecurityRuleMatch{RoleId: match.RoleID, RuleId: match.RuleID, Effect: encodeSecurityEffect(match.Effect), Action: encodeSecurityAction(match.Action), Endpoint: match.Endpoint})
+		response.Matches = append(response.Matches, &pb.SecurityRuleMatch{RoleId: match.RoleID, RuleId: match.RuleID, Permission: encodeSecurityPermission(match.Permission), ResourceKind: encodeSecurityResource(match.Resource), Endpoint: match.Endpoint})
 	}
 	return securityReadResponse(ctx, admission, h.now(), response)
 }

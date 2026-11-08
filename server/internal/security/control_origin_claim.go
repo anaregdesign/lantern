@@ -99,7 +99,7 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 	}
 	var expires time.Time
 	if command.Kind == S1IssueSession {
-		if c.Token == nil || command.Session == nil || !command.Session.AuthTime.Equal(c.Token.AuthTime.Time()) || low.Before(command.Session.CreatedAt) {
+		if c.Token == nil || command.Session == nil || !command.Session.AuthTime.Equal(c.Token.AuthTime.Time()) || command.Session.VerifiedEmail != c.Token.VerifiedEmail || low.Before(command.Session.CreatedAt) {
 			return false
 		}
 		s := command.Session

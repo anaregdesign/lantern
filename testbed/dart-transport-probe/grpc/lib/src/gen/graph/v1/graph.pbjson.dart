@@ -661,13 +661,22 @@ const PutVertexResponse$json = {
       '6': '.graph.v1.PutOutcome',
       '10': 'outcome'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `PutVertexResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putVertexResponseDescriptor = $convert.base64Decode(
     'ChFQdXRWZXJ0ZXhSZXNwb25zZRIuCgdvdXRjb21lGAEgASgOMhQuZ3JhcGgudjEuUHV0T3V0Y2'
-    '9tZVIHb3V0Y29tZQ==');
+    '9tZVIHb3V0Y29tZRI8CgphY2NlcHRhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2Nl'
+    'cHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use putVerticesRequestDescriptor instead')
 const PutVerticesRequest$json = {
@@ -712,13 +721,22 @@ const PutVerticesResponse$json = {
       '6': '.graph.v1.PutOutcome',
       '10': 'outcomes'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `PutVerticesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putVerticesResponseDescriptor = $convert.base64Decode(
     'ChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3'
-    'V0Y29tZVIIb3V0Y29tZXM=');
+    'V0Y29tZVIIb3V0Y29tZXMSPAoKYWNjZXB0YW5jZRgCIAEoCzIcLmdyYXBoLnYxLk11dGF0aW9u'
+    'QWNjZXB0YW5jZVIKYWNjZXB0YW5jZQ==');
 
 @$core.Deprecated('Use graphMutationItemDescriptor instead')
 const GraphMutationItem$json = {
@@ -907,13 +925,21 @@ const DeleteVertexResponse$json = {
   '1': 'DeleteVertexResponse',
   '2': [
     {'1': 'existed', '3': 1, '4': 1, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteVertexResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteVertexResponseDescriptor =
-    $convert.base64Decode(
-        'ChREZWxldGVWZXJ0ZXhSZXNwb25zZRIYCgdleGlzdGVkGAEgASgIUgdleGlzdGVk');
+final $typed_data.Uint8List deleteVertexResponseDescriptor = $convert.base64Decode(
+    'ChREZWxldGVWZXJ0ZXhSZXNwb25zZRIYCgdleGlzdGVkGAEgASgIUgdleGlzdGVkEjwKCmFjY2'
+    'VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5NdXRhdGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
 
 @$core.Deprecated('Use deleteVerticesRequestDescriptor instead')
 const DeleteVerticesRequest$json = {
@@ -943,14 +969,22 @@ const DeleteVerticesResponse$json = {
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
     {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteVerticesResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteVerticesResponseDescriptor =
-    $convert.base64Decode(
-        'ChZEZWxldGVWZXJ0aWNlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQSGAoHZX'
-        'hpc3RlZBgCIAMoCFIHZXhpc3RlZA==');
+final $typed_data.Uint8List deleteVerticesResponseDescriptor = $convert.base64Decode(
+    'ChZEZWxldGVWZXJ0aWNlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQSGAoHZX'
+    'hpc3RlZBgCIAMoCFIHZXhpc3RlZBI8CgphY2NlcHRhbmNlGAMgASgLMhwuZ3JhcGgudjEuTXV0'
+    'YXRpb25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use scanVerticesRequestDescriptor instead')
 const ScanVerticesRequest$json = {
@@ -1208,6 +1242,14 @@ const DeleteVerticesByPrefixResponse$json = {
   '1': 'DeleteVerticesByPrefixResponse',
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 4, '10': 'deleted'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
@@ -1215,7 +1257,8 @@ const DeleteVerticesByPrefixResponse$json = {
 final $typed_data.Uint8List deleteVerticesByPrefixResponseDescriptor =
     $convert.base64Decode(
         'Ch5EZWxldGVWZXJ0aWNlc0J5UHJlZml4UmVzcG9uc2USGAoHZGVsZXRlZBgBIAEoBFIHZGVsZX'
-        'RlZA==');
+        'RlZBI8CgphY2NlcHRhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgph'
+        'Y2NlcHRhbmNl');
 
 @$core.Deprecated('Use topVerticesByDegreeRequestDescriptor instead')
 const TopVerticesByDegreeRequest$json = {

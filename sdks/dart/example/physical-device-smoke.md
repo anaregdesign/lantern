@@ -279,11 +279,14 @@ remain separate evidence.
 
 `integration_test/physical_head_edge_test.dart` uses two runtime token BFF routes
 and one production Server with native receipt WAL. The observer fixture Role
-has VertexRead/Write/Delete and ReceiptRead on `physical-head:`. The writer
-Role has only VertexRead on `physical-head:tails:`, VertexWrite on
-`physical-head:heads:`, Deny VertexWrite on `physical-head:heads:denied:`, and
-ReceiptRead on `physical-head:`. It has no head read, VertexDelete or direct
-Principal grants. Both endpoint value and TTL are independently seeded.
+has Data read/write on `physical-head:`. The writer Role has Data read on
+`physical-head:tails:` and Data write on `physical-head:heads:allowed:`; the
+cluster Edge policy is explicitly RW. Other head prefixes have no grant. It
+has no head read or direct Principal grants. Data write includes Vertex Put,
+Delete and TTL changes, whose results remain typed blind acknowledgements.
+Both Edge endpoint value and TTL are independently seeded and preserved by
+Edge operations.
+
 
 Pass `LANTERN_ENDPOINT`, `LANTERN_TOKEN_ENDPOINT` (observer) and
 `LANTERN_HEAD_WRITER_TOKEN_ENDPOINT` (writer) as platform-trusted HTTPS URLs.
@@ -295,7 +298,7 @@ and run on each actual Android/iOS phone. Require a fresh
 and the matching installed binary hash after every tracked cleanup finishes.
 Apply the same exact-binary/content-free evidence rules as the mobile smoke.
 
-The target covers explicit Role/Deny failures, whole-request typed blind
+The target covers explicit Role scope failures, whole-request typed blind
 acknowledgements, missing endpoints without resurrection or partial batch
 effects, preserved endpoint value/TTL, undisclosed original receipt status and
 replay, and native SQLite terminal `acceptedUndisclosed` after reopen. The

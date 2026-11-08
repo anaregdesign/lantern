@@ -134,7 +134,7 @@ func (h *SecurityConnectHandler) GetLogSettings(ctx context.Context, req *connec
 	if err := securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	a, err := h.admission(ctx, true)
+	a, err := h.admissionAction(ctx, security.SettingsRead)
 	if err != nil {
 		return nil, err
 	}

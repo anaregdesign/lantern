@@ -1,108 +1,99 @@
 import { describe, expect, test } from "bun:test";
 import {
-  SecurityAction as A,
-  SecurityEffect as E,
+  SecurityPermission as P,
+  SecurityResource as R,
   type SecurityRule,
 } from "lantern-sdk/web";
-import {
-  scopeOptions,
-  deniedScopes,
-  QUERY_SCOPE_ACTIONS,
-  receiptSuggestedForEdge,
-} from "./scope-options";
-const rule = (action: A, effect: E, prefix: string): SecurityRule => ({
+import { scopeOptions, receiptSuggestedForEdge } from "./scope-options";
+const rule = (
+  permission: P,
+  prefix: string,
+  resourceKind = R.DATA,
+): SecurityRule => ({
   $typeName: "graph.v1.SecurityRule",
   id: prefix || "all",
-  action,
-  effect,
+  permission,
+  resourceKind,
   resource: { case: "prefix", value: prefix },
 });
 const roles = (rules: SecurityRule[]) => [{ id: "reader", rules }];
-describe("Scopes suggested by current Server Roles", () => {
-  test("optional receipts need grants for both endpoints, with Deny precedence", () => {
-    expect(
-      receiptSuggestedForEdge(
-        roles([
-          rule(A.VERTEX_READ, E.ALLOW, "orders:"),
-          rule(A.VERTEX_WRITE, E.ALLOW, "orders:"),
-        ]),
-        "orders:a",
-        "orders:b",
-      ),
-    ).toBe(false);
-    expect(
-      receiptSuggestedForEdge(
-        roles([rule(A.RECEIPT_READ, E.ALLOW, "audit:")]),
-        "orders:a",
-        "orders:b",
-      ),
-    ).toBe(false);
-    expect(
-      receiptSuggestedForEdge(
-        roles([rule(A.RECEIPT_READ, E.ALLOW, "orders:a")]),
-        "orders:a",
-        "orders:b",
-      ),
-    ).toBe(false);
-    const grants = roles([rule(A.RECEIPT_READ, E.ALLOW, "orders:")]);
+describe("Read scopes suggested by current Server Roles", () => {
+  test("data read covers query and receipt suggestions while write grants no disclosure", () => {
+    const grants = roles([rule(P.READ, "orders:")]);
+    expect(scopeOptions(grants)).toEqual([{ prefix: "orders:" }]);
     expect(receiptSuggestedForEdge(grants, "orders:a", "orders:b")).toBe(true);
+    expect(receiptSuggestedForEdge(grants, "orders:a", "private:b")).toBe(
+      false,
+    );
     expect(
       receiptSuggestedForEdge(
-        [
-          ...grants,
-          { id: "deny", rules: [rule(A.RECEIPT_READ, E.DENY, "orders:b")] },
-        ],
+        roles([rule(P.WRITE, "orders:")]),
         "orders:a",
         "orders:b",
       ),
     ).toBe(false);
+    expect(scopeOptions(roles([rule(P.WRITE, "orders:")]))).toEqual([]);
   });
-  test("intersects query and read grants and shows nested Deny exceptions", () => {
-    const r = roles([
-      rule(A.VERTEX_READ, E.ALLOW, "orders:"),
-      rule(A.QUERY, E.ALLOW, "orders:open:"),
-      rule(A.VERTEX_READ, E.DENY, "orders:open:private:"),
-    ]);
-    expect(scopeOptions(r, QUERY_SCOPE_ACTIONS)).toEqual([
-      { prefix: "orders:open:", denied: ["orders:open:private:"] },
-    ]);
-    expect(deniedScopes(r, QUERY_SCOPE_ACTIONS, "orders:open:")).toEqual([
-      "orders:open:private:",
-    ]);
+  test("unioned Roles supply endpoint reads independently and role removal preserves remaining scope", () => {
+    const left = { id: "left", rules: [rule(P.READ, "orders:a")] },
+      right = { id: "right", rules: [rule(P.READ, "orders:b")] };
+    expect(receiptSuggestedForEdge([left, right], "orders:a", "orders:b")).toBe(
+      true,
+    );
+    expect(scopeOptions([right])).toEqual([{ prefix: "orders:b" }]);
+    expect(receiptSuggestedForEdge([right], "orders:a", "orders:b")).toBe(
+      false,
+    );
   });
-  test("Deny across another Role removes a fully denied candidate", () => {
-    const r = [
-      ...roles([rule(A.VERTEX_READ, E.ALLOW, "orders:")]),
-      { id: "deny", rules: [rule(A.VERTEX_READ, E.DENY, "orders:")] },
-    ];
-    expect(scopeOptions(r, [A.VERTEX_READ])).toEqual([]);
-  });
-  test("read-only and management Roles do not imply query or data scope", () => {
-    expect(
-      scopeOptions(
-        roles([rule(A.VERTEX_READ, E.ALLOW, "orders:")]),
-        QUERY_SCOPE_ACTIONS,
-      ),
-    ).toEqual([]);
-    expect(
-      scopeOptions(roles([rule(A.MANAGE, E.ALLOW, "")]), [A.VERTEX_READ]),
-    ).toEqual([]);
-    expect(scopeOptions([], [A.VERTEX_READ])).toEqual([]);
-  });
-  test("literal wildcards stay literal, all-key grants retain exceptions", () => {
-    expect(
-      scopeOptions(roles([rule(A.VERTEX_READ, E.ALLOW, "orders:*")]), [
-        A.VERTEX_READ,
-      ])[0].prefix,
-    ).toBe("orders:*");
+  test("management resource grants and missing or unsupported permission do not suggest data scope", () => {
     expect(
       scopeOptions(
         roles([
-          rule(A.VERTEX_READ, E.ALLOW, ""),
-          rule(A.VERTEX_READ, E.DENY, "private:"),
+          rule(P.READ, "", R.SECURITY),
+          rule(P.WRITE, "", R.SETTINGS),
+          rule(P.READ, "", R.OPERATIONS),
+          rule(P.READ, "", R.SCHEMA),
+          rule(P.UNSPECIFIED, ""),
         ]),
-        [A.VERTEX_READ],
       ),
-    ).toEqual([{ prefix: "", denied: ["private:"] }]);
+    ).toEqual([]);
+    expect(scopeOptions([])).toEqual([]);
+  });
+  test("literal wildcards stay literal and explicit empty prefix suggests all logical data", () => {
+    expect(scopeOptions(roles([rule(P.READ, "orders:*")]))).toEqual([
+      { prefix: "orders:*" },
+    ]);
+    expect(scopeOptions(roles([rule(P.READ, ""), rule(P.READ, "")]))).toEqual([
+      { prefix: "" },
+    ]);
+  });
+  test("typed UID scope uses only the server-provided self UID and never opaque subject or email", () => {
+    const personal: SecurityRule = {
+      $typeName: "graph.v1.SecurityRule",
+      id: "personal",
+      permission: P.READ,
+      resourceKind: R.DATA,
+      resource: {
+        case: "principalUidPrefix",
+        value: {
+          $typeName: "graph.v1.SecurityPrincipalUIDPrefix",
+          literalBefore: "users:",
+          literalAfter: ":",
+        },
+      },
+    };
+    const granted = roles([personal]),
+      uid = "0123456789abcdef0123456789abcdef";
+    expect(scopeOptions(granted, uid)).toEqual([{ prefix: `users:${uid}:` }]);
+    expect(
+      receiptSuggestedForEdge(granted, `users:${uid}:a`, `users:${uid}:b`, uid),
+    ).toBe(true);
+    for (const unknown of [
+      undefined,
+      "subject",
+      "user@example.invalid",
+      "0".repeat(32),
+    ])
+      expect(scopeOptions(granted, unknown)).toEqual([]);
   });
 });

@@ -112,7 +112,7 @@ func TestSnapshotReusesUnchangedRoles(t *testing.T) {
 	if next.policy != first.policy {
 		t.Fatal("Session churn rebuilt Role ranges")
 	}
-	image.Roles[1].Rules[0] = dataRule(Allow, VertexRead, "users:")
+	image.Roles[1].Rules[0] = dataRule(VertexRead, "users:")
 	changed, err := compileImage(image, DefaultPolicyLimits(), next)
 	if err != nil {
 		t.Fatal(err)
@@ -122,12 +122,12 @@ func TestSnapshotReusesUnchangedRoles(t *testing.T) {
 	}
 	// JSON substitutes malformed UTF-8. It must not allow invalid input to hit
 	// a valid policy's canonical cache key.
-	image.Roles[1].Rules[0] = dataRule(Allow, VertexRead, "\ufffd")
+	image.Roles[1].Rules[0] = dataRule(VertexRead, "\ufffd")
 	validUnicode, err := CompileImage(image, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
-	image.Roles[1].Rules[0] = dataRule(Allow, VertexRead, "\xff")
+	image.Roles[1].Rules[0] = dataRule(VertexRead, "\xff")
 	if _, err := compileImage(image, DefaultPolicyLimits(), validUnicode); err == nil {
 		t.Fatal("malformed UTF8 matched cached policy")
 	}

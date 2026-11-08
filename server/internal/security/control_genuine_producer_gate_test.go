@@ -94,7 +94,7 @@ func TestCurrentAuthorityGenuineProducerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	role := security.S1Command{Kind: security.S1Management, Changes: []security.Change{{Kind: security.PutRole, Role: &security.Role{ID: "genuine_reader", Rules: []security.PermissionRule{{ID: "read", Effect: security.Allow, Action: security.VertexRead, Resource: security.DataResource, Prefix: new(string)}}}}}}
+	role := security.S1Command{Kind: security.S1Management, Changes: []security.Change{{Kind: security.PutRole, Role: &security.Role{ID: "genuine_reader", Rules: []security.PermissionRule{{ID: "read", Permission: security.Read, Resource: security.DataResource, Prefix: new(string)}}}}}}
 	g.Renew()
 	if phase := os.Getenv("LANTERN_CURRENT_OUTPUT_CHILD"); phase != "" {
 		g.ExercisePausedOutput(bearer, phase, os.Getenv("LANTERN_CURRENT_OUTPUT_CHILD_DIR"))

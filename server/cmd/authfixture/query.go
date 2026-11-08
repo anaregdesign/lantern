@@ -74,11 +74,9 @@ func queryBinaryProvenance(path string) (queryBinary, error) {
 }
 
 func queryRole() security.Role {
-	visible, denied, all := "bench:", "bench:private:", ""
+	visible := "bench:public:"
 	return security.Role{ID: "fixture_query_reader", Name: "Local protected query reader", Rules: []security.PermissionRule{
-		{ID: "read", Action: security.VertexRead, Effect: security.Allow, Resource: security.DataResource, Prefix: &visible},
-		{ID: "deny", Action: security.VertexRead, Effect: security.Deny, Resource: security.DataResource, Prefix: &denied},
-		{ID: "query", Action: security.Query, Effect: security.Allow, Resource: security.DataResource, Prefix: &all},
+		{ID: "read", Permission: security.Read, Resource: security.DataResource, Prefix: &visible},
 	}}
 }
 

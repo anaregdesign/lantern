@@ -13,7 +13,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
-from urllib import error
+from urllib import error, parse
 
 
 SPEC = importlib.util.spec_from_file_location("ha_check", Path(__file__).with_name("check.py"))
@@ -49,6 +49,13 @@ class ExampleHTTP:
             return 200, {}, self.raw({"mode": "AUTH_MODE_OIDC", "ready": True, "protocolVersion": 2})
         if url.endswith("/api/v1/targets"):
             return 200, {}, self.raw(targets())
+        if "/api/v1/query_range?" in url:
+            query = parse.parse_qs(parse.urlsplit(url).query)["query"][0]
+            result = [{"metric": {} if query.startswith("sum(") else
+                       {"node": f"lantern-{i}", "instance": f"lantern-{i}:9443"},
+                       "values": [[100, "1"], [115, "1"]]}
+                      for i in range(1 if query.startswith("sum(") else 3)]
+            return 200, {}, self.raw({"status": "success", "data": {"resultType": "matrix", "result": result}})
         if url.endswith("/GetVertex"):
             if token is None and not self.allow_anonymous:
                 return 401, {}, self.raw({"code": "unauthenticated"})

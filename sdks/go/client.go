@@ -537,6 +537,9 @@ func (l *Lantern) putVertexAt(ctx context.Context, key string, value any, expira
 	if err != nil {
 		return 0, err
 	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
+		return 0, err
+	}
 	inputs := []VertexInput{{Key: key, Expiration: expiration}}
 	results, err := vertexPutResults(inputs, resp.GetOutcomes())
 	if err != nil {
@@ -576,6 +579,9 @@ func (l *Lantern) putVertexIfAbsentAt(ctx context.Context, key string, value any
 	if err != nil {
 		return 0, err
 	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
+		return 0, err
+	}
 	results, err := vertexPutResults([]VertexInput{{Key: key}}, resp.GetOutcomes())
 	if err != nil {
 		return 0, err
@@ -607,19 +613,30 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) ([]Vert
 		vs = append(vs, v)
 	}
 	var results []VertexPutResult
+	offset, undisclosed := 0, false
 	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
 		resp, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk}, l.client.PutVertices)
 		if err != nil {
 			return 0, err
 		}
-		offset := len(results)
-		chunkResults, err := vertexPutResults(inputs[offset:offset+len(chunk)], resp.GetOutcomes())
+		chunkInputs := inputs[offset : offset+len(chunk)]
+		offset += len(chunk)
+		if err := mutationAcceptanceFromProto(resp); err != nil {
+			if _, accepted := err.(*MutationAcceptance); accepted {
+				undisclosed = true
+			}
+			return 0, err
+		}
+		chunkResults, err := vertexPutResults(chunkInputs, resp.GetOutcomes())
 		if err != nil {
 			return 0, err
 		}
 		results = append(results, chunkResults...)
 		return int32(len(chunk)), nil
 	})
+	if undisclosed {
+		return nil, err
+	}
 	return clientBoundedVertexPutResults(results, inputs[:len(results)], initiallyLive[:len(results)], l.now()), err
 }
 
@@ -655,19 +672,30 @@ func (l *Lantern) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput)
 		vs = append(vs, v)
 	}
 	var results []VertexPutResult
+	offset, undisclosed := 0, false
 	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
 		resp, rerr := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk, IfAbsent: true}, l.client.PutVertices)
 		if rerr != nil {
 			return 0, rerr
 		}
-		offset := len(results)
-		chunkResults, rerr := vertexPutResults(inputs[offset:offset+len(chunk)], resp.GetOutcomes())
+		chunkInputs := inputs[offset : offset+len(chunk)]
+		offset += len(chunk)
+		if err := mutationAcceptanceFromProto(resp); err != nil {
+			if _, accepted := err.(*MutationAcceptance); accepted {
+				undisclosed = true
+			}
+			return 0, err
+		}
+		chunkResults, rerr := vertexPutResults(chunkInputs, resp.GetOutcomes())
 		if rerr != nil {
 			return 0, rerr
 		}
 		results = append(results, chunkResults...)
 		return int32(len(chunk)), nil
 	})
+	if undisclosed {
+		return nil, err
+	}
 	return clientBoundedVertexPutResults(results, inputs[:len(results)], initiallyLive[:len(results)], l.now()), err
 }
 
@@ -679,6 +707,9 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	defer cancel()
 	resp, err := unary(ctx, l, &pb.DeleteVertexRequest{Key: key}, l.client.DeleteVertex)
 	if err != nil {
+		return false, err
+	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
 		return false, err
 	}
 	return resp.GetExisted(), nil
@@ -702,6 +733,9 @@ func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []string) (int32, error) {
 		resp, err := unary(ctx, l, &pb.DeleteVerticesRequest{Keys: chunk}, l.client.DeleteVertices)
 		if err != nil {
+			return 0, err
+		}
+		if err := mutationAcceptanceFromProto(resp); err != nil {
 			return 0, err
 		}
 		return resp.GetDeleted(), nil

@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/authz"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -15,6 +16,11 @@ import (
 
 func TestMutationAcceptanceResponseDiscardsEveryEffectAndPreservesOriginal(t *testing.T) {
 	for _, original := range []proto.Message{
+		&pb.PutVertexResponse{Outcome: pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET},
+		&pb.PutVerticesResponse{Outcomes: []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED}},
+		&pb.DeleteVertexResponse{Existed: true},
+		&pb.DeleteVerticesResponse{Deleted: 2, Existed: []bool{true, true}},
+		&pb.DeleteVerticesByPrefixResponse{Deleted: 9},
 		&pb.MutateGraphResponse{Results: []*pb.GraphMutationResult{{Result: &pb.GraphMutationResult_PutVertex{PutVertex: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}}, {Result: &pb.GraphMutationResult_AddEdgeEffectiveWeight{AddEdgeEffectiveWeight: 9}}}},
 		&pb.AddEdgeResponse{EffectiveWeight: 7},
 		&pb.AddEdgesResponse{Written: 2, EffectiveWeights: []float32{7, 11}},
@@ -66,15 +72,21 @@ func TestMutationAcceptanceResponseDiscardsEveryEffectAndPreservesOriginal(t *te
 }
 
 func TestBlindMutationDisclosureUsesPolicyAndRequestOnly(t *testing.T) {
-	access := dataAccessFixture(t, []security.PermissionRule{
-		dataAccessRule("tail-read", security.Allow, security.VertexRead, "tails:"),
-		dataAccessRule("public-head-read", security.Allow, security.VertexRead, "heads:public:"),
-		dataAccessRule("head-write", security.Allow, security.VertexWrite, "heads:"),
-	})
+	access := dataAccessFixtureWithMode(t, []security.PermissionRule{
+		dataAccessRule("tail-read", security.VertexRead, "tails:"),
+		dataAccessRule("public-head-read", security.VertexRead, "heads:public:"),
+		dataAccessRule("head-write", security.VertexWrite, "heads:"),
+	}, authz.EdgeReadWrite)
 	for _, tc := range []struct {
 		request proto.Message
 		want    bool
 	}{
+		{&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "heads:private:a"}}, true},
+		{&pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "heads:public:a"}, {Key: "heads:private:a"}}}, true},
+		{&pb.DeleteVertexRequest{Key: "heads:private:a"}, true},
+		{&pb.DeleteVerticesRequest{Keys: []string{"heads:public:a", "heads:private:a"}}, true},
+		{&pb.DeleteVerticesByPrefixRequest{Prefix: "heads:", DryRun: true}, true},
+		{&pb.DeleteVerticesByPrefixRequest{Prefix: "heads:public:"}, false},
 		{&pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "tails:a", Head: "heads:public:a"}}}, false},
 		{&pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "tails:a", Head: "heads:public:a"}, {Tail: "tails:a", Head: "heads:private:a"}}}, true},
 		{&pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "tails:a", Head: "heads:private:a"}}, true},

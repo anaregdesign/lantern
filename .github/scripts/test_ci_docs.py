@@ -397,7 +397,7 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                         'operational cutover and final qualification',
                         '#1608/#1609 S5 work',
                         'Missing upstream routes fail closed', '/auth/operations',
-                        'operations.read', 'Only GET diagnostics',
+                        'read Allow on the Operations resource', 'Only GET diagnostics',
                         'Prometheus never receives cookies or Authorization',
                         'browser local storage and Vite env',
                     ):

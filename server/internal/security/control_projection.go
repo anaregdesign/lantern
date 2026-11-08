@@ -198,6 +198,9 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		for i := range image.Principals {
 			if image.Principals[i].Identity == session.Identity {
 				image.Principals[i].HumanIssuerConfigRevision = issuer.ConfigRevision
+				if session.CredentialProfile() == BrowserCookieProfile {
+					image.Principals[i].VerifiedEmail = session.VerifiedEmail
+				}
 			}
 		}
 		image.Sessions = append(image.Sessions, session)
@@ -227,7 +230,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 	for identity := range next.snapshot.principals {
 		before, wasActive := p.snapshot.AccessFor(identity)
 		after, isActive := next.snapshot.AccessFor(identity)
-		if isActive && after.AllowsGlobal(SecurityManage) && (!wasActive || !before.AllowsGlobal(SecurityManage)) {
+		if isActive && (after.AllowsGlobal(SecurityManage) && (!wasActive || !before.AllowsGlobal(SecurityManage)) || after.AllowsGlobal(SettingsWrite) && (!wasActive || !before.AllowsGlobal(SettingsWrite))) {
 			needsPurpose = true
 		}
 	}
@@ -246,13 +249,18 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 }
 
 func s1PermissionsSubset(before, after *Snapshot) bool {
+	// A changed endpoint predicate must retire old admission/output bindings,
+	// even when Role ranges are identical. Do not carry a prior policy cut.
+	if before == nil || after == nil || before.EdgePolicy().Mode != after.EdgePolicy().Mode {
+		return false
+	}
 	for identity := range after.principals {
 		a, active := after.AccessFor(identity)
 		if !active {
 			continue
 		}
 		b, wasActive := before.AccessFor(identity)
-		for _, action := range []Action{SecurityManage, OperationsRead, SchemaRead} {
+		for _, action := range []Action{SecurityRead, SecurityManage, SettingsRead, SettingsWrite, OperationsRead, SchemaRead} {
 			if a.AllowsGlobal(action) && (!wasActive || !b.AllowsGlobal(action)) {
 				return false
 			}

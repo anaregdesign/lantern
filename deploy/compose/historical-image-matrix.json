@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "observed_date": "2026-11-08",
+  "status": "historical; incompatible with the new Allow-only policy contract; not selected defaults",
+  "method": "GitHub release collection and read-only docker buildx imagetools inspect",
+  "images": {
+    "server": {
+      "tag": "ghcr.io/anaregdesign/lantern:0.37.1",
+      "index_digest": "sha256:61a42a57ab22661b6c5d840e756c25ce3ec3cef2e716061b7d33e93b1327e401",
+      "linux_amd64": "sha256:b32e4ccf3403edf94153a74bf49c11540bfb78cfb13175cbfef0b054e823b586",
+      "linux_arm64": "sha256:fc67253bcb85b32c01a42323d6c4b0fff0613aa2368983c9094fbee99ab88722"
+    },
+    "admin": {
+      "tag": "ghcr.io/anaregdesign/lantern-admin:v0.25.0",
+      "index_digest": "sha256:6a320ea8c96c6ae7b96a386f5321fc82504cf796407aece35d7d5b3faef8039a",
+      "linux_amd64": "sha256:c41432dfcd2ab1bdd7beabb4d0afa12d96bb79cfb803762ed70a6d10c89ab22a",
+      "linux_arm64": "sha256:2c55d6d5e41d919f1b852a265e9b43f2e83900f1359312bafaa1c18430e9c8ea"
+    },
+    "mcp": {
+      "tag": "ghcr.io/anaregdesign/lantern-mcp:v0.15.2",
+      "index_digest": "sha256:abf2b54130372ef337d8dd398923c18136c7ace21a1dc88d299bc7515797e8ec",
+      "linux_amd64": "sha256:23da8cf59fc7c73816a7ea5130749a508c12f4d108a218231b86c7d248baaac9",
+      "linux_arm64": "sha256:41d420ced51d2b03b96a361eb96e539dec3d7aa556a861604307cc4073846f9c"
+    }
+  },
+  "new_source_publication": "pending separately authorized release gates",
+  "new_actual_pulled_stack_qualification": "not run"
+}

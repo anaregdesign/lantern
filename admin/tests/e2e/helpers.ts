@@ -6,6 +6,9 @@ import {
   CurrentSecurityChangeResultSchema,
   CurrentSecurityChangeIDSchema,
   SecurityVersionSchema,
+  SecurityRoleSchema,
+  SecurityEdgePolicySchema,
+  SecurityRegistrationPolicySchema,
   CurrentSecurityDisposition,
   CurrentAuthorizationStopObservation,
   type CurrentSecurityReview,
@@ -118,6 +121,7 @@ export async function securityUI(
     reauthentication?: boolean;
     roles?: Array<Record<string, unknown>>;
     uidRole?: boolean;
+    verifiedEmail?: string;
     logSettings?: {
       adoption?: "unadopted" | "fenced" | "managed";
       application?: "pending" | "applied" | "error";
@@ -155,6 +159,94 @@ export async function securityUI(
         CurrentAuthorizationStopObservation.OLD_CUT_NEW_AUTHORIZATIONS_STOPPED;
     if (mismatch) value.original!.commit!.value = new Uint8Array(32).fill(99);
     return toJson(CurrentSecurityChangeResultSchema, value);
+  };
+  const savedRoles = new Map<string, Record<string, unknown>>(
+    (
+      options.roles ??
+      (options.uidRole
+        ? [
+            {
+              id: "personal_user",
+              name: "Personal user",
+              rules: [
+                {
+                  id: "read",
+                  permission: "SECURITY_PERMISSION_READ",
+                  resourceKind: "SECURITY_RESOURCE_DATA",
+                  principalUidPrefix: {
+                    literalBefore: "users:",
+                    literalAfter: ":",
+                  },
+                },
+              ],
+            },
+          ]
+        : [
+            {
+              id: "security_admin",
+              name: "Security administrator",
+              envOwned: true,
+              rules: [],
+            },
+            {
+              id: "personal_user",
+              name: "Personal user",
+              rules: ["READ", "WRITE"].map((permission) => ({
+                id: permission.toLowerCase(),
+                permission: `SECURITY_PERMISSION_${permission}`,
+                resourceKind: "SECURITY_RESOURCE_DATA",
+                principalUidPrefix: {
+                  literalBefore: "users:",
+                  literalAfter: ":",
+                },
+              })),
+            },
+            {
+              id: "reader",
+              name: "Reader",
+              rules: [
+                {
+                  id: "read",
+                  permission: "SECURITY_PERMISSION_READ",
+                  resourceKind: "SECURITY_RESOURCE_DATA",
+                  prefix: "tenant:",
+                },
+              ],
+            },
+            {
+              id: "cdc-identity",
+              name: "Data stream reader",
+              rules: [
+                {
+                  id: "read",
+                  permission: "SECURITY_PERMISSION_READ",
+                  resourceKind: "SECURITY_RESOURCE_DATA",
+                  prefix: "tenant:",
+                },
+              ],
+            },
+          ])
+    ).map((role) => [String(role.id), role]),
+  );
+  let savedEdgePolicy: Record<string, unknown> = {
+    version: 1,
+    mode: "EDGE_ENDPOINT_MODE_READ_READ",
+  };
+  let savedRegistrationPolicy: Record<string, unknown> = {
+    version: 2,
+    enabled: false,
+    roleId: "personal_user",
+    profiles: [],
+  };
+  const savedUser: Record<string, unknown> = {
+    identity: {
+      kind: "SECURITY_PRINCIPAL_KIND_OIDC",
+      issuer: "https://idp.example",
+      subject: "alice",
+    },
+    verifiedEmail: options.verifiedEmail ?? "alice@example.test",
+    state: "SECURITY_PRINCIPAL_STATE_ACTIVE",
+    assignments: [{ roleId: "reader", envOwned: true }],
   };
   let signedIn = options.mode !== "login";
   let statusCalls = 0;
@@ -329,63 +421,20 @@ export async function securityUI(
             : undefined,
         });
       }
+      if (method === "GetEdgePolicy")
+        return json({ version, policy: savedEdgePolicy });
+      if (method === "GetRegistrationPolicy")
+        return json({ version, policy: savedRegistrationPolicy });
       if (method === "ListRoles")
-        return json({
-          version,
-          roles: options.uidRole
-            ? [
-                {
-                  id: "personal_user",
-                  name: "Personal user",
-                  rules: [
-                    {
-                      id: "read",
-                      action: "SECURITY_ACTION_VERTEX_READ",
-                      effect: "SECURITY_EFFECT_ALLOW",
-                      principalUidPrefix: {
-                        literalBefore: "users:",
-                        literalAfter: ":",
-                      },
-                    },
-                  ],
-                },
-              ]
-            : [
-                {
-                  id: "security_admin",
-                  name: "Security administrator",
-                  envOwned: true,
-                  rules: [],
-                },
-                {
-                  id: "reader",
-                  name: "Reader",
-                  rules: [
-                    {
-                      id: "read",
-                      action: "SECURITY_ACTION_VERTEX_READ",
-                      effect: "SECURITY_EFFECT_ALLOW",
-                      prefix: "tenant:",
-                    },
-                  ],
-                },
-              ],
-        });
-      if (method === "ListUsers")
-        return json({
-          version,
-          users: [
-            {
-              identity: {
-                kind: "SECURITY_PRINCIPAL_KIND_OIDC",
-                issuer: "https://idp.example",
-                subject: "alice",
-              },
-              state: "SECURITY_PRINCIPAL_STATE_ACTIVE",
-              assignments: [{ roleId: "reader", envOwned: true }],
-            },
-          ],
-        });
+        return json({ version, roles: Array.from(savedRoles.values()) });
+      if (method === "GetRole") {
+        const role = savedRoles.get(String(body.id));
+        return role
+          ? json({ version, role })
+          : json({ code: "not_found", message: "Role does not exist" }, 404);
+      }
+      if (method === "ListUsers") return json({ version, users: [savedUser] });
+      if (method === "GetUser") return json({ version, user: savedUser });
       if (method === "ListIssuers")
         return json({
           version,
@@ -448,6 +497,37 @@ export async function securityUI(
           securityRevocationApplied = true;
         if (logPolicy?.operation.case === "putLogPolicy")
           managedLogLevel = logPolicy.operation.value.level;
+        for (const change of reviewed.changes) {
+          if (change.operation.case === "putEdgePolicy")
+            savedEdgePolicy = toJson(
+              SecurityEdgePolicySchema,
+              change.operation.value,
+            ) as Record<string, unknown>;
+          if (change.operation.case === "putRegistrationPolicy")
+            savedRegistrationPolicy = toJson(
+              SecurityRegistrationPolicySchema,
+              change.operation.value,
+            ) as Record<string, unknown>;
+          if (change.operation.case === "putRole") {
+            const role = toJson(
+              SecurityRoleSchema,
+              change.operation.value,
+            ) as Record<string, unknown>;
+            savedRoles.set(change.operation.value.id, role);
+          }
+          if (change.operation.case === "putAssignment") {
+            savedUser.assignments = [
+              ...(savedUser.assignments as Array<Record<string, unknown>>),
+              { roleId: change.operation.value.roleId },
+            ];
+          }
+          if (change.operation.case === "deleteAssignment") {
+            const roleId = change.operation.value.roleId;
+            savedUser.assignments = (
+              savedUser.assignments as Array<Record<string, unknown>>
+            ).filter((assignment) => assignment.roleId !== roleId);
+          }
+        }
         if (options.apply === "lost") return route.abort("failed");
         return json({ currentResult: wireResult(reviewed) });
       }
@@ -539,21 +619,7 @@ export async function securityUI(
         });
       }
       if (method === "ExplainAccess")
-        return json({
-          version,
-          allowed: false,
-          matches: [
-            {
-              roleId: "private",
-              ruleId: "hide",
-              effect: "SECURITY_EFFECT_DENY",
-              action: body.edge
-                ? "SECURITY_ACTION_VERTEX_WRITE"
-                : "SECURITY_ACTION_VERTEX_READ",
-              endpoint: body.edge ? "head" : "",
-            },
-          ],
-        });
+        return json({ version, allowed: false, matches: [] });
       if (method === "GetRoleTemplates")
         return json({
           version,
@@ -564,8 +630,8 @@ export async function securityUI(
               rules: [
                 {
                   id: "read",
-                  action: "SECURITY_ACTION_VERTEX_READ",
-                  effect: "SECURITY_EFFECT_ALLOW",
+                  permission: "SECURITY_PERMISSION_READ",
+                  resourceKind: "SECURITY_RESOURCE_DATA",
                   prefix: body.prefix,
                 },
               ],

@@ -68,32 +68,35 @@ func (o *authorityOriginOwner) authenticateUse(ctx context.Context, producer Cur
 		return authorityOriginCredential{}, err
 	}
 	c, err := captureRegistrationCredential(view, facts)
-	if err != nil || c.claim.Token.Native.Registration.Kind != "registration" {
+	if err != nil || registrationTokenPurpose(*c.claim.Token).Kind != "registration" || use.kind == "registered-session" && c.claim.Kind == "browser-registration" {
 		return authorityOriginCredential{}, ErrPermissionDenied
 	}
 	claim := c.claim
-	claim.Registration = &authorityRegistrationAuthorization{Version: 1, State: c.state, ClientProfileID: c.claim.Token.Native.ClientProfileID}
+	kind, id := registrationTokenProfile(*c.claim.Token)
+	claim.Registration = &authorityRegistrationAuthorization{Version: 1, State: c.state, ClientProfileID: id, ProfileKind: kind}
 	if use.original != nil {
 		original := *use.original
 		claim.Registration.Original = &original
 	}
-	return authorityOriginCredential{actor: c.actor, authentication: Authentication{Provenance: NativeProviderRegistration, Class: EndUser, IssuerConfigRevision: c.claim.Token.ConfigRevision},
+	return authorityOriginCredential{actor: c.actor, authentication: Authentication{Provenance: registrationProvenance(kind), Class: EndUser, IssuerConfigRevision: c.claim.Token.ConfigRevision},
 		lineage: c.lineage, cut: c.cut, claim: claim, registration: &c}, nil
 }
 
 func verifyRegistrationCredential(h authorityHistoricalHeader, operation OperationIdentity, command S1Command) bool {
 	c, a := h.Credential, h.Authentication
 	r := c.Registration
-	if r == nil || r.Version != 1 || c.Kind != "native-registration" || c.Token == nil || c.Session != nil ||
+	if r == nil || r.Version != 1 || !validRegistrationProfileKind(r.ProfileKind) || (c.Kind != "native-registration" && c.Kind != "browser-registration") || c.Token == nil || c.Session != nil ||
 		c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} || c.Origin != [32]byte{} || c.CSRF != [32]byte{} ||
-		a.Provenance != NativeProviderRegistration || a.Class != EndUser || a.IssuerConfigRevision == 0 || a.SessionDigest != "" ||
+		a.Provenance != registrationProvenance(r.ProfileKind) || a.Class != EndUser || a.IssuerConfigRevision == 0 || a.SessionDigest != "" ||
 		r.State.Present != (h.Lineage != 0) || !r.State.Present && r.State.UserUID != "" {
 		return false
 	}
 	e := c.Token
 	commitment, err := e.Commitment()
-	if err != nil || c.Verification != commitment || e.Mode != "native-registration" || e.Native.Registration.Kind != "registration" ||
-		e.Identity != operation.actor || e.Generation != operation.reviewed.Generation || e.ConfigRevision != a.IssuerConfigRevision || r.ClientProfileID != e.Native.ClientProfileID {
+	kind, id := registrationTokenProfile(*e)
+	if err != nil || c.Verification != commitment || registrationTokenPurpose(*e).Kind != "registration" ||
+		e.Identity != operation.actor || e.Generation != operation.reviewed.Generation || e.ConfigRevision != a.IssuerConfigRevision || r.ClientProfileID != id || r.ProfileKind != kind ||
+		(c.Kind == "browser-registration") != (e.Mode == "code" && e.Code.Flow == "login") {
 		return false
 	}
 	low, high := h.Time.utcTimes()
@@ -110,11 +113,11 @@ func registrationCommandMatches(r *authorityRegistrationAuthorization, actor Ide
 	}
 	if command.Kind == S1RegisterPrincipal {
 		c := command.Registration
-		return r.Original == nil && c.valid() && c.ClientProfileID == r.ClientProfileID && c.IssuerConfigRevision == revision &&
+		return r.Original == nil && c.valid() && c.ClientProfileID == r.ClientProfileID && c.ProfileKind == r.ProfileKind && c.IssuerConfigRevision == revision &&
 			(r.State.UserUID == "" || r.State.UserUID == c.UserUID)
 	}
 	s := command.Session
-	if command.Kind != S1IssueSession || r.Original == nil || !r.State.Present || lineage == 0 || !authz.ValidPersonalUID(r.State.UserUID) ||
+	if r.ProfileKind != NativeRegistrationProfile || command.Kind != S1IssueSession || r.Original == nil || !r.State.Present || lineage == 0 || !authz.ValidPersonalUID(r.State.UserUID) ||
 		!r.Original.ID.valid() || r.Original.Intent == [32]byte{} || r.Original.UserUID != r.State.UserUID || r.Original.Commit.Slot == 0 ||
 		s == nil || !s.valid() || s.Revoked || s.Identity != actor || s.IssuerConfigRevision != revision || s.CredentialProfile() != NativeEndUserProfile ||
 		s.ClientProfileID != e.Native.ClientProfileID || s.ServiceOrigin != e.Native.ServiceOrigin || s.CreatedAt.Before(e.Native.ConsumedAt) || low.Before(s.CreatedAt) ||
@@ -126,7 +129,7 @@ func registrationCommandMatches(r *authorityRegistrationAuthorization, actor Ide
 
 func registrationAuthorizationMatches(p *S1Projection, h *S1Handoff, c S1Command) bool {
 	r := h.authorization.registration
-	if r == nil || r.Version != 1 || h.authorization.authentication.Provenance != NativeProviderRegistration || h.authorization.authentication.SessionDigest != "" {
+	if r == nil || r.Version != 1 || h.authorization.authentication.Provenance != registrationProvenance(r.ProfileKind) || h.authorization.authentication.SessionDigest != "" {
 		return false
 	}
 	actor := h.operation.actor
@@ -134,7 +137,7 @@ func registrationAuthorizationMatches(p *S1Projection, h *S1Handoff, c S1Command
 	if !known || !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != h.authorization.authentication.IssuerConfigRevision || p.lineage[actor] != h.authorization.lineage {
 		return false
 	}
-	if _, known := issuer.NativeClient(r.ClientProfileID); !known {
+	if !registrationProfileExists(issuer, r.ProfileKind, r.ClientProfileID) {
 		return false
 	}
 	principal, present := p.snapshot.principals[actor]
@@ -142,9 +145,9 @@ func registrationAuthorizationMatches(p *S1Projection, h *S1Handoff, c S1Command
 		return false
 	}
 	if c.Kind == S1RegisterPrincipal {
-		return r.Original == nil && c.Registration != nil && c.Registration.ClientProfileID == r.ClientProfileID && c.Registration.IssuerConfigRevision == issuer.ConfigRevision &&
+		return r.Original == nil && c.Registration != nil && c.Registration.ClientProfileID == r.ClientProfileID && c.Registration.ProfileKind == r.ProfileKind && c.Registration.IssuerConfigRevision == issuer.ConfigRevision &&
 			(r.State.UserUID == "" || r.State.UserUID == c.Registration.UserUID)
 	}
-	return c.Kind == S1IssueSession && r.Original != nil && present && r.State.UserUID != "" && c.Session != nil &&
+	return r.ProfileKind == NativeRegistrationProfile && c.Kind == S1IssueSession && r.Original != nil && present && r.State.UserUID != "" && c.Session != nil &&
 		c.Session.Identity == actor && c.Session.CredentialProfile() == NativeEndUserProfile && c.Session.ClientProfileID == r.ClientProfileID && c.SessionLineage == h.authorization.lineage
 }

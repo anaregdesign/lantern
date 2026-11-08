@@ -6056,8 +6056,8 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 			pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ,
 		} {
 			rules = append(rules, &pb.SecurityRule{
-				Id: fmt.Sprintf("bench-probe-%d", i), Action: action,
-				Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: "bench:"},
+				Id: fmt.Sprintf("bench-probe-%d", i), Permission: wirePermissionForAction(action), ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA,
+				Resource: &pb.SecurityRule_Prefix{Prefix: "bench:"},
 			})
 		}
 		protected := newScopedSDKFixtureTransport(t, true, rules...)
@@ -6115,8 +6115,8 @@ func TestReceiptProbeProtectedEdgeAddIntent_RealConnectWire(t *testing.T) {
 		t.Skip("protected receipt fixture requires lantern_test_time; no external time-source probe")
 	}
 	f := newScopedSDKFixtureTransport(t, true, &pb.SecurityRule{
-		Id: "probe-receipt", Action: pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ,
-		Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"},
+		Id: "probe-receipt", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA,
+		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"},
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()

@@ -107,6 +107,7 @@ export function OperationalSettings({
               edit={(key, value) => controller?.edit(key, value)}
               acknowledge={(value) => controller?.acknowledge(value)}
               review={() => void controller?.review()}
+              cancel={() => controller?.cancelDraft()}
             />
           ) : null;
         })}

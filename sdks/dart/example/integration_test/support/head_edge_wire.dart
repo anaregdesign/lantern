@@ -22,12 +22,12 @@ Future<({List<EdgeRef> edges, List<Vertex> original})> verifyHeadEdgeWire({
     for (final name in ['direct', 'receipt', 'offline'])
       EdgeRef(
         'physical-head:tails:$runId:$name',
-        'physical-head:heads:$runId:$name',
+        'physical-head:heads:allowed:$runId:$name',
       ),
   ];
   final missing = EdgeRef(
     'physical-head:tails:$runId:missing',
-    'physical-head:heads:$runId:missing',
+    'physical-head:heads:allowed:$runId:missing',
   );
   registerCleanup(() async {
     await observer.deleteEdges([...edges, missing]);
@@ -47,18 +47,25 @@ Future<({List<EdgeRef> edges, List<Vertex> original})> verifyHeadEdgeWire({
     writer.getVertex(edges.first.head),
     throwsA(isA<LanternPermissionDeniedException>()),
   );
-  await expectLater(
-    writer.putVertex(
-      VertexInput(
-        key: edges.first.head,
-        value: VertexValue.string('overwrite'),
+  // Data write includes Vertex mutation and deletion. Keep this proof on a
+  // separate record so the Edge endpoint preservation assertions stay exact.
+  final writerVertex = 'physical-head:heads:allowed:$runId:vertex-proof';
+  registerCleanup(() => observer.deleteVertex(writerVertex));
+  expect(
+    await captureMutationReply(
+      () => writer.putVertex(
+        VertexInput(key: writerVertex, value: VertexValue.string('write-only')),
       ),
     ),
-    throwsA(isA<LanternPermissionDeniedException>()),
+    isA<MutationAcceptedUndisclosed<PutOutcome>>(),
   );
-  await expectLater(
-    writer.deleteVertex(edges.first.head),
-    throwsA(isA<LanternPermissionDeniedException>()),
+  expect(
+    (await observer.getVertex(writerVertex)).value,
+    isA<StringValue>().having((value) => value.value, 'value', 'write-only'),
+  );
+  expect(
+    await captureMutationReply(() => writer.deleteVertex(writerVertex)),
+    isA<MutationAcceptedUndisclosed<bool>>(),
   );
   final anonymous =
       anonymousClient ??

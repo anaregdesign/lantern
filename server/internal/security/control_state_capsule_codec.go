@@ -220,7 +220,7 @@ func s2DecodeCapsule(encoded []byte, limits s2CapsuleLimits) (*s2DecodedCandidat
 	}
 	// This temporary projection only recomputes a commitment. It never escapes
 	// and is never an S1ApplyState, trusted genesis or verified input.
-	p := S1Projection{snapshot, lineage, h.Cut}
+	p := S1Projection{snapshot: snapshot, lineage: lineage, cut: h.Cut}
 	if p.projectionDigest() != h.Cut.Projection {
 		return nil, errS2Capsule
 	}

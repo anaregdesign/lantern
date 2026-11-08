@@ -310,9 +310,12 @@ test("unknown log policy leaves session revocation available and recovers the sa
   await page.goto(`${fixture.primary}/security/users`);
   await page
     .getByRole("button", {
-      name: "alice · https://idp.example · 1 Roles",
+      name: "alice@example.test",
       exact: true,
     })
+    .click();
+  await page
+    .getByRole("button", { name: "Edit user state", exact: true })
     .click();
   await page
     .getByRole("button", { name: "Review session revocation", exact: true })

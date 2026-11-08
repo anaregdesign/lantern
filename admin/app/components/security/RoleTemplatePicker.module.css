@@ -1,0 +1,11 @@
+.picker {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.templates {
+  display: grid;
+  gap: 16px;
+  padding-inline-start: 20px;
+  overflow-wrap: anywhere;
+}

@@ -9,7 +9,7 @@ import (
 func TestPrincipalRegistrationTransitions(t *testing.T) {
 	const uid = "11111111111111111111111111111111"
 	actor := Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "new-user"}
-	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: uid, ClientProfileID: "android", IssuerConfigRevision: 1}}
+	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: uid, ClientProfileID: "android", ProfileKind: NativeRegistrationProfile, IssuerConfigRevision: 1}}
 	initial := s1Fixture(t, registrationImage()).projection
 	operation := s1Operation(t, initial, actor, command)
 	assessment, err := AssessS1(initial, operation)
@@ -62,7 +62,7 @@ func TestPrincipalRegistrationTransitions(t *testing.T) {
 			i.Principals = append(i.Principals, Principal{Identity: actor, State: Deleted, UserUID: uid})
 		}},
 		{"broadened Role", func(i *Image) {
-			i.Roles[len(i.Roles)-1].Rules = append(i.Roles[len(i.Roles)-1].Rules, dataRule(Allow, VertexRead, ""))
+			i.Roles[len(i.Roles)-1].Rules = append(i.Roles[len(i.Roles)-1].Rules, dataRule(VertexRead, ""))
 		}},
 		{"issuer disabled", func(i *Image) { i.Issuers[1].Enabled = false }},
 	} {
@@ -98,7 +98,7 @@ func TestPrincipalRegistrationRequiresSeparateAuthority(t *testing.T) {
 	actor := Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "existing"}
 	image.Principals = append(image.Principals, Principal{Identity: actor, State: Active, HumanIssuerConfigRevision: 1})
 	projection := s1Fixture(t, image).projection
-	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}}
+	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", ProfileKind: NativeRegistrationProfile, IssuerConfigRevision: 1}}
 	h := s1Seal(projection, s1Operation(t, projection, actor, command), 1, false)
 	h.authorization.authentication.Provenance = BrowserCode
 	if s1CurrentAuthority(projection, h, command) {
@@ -121,7 +121,7 @@ func TestPrincipalRegistrationPrincipalCapacityIsAtomic(t *testing.T) {
 	}
 	before := s1Fixture(t, image).projection
 	actor := Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "over-capacity"}
-	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}}
+	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", ProfileKind: NativeRegistrationProfile, IssuerConfigRevision: 1}}
 	if next, err := AssessS1(before, s1Operation(t, before, actor, command)); err == nil || next.Next != nil {
 		t.Fatal("registration exceeded retained Principal capacity")
 	}

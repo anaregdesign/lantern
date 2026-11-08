@@ -5,12 +5,10 @@ import styles from "./ScopeSelector.module.css";
 export function ScopeSelector({
   prefix,
   options,
-  denied,
   select,
 }: {
   prefix: string;
   options: ScopeOption[];
-  denied: string[];
   select(value: string): void;
 }) {
   const custom = prefix !== "" && !options.some((o) => o.prefix === prefix);
@@ -41,12 +39,6 @@ export function ScopeSelector({
         Suggestions come from your current Roles. The Server checks every
         request.
       </p>
-      {denied.length ? (
-        <p className={styles.help} data-testid="scope-deny-exceptions">
-          Deny exceptions:{" "}
-          {denied.map((value) => value || "all logical keys").join(", ")}.
-        </p>
-      ) : null}
     </section>
   );
 }

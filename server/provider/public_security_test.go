@@ -32,7 +32,7 @@ func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
 			now := time.Date(2026, time.October, 25, 0, 0, 0, 0, time.UTC)
 			issuer := security.Issuer{URL: "https://issuer.example", ConfigRevision: 1, EnvOwned: true, Enabled: true, ClientID: "admin", RedirectURI: "https://admin.example/callback", Algorithms: []string{"EdDSA"}}
 			image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1, Issuers: []security.Issuer{issuer},
-				Roles:      []security.Role{{ID: "security_admin", Name: "Security administrator", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}},
+				Roles:      []security.Role{{ID: "security_admin", Name: "Security administrator", Rules: []security.PermissionRule{{ID: "security-read", Permission: security.Read, Resource: security.SecurityResource}, {ID: "security-write", Permission: security.Write, Resource: security.SecurityResource}, {ID: "settings-read", Permission: security.Read, Resource: security.SettingsResource}, {ID: "settings-write", Permission: security.Write, Resource: security.SettingsResource}}}},
 				Principals: []security.Principal{{Identity: security.Identity{Kind: security.OIDCPrincipal, Issuer: issuer.URL, Subject: "admin"}, State: security.Active, HumanIssuerConfigRevision: 1, Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}}}
 			var nodes []security.ProvisioningNode
 			for i := 1; i <= count; i++ {

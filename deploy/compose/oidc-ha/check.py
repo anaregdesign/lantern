@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -251,6 +252,43 @@ def prometheus_ready(http: HTTP, url: str) -> bool:
     return all(target.get("health") == "up" and not target.get("lastError") for target in targets)
 
 
+def prometheus_history_ready(http: HTTP, url: str) -> bool:
+    """Require named replica history and the cluster sum, not just scrape health."""
+    end = int(time.time())
+    for aggregate in (False, True):
+        query = ('sum(lantern_vertices{job="lantern_oidc_ha"})' if aggregate else
+                 'sum by (node, instance) (lantern_vertices{job="lantern_oidc_ha"})')
+        params = parse.urlencode({"query": query, "start": end - 90, "end": end, "step": 15})
+        status, _, raw = http.call(url + "/api/v1/query_range?" + params)
+        require(status == 200, "prometheus-history")
+        body = json_value(raw)
+        require(isinstance(body, dict) and body.get("status") == "success" and
+                isinstance(body.get("data"), dict) and body["data"].get("resultType") == "matrix" and
+                isinstance(body["data"].get("result"), list), "prometheus-history")
+        series = body["data"]["result"]
+        if not series:
+            return False
+        require(all(isinstance(item, dict) and isinstance(item.get("metric"), dict)
+                    for item in series), "prometheus-history")
+        if aggregate:
+            require(len(series) == 1, "prometheus-history")
+        else:
+            require(len(series) == 3 and {item.get("metric", {}).get("node") for item in series}
+                    == {"lantern-0", "lantern-1", "lantern-2"}, "prometheus-history")
+            require(len({item.get("metric", {}).get("instance") for item in series}) == 3,
+                    "prometheus-history")
+        for item in series:
+            values = item.get("values")
+            require(isinstance(values, list), "prometheus-history")
+            if len(values) < 2:
+                return False
+            require(all(isinstance(pair, list) and len(pair) == 2 and
+                        isinstance(pair[0], (int, float)) and isinstance(pair[1], str) and
+                        math.isfinite(float(pair[1])) and float(pair[1]) >= 0 for pair in values),
+                    "prometheus-history")
+    return True
+
+
 class MCP:
     def __init__(self, http: HTTP, url: str):
         self.http, self.url, self.session, self.sequence = http, url, None, 0
@@ -367,6 +405,7 @@ def check(args) -> None:
         http.deadline = deadline
         eventually(lambda: auth_ready(http, edge), deadline, "readiness")
         eventually(lambda: prometheus_ready(http, prometheus), deadline, "prometheus-unready")
+        eventually(lambda: prometheus_history_ready(http, prometheus), deadline, "prometheus-history")
         http.deadline = None
         status, headers, html = http.call(edge + "/")
         require(status == 200 and "text/html" in headers.get("Content-Type", "").lower()

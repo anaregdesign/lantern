@@ -174,7 +174,7 @@ func TestHistoricalSeedIdentityPreservesManagedPolicy(t *testing.T) {
 	admin := securityInitialAdminJSON{Issuer: "https://managed.example", Subject: "operator-admin"}
 	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1,
 		Issuers:    []security.Issuer{{URL: admin.Issuer, Enabled: true, ConfigRevision: 1, ClientID: "managed-client", RedirectURI: "https://admin.example/callback", Algorithms: []string{"EdDSA"}}},
-		Roles:      []security.Role{{ID: "custom_admin", Name: "Externally managed administrator", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}},
+		Roles:      []security.Role{{ID: "custom_admin", Name: "Externally managed administrator", Rules: []security.PermissionRule{{ID: "security-read", Permission: security.Read, Resource: security.SecurityResource}, {ID: "security-write", Permission: security.Write, Resource: security.SecurityResource}, {ID: "settings-read", Permission: security.Read, Resource: security.SettingsResource}, {ID: "settings-write", Permission: security.Write, Resource: security.SettingsResource}}}},
 		Principals: []security.Principal{{Identity: security.Identity{Kind: security.OIDCPrincipal, Issuer: admin.Issuer, Subject: admin.Subject}, State: security.Active, HumanIssuerConfigRevision: 1, Assignments: []security.RoleAssignment{{RoleID: "custom_admin"}}}},
 	}
 	if !historicalSeedIdentity(image, admin) {
