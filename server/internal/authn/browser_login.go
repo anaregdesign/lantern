@@ -53,6 +53,10 @@ func (w *Workflow) BeginLogin(ctx context.Context, request LoginRequest) (oidc.L
 		traceBrowserDecision("login_start", "transaction")
 		return oidc.LoginStart{}, ErrInvalidInput
 	}
+	if err := waitCurrentCodeStart(ctx, w.current.TimeBounds, start.NotBefore(), start.ExpiresAt); err != nil {
+		traceBrowserDecision("login_start", "transaction_not_before")
+		return oidc.LoginStart{}, ErrUnavailable
+	}
 	if w.current.BindLoginOutput(ctx, cut, i.URL) != nil {
 		traceBrowserDecision("login_start", "output")
 		return oidc.LoginStart{}, ErrUnavailable

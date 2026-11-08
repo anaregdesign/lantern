@@ -87,6 +87,11 @@ func (w *Workflow) StartAuthorization(ctx context.Context, ticket [32]byte, affi
 		w.current.RejectPurpose(navigation.ID)
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
+	if err := waitCurrentCodeStart(ctx, w.current.TimeBounds, start.NotBefore(), start.ExpiresAt); err != nil {
+		traceBrowserDecision("purpose_start", "transaction_not_before")
+		w.current.RejectPurpose(navigation.ID)
+		return oidc.LoginStart{}, ErrUnavailable
+	}
 	if w.current.BindLoginOutput(ctx, navigation.Cut, navigation.Issuer.URL) != nil {
 		traceBrowserDecision("purpose_start", "output")
 		w.current.RejectPurpose(navigation.ID)

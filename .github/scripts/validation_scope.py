@@ -122,7 +122,7 @@ def affected(changes):
             # Backend native composition also changes the Windows Rust fixture.
             native_rust |= path.startswith(("server/provider/", "server/cmd/", "server/internal/listenerlaunch/",
                                             "server/internal/config/"))
-    if families == {"docs"} and not harness:
+    if families == {"docs"} and not harness and not modules:
         return full("documentation uses the existing explicit prose gate")
     return dict(full=False, reason="mapped affected inputs", families=sorted(families),
                 go_modules=sorted(modules), generation=generation,

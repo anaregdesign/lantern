@@ -72,6 +72,7 @@ class ValidationScopeTest(unittest.TestCase):
                                        ".github/scripts/windows_native.py": "M"})["full"])
 
     def test_unknown_policy_fixtures_and_bad_diffs_keep_full(self):
+        self.assertTrue(scope.affected({"docs/oidc-operations.md": "M"})["full"])
         for path in ("unknown.file", "tests/fixture.md", ".github/scripts/validation_scope.py",
                      "go.mod", "sdks/node/package.json", "sdks/rust/Cargo.lock", "sdks/rust/xtask/src/main.rs", "sdks/node/src/generated/api.ts", "server/config.yaml", "../core/a.go", "/core/a.go"):
             self.assertTrue(scope.affected({path: "M"})["full"], path)
@@ -137,6 +138,29 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertFalse(result["full"])
         names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
         self.assertEqual(names, {"harness-contracts", "docs-tests", "final-diff", "final-clean"})
+
+    def test_go_with_docs_preserves_module_docs_and_native_obligations(self):
+        cases = (
+            ("server/internal/authn/browser_login.go", {"server", "."}, True),
+            ("core/search/index.go", {"core", "server", "."}, False),
+        )
+        for path, modules, native in cases:
+            with self.subTest(path=path):
+                result = scope.affected({path: "M", "docs/oidc-operations.md": "M"})
+                self.assertFalse(result["full"])
+                self.assertEqual(set(result["families"]), {"docs"})
+                self.assertEqual(set(result["go_modules"]), modules)
+                self.assertEqual(result["windows_required"], native)
+                self.assertFalse(result["windows_rust_required"])
+                self.assertFalse(result["generation"])
+                self.assertFalse(scope.harness_required(result))
+                names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
+                self.assertEqual({name for name in names if name.startswith("go-test-")},
+                                 {"go-test-" + module.replace("/", "-") for module in modules})
+                self.assertTrue({"docs-tests", "gofmt", "go-build", "go-lint",
+                                 "node-prebuild", "admin-frozen-install"} <= names)
+                self.assertFalse({"current-functional-wire", "native-login-wire", "admin-playwright",
+                                  "rust-real-wire", "dart-test", "sqlite-performance-probe"} & names)
 
     def test_early_real_tools_follow_relevant_changes_without_duplicate_product_sweeps(self):
         for path in ("core/search/index.go", "admin/app/a.tsx", "server/service/runtime.go"):

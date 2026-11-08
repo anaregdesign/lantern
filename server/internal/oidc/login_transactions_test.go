@@ -54,10 +54,16 @@ func TestLoginTransactionsCurrentQualifiedBoundsAndAttemptAffinity(t *testing.T)
 		t.Fatal("missing process routing identity")
 	}
 	created := high
+	if start.NotBefore() != created || start.ExpiresAt != created.Add(LoginTransactionLifetime) {
+		t.Fatal("login start did not retain the original qualified upper bound")
+	}
 	if _, err := m.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
 		t.Fatal("upper endpoint substituted for strict start")
 	}
 	low, high = low.Add(time.Second), high.Add(time.Second)
+	if start.NotBefore() != created {
+		t.Fatal("later clock bounds replaced the minted login start")
+	}
 	other, err := NewLoginTransactionsWithBounds("https://admin.example", []string{"/"}, bounds, "v2.3."+base64.RawURLEncoding.EncodeToString(process[:]))
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +95,29 @@ func TestLoginTransactionsCurrentQualifiedBoundsAndAttemptAffinity(t *testing.T)
 		t.Fatal("lower endpoint substituted for strict expiry")
 	}
 }
+
+func TestAuthorizationLoginStartRetainsMintedUpperBound(t *testing.T) {
+	_, trust, discovery := loginTransactionFixture(t)
+	low := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	high := low.Add(20 * time.Millisecond)
+	manager, err := NewLoginTransactionsWithBounds("https://admin.example", []string{"/", "/security/roles"},
+		func() (time.Time, time.Time, error) { return low, high, nil },
+		"v2.1."+base64.RawURLEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := manager.BeginAuthorization(trust, discovery, [32]byte{1})
+	minted := high
+	if err != nil || start.AuthorizationURL == "" || start.NotBefore() != minted ||
+		start.NotBefore() == low || start.ExpiresAt != minted.Add(LoginTransactionLifetime) {
+		t.Fatal("purpose start lost its exact original upper endpoint", err)
+	}
+	low, high = low.Add(time.Second), high.Add(time.Second)
+	if start.NotBefore() != minted {
+		t.Fatal("NotBefore reread the later qualified interval")
+	}
+}
+
 func TestLoginTransactionsPKCESingleUseMixUpAndRestart(t *testing.T) {
 	manager, trust, discovery := loginTransactionFixture(t)
 	start, err := manager.Begin(trust, discovery, "/security/roles", "", false)

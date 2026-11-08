@@ -43,14 +43,16 @@ type loginTransaction struct {
 	authorizationID                             [32]byte
 }
 
-// LoginStart contains only the redirect and host-bound transaction-cookie
-// material. Its String method prevents accidental credential logging.
+// LoginStart contains the redirect, host-bound transaction-cookie material and
+// minted not-before bound. Its String method prevents credential logging.
 type LoginStart struct {
 	AuthorizationURL, TransactionCookie string
 	ExpiresAt                           time.Time
+	notBefore                           time.Time
 }
 
-func (LoginStart) String() string { return "[redacted OIDC login start]" }
+func (LoginStart) String() string         { return "[redacted OIDC login start]" }
+func (s LoginStart) NotBefore() time.Time { return s.notBefore }
 
 // LoginCompletion is server-private single-use evidence for code exchange.
 type LoginCompletion struct {
@@ -256,7 +258,7 @@ func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, 
 	transaction.discovery.ResponseTypes = append([]string(nil), discovery.ResponseTypes...)
 	transaction.discovery.CodeChallengeMethods = append([]string(nil), discovery.CodeChallengeMethods...)
 	m.pending[sha256.Sum256([]byte(state))] = transaction
-	return LoginStart{AuthorizationURL: authorize.String(), TransactionCookie: cookie, ExpiresAt: transaction.expiresAt}, nil
+	return LoginStart{AuthorizationURL: authorize.String(), TransactionCookie: cookie, ExpiresAt: transaction.expiresAt, notBefore: transaction.createdAt}, nil
 }
 func (m *LoginTransactions) Consume(state, cookie, callbackPath, responseIssuer string) (LoginCompletion, error) {
 	if m == nil || len(cookie) != 43 || len(responseIssuer) > 2048 {

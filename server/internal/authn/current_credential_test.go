@@ -31,7 +31,8 @@ func TestCurrentCodeStartWaitPreservesStrictNativeBounds(t *testing.T) {
 				sampled++
 				switch kind {
 				case "expired":
-					return now.Add(-time.Nanosecond), now.Add(time.Hour), nil
+					// Even an eligible lower endpoint cannot replace strict upper expiry.
+					return now, now.Add(time.Hour), nil
 				case "uncertain":
 					return time.Time{}, time.Time{}, security.ErrAuthorityUnavailable
 				default:
