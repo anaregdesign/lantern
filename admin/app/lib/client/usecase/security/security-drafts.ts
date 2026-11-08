@@ -1,6 +1,6 @@
 import {
-  SecurityAction,
-  SecurityEffect,
+  SecurityPermission,
+  SecurityResource,
   SecurityPrincipalKind,
   SecurityPrincipalState,
   type SecurityChange,
@@ -11,32 +11,17 @@ import {
   type SecurityUser,
 } from "lantern-sdk/web";
 
-export const ACTIONS = [
-  [SecurityAction.VERTEX_READ, "Read vertices"],
-  [SecurityAction.VERTEX_WRITE, "Write vertices"],
-  [SecurityAction.VERTEX_DELETE, "Delete vertices"],
-  [SecurityAction.QUERY, "Search and explore"],
-  [SecurityAction.CDC_IDENTITY, "Identity CDC"],
-  [SecurityAction.CDC_VALUE, "Value CDC"],
-  [SecurityAction.EXPORT, "Export"],
-  [SecurityAction.RECEIPT_READ, "Read receipts"],
-  [SecurityAction.OPERATIONS_READ, "Observe operations"],
-  [SecurityAction.SCHEMA_READ, "Read schema"],
-  [SecurityAction.MANAGE, "Manage security"],
+export const PERMISSIONS = [
+  [SecurityPermission.READ, "Read"],
+  [SecurityPermission.WRITE, "Write"],
 ] as const;
-export const EXPLANATION_ACTIONS = [
-  ...ACTIONS,
-  [SecurityAction.EDGE_READ, "Read edges"],
-  [SecurityAction.EDGE_CREATE, "Create connections"],
-  [SecurityAction.EDGE_ADD, "Add edge contributions"],
-  [SecurityAction.EDGE_WRITE, "Write edges"],
-  [SecurityAction.EDGE_DELETE, "Delete edges"],
+export const RESOURCES = [
+  [SecurityResource.DATA, "Logical data"],
+  [SecurityResource.SECURITY, "Security management"],
+  [SecurityResource.SETTINGS, "Operational Settings"],
+  [SecurityResource.OPERATIONS, "Operations and metrics"],
+  [SecurityResource.SCHEMA, "Schema"],
 ] as const;
-const GLOBAL_ACTIONS = new Set<SecurityAction>([
-  SecurityAction.OPERATIONS_READ,
-  SecurityAction.SCHEMA_READ,
-  SecurityAction.MANAGE,
-]);
 export interface IssuerDraft {
   issuer: string;
   clientId: string;
@@ -55,11 +40,13 @@ export interface IssuerDraft {
 }
 export interface RuleDraft {
   id: string;
-  action: SecurityAction;
-  effect: SecurityEffect;
+  permission: SecurityPermission;
+  resourceKind: SecurityResource;
   prefix: string;
   allKeys: boolean;
-  global: boolean;
+  personal: boolean;
+  uidBefore: string;
+  uidAfter: string;
 }
 export interface RoleDraft {
   id: string;
@@ -81,7 +68,8 @@ export interface UserDraft {
 export interface ExplanationDraft {
   issuer: string;
   subject: string;
-  action: SecurityAction;
+  permission: SecurityPermission;
+  resourceKind: SecurityResource;
   key: string;
   edge: boolean;
   tail: string;
@@ -115,13 +103,16 @@ export function roleDraft(value?: SecurityRole): RoleDraft {
   if (
     value?.rules.some(
       (rule) =>
-        (rule.resource.case !== "prefix" &&
-          !(rule.resource.case === "global" && rule.resource.value)) ||
-        !ACTIONS.some(([action]) => action === rule.action),
+        !PERMISSIONS.some(([permission]) => permission === rule.permission) ||
+        !RESOURCES.some(([resource]) => resource === rule.resourceKind) ||
+        (rule.resourceKind === SecurityResource.DATA
+          ? rule.resource.case !== "prefix" &&
+            rule.resource.case !== "principalUidPrefix"
+          : rule.resource.case !== undefined),
     )
   )
     throw new Error(
-      "This Role uses an unsupported action or selector. Ask the operator to edit it with a compatible policy client.",
+      "This Role uses an unsupported permission or resource. Ask the operator to use a compatible policy client.",
     );
   return {
     id: value?.id ?? "",
@@ -131,11 +122,19 @@ export function roleDraft(value?: SecurityRole): RoleDraft {
     rules:
       value?.rules.map((rule) => ({
         id: rule.id,
-        action: rule.action,
-        effect: rule.effect,
+        permission: rule.permission,
+        resourceKind: rule.resourceKind,
         prefix: rule.resource.case === "prefix" ? rule.resource.value : "",
         allKeys: rule.resource.case === "prefix" && rule.resource.value === "",
-        global: rule.resource.case === "global",
+        personal: rule.resource.case === "principalUidPrefix",
+        uidBefore:
+          rule.resource.case === "principalUidPrefix"
+            ? rule.resource.value.literalBefore
+            : "users:",
+        uidAfter:
+          rule.resource.case === "principalUidPrefix"
+            ? rule.resource.value.literalAfter
+            : ":",
       })) ?? [],
   };
 }
@@ -151,39 +150,16 @@ export function userDraft(value?: SecurityUser): UserDraft {
     existing: !!value,
   };
 }
-export function globalAction(action: SecurityAction) {
-  return GLOBAL_ACTIONS.has(action);
-}
-export function edgeSelectorAction(action: SecurityAction) {
-  return [
-    SecurityAction.EDGE_READ,
-    SecurityAction.EDGE_CREATE,
-    SecurityAction.EDGE_ADD,
-    SecurityAction.EDGE_WRITE,
-    SecurityAction.EDGE_DELETE,
-    SecurityAction.CDC_IDENTITY,
-    SecurityAction.CDC_VALUE,
-    SecurityAction.EXPORT,
-    SecurityAction.RECEIPT_READ,
-  ].includes(action);
-}
-export function derivedEdgeAction(action: SecurityAction) {
-  return [
-    SecurityAction.EDGE_READ,
-    SecurityAction.EDGE_CREATE,
-    SecurityAction.EDGE_ADD,
-    SecurityAction.EDGE_WRITE,
-    SecurityAction.EDGE_DELETE,
-  ].includes(action);
-}
 export function newRule(index: number): RuleDraft {
   return {
     id: `rule-${index}`,
-    action: SecurityAction.VERTEX_READ,
-    effect: SecurityEffect.ALLOW,
+    permission: SecurityPermission.READ,
+    resourceKind: SecurityResource.DATA,
     prefix: "",
     allKeys: false,
-    global: false,
+    personal: false,
+    uidBefore: "users:",
+    uidAfter: ":",
   };
 }
 function required(value: string, label: string) {
@@ -195,7 +171,12 @@ function required(value: string, label: string) {
 }
 function https(value: string, label: string) {
   required(value, label);
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid HTTPS URL.`);
+  }
   if (url.protocol !== "https:" || url.username || url.password || url.hash)
     throw new Error(
       `${label} must be an HTTPS URL without credentials or a fragment.`,
@@ -297,28 +278,56 @@ export function buildRole(draft: RoleDraft): SecurityRole {
       throw new Error("Rule IDs must be unique within a Role.");
     ids.add(rule.id);
     if (
-      !ACTIONS.some(([action]) => action === rule.action) ||
-      ![SecurityEffect.ALLOW, SecurityEffect.DENY].includes(rule.effect)
+      !PERMISSIONS.some(([permission]) => permission === rule.permission) ||
+      !RESOURCES.some(([resource]) => resource === rule.resourceKind)
     )
-      throw new Error("Choose an action and Allow or Deny.");
-    if (globalAction(rule.action) !== rule.global)
-      throw new Error("Choose the resource scope appropriate to the action.");
-    if (!rule.global && !rule.allKeys && !rule.prefix)
+      throw new Error(
+        "Choose a supported resource and Read or Write permission.",
+      );
+    if (
+      [SecurityResource.OPERATIONS, SecurityResource.SCHEMA].includes(
+        rule.resourceKind,
+      ) &&
+      rule.permission === SecurityPermission.WRITE
+    )
+      throw new Error("Operations and Schema support Read only.");
+    const data = rule.resourceKind === SecurityResource.DATA;
+    if (data && !rule.personal && !rule.allKeys && !rule.prefix)
       throw new Error(
         "Enter a literal logical prefix or explicitly select all data keys.",
       );
-    if (!rule.global && !rule.allKeys && /^(sys:|data:)/.test(rule.prefix))
+    if (
+      data &&
+      !rule.personal &&
+      !rule.allKeys &&
+      /^(sys:|data:)/.test(rule.prefix)
+    )
       throw new Error(
         "Use public logical keys, without sys: or data: prefixes.",
       );
+    if (
+      data &&
+      rule.personal &&
+      (rule.uidBefore !== "users:" || rule.uidAfter !== ":")
+    )
+      throw new Error("Personal scope must be users:<trusted UID>:.");
     return {
       $typeName: "graph.v1.SecurityRule",
       id: rule.id,
-      action: rule.action,
-      effect: rule.effect,
-      resource: rule.global
-        ? { case: "global", value: true }
-        : { case: "prefix", value: rule.allKeys ? "" : rule.prefix },
+      permission: rule.permission,
+      resourceKind: rule.resourceKind,
+      resource: !data
+        ? { case: undefined }
+        : rule.personal
+          ? {
+              case: "principalUidPrefix",
+              value: {
+                $typeName: "graph.v1.SecurityPrincipalUIDPrefix",
+                literalBefore: rule.uidBefore,
+                literalAfter: rule.uidAfter,
+              },
+            }
+          : { case: "prefix", value: rule.allKeys ? "" : rule.prefix },
     };
   });
   return {

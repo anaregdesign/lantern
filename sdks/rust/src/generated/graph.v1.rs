@@ -252,6 +252,10 @@ pub struct PutVertexResponse {
     /// Server-authoritative result for vertex in the request.
     #[prost(enumeration = "PutOutcome", tag = "1")]
     pub outcome: i32,
+    /// Present when the caller can mutate but cannot read every selected key.
+    /// In that case all effect fields are empty for the complete call.
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
 /// replaces any existing value at that key. Use the Vertex.expiration field
@@ -278,6 +282,10 @@ pub struct PutVerticesResponse {
     /// keys. An empty request returns an empty list.
     #[prost(enumeration = "PutOutcome", repeated, tag = "1")]
     pub outcomes: ::prost::alloc::vec::Vec<i32>,
+    /// Present when the caller can mutate but cannot read every selected key.
+    /// In that case all effect fields are empty for the complete call.
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// One typed mixed item. All Vertex Puts precede all explicit-ID Edge Adds.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -359,6 +367,10 @@ pub struct DeleteVertexResponse {
     /// existed is true if the vertex was present and removed by this call.
     #[prost(bool, tag = "1")]
     pub existed: bool,
+    /// Present when the caller can mutate but cannot read every selected key.
+    /// In that case all effect fields are empty for the complete call.
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// DeleteVerticesRequest removes several vertices in one round trip. Same
 /// cascade semantics as DeleteVertex (edges reaped lazily by the GC loop).
@@ -384,6 +396,10 @@ pub struct DeleteVerticesResponse {
     /// absent, duplicate-after-delete, or causally rejected items are false.
     #[prost(bool, repeated, tag = "2")]
     pub existed: ::prost::alloc::vec::Vec<bool>,
+    /// Present when the caller can mutate but cannot read every selected key.
+    /// In that case all effect fields are empty for the complete call.
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// ScanVerticesRequest streams vertices whose key starts with `prefix` in
 /// lexicographic order. `limit` caps the number returned in one call; the
@@ -601,6 +617,10 @@ pub struct DeleteVerticesByPrefixRequest {
 pub struct DeleteVerticesByPrefixResponse {
     #[prost(uint64, tag = "1")]
     pub deleted: u64,
+    /// Present when the caller can mutate but cannot read every selected key.
+    /// In that case all effect fields are empty for the complete call.
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// TopVerticesByDegreeRequest ranks the most-connected vertices under a key
 /// prefix by their (weighted) degree — the seed-selection question a cold-start
@@ -3416,17 +3436,6 @@ pub struct SecurityIdentity {
     #[prost(string, tag = "4")]
     pub machine_name: ::prost::alloc::string::String,
 }
-/// Selectors use literal logical-key prefixes. Empty prefix explicitly means
-/// all data. Pair is a retired diagnostic shape: Server rejects every pair
-/// selector and independent Edge action in a Role. Edge permissions are derived
-/// from Vertex grants; pair must never be interpreted as permission authority.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SecurityPrefixPair {
-    #[prost(string, tag = "1")]
-    pub tail_prefix: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub head_prefix: ::prost::alloc::string::String,
-}
 /// Inserts the installed Principal's Server-owned UID between byte literals.
 /// Before must end with ':' and after must start with ':'. Neither is empty.
 /// This is one typed UID slot, not a template language or client-supplied UID.
@@ -3441,23 +3450,22 @@ pub struct SecurityPrincipalUidPrefix {
 pub struct SecurityRule {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    #[prost(enumeration = "SecurityEffect", tag = "2")]
-    pub effect: i32,
-    #[prost(enumeration = "SecurityAction", tag = "3")]
-    pub action: i32,
-    #[prost(oneof = "security_rule::Resource", tags = "4, 5, 6, 7")]
+    /// New tags intentionally reject old effect/action bytes under strict decoding.
+    #[prost(enumeration = "SecurityPermission", tag = "8")]
+    pub permission: i32,
+    #[prost(enumeration = "SecurityResource", tag = "9")]
+    pub resource_kind: i32,
+    /// Data requires exactly one selector. Other resources require no selector.
+    #[prost(oneof = "security_rule::Resource", tags = "4, 7")]
     pub resource: ::core::option::Option<security_rule::Resource>,
 }
 /// Nested message and enum types in `SecurityRule`.
 pub mod security_rule {
+    /// Data requires exactly one selector. Other resources require no selector.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(string, tag = "4")]
         Prefix(::prost::alloc::string::String),
-        #[prost(bool, tag = "5")]
-        Global(bool),
-        #[prost(message, tag = "6")]
-        Pair(super::SecurityPrefixPair),
         #[prost(message, tag = "7")]
         PrincipalUidPrefix(super::SecurityPrincipalUidPrefix),
     }
@@ -3495,6 +3503,9 @@ pub struct SecurityUser {
     /// management never accepts this value as input; deleted tombstones retain it.
     #[prost(string, optional, tag = "4")]
     pub user_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Optional verified display metadata, never authentication or permission identity.
+    #[prost(string, optional, tag = "5")]
+    pub verified_email: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityIssuer {
@@ -3590,6 +3601,8 @@ pub struct GetCurrentPrincipalResponse {
     /// This self metadata requires no additional Role and never grants data access.
     #[prost(string, optional, tag = "7")]
     pub user_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "8")]
+    pub verified_email: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
 /// cross this boundary; principal is absent only when mode is explicitly OFF.
@@ -3816,13 +3829,17 @@ pub struct SecurityEdgeIdentity {
 pub struct ExplainAccessRequest {
     #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<SecurityIdentity>,
+    /// Only derived Edge operation diagnostics use action + edge.
     #[prost(enumeration = "SecurityAction", tag = "2")]
     pub action: i32,
-    /// Omit both selectors for a global capability. Supplying both is invalid.
     #[prost(string, optional, tag = "3")]
     pub logical_key: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "4")]
     pub edge: ::core::option::Option<SecurityEdgeIdentity>,
+    #[prost(enumeration = "SecurityPermission", tag = "5")]
+    pub permission: i32,
+    #[prost(enumeration = "SecurityResource", tag = "6")]
+    pub resource_kind: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SecurityRuleMatch {
@@ -3830,11 +3847,10 @@ pub struct SecurityRuleMatch {
     pub role_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub rule_id: ::prost::alloc::string::String,
-    #[prost(enumeration = "SecurityEffect", tag = "3")]
-    pub effect: i32,
-    /// Actual grantable capability required by this part of the operation.
-    #[prost(enumeration = "SecurityAction", tag = "4")]
-    pub action: i32,
+    #[prost(enumeration = "SecurityPermission", tag = "3")]
+    pub permission: i32,
+    #[prost(enumeration = "SecurityResource", tag = "4")]
+    pub resource_kind: i32,
     /// "tail" or "head" for a derived Edge check; empty for ordinary grants.
     #[prost(string, tag = "5")]
     pub endpoint: ::prost::alloc::string::String,
@@ -3871,6 +3887,8 @@ pub struct SecurityRegistrationProfile {
     pub issuer: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub client_profile_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "RegistrationProfileKind", tag = "3")]
+    pub kind: i32,
 }
 /// Default absent/disabled. Expansion requires operation-bound reauthentication.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3890,6 +3908,22 @@ pub struct GetRegistrationPolicyRequest {}
 pub struct GetRegistrationPolicyResponse {
     #[prost(message, optional, tag = "1")]
     pub policy: ::core::option::Option<SecurityRegistrationPolicy>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityEdgePolicy {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(enumeration = "EdgeEndpointMode", tag = "2")]
+    pub mode: i32,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetEdgePolicyRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetEdgePolicyResponse {
+    #[prost(message, optional, tag = "1")]
+    pub policy: ::core::option::Option<SecurityEdgePolicy>,
     #[prost(message, optional, tag = "2")]
     pub version: ::core::option::Option<SecurityVersion>,
 }
@@ -4208,7 +4242,7 @@ pub struct PreviewOperationalPolicyResponse {
 pub struct SecurityChange {
     #[prost(
         oneof = "security_change::Operation",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     pub operation: ::core::option::Option<security_change::Operation>,
 }
@@ -4242,6 +4276,8 @@ pub mod security_change {
         PutLogPolicy(super::ManagedLogPolicy),
         #[prost(message, tag = "13")]
         PutOperationalPolicy(super::OperationalPolicyChange),
+        #[prost(message, tag = "14")]
+        PutEdgePolicy(super::SecurityEdgePolicy),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -4716,6 +4752,9 @@ pub enum SecurityAction {
     SchemaRead = 14,
     Manage = 15,
     EdgeCreate = 16,
+    SecurityRead = 17,
+    SettingsRead = 18,
+    SettingsWrite = 19,
 }
 impl SecurityAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -4741,6 +4780,9 @@ impl SecurityAction {
             Self::SchemaRead => "SECURITY_ACTION_SCHEMA_READ",
             Self::Manage => "SECURITY_ACTION_MANAGE",
             Self::EdgeCreate => "SECURITY_ACTION_EDGE_CREATE",
+            Self::SecurityRead => "SECURITY_ACTION_SECURITY_READ",
+            Self::SettingsRead => "SECURITY_ACTION_SETTINGS_READ",
+            Self::SettingsWrite => "SECURITY_ACTION_SETTINGS_WRITE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4763,35 +4805,77 @@ impl SecurityAction {
             "SECURITY_ACTION_SCHEMA_READ" => Some(Self::SchemaRead),
             "SECURITY_ACTION_MANAGE" => Some(Self::Manage),
             "SECURITY_ACTION_EDGE_CREATE" => Some(Self::EdgeCreate),
+            "SECURITY_ACTION_SECURITY_READ" => Some(Self::SecurityRead),
+            "SECURITY_ACTION_SETTINGS_READ" => Some(Self::SettingsRead),
+            "SECURITY_ACTION_SETTINGS_WRITE" => Some(Self::SettingsWrite),
             _ => None,
         }
     }
 }
+/// Role grants expose exactly two independent verbs on typed resources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum SecurityEffect {
+pub enum SecurityPermission {
     Unspecified = 0,
-    Allow = 1,
-    Deny = 2,
+    Read = 1,
+    Write = 2,
 }
-impl SecurityEffect {
+impl SecurityPermission {
     /// String value of the enum field names used in the ProtoBuf definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Unspecified => "SECURITY_EFFECT_UNSPECIFIED",
-            Self::Allow => "SECURITY_EFFECT_ALLOW",
-            Self::Deny => "SECURITY_EFFECT_DENY",
+            Self::Unspecified => "SECURITY_PERMISSION_UNSPECIFIED",
+            Self::Read => "SECURITY_PERMISSION_READ",
+            Self::Write => "SECURITY_PERMISSION_WRITE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "SECURITY_EFFECT_UNSPECIFIED" => Some(Self::Unspecified),
-            "SECURITY_EFFECT_ALLOW" => Some(Self::Allow),
-            "SECURITY_EFFECT_DENY" => Some(Self::Deny),
+            "SECURITY_PERMISSION_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_PERMISSION_READ" => Some(Self::Read),
+            "SECURITY_PERMISSION_WRITE" => Some(Self::Write),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityResource {
+    Unspecified = 0,
+    Data = 1,
+    Security = 2,
+    Settings = 3,
+    Operations = 4,
+    Schema = 5,
+}
+impl SecurityResource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_RESOURCE_UNSPECIFIED",
+            Self::Data => "SECURITY_RESOURCE_DATA",
+            Self::Security => "SECURITY_RESOURCE_SECURITY",
+            Self::Settings => "SECURITY_RESOURCE_SETTINGS",
+            Self::Operations => "SECURITY_RESOURCE_OPERATIONS",
+            Self::Schema => "SECURITY_RESOURCE_SCHEMA",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_RESOURCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_RESOURCE_DATA" => Some(Self::Data),
+            "SECURITY_RESOURCE_SECURITY" => Some(Self::Security),
+            "SECURITY_RESOURCE_SETTINGS" => Some(Self::Settings),
+            "SECURITY_RESOURCE_OPERATIONS" => Some(Self::Operations),
+            "SECURITY_RESOURCE_SCHEMA" => Some(Self::Schema),
             _ => None,
         }
     }
@@ -4824,6 +4908,71 @@ impl NativeClientKind {
             "NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN" => Some(Self::GoogleIdToken),
             "NATIVE_CLIENT_KIND_APPLE_NATIVE" => Some(Self::AppleNative),
             "NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB" => Some(Self::AppleAndroidWeb),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RegistrationProfileKind {
+    Unspecified = 0,
+    Native = 1,
+    Browser = 2,
+}
+impl RegistrationProfileKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "REGISTRATION_PROFILE_KIND_UNSPECIFIED",
+            Self::Native => "REGISTRATION_PROFILE_KIND_NATIVE",
+            Self::Browser => "REGISTRATION_PROFILE_KIND_BROWSER",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REGISTRATION_PROFILE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "REGISTRATION_PROFILE_KIND_NATIVE" => Some(Self::Native),
+            "REGISTRATION_PROFILE_KIND_BROWSER" => Some(Self::Browser),
+            _ => None,
+        }
+    }
+}
+/// One cluster-wide endpoint predicate, captured with the immutable Role cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EdgeEndpointMode {
+    Unspecified = 0,
+    ReadRead = 1,
+    WriteWrite = 2,
+    ReadWrite = 3,
+    WriteRead = 4,
+}
+impl EdgeEndpointMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EDGE_ENDPOINT_MODE_UNSPECIFIED",
+            Self::ReadRead => "EDGE_ENDPOINT_MODE_READ_READ",
+            Self::WriteWrite => "EDGE_ENDPOINT_MODE_WRITE_WRITE",
+            Self::ReadWrite => "EDGE_ENDPOINT_MODE_READ_WRITE",
+            Self::WriteRead => "EDGE_ENDPOINT_MODE_WRITE_READ",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EDGE_ENDPOINT_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "EDGE_ENDPOINT_MODE_READ_READ" => Some(Self::ReadRead),
+            "EDGE_ENDPOINT_MODE_WRITE_WRITE" => Some(Self::WriteWrite),
+            "EDGE_ENDPOINT_MODE_READ_WRITE" => Some(Self::ReadWrite),
+            "EDGE_ENDPOINT_MODE_WRITE_READ" => Some(Self::WriteRead),
             _ => None,
         }
     }
@@ -6121,6 +6270,32 @@ pub mod lantern_security_service_client {
                         "graph.v1.LanternSecurityService",
                         "GetRegistrationPolicy",
                     ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_edge_policy(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetEdgePolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetEdgePolicyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetEdgePolicy",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternSecurityService", "GetEdgePolicy"),
                 );
             self.inner.unary(req, path, codec).await
         }

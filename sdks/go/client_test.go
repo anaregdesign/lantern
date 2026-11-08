@@ -315,6 +315,91 @@ func TestEdgeSingularBlindFacadesReturnTypedAcknowledgement(t *testing.T) {
 	}
 }
 
+func (c *blindEdgeClient) PutVertices(_ context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
+	c.calls++
+	if c.calls == 3 && c.failLast {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+	}
+	if c.calls == 2 {
+		return connect.NewResponse(&pb.PutVerticesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+	}
+	return connect.NewResponse(&pb.PutVerticesResponse{Outcomes: []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}}), nil
+}
+
+func (c *blindEdgeClient) DeleteVertices(_ context.Context, req *connect.Request[pb.DeleteVerticesRequest]) (*connect.Response[pb.DeleteVerticesResponse], error) {
+	c.calls++
+	if c.calls == 3 && c.failLast {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+	}
+	if c.calls == 2 {
+		return connect.NewResponse(&pb.DeleteVerticesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+	}
+	return connect.NewResponse(&pb.DeleteVerticesResponse{Deleted: 1, Existed: []bool{true}}), nil
+}
+
+func (c *blindEdgeClient) DeleteVertex(context.Context, *connect.Request[pb.DeleteVertexRequest]) (*connect.Response[pb.DeleteVertexResponse], error) {
+	return connect.NewResponse(&pb.DeleteVertexResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+}
+
+func (c *blindEdgeClient) DeleteVerticesByPrefix(context.Context, *connect.Request[pb.DeleteVerticesByPrefixRequest]) (*connect.Response[pb.DeleteVerticesByPrefixResponse], error) {
+	return connect.NewResponse(&pb.DeleteVerticesByPrefixResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+}
+
+func TestVertexBlindChunksAndFacadesNeverInventEffects(t *testing.T) {
+	for _, failLast := range []bool{false, true} {
+		for _, kind := range []string{"put", "conditional", "delete"} {
+			fake := &blindEdgeClient{failLast: failLast}
+			l := &Lantern{client: fake, opts: options{batchChunkSize: 1}}
+			inputs := []VertexInput{{Key: "a"}, {Key: "b"}, {Key: "c"}}
+			var err error
+			if kind == "delete" {
+				var count int
+				count, err = l.DeleteVertices(context.Background(), []string{"a", "b", "c"})
+				if count != 0 {
+					t.Fatal("count disclosed", count)
+				}
+			} else {
+				var results []VertexPutResult
+				if kind == "put" {
+					results, err = l.PutVertices(context.Background(), inputs)
+				} else {
+					results, err = l.PutVerticesIfAbsent(context.Background(), inputs)
+				}
+				if results != nil {
+					t.Fatal("effects disclosed", results)
+				}
+			}
+			if fake.calls != 3 {
+				t.Fatal("new chunk skipped or repeated", fake.calls)
+			}
+			if failLast {
+				var batch *BatchError
+				if !errors.As(err, &batch) || batch.Written != 2 || !errors.Is(err, ErrUnavailable) {
+					t.Fatal("partial failure lost", err)
+				}
+			} else if _, accepted := err.(*MutationAcceptance); !accepted {
+				t.Fatal("missing complete acknowledgement", err)
+			}
+		}
+	}
+	l := &Lantern{client: &blindEdgeClient{calls: 1}}
+	if value, err := l.PutVertex(context.Background(), "v", nil, 0); value != 0 {
+		t.Fatal("outcome invented")
+	} else if _, ok := err.(*MutationAcceptance); !ok {
+		t.Fatal(err)
+	}
+	if value, err := l.DeleteVertex(context.Background(), "v"); value {
+		t.Fatal("existence invented")
+	} else if _, ok := err.(*MutationAcceptance); !ok {
+		t.Fatal(err)
+	}
+	if value, err := l.DeleteVerticesByPrefix(context.Background(), "v"); value != 0 {
+		t.Fatal("count invented")
+	} else if _, ok := err.(*MutationAcceptance); !ok {
+		t.Fatal(err)
+	}
+}
+
 func (appliedPutClient) PutVertices(_ context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
 	outcomes := make([]pb.PutOutcome, len(req.Msg.GetVertices()))
 	for i := range outcomes {

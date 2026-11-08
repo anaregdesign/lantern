@@ -82,7 +82,7 @@ void main() {
             open('LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE', intercept),
         pair: EdgeRef(
           'physical-head:tails:g3:$id',
-          'physical-head:heads:g3:$id',
+          'physical-head:heads:allowed:g3:$id',
         ),
         undisclosed: true,
       );

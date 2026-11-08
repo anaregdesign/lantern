@@ -18,6 +18,7 @@ type Change struct {
 	State                 PrincipalState            `json:"state,omitempty"`
 	PreserveSecret        bool                      `json:"preserve_secret,omitempty"`
 	PreserveNativeSecrets []string                  `json:"preserve_native_secrets,omitempty"`
+	EdgePolicy            *EdgePolicy               `json:"edge_policy,omitempty"`
 	RegistrationPolicy    *RegistrationPolicy       `json:"registration_policy,omitempty"`
 	LogPolicy             *LogPolicyChange          `json:"log_policy,omitempty"`
 	OperationalPolicy     *operationalpolicy.Change `json:"operational_policy,omitempty"`
@@ -34,6 +35,7 @@ const (
 	PutAssignment         = "assignment.put"
 	DeleteAssignment      = "assignment.delete"
 	RevokeSessions        = "session.revoke_user"
+	PutEdgePolicy         = "edge_policy.put"
 	PutRegistrationPolicy = "registration_policy.put"
 	PutLogPolicy          = "log_policy.put"
 	PutOperationalPolicy  = "operational_policy.put"
@@ -41,6 +43,9 @@ const (
 )
 
 func (c Change) validate() error {
+	if c.EdgePolicy != nil && c.Kind != PutEdgePolicy {
+		return ErrInvalidImage
+	}
 	if c.OperationalPolicy != nil && c.Kind != PutOperationalPolicy {
 		return ErrInvalidImage
 	}
@@ -64,6 +69,10 @@ func (c Change) validate() error {
 	}
 	issuer, role, identity := c.Issuer != nil, c.Role != nil, c.Identity != nil
 	switch c.Kind {
+	case PutEdgePolicy:
+		if c.EdgePolicy == nil || !c.EdgePolicy.valid() || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" || c.OperationalPolicy != nil || c.LogPolicy != nil || c.RegistrationPolicy != nil {
+			return ErrInvalidImage
+		}
 	case PutOperationalPolicy:
 		if c.OperationalPolicy == nil || c.OperationalPolicy.Validate() != nil || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" {
 			return ErrInvalidImage
@@ -147,6 +156,8 @@ func (c Change) ResolveIssuerSecrets(prior Issuer) Issuer {
 
 func (c Change) target() string {
 	switch c.Kind {
+	case PutEdgePolicy:
+		return "edge_policy"
 	case PutOperationalPolicy:
 		group, _ := c.OperationalPolicy.Values.Group()
 		return "operational_policy:" + string(group)

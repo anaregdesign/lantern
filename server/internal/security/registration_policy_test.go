@@ -17,11 +17,12 @@ func TestRegistrationPolicyBoundsAndSelection(t *testing.T) {
 	}{
 		{"version", func(p *RegistrationPolicy) { p.Version++ }},
 		{"Role", func(p *RegistrationPolicy) { p.RoleID = "security_admin" }},
+		{"missing kind", func(p *RegistrationPolicy) { p.Profiles[0].Kind = "" }},
 		{"empty allowlist", func(p *RegistrationPolicy) { p.Profiles = nil }},
 		{"too many", func(p *RegistrationPolicy) { p.Profiles = make([]RegistrationProfile, 33) }},
 		{"duplicate", func(p *RegistrationPolicy) { p.Profiles = append(p.Profiles, p.Profiles[0]) }},
 		{"order", func(p *RegistrationPolicy) {
-			p.Profiles = []RegistrationProfile{{GoogleIssuer, "ios"}, {GoogleIssuer, "android"}}
+			p.Profiles = []RegistrationProfile{{Issuer: GoogleIssuer, ClientProfileID: "ios", Kind: NativeRegistrationProfile}, {Issuer: GoogleIssuer, ClientProfileID: "android", Kind: NativeRegistrationProfile}}
 		}},
 		{"profile bounds", func(p *RegistrationPolicy) { p.Profiles[0].ClientProfileID = strings.Repeat("a", 65) }},
 		{"issuer syntax", func(p *RegistrationPolicy) { p.Profiles[0].Issuer = "http://accounts.google.com" }},
@@ -40,7 +41,7 @@ func TestRegistrationPolicyBoundsAndSelection(t *testing.T) {
 		t.Fatal("trust expansion misclassified")
 	}
 	expanded := valid.clone()
-	expanded.Profiles = append(expanded.Profiles, RegistrationProfile{GoogleIssuer, "ios"})
+	expanded.Profiles = append(expanded.Profiles, RegistrationProfile{Issuer: GoogleIssuer, ClientProfileID: "ios", Kind: NativeRegistrationProfile})
 	if !registrationPolicyExpands(valid, expanded) || registrationPolicyExpands(expanded, valid) {
 		t.Fatal("allowlist set inclusion")
 	}
@@ -75,18 +76,49 @@ func TestRegistrationPolicyImageAndLegacyCanonical(t *testing.T) {
 	}
 }
 
+func TestRegistrationPolicySeparatesBrowserAndNativeProfiles(t *testing.T) {
+	image := browserRegistrationImage()
+	policy := image.RegistrationPolicy
+	if !policy.valid() || !policy.permitsKind(GoogleIssuer, BrowserRegistrationProfile, BrowserRegistrationProfileID) || policy.permits(GoogleIssuer, BrowserRegistrationProfileID) || policy.permitsKind(GoogleIssuer+"/", BrowserRegistrationProfile, BrowserRegistrationProfileID) {
+		t.Fatal("browser profile matched a native or different exact issuer profile")
+	}
+	if _, err := CompileImage(image, DefaultPolicyLimits()); err != nil {
+		t.Fatal("valid browser policy", err)
+	}
+	for name, edit := range map[string]func(*RegistrationProfile){
+		"unknown kind":                    func(p *RegistrationProfile) { p.Kind = "all" },
+		"browser arbitrary id":            func(p *RegistrationProfile) { p.ClientProfileID = "android" },
+		"browser native reinterpretation": func(p *RegistrationProfile) { p.Kind = NativeRegistrationProfile },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := browserRegistrationImage()
+			edit(&candidate.RegistrationPolicy.Profiles[0])
+			if _, err := CompileImage(candidate, DefaultPolicyLimits()); err == nil {
+				t.Fatal("invalid typed profile accepted")
+			}
+		})
+	}
+	native := registrationImage().RegistrationPolicy
+	if !registrationPolicyExpands(native, policy) || !registrationPolicyExpands(policy, native) {
+		t.Fatal("switching browser/native eligibility was not classified as expansion")
+	}
+}
+
 func TestRegistrationPolicyInitialRoleContract(t *testing.T) {
 	base := PersonalUserRole()
-	if len(base.Rules) != 7 || !validInitialRegistrationRole(base) {
+	if len(base.Rules) != 2 || !validInitialRegistrationRole(base) {
 		t.Fatal("default personal grants changed")
 	}
 	for _, tc := range []struct {
 		name string
 		rule PermissionRule
 	}{
-		{"global", globalRule(Allow, SecurityManage)},
-		{"literal all", dataRule(Allow, VertexRead, "")},
-		{"export", func() PermissionRule { r := PersonalUserRole().Rules[0]; r.Action = Export; return r }()},
+		{"security", PermissionRule{ID: "security", Permission: Write, Resource: SecurityResource}},
+		{"literal all", func() PermissionRule {
+			prefix := ""
+			return PermissionRule{ID: "all", Permission: Read, Resource: DataResource, Prefix: &prefix}
+		}()},
+		{"unsupported permission", func() PermissionRule { r := PersonalUserRole().Rules[0]; r.Permission = "export"; return r }()},
 		{"public root", func() PermissionRule {
 			r := PersonalUserRole().Rules[0]
 			r.PrincipalUIDPrefix.LiteralBefore = "public:users:"
@@ -106,9 +138,9 @@ func TestRegistrationPolicyInitialRoleContract(t *testing.T) {
 			}
 		})
 	}
-	base.Rules = append(base.Rules, dataRule(Deny, VertexWrite, "users:"))
+	base.Rules = base.Rules[:1]
 	if !validInitialRegistrationRole(base) {
-		t.Fatal("ordinary Deny prevented restrictive policy")
+		t.Fatal("a restricted subset of personal grants was rejected")
 	}
 }
 
@@ -119,7 +151,7 @@ func TestRegistrationPolicyS1TrustExpansion(t *testing.T) {
 		expand        bool
 	}{
 		{"open", nil, registrationImage().RegistrationPolicy, true},
-		{"close", registrationImage().RegistrationPolicy, &RegistrationPolicy{Version: 1, RoleID: PersonalUserRoleID}, false},
+		{"close", registrationImage().RegistrationPolicy, &RegistrationPolicy{Version: RegistrationPolicyVersion, RoleID: PersonalUserRoleID}, false},
 		{"unchanged", registrationImage().RegistrationPolicy, registrationImage().RegistrationPolicy, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

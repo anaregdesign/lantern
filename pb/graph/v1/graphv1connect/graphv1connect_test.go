@@ -82,8 +82,8 @@ func TestSecurityAndChangeWire(t *testing.T) {
 			version := &pb.SecurityVersion{Revision: 8, Digest: bytes.Repeat([]byte{4}, 32), Generation: bytes.Repeat([]byte{5}, 16)}
 			change := &pb.ApplySecurityChangesRequest{ExpectedRevision: 7, ChangeId: bytes.Repeat([]byte{6}, 16), Changes: []*pb.SecurityChange{
 				{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "reader", Name: "Reader", Rules: []*pb.SecurityRule{
-					{Id: "all", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: ""}},
-					{Id: "deny", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:private:"}},
+					{Id: "all", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: ""}},
+					{Id: "write-public", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:public:"}},
 				}}}},
 				{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "reader"}}},
 			}}
@@ -139,13 +139,13 @@ func TestSecurityAndChangeWire(t *testing.T) {
 			}
 			// Empty optional key and omitted key are distinct wire intents. Server
 			// policy validation, rather than protobuf defaults, decides their validity.
-			explanation, err := client.ExplainAccess(ctx, connect.NewRequest(&pb.ExplainAccessRequest{Identity: identity, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, LogicalKey: proto.String("")}))
-			if err != nil || explanation.Msg.GetAllowed() || !proto.Equal(explanation.Msg.GetVersion(), version) || len(explanation.Msg.GetMatches()) != 1 {
+			explanation, err := client.ExplainAccess(ctx, connect.NewRequest(&pb.ExplainAccessRequest{Identity: identity, Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, LogicalKey: proto.String("")}))
+			if err != nil || !explanation.Msg.GetAllowed() || !proto.Equal(explanation.Msg.GetVersion(), version) || len(explanation.Msg.GetMatches()) != 1 {
 				t.Fatalf("explanation read model mismatch: response=%v error=%v", explanation, err)
 			}
 			match := explanation.Msg.GetMatches()[0]
-			if match.GetRoleId() != "reader" || match.GetRuleId() != "deny" || match.GetEffect() != pb.SecurityEffect_SECURITY_EFFECT_DENY || match.GetAction() != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.GetEndpoint() != "" {
-				t.Fatal("explanation source/action changed")
+			if match.GetRoleId() != "reader" || match.GetRuleId() != "all" || match.GetPermission() != pb.SecurityPermission_SECURITY_PERMISSION_READ || match.GetResourceKind() != pb.SecurityResource_SECURITY_RESOURCE_DATA || match.GetEndpoint() != "" {
+				t.Fatal("explanation source/typed grant changed")
 			}
 			changes := graphv1connect.NewLanternChangeServiceClient(server.Client(), server.URL, profile.opts...)
 			stream, err := changes.WatchChanges(ctx, connect.NewRequest(watch))
@@ -211,11 +211,11 @@ func (h controlWireHandler) GetUser(_ context.Context, request *connect.Request[
 	return connect.NewResponse(&pb.GetUserResponse{Version: h.version, User: &pb.SecurityUser{Identity: h.identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE, Assignments: []*pb.SecurityRoleAssignment{{Identity: h.identity, RoleId: "reader", EnvOwned: true}}}}), nil
 }
 func (h controlWireHandler) ExplainAccess(_ context.Context, request *connect.Request[pb.ExplainAccessRequest]) (*connect.Response[pb.ExplainAccessResponse], error) {
-	if !proto.Equal(request.Msg.GetIdentity(), h.identity) || request.Msg.GetAction() != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || request.Msg.LogicalKey == nil || request.Msg.GetLogicalKey() != "" || request.Msg.GetEdge() != nil {
+	if !proto.Equal(request.Msg.GetIdentity(), h.identity) || request.Msg.GetPermission() != pb.SecurityPermission_SECURITY_PERMISSION_READ || request.Msg.GetResourceKind() != pb.SecurityResource_SECURITY_RESOURCE_DATA || request.Msg.GetAction() != pb.SecurityAction_SECURITY_ACTION_UNSPECIFIED || request.Msg.LogicalKey == nil || request.Msg.GetLogicalKey() != "" || request.Msg.GetEdge() != nil {
 		h.t.Error("optional explanation intent changed across wire")
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
-	return connect.NewResponse(&pb.ExplainAccessResponse{Version: h.version, Matches: []*pb.SecurityRuleMatch{{RoleId: "reader", RuleId: "deny", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ}}}), nil
+	return connect.NewResponse(&pb.ExplainAccessResponse{Version: h.version, Allowed: true, Matches: []*pb.SecurityRuleMatch{{RoleId: "reader", RuleId: "all", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA}}}), nil
 }
 
 type changeWireHandler struct {
@@ -264,6 +264,7 @@ func TestSecurityUnimplementedRouting(t *testing.T) {
 		{"GetRole", unimplementedUnary(client.GetRole)},
 		{"ListUsers", unimplementedUnary(client.ListUsers)},
 		{"GetUser", unimplementedUnary(client.GetUser)},
+		{"GetEdgePolicy", unimplementedUnary(client.GetEdgePolicy)},
 		{"ListRoleAssignments", unimplementedUnary(client.ListRoleAssignments)},
 		{"ListSecurityAudit", unimplementedUnary(client.ListSecurityAudit)},
 		{"GetRoleTemplates", unimplementedUnary(client.GetRoleTemplates)},

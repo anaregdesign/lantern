@@ -60,6 +60,9 @@ const (
 	// LanternSecurityServiceGetRegistrationPolicyProcedure is the fully-qualified name of the
 	// LanternSecurityService's GetRegistrationPolicy RPC.
 	LanternSecurityServiceGetRegistrationPolicyProcedure = "/graph.v1.LanternSecurityService/GetRegistrationPolicy"
+	// LanternSecurityServiceGetEdgePolicyProcedure is the fully-qualified name of the
+	// LanternSecurityService's GetEdgePolicy RPC.
+	LanternSecurityServiceGetEdgePolicyProcedure = "/graph.v1.LanternSecurityService/GetEdgePolicy"
 	// LanternSecurityServiceGetLogSettingsProcedure is the fully-qualified name of the
 	// LanternSecurityService's GetLogSettings RPC.
 	LanternSecurityServiceGetLogSettingsProcedure = "/graph.v1.LanternSecurityService/GetLogSettings"
@@ -115,6 +118,7 @@ type LanternSecurityServiceClient interface {
 	ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error)
 	GetUser(context.Context, *connect.Request[v1.GetUserRequest]) (*connect.Response[v1.GetUserResponse], error)
 	GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error)
+	GetEdgePolicy(context.Context, *connect.Request[v1.GetEdgePolicyRequest]) (*connect.Response[v1.GetEdgePolicyResponse], error)
 	// Contacted-node application state; a committed policy is not all-node application.
 	GetLogSettings(context.Context, *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error)
 	// Verified desired state and actual application of the eight closed groups.
@@ -200,6 +204,12 @@ func NewLanternSecurityServiceClient(httpClient connect.HTTPClient, baseURL stri
 			httpClient,
 			baseURL+LanternSecurityServiceGetRegistrationPolicyProcedure,
 			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetRegistrationPolicy")),
+			connect.WithClientOptions(opts...),
+		),
+		getEdgePolicy: connect.NewClient[v1.GetEdgePolicyRequest, v1.GetEdgePolicyResponse](
+			httpClient,
+			baseURL+LanternSecurityServiceGetEdgePolicyProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetEdgePolicy")),
 			connect.WithClientOptions(opts...),
 		),
 		getLogSettings: connect.NewClient[v1.GetLogSettingsRequest, v1.GetLogSettingsResponse](
@@ -300,6 +310,7 @@ type lanternSecurityServiceClient struct {
 	listUsers                        *connect.Client[v1.ListUsersRequest, v1.ListUsersResponse]
 	getUser                          *connect.Client[v1.GetUserRequest, v1.GetUserResponse]
 	getRegistrationPolicy            *connect.Client[v1.GetRegistrationPolicyRequest, v1.GetRegistrationPolicyResponse]
+	getEdgePolicy                    *connect.Client[v1.GetEdgePolicyRequest, v1.GetEdgePolicyResponse]
 	getLogSettings                   *connect.Client[v1.GetLogSettingsRequest, v1.GetLogSettingsResponse]
 	getOperationalSettings           *connect.Client[v1.GetOperationalSettingsRequest, v1.GetOperationalSettingsResponse]
 	previewOperationalPolicy         *connect.Client[v1.PreviewOperationalPolicyRequest, v1.PreviewOperationalPolicyResponse]
@@ -359,6 +370,11 @@ func (c *lanternSecurityServiceClient) GetUser(ctx context.Context, req *connect
 // GetRegistrationPolicy calls graph.v1.LanternSecurityService.GetRegistrationPolicy.
 func (c *lanternSecurityServiceClient) GetRegistrationPolicy(ctx context.Context, req *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error) {
 	return c.getRegistrationPolicy.CallUnary(ctx, req)
+}
+
+// GetEdgePolicy calls graph.v1.LanternSecurityService.GetEdgePolicy.
+func (c *lanternSecurityServiceClient) GetEdgePolicy(ctx context.Context, req *connect.Request[v1.GetEdgePolicyRequest]) (*connect.Response[v1.GetEdgePolicyResponse], error) {
+	return c.getEdgePolicy.CallUnary(ctx, req)
 }
 
 // GetLogSettings calls graph.v1.LanternSecurityService.GetLogSettings.
@@ -445,6 +461,7 @@ type LanternSecurityServiceHandler interface {
 	ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error)
 	GetUser(context.Context, *connect.Request[v1.GetUserRequest]) (*connect.Response[v1.GetUserResponse], error)
 	GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error)
+	GetEdgePolicy(context.Context, *connect.Request[v1.GetEdgePolicyRequest]) (*connect.Response[v1.GetEdgePolicyResponse], error)
 	// Contacted-node application state; a committed policy is not all-node application.
 	GetLogSettings(context.Context, *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error)
 	// Verified desired state and actual application of the eight closed groups.
@@ -526,6 +543,12 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 		LanternSecurityServiceGetRegistrationPolicyProcedure,
 		svc.GetRegistrationPolicy,
 		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetRegistrationPolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternSecurityServiceGetEdgePolicyHandler := connect.NewUnaryHandler(
+		LanternSecurityServiceGetEdgePolicyProcedure,
+		svc.GetEdgePolicy,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetEdgePolicy")),
 		connect.WithHandlerOptions(opts...),
 	)
 	lanternSecurityServiceGetLogSettingsHandler := connect.NewUnaryHandler(
@@ -632,6 +655,8 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 			lanternSecurityServiceGetUserHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceGetRegistrationPolicyProcedure:
 			lanternSecurityServiceGetRegistrationPolicyHandler.ServeHTTP(w, r)
+		case LanternSecurityServiceGetEdgePolicyProcedure:
+			lanternSecurityServiceGetEdgePolicyHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceGetLogSettingsProcedure:
 			lanternSecurityServiceGetLogSettingsHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceGetOperationalSettingsProcedure:
@@ -703,6 +728,10 @@ func (UnimplementedLanternSecurityServiceHandler) GetUser(context.Context, *conn
 
 func (UnimplementedLanternSecurityServiceHandler) GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetRegistrationPolicy is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) GetEdgePolicy(context.Context, *connect.Request[v1.GetEdgePolicyRequest]) (*connect.Response[v1.GetEdgePolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetEdgePolicy is not implemented"))
 }
 
 func (UnimplementedLanternSecurityServiceHandler) GetLogSettings(context.Context, *connect.Request[v1.GetLogSettingsRequest]) (*connect.Response[v1.GetLogSettingsResponse], error) {

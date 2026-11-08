@@ -4,12 +4,16 @@ import {
   validateOperationalValues,
   type OperationalPolicyValues,
 } from "lantern-sdk/web";
+import { operationalFieldGuidance } from "./operational-settings-help";
+
 export type OperationalDraft = Readonly<Record<string, string>>;
 export type OperationalField = {
   key: string;
   label: string;
   kind: "integer" | "decimal" | "boolean" | "search-mode";
+  min?: string;
   max?: string;
+  help: { meaning: string; example: string; details: string };
 };
 export type OperationalGroupDefinition = {
   group: OperationalGroup;
@@ -17,7 +21,9 @@ export type OperationalGroupDefinition = {
   note: string;
   fields: readonly OperationalField[];
 };
-export const operationalDefinitions: readonly OperationalGroupDefinition[] = [
+const groups: readonly (Omit<OperationalGroupDefinition, "fields"> & {
+  fields: readonly Omit<OperationalField, "help">[];
+})[] = [
   {
     group: OperationalGroup.SLOW_RPC,
     label: "Slow RPC diagnostics",
@@ -219,6 +225,114 @@ export const operationalDefinitions: readonly OperationalGroupDefinition[] = [
     ],
   },
 ];
+export const operationalDefinitions: readonly OperationalGroupDefinition[] =
+  groups.map((group) => ({
+    ...group,
+    fields: group.fields.map((field) => ({
+      ...field,
+      ...operationalFieldGuidance(
+        group.group,
+        field.key,
+        field.kind === "integer",
+      ),
+    })),
+  }));
+
+/** Field feedback does not replace the SDK's complete-group validation. */
+export function operationalFieldError(
+  field: OperationalField,
+  value: string,
+): string | undefined {
+  if (field.kind === "boolean")
+    return ["true", "false"].includes(value)
+      ? undefined
+      : "Choose Enabled or Disabled.";
+  if (field.kind === "search-mode")
+    return ["1", "2", "3"].includes(value)
+      ? undefined
+      : "Choose a matching mode.";
+  if (field.kind === "decimal") {
+    try {
+      decimal({ [field.key]: value }, field.key);
+      return undefined;
+    } catch {
+      return "Enter a finite nonnegative decimal.";
+    }
+  }
+  try {
+    const parsed = integer(
+      { [field.key]: value },
+      field.key,
+      BigInt(field.max!),
+    );
+    return parsed < BigInt(field.min!)
+      ? `Enter at least ${field.min}.`
+      : undefined;
+  } catch {
+    return `Enter a whole number from ${field.min} to ${field.max}.`;
+  }
+}
+/** Associate complete-group constraints with both fields participating in the pair. */
+export function operationalDraftErrors(
+  group: OperationalGroup,
+  draft: OperationalDraft,
+): Readonly<Record<string, string>> {
+  const errors: Record<string, string> = {};
+  for (const field of operationalDefinition(group).fields) {
+    const message = operationalFieldError(field, draft[field.key] ?? "");
+    if (message) errors[field.key] = message;
+  }
+  const ordered = (lower: string, upper: string, message: string) => {
+    if (
+      !errors[lower] &&
+      !errors[upper] &&
+      BigInt(draft[lower]!) > BigInt(draft[upper]!)
+    ) {
+      errors[lower] = message;
+      errors[upper] = message;
+    }
+  };
+  if (group === OperationalGroup.REQUEST) {
+    ordered(
+      "deleteByPrefixDefaultLimit",
+      "deleteByPrefixMaxLimit",
+      "Delete default must not exceed its maximum.",
+    );
+    ordered(
+      "scanDefaultLimit",
+      "scanMaxLimit",
+      "Scan default must not exceed its maximum.",
+    );
+  }
+  if (group === OperationalGroup.SEARCH) {
+    ordered(
+      "defaultLimit",
+      "maxLimit",
+      "Search default must not exceed its maximum.",
+    );
+    ordered(
+      "maxQueryTerms",
+      "maxQueryBytes",
+      "Query terms must not exceed query bytes.",
+    );
+  }
+  if (group === OperationalGroup.REPLICATION)
+    ordered(
+      "pumpBackoffMinMs",
+      "pumpBackoffMaxMs",
+      "Minimum backoff must not exceed maximum backoff.",
+    );
+  if (
+    group === OperationalGroup.RATE &&
+    !errors.rps &&
+    !errors.burst &&
+    (Number(draft.rps) === 0) !== (BigInt(draft.burst!) === 0n)
+  ) {
+    errors.rps = errors.burst =
+      "RPS and Burst must both be zero or both positive.";
+  }
+  return errors;
+}
 export function operationalDefinition(
   group: OperationalGroup,
 ): OperationalGroupDefinition {

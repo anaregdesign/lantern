@@ -36,6 +36,45 @@ func TestVerifierLoginOptionalTokenHash(t *testing.T) {
 	}
 }
 
+func TestVerifierOptionalVerifiedEmail(t *testing.T) {
+	p := newTestProvider(t)
+	v := NewVerifierWithClock(NewKeyCacheWithClock(p.fetcher, p.now), p.now)
+	for _, tc := range []struct {
+		name     string
+		email    any
+		verified any
+		want     string
+	}{
+		{"verified", "User+tag@example.test", true, "User+tag@example.test"},
+		{"changed", "new@example.test", true, "new@example.test"},
+		{"missing", nil, nil, ""},
+		{"unverified", "user@example.test", false, ""},
+		{"string true", "user@example.test", "true", ""},
+		{"number true", "user@example.test", 1, ""},
+		{"non-string email", []string{"user@example.test"}, true, ""},
+		{"malformed email", "not-an-email", true, ""},
+		{"html", "<script>@example.test", true, ""},
+		{"oversized", strings.Repeat("x", 255) + "@example.test", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := p.accessClaims()
+			claims["aud"], claims["nonce"], claims["email"], claims["email_verified"] = "admin", "nonce", tc.email, tc.verified
+			identity, err := v.VerifyLogin(t.Context(), p.sign(t, claims, "JWT"), p.trust, "nonce", "")
+			if err != nil || identity.Identity().Subject != "user" || identity.Evidence().VerifiedEmail != tc.want {
+				t.Fatal("optional display metadata altered identity or validation", identity, err)
+			}
+		})
+	}
+	// The display permission does not create a new supported access-token
+	// profile or copy claims into a machine/API credential's durable metadata.
+	claims := p.accessClaims()
+	claims["email"], claims["email_verified"] = "user@example.test", true
+	identity, err := v.VerifyAccess(t.Context(), p.sign(t, claims, "at+jwt"), p.trust)
+	if err != nil || identity.Evidence().VerifiedEmail != "" {
+		t.Fatal("API token supplied browser display metadata", err)
+	}
+}
+
 func TestVerifierAccessProfile(t *testing.T) {
 	p := newTestProvider(t)
 	keys := NewKeyCache(p.fetcher)

@@ -176,6 +176,16 @@ export class OperationalSettingsController {
         : undefined;
     this.publish();
   }
+  cancelDraft() {
+    if (operationalBlocked(this.state, this.canMutate)) return;
+    this.change.cancelReview();
+    this.selected = undefined;
+    this.draft = undefined;
+    this.retentionAcknowledged = false;
+    this.backupPreview = undefined;
+    this.capacityPreview = undefined;
+    this.publish();
+  }
   edit(key: string, value: string) {
     if (
       operationalBlocked(this.state, this.canMutate) ||

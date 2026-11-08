@@ -163,6 +163,23 @@ extension type LanternSecurityServiceClient (connect.Transport _transport) {
     );
   }
 
+  Future<graphv1security.GetEdgePolicyResponse> getEdgePolicy(
+    graphv1security.GetEdgePolicyRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.getEdgePolicy,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   /// Contacted-node application state; a committed policy is not all-node application.
   Future<graphv1security.GetLogSettingsResponse> getLogSettings(
     graphv1security.GetLogSettingsRequest input, {

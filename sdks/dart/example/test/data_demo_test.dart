@@ -65,7 +65,10 @@ void main() {
     );
     await tester.tap(find.text('Server search info'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('operations.read is required'), findsOneWidget);
+    expect(
+      find.textContaining('read permission on Operations is required'),
+      findsOneWidget,
+    );
     await tester.tap(find.text('Seed CRUD'));
     await tester.pumpAndSettle();
     expect(
@@ -196,7 +199,10 @@ void main() {
     await tester.tap(find.text('Server search info'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Phrase search failed:'), findsOneWidget);
-    expect(find.textContaining('operations.read is required'), findsNothing);
+    expect(
+      find.textContaining('read permission on Operations is required'),
+      findsNothing,
+    );
   });
 
   testWidgets('held Add prevents overlap and disposal prevents later work', (
@@ -238,18 +244,30 @@ void main() {
       );
       await show(tester, client);
       await tester.runAsync(() => tester.tap(find.text('Server search info')));
-      await _waitFor(tester, 'operations.read is required');
+      await _waitFor(tester, 'read permission on Operations is required');
       await tester.runAsync(() => tester.tap(find.text('Seed CRUD')));
       await _waitFor(tester, switch (subject) {
         'demo' => 'Seed CRUD completed',
-        'query-denied' => 'Stopped at Search sample vertices:',
+        'query-denied' => 'Stopped at Put sample vertices:',
         _ => 'Stopped at Put sample vertices:',
       });
-      if (subject != 'data-denied') {
+      if (subject == 'demo') {
         expect(
           find.textContaining('Add sample edge; Read sample edge'),
           findsOneWidget,
         );
+      }
+      if (subject == 'query-denied') {
+        expect(
+          find.textContaining('accepted; effect undisclosed'),
+          findsOneWidget,
+        );
+        await tester.runAsync(() async {
+          await expectLater(
+            client.getVertex('flutter-demo:alice'),
+            throwsA(isA<LanternPermissionDeniedException>()),
+          );
+        });
       }
       expect(
         tester

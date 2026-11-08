@@ -120,6 +120,12 @@ export class SettingsController {
     this.draft = value;
     this.publish();
   }
+  cancelDraft() {
+    if (settingsView(this.state, this.canMutate).blocked) return;
+    this.change.cancelReview();
+    this.draft = this.settings?.desired?.level ?? ManagedLogLevel.UNSPECIFIED;
+    this.publish();
+  }
   async load() {
     const current = this.change.getSnapshot();
     // Observing current policy cannot settle a retained original. Reads may

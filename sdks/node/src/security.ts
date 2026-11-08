@@ -31,6 +31,7 @@ import {
   GetAuthCapabilitiesRequestSchema,
   GetCurrentPrincipalRequestSchema,
   GetRegistrationPolicyRequestSchema,
+  GetEdgePolicyRequestSchema,
   GetLogSettingsRequestSchema,
   GetOperationalSettingsRequestSchema,
   PreviewOperationalPolicyRequestSchema,
@@ -195,6 +196,12 @@ export class SecurityClient {
    * no user ID. Signed-out requests retain their authentication error. */
   async getCurrentUserId(options?: CallOptions): Promise<string | undefined> {
     return currentUserId(await this.getCurrentPrincipal({}, options));
+  }
+  getEdgePolicy(
+    request: MessageInitShape<typeof GetEdgePolicyRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    return this.invoke(() => this.client.getEdgePolicy(request, options));
   }
   getRegistrationPolicy(
     request: MessageInitShape<typeof GetRegistrationPolicyRequestSchema> = {},

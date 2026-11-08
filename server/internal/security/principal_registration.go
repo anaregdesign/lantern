@@ -9,10 +9,11 @@ type PrincipalRegistration struct {
 	UserUID              string
 	ClientProfileID      string
 	IssuerConfigRevision uint64
+	ProfileKind          string
 }
 
 func (r *PrincipalRegistration) valid() bool {
-	return r != nil && authz.ValidPersonalUID(r.UserUID) && validRoleID(r.ClientProfileID) && r.IssuerConfigRevision != 0
+	return r != nil && authz.ValidPersonalUID(r.UserUID) && validRoleID(r.ClientProfileID) && r.IssuerConfigRevision != 0 && (r.ProfileKind == NativeRegistrationProfile || r.ProfileKind == BrowserRegistrationProfile && r.ClientProfileID == BrowserRegistrationProfileID)
 }
 
 // applyPrincipalRegistration changes one detached image. Final compilation and
@@ -32,7 +33,7 @@ func applyPrincipalRegistration(image *Image, actor Identity, registration *Prin
 	if !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != registration.IssuerConfigRevision {
 		return ErrPermissionDenied
 	}
-	if _, registered := issuer.NativeClient(registration.ClientProfileID); !registered {
+	if !registrationProfileExists(issuer, registration.ProfileKind, registration.ClientProfileID) {
 		return ErrPermissionDenied
 	}
 	index := -1
@@ -58,7 +59,7 @@ func applyPrincipalRegistration(image *Image, actor Identity, registration *Prin
 			return nil
 		}
 	}
-	if !image.RegistrationPolicy.permits(actor.Issuer, registration.ClientProfileID) {
+	if !image.RegistrationPolicy.permitsKind(actor.Issuer, registration.ProfileKind, registration.ClientProfileID) {
 		return ErrPermissionDenied
 	}
 	found := false

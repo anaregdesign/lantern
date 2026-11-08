@@ -1,21 +1,34 @@
 import { Field, Input, Select } from "@fluentui/react-components";
-import type { OperationalField } from "~/lib/client/usecase/settings/operational-settings-fields";
+import { FieldHelp } from "~/components/shared/FieldHelp";
+import {
+  operationalFieldError,
+  type OperationalField,
+} from "~/lib/client/usecase/settings/operational-settings-fields";
 import styles from "./OperationalSettingField.module.css";
 export function OperationalSettingField({
   field,
   value,
   disabled,
+  editing,
+  validationError,
   change,
 }: {
   field: OperationalField;
   value: string;
   disabled: boolean;
+  editing: boolean;
+  validationError?: string;
   change(value: string): void;
 }) {
+  const error = editing
+    ? (validationError ?? operationalFieldError(field, value))
+    : undefined;
   return (
     <Field
-      label={field.label}
-      hint={field.max ? `Maximum ${field.max}` : undefined}
+      label={{ children: field.label, className: styles.label }}
+      hint={<FieldHelp {...field.help} />}
+      validationState={error ? "error" : "none"}
+      validationMessage={error}
       className={styles.field}
     >
       {field.kind === "boolean" ? (
@@ -47,6 +60,7 @@ export function OperationalSettingField({
         <Input
           value={value}
           disabled={disabled}
+          placeholder={field.help.example}
           inputMode={field.kind === "decimal" ? "decimal" : "numeric"}
           onChange={(_, data) => change(data.value)}
         />

@@ -25,6 +25,7 @@ export type SettingsPageProps = {
   review(): void;
   apply(): void;
   cancel(): void;
+  cancelDraft(): void;
   checkStatus(): void;
   authorize(): void;
   checkAuthorization(): void;
@@ -104,6 +105,7 @@ export function SettingsPage(props: SettingsPageProps) {
               view={view}
               editLevel={props.editLevel}
               review={props.review}
+              cancelDraft={props.cancelDraft}
             />
           )}
           {props.children}

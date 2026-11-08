@@ -74,7 +74,7 @@ func TestS1RegistrationClosedVariantAndCanonicalOmission(t *testing.T) {
 	if err != nil || string(legacy) != want {
 		t.Fatal("older command transcript changed", string(legacy), err)
 	}
-	registration := &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}
+	registration := &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", ProfileKind: NativeRegistrationProfile, IssuerConfigRevision: 1}
 	for _, kind := range []string{S1Management, S1IssueSession, S1RevokeSession, "unknown"} {
 		if validateS1Command(S1Command{Kind: kind, Registration: registration}, DefaultPolicyLimits()) == nil {
 			t.Fatal("registration field crossed command boundary")

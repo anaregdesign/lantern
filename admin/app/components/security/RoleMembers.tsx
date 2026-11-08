@@ -9,19 +9,22 @@ export function RoleMembers({
   cursor,
   disabled,
   load,
+  select,
 }: {
   roleId: string;
   members: SecurityUser[];
   cursor: string;
   disabled: boolean;
   load(cursor?: string): void;
+  select(user: SecurityUser): void;
 }) {
   return (
     <section className={styles.panel} aria-label="Role members">
-      <Title3>Users assigned to {roleId}</Title3>
+      <Title3>Assign members to {roleId}</Title3>
       <p>
-        Inspect one user page at a time. These matches do not represent a total
-        member count.
+        Inspect one user page at a time. Choose a user to manage saved Role
+        assignments through the same Review/Apply flow. Creating a Role alone
+        grants no user access. This page is not a total member count.
       </p>
       <Button disabled={disabled} onClick={() => load()}>
         Inspect first user page
@@ -29,8 +32,19 @@ export function RoleMembers({
       <ul>
         {members.map((user) => (
           <li key={JSON.stringify(user.identity)}>
-            {user.identity?.subject || user.identity?.machineName} ·{" "}
-            {user.identity?.issuer}
+            {user.verifiedEmail ||
+              user.identity?.subject ||
+              user.identity?.machineName}{" "}
+            · {user.identity?.issuer}
+            {user.assignments.some((assignment) => assignment.roleId === roleId)
+              ? " · assigned"
+              : " · not assigned"}
+            <Button disabled={disabled} onClick={() => select(user)}>
+              Manage Roles for{" "}
+              {user.verifiedEmail ||
+                user.identity?.subject ||
+                user.identity?.machineName}
+            </Button>
           </li>
         ))}
       </ul>

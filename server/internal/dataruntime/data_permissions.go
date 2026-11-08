@@ -57,7 +57,7 @@ func planDataPermissions(access *security.Access, message proto.Message) (dataPe
 	case *pb.MutateGraphRequest:
 		for _, item := range request.GetItems() {
 			if vertex := item.GetPutVertex(); vertex != nil {
-				err = vertices([]string{vertex.GetKey()}, security.VertexRead, security.VertexWrite)
+				err = vertices([]string{vertex.GetKey()}, security.VertexWrite)
 			} else if add := item.GetAddEdge(); add != nil {
 				err = edge(add.GetEdge().GetTail(), add.GetEdge().GetHead(), security.EdgeAdd)
 			} else {
@@ -72,17 +72,17 @@ func planDataPermissions(access *security.Access, message proto.Message) (dataPe
 	case *pb.GetVerticesRequest:
 		err = vertices(request.GetKeys(), security.VertexRead)
 	case *pb.PutVertexRequest:
-		err = vertices([]string{request.GetVertex().GetKey()}, security.VertexRead, security.VertexWrite)
+		err = vertices([]string{request.GetVertex().GetKey()}, security.VertexWrite)
 	case *pb.PutVerticesRequest:
 		for _, vertex := range request.GetVertices() {
-			if err = vertices([]string{vertex.GetKey()}, security.VertexRead, security.VertexWrite); err != nil {
+			if err = vertices([]string{vertex.GetKey()}, security.VertexWrite); err != nil {
 				break
 			}
 		}
 	case *pb.DeleteVertexRequest:
-		err = vertices([]string{request.GetKey()}, security.VertexRead, security.VertexDelete)
+		err = vertices([]string{request.GetKey()}, security.VertexDelete)
 	case *pb.DeleteVerticesRequest:
-		err = vertices(request.GetKeys(), security.VertexRead, security.VertexDelete)
+		err = vertices(request.GetKeys(), security.VertexDelete)
 	case *pb.GetEdgeRequest:
 		err = edge(request.GetTail(), request.GetHead(), security.EdgeRead)
 	case *pb.GetEdgesRequest:
@@ -133,7 +133,19 @@ func planDataPermissions(access *security.Access, message proto.Message) (dataPe
 		}
 	case *pb.GetServerStatusRequest, *pb.GetReplicationStatusRequest:
 		err = global(security.OperationsRead)
-	case *pb.GetReceiptCapabilityRequest, *pb.GetReceiptStatusRequest, *pb.GetReceiptStatusesRequest:
+	case *pb.GetReceiptCapabilityRequest:
+		// Static durability capability enables write-only clients to construct
+		// receipt requests. Original status and effect disclosure stay separate.
+		action := security.VertexRead
+		if access.Scope(action).Empty() {
+			action = security.VertexWrite
+		}
+		if access.Scope(action).Empty() {
+			err = dataPermissionError()
+		} else {
+			resources = append(resources, security.PublicOutputResource{Kind: security.OutputVertexCollection, Actions: []security.Action{action}})
+		}
+	case *pb.GetReceiptStatusRequest, *pb.GetReceiptStatusesRequest:
 		if access.Scope(security.ReceiptRead, security.VertexRead).Empty() && access.EdgeCandidateScope(security.ReceiptRead, security.VertexRead).Empty() {
 			err = dataPermissionError()
 		}
@@ -171,9 +183,6 @@ func planDataPermissions(access *security.Access, message proto.Message) (dataPe
 		GetReceiptContext() *pb.MutationReceiptContext
 	}); err == nil && known && receiptRequest.GetReceiptContext() != nil {
 		err = authorizeReceiptRequest(access, message)
-		for i := range resources {
-			resources[i].Actions = append(append([]security.Action(nil), resources[i].Actions...), security.ReceiptRead)
-		}
 	}
 	return dataPermissionPlan{resources, globalOutput}, err
 }

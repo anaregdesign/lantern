@@ -48,12 +48,6 @@
   font-weight: 600;
   margin-bottom: 8px;
 }
-.fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
-}
 .card form {
   display: flex;
   flex-direction: column;
@@ -76,5 +70,58 @@
   .tableWrap th,
   .tableWrap td {
     padding: 6px;
+  }
+}
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.values td {
+  min-width: 5rem;
+}
+.values td:nth-child(4) {
+  width: 45%;
+  min-width: 15rem;
+}
+@media (max-width: 760px) {
+  .values,
+  .values tbody,
+  .values tr,
+  .values th,
+  .values td {
+    display: block;
+    width: auto;
+    min-width: 0;
+  }
+  .values thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .values tr {
+    margin-bottom: 20px;
+    border: 1px solid var(--colorNeutralStroke2);
+    border-radius: var(--borderRadiusMedium);
+  }
+  .values td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  .values td:nth-child(4) {
+    width: auto;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .values caption {
+    display: block;
+    width: auto;
   }
 }

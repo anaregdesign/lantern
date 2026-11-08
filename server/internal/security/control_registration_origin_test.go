@@ -11,10 +11,10 @@ func TestRegistrationHistoricalClosedVariantAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}}
+	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", ProfileKind: NativeRegistrationProfile, IssuerConfigRevision: 1}}
 	op := s1Operation(t, s.projection, event.Identity, command)
 	claim := c.claim
-	claim.Registration = &authorityRegistrationAuthorization{Version: 1, State: c.state, ClientProfileID: "android"}
+	claim.Registration = &authorityRegistrationAuthorization{Version: 1, State: c.state, ClientProfileID: "android", ProfileKind: NativeRegistrationProfile}
 	low, high, _ := view.TimeBounds()
 	h := authorityHistoricalHeader{Credential: claim, Authentication: Authentication{Provenance: NativeProviderRegistration, Class: EndUser, IssuerConfigRevision: 1}, Lineage: c.lineage,
 		Time: authorityConsumeTime{UTCLow: uint64(low.UnixNano()), UTCHigh: uint64(high.UnixNano())}, CredentialDeadline: c.claim.AdmissionDeadline}
@@ -24,10 +24,15 @@ func TestRegistrationHistoricalClosedVariantAndApply(t *testing.T) {
 	for name, edit := range map[string]func(*authorityHistoricalHeader){
 		"ordinary provenance": func(h *authorityHistoricalHeader) { h.Authentication.Provenance = NativeProviderLogin },
 		"no variant":          func(h *authorityHistoricalHeader) { h.Credential.Registration = nil },
-		"fabricated lineage":  func(h *authorityHistoricalHeader) { h.Lineage = 1 },
-		"evidence digest":     func(h *authorityHistoricalHeader) { h.Credential.Verification[0] ^= 1 },
-		"purpose":             func(h *authorityHistoricalHeader) { h.PurposeBinding = [32]byte{1} },
-		"expired":             func(h *authorityHistoricalHeader) { h.Time.UTCHigh = uint64(event.Native.ExpiresAt.UnixNano()) },
+		"missing profile kind": func(h *authorityHistoricalHeader) {
+			r := *h.Credential.Registration
+			r.ProfileKind = ""
+			h.Credential.Registration = &r
+		},
+		"fabricated lineage": func(h *authorityHistoricalHeader) { h.Lineage = 1 },
+		"evidence digest":    func(h *authorityHistoricalHeader) { h.Credential.Verification[0] ^= 1 },
+		"purpose":            func(h *authorityHistoricalHeader) { h.PurposeBinding = [32]byte{1} },
+		"expired":            func(h *authorityHistoricalHeader) { h.Time.UTCHigh = uint64(event.Native.ExpiresAt.UnixNano()) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := h

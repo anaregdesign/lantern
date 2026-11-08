@@ -13,7 +13,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 void main() {
   final url = io.Platform.environment['LANTERN_SCOPED_WIRE_URL'];
   test(
-    'real public scoped CDC invalidates offline residents and denies peer/value access',
+    'real public scoped CDC invalidates offline residents and refuses unauthorized access',
     () async {
       final context = io.SecurityContext(withTrustedRoots: false)
         ..setTrustedCertificates(
@@ -36,9 +36,9 @@ void main() {
       );
       addTearDown(repository.dispose);
       await sdk.putVertex(
-        VertexInput(key: 'orders:resident', value: VertexValue.string('old')),
+        VertexInput(key: 'orders:1', value: VertexValue.string('old')),
       );
-      await repository.readVertex('account', 'orders:resident');
+      await repository.readVertex('account', 'orders:1');
       final source = LanternScopedChangeSource(source: _source(sdk));
       final cancellation = LanternCancellationToken();
       final consuming = repository.consumeScopedChanges(
@@ -57,26 +57,31 @@ void main() {
               await tx.scopedChangeCursor('account') != null &&
               !(await tx.hasUnknownResident(
                 'account',
-                const OfflineEntityKey.vertex('orders:resident'),
+                const OfflineEntityKey.vertex('orders:1'),
               )),
         ),
       );
       final before = await store.transaction(
         (tx) => tx.scopedChangeCursor('account'),
       );
-      await sdk.putVertices([
-        VertexInput(
-          key: 'orders:private:1',
-          value: VertexValue.string('hidden'),
+      expect(
+        await captureMutationReply(
+          () => sdk.putVertices([
+            VertexInput(
+              key: 'orders:private:1',
+              value: VertexValue.string('hidden'),
+            ),
+            VertexInput(key: 'orders:1', value: VertexValue.string('new')),
+          ]),
         ),
-        VertexInput(key: 'orders:resident', value: VertexValue.string('new')),
-      ]);
+        isA<MutationAcceptedUndisclosed<List<VertexPutResult>>>(),
+      );
       await _wait(
         'legacy resident invalidated',
         () async =>
             (await repository.readVertex(
               'account',
-              'orders:resident',
+              'orders:1',
               policy: OfflineReadPolicy.cacheOnly,
             )).state ==
             OfflineReadState.unknown,
@@ -102,8 +107,22 @@ void main() {
           (tx) => tx.scopedChangeCursor('account'),
         ))!.toBytes(),
       );
+      final valueBootstrap = await sdk
+          .watchChanges(
+            prefix: 'orders:',
+            projection: ChangeProjection.value,
+            bootstrap: true,
+          )
+          .first;
+      expect(valueBootstrap.bootstrap, isTrue);
+      expect(valueBootstrap.cursor, isNotNull);
+      expect(valueBootstrap.invalidations, isEmpty);
+      final denied = client(
+        io.Platform.environment['LANTERN_SCOPED_WIRE_DENIED_CREDENTIAL']!,
+      );
+      addTearDown(denied.close);
       await expectLater(
-        sdk
+        denied
             .watchChanges(
               prefix: 'orders:',
               projection: ChangeProjection.value,
@@ -118,13 +137,9 @@ void main() {
       );
       await repository.readVertex(
         'account',
-        'orders:resident',
+        'orders:1',
         policy: OfflineReadPolicy.serverOnly,
       );
-      final denied = client(
-        io.Platform.environment['LANTERN_SCOPED_WIRE_DENIED_CREDENTIAL']!,
-      );
-      addTearDown(denied.close);
       await expectLater(
         repository.consumeScopedChanges(
           'account',
@@ -140,7 +155,7 @@ void main() {
         await store.transaction(
           (tx) => tx.hasUnknownResident(
             'account',
-            const OfflineEntityKey.vertex('orders:resident'),
+            const OfflineEntityKey.vertex('orders:1'),
           ),
         ),
         isTrue,

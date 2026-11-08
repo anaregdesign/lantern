@@ -12,7 +12,7 @@ type Range struct {
 	Upper string
 }
 
-// Scope is the immutable union of Allow prefixes minus every applicable Deny.
+// Scope is the immutable union of positive data-prefix grants.
 // It contains no graph data and is compiled before entering a query lock.
 type Scope struct{ ranges []Range }
 
@@ -143,48 +143,26 @@ func prefixEnd(prefix string) string {
 }
 
 func (a *Access) compileScope(action Action) *Scope {
-	var allow, deny []string
+	permission, known := OperationPermission(action)
+	resource, mapped := ActionResource(action)
+	if !known || !mapped || resource != DataResource {
+		return &Scope{}
+	}
+	var allow []string
 	for _, role := range a.roles {
-		allow = append(allow, role.data[action].allow...)
-		deny = append(deny, role.data[action].deny...)
-		for _, prefix := range role.data[action].uidAllow {
+		allow = append(allow, role.data[permission].allow...)
+		for _, prefix := range role.data[permission].uidAllow {
 			allow = append(allow, prefix.bind(a.bindings))
 		}
-		for _, prefix := range role.data[action].uidDeny {
-			deny = append(deny, prefix.bind(a.bindings))
-		}
 	}
-	return prefixScope(allow, deny)
+	return prefixScope(allow)
 }
 
-func prefixScope(allow, deny []string) *Scope {
-	allow, deny = disjointPrefixes(allow), disjointPrefixes(deny)
-	result := &Scope{}
-	d := 0
-	for _, prefix := range allow {
-		lower, upper := prefix, prefixEnd(prefix)
-		for d < len(deny) && endBefore(prefixEnd(deny[d]), lower) {
-			d++
-		}
-		for j := d; j < len(deny) && (upper == "" || deny[j] < upper); j++ {
-			if deny[j] > lower {
-				result.ranges = append(result.ranges, Range{lower, deny[j]})
-			}
-			end := prefixEnd(deny[j])
-			if end == "" || upper != "" && end >= upper {
-				// An infinite Deny removes the remainder even when upper is
-				// also infinity. Skip the trailing range without treating its
-				// empty upper endpoint as a lower bound.
-				goto exhausted
-			}
-			if end > lower {
-				lower = end
-			}
-		}
-		if upper == "" || lower < upper {
-			result.ranges = append(result.ranges, Range{lower, upper})
-		}
-	exhausted:
+func prefixScope(allow []string) *Scope {
+	prefixes := disjointPrefixes(allow)
+	result := &Scope{ranges: make([]Range, len(prefixes))}
+	for i, prefix := range prefixes {
+		result.ranges[i] = Range{prefix, prefixEnd(prefix)}
 	}
 	return result
 }

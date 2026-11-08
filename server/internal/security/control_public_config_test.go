@@ -348,7 +348,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	// Explicit ordinary data grants, independent of security.manage.
 	role := Role{ID: "wire_data"}
 	for i, action := range []Action{VertexRead, VertexWrite, VertexDelete, ReceiptRead, Export, CDCIdentity, CDCValue} {
-		rule := dataRule(Allow, action, "orders:")
+		rule := dataRule(action, "orders:")
 		rule.ID = fmt.Sprintf("data%d", i)
 		role.Rules = append(role.Rules, rule)
 	}
@@ -365,16 +365,16 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:"), dataRule(Deny, VertexRead, "orders:private:")}}
-	reader.Rules[0].ID, reader.Rules[1].ID = "read", "deny"
-	blocked := Role{ID: "blocked_admin", Rules: []PermissionRule{{ID: "allow", Effect: Allow, Action: SecurityManage, Resource: GlobalResource}, {ID: "deny", Effect: Deny, Action: SecurityManage, Resource: GlobalResource}}}
+	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(VertexRead, "orders:public:")}}
+	reader.Rules[0].ID = "read"
+	blocked := Role{ID: "blocked_admin"}
 	image.Roles = append(image.Roles, reader, blocked)
 	for _, entry := range []struct{ subject, role string }{{"reader", reader.ID}, {"denied-manager", blocked.ID}} {
 		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuerURL, Subject: entry.subject}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: entry.role}}})
 	}
 	image = currentOperationalQueryFixtureImage(image, issuerURL)
 	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
-		blind := Role{ID: "wire_blind", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:blind:tail:"), dataRule(Allow, VertexWrite, "orders:blind:"), dataRule(Allow, ReceiptRead, "orders:blind:")}}
+		blind := Role{ID: "wire_blind", Rules: []PermissionRule{dataRule(VertexRead, "orders:blind:tail:"), dataRule(VertexWrite, "orders:blind:"), dataRule(ReceiptRead, "orders:blind:")}}
 		for i := range blind.Rules {
 			blind.Rules[i].ID = fmt.Sprintf("blind%d", i)
 		}
@@ -657,22 +657,20 @@ func currentPhysicalFixtureImage(image Image, observer Identity, primary string,
 	}
 	reader := Role{ID: "physical_observer"}
 	for _, prefix := range []string{"mobile-smoke:", "physical-api:", "physical-cdc:", "physical-contribution:", "physical-receipt:", "physical-head:", "flutter-demo:"} {
-		for _, action := range []Action{VertexRead, VertexWrite, VertexDelete, ReceiptRead, CDCIdentity, CDCValue, Query} {
-			rule := dataRule(Allow, action, prefix)
-			rule.ID = fmt.Sprintf("physical%d", len(reader.Rules))
-			reader.Rules = append(reader.Rules, rule)
+		for _, permission := range []Permission{Read, Write} {
+			value := prefix
+			reader.Rules = append(reader.Rules, PermissionRule{ID: fmt.Sprintf("physical%d", len(reader.Rules)), Permission: permission, Resource: DataResource, Prefix: &value})
 		}
 	}
 	writer := Role{ID: "physical_head_writer", Rules: []PermissionRule{
-		dataRule(Allow, VertexRead, "physical-head:tails:"),
-		dataRule(Allow, VertexWrite, "physical-head:heads:"),
-		dataRule(Deny, VertexWrite, "physical-head:heads:denied:"),
-		dataRule(Allow, ReceiptRead, "physical-head:"),
+		dataRule(VertexRead, "physical-head:tails:"),
+		dataRule(VertexWrite, "physical-head:heads:allowed:"),
 	}}
 	for i := range writer.Rules {
 		writer.Rules[i].ID = fmt.Sprintf("head%d", i)
 	}
 	image.Roles = append(image.Roles, reader, writer)
+	image.EdgePolicy = &EdgePolicy{Version: EdgePolicyVersion, Mode: "rw"}
 	for i := range image.Principals {
 		if image.Principals[i].Identity == observer {
 			image.Principals[i].Assignments = []RoleAssignment{{RoleID: reader.ID}}
@@ -720,7 +718,7 @@ func TestCurrentPhysicalFixtureImage(t *testing.T) {
 		}
 	}
 	reader, writer := image.Roles[len(image.Roles)-2], image.Roles[len(image.Roles)-1]
-	if len(reader.Rules) != 49 || len(writer.Rules) != 4 || writer.Rules[2].Effect != Deny || writer.Rules[0].Action != VertexRead || writer.Rules[1].Action != VertexWrite || writer.Rules[3].Action != ReceiptRead {
+	if len(reader.Rules) != 14 || len(writer.Rules) != 2 || writer.Rules[0].Permission != Read || writer.Rules[1].Permission != Write || *writer.Rules[1].Prefix != "physical-head:heads:allowed:" {
 		t.Fatal("physical scopes or minimal Head authority drifted")
 	}
 	for _, rule := range reader.Rules {
@@ -744,7 +742,7 @@ func currentNativeFixtureImage(image Image, role Role, serving bool, origin, pre
 		for i := range nativeRole.Rules {
 			nativeRole.Rules[i].Prefix = &prefix
 		}
-		query := dataRule(Allow, Query, prefix)
+		query := dataRule(Query, prefix)
 		query.ID = "native-fixture-query"
 		nativeRole.Rules = append(nativeRole.Rules, query)
 	}
@@ -756,7 +754,7 @@ func currentNativeFixtureImage(image Image, role Role, serving bool, origin, pre
 	// Fixture-only policy; enrollment itself still crosses public Prepare/Apply.
 	image.Roles = append(image.Roles, PersonalUserRole())
 	image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID, Profiles: []RegistrationProfile{
-		{GoogleIssuer, "google"}, {AppleIssuer, "apple_ios"}, {AppleIssuer, "apple_web"},
+		{Issuer: GoogleIssuer, ClientProfileID: "google", Kind: NativeRegistrationProfile}, {Issuer: AppleIssuer, ClientProfileID: "apple_ios", Kind: NativeRegistrationProfile}, {Issuer: AppleIssuer, ClientProfileID: "apple_web", Kind: NativeRegistrationProfile},
 	}}
 	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "registration-legacy"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
 	for _, issuer := range []string{GoogleIssuer, AppleIssuer} {
@@ -768,7 +766,7 @@ func currentNativeFixtureImage(image Image, role Role, serving bool, origin, pre
 func TestCurrentNativeFixtureImage(t *testing.T) {
 	role := Role{ID: "wire_data"}
 	for i, action := range []Action{VertexRead, VertexWrite, VertexDelete, ReceiptRead, Export, CDCIdentity, CDCValue} {
-		rule := dataRule(Allow, action, "orders:")
+		rule := dataRule(action, "orders:")
 		rule.ID = fmt.Sprintf("data%d", i)
 		role.Rules = append(role.Rules, rule)
 	}
@@ -795,7 +793,7 @@ func TestCurrentNativeFixtureImage(t *testing.T) {
 				t.Fatal("native grants changed")
 			}
 			for i, rule := range nativeRole.Rules {
-				if rule.Prefix == nil || *rule.Prefix != prefix || rule.Effect != Allow || rule.Resource != DataResource || i < len(role.Rules) && rule.Action != role.Rules[i].Action || i == len(role.Rules) && rule.Action != Query {
+				if rule.Prefix == nil || *rule.Prefix != prefix || rule.Resource != DataResource || i < len(role.Rules) && rule.Permission != role.Rules[i].Permission || i == len(role.Rules) && rule.Permission != Read {
 					t.Fatal("native fixture rule escaped explicit scope")
 				}
 			}
@@ -948,11 +946,11 @@ func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, co
 	write(filepath.Join(dir, "publisher.json"), raw)
 }
 
-// This ordinary query actor keeps the legacy reader's exact read/Deny role and
-// adds only Query. It cannot read settings, mutate policy or write graph data.
+// This ordinary query actor has the reader's exact positive Data read scope.
+// It cannot read settings, mutate policy or write graph data.
 // The separate query/bootstrap profiles below replace the complete seed as before.
 func currentOperationalQueryFixtureImage(image Image, issuer string) Image {
-	query := dataRule(Allow, Query, "orders:")
+	query := dataRule(Query, "orders:public:")
 	query.ID = "query"
 	image.Roles = append(image.Roles, Role{ID: "wire_operational_query", Rules: []PermissionRule{query}})
 	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "operational-query-reader"}, State: Active, HumanIssuerConfigRevision: 1,
@@ -963,8 +961,8 @@ func currentOperationalQueryFixtureImage(image Image, issuer string) Image {
 func TestCurrentOperationalQueryFixturePreservesLegacyReaderAndLeastPrivilege(t *testing.T) {
 	image := s1Image()
 	issuer := image.Issuers[0].URL
-	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:"), dataRule(Deny, VertexRead, "orders:private:")}}
-	reader.Rules[0].ID, reader.Rules[1].ID = "read", "deny"
+	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(VertexRead, "orders:public:")}}
+	reader.Rules[0].ID = "read"
 	legacy := Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "reader"}
 	image.Roles = append(image.Roles, reader)
 	image.Principals = append(image.Principals, Principal{Identity: legacy, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: reader.ID}}})
@@ -982,13 +980,13 @@ func TestCurrentOperationalQueryFixturePreservesLegacyReaderAndLeastPrivilege(t 
 		t.Fatal(err)
 	}
 	old, active := snapshot.AccessFor(legacy)
-	if !active || !old.Allows(VertexRead, "orders:public:1") || old.Allows(VertexRead, "orders:private:1") || old.Allows(Query, "orders:public:1") || old.AllowsGlobal(SecurityManage) {
+	if !active || !old.Allows(VertexRead, "orders:public:1") || old.Allows(VertexRead, "orders:private:1") || !old.Allows(Query, "orders:public:1") || old.AllowsGlobal(SecurityManage) {
 		t.Fatal("legacy reader permissions changed")
 	}
 	identity := Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "operational-query-reader"}
 	access, active := snapshot.AccessFor(identity)
 	if !active || !access.Allows(VertexRead, "orders:public:1") || !access.Allows(Query, "orders:public:1") || access.Scope(VertexRead, Query).Within("orders:public:").Empty() || !access.Scope(VertexRead, Query).Within("orders:private:").Empty() || !access.Scope(VertexRead, Query).Within("other:").Empty() {
-		t.Fatal("dedicated query actor lost its exact scoped read/Deny intersection")
+		t.Fatal("dedicated query actor lost its exact positive read scope")
 	}
 	if access.Allows(VertexWrite, "orders:public:1") || access.Allows(VertexDelete, "orders:public:1") || access.AllowsGlobal(SecurityManage) || access.AllowsGlobal(OperationsRead) {
 		t.Fatal("dedicated query actor gained write or management authority")
@@ -1054,9 +1052,9 @@ func currentQueryFixtureImage(t *testing.T, path, issuer, machineToken string) I
 	return image
 }
 
-func TestCurrentQueryFixtureImageRetainsActorsAndDeny(t *testing.T) {
+func TestCurrentQueryFixtureImageRetainsActorsAndPositiveScope(t *testing.T) {
 	path := currentQueryRoleTestFile(t)
-	hidden := "bench:private:"
+	prefix := "bench:public:"
 	token, err := NewMachineToken()
 	if err != nil {
 		t.Fatal(err)
@@ -1066,8 +1064,8 @@ func TestCurrentQueryFixtureImageRetainsActorsAndDeny(t *testing.T) {
 		t.Fatal("query actors changed")
 	}
 	got := image.Roles[len(image.Roles)-1]
-	if got.ID != "fixture_query_reader" || got.Rules[1].Effect != Deny || *got.Rules[1].Prefix != hidden {
-		t.Fatal("Deny changed")
+	if got.ID != "fixture_query_reader" || len(got.Rules) != 1 || got.Rules[0].Permission != Read || *got.Rules[0].Prefix != prefix {
+		t.Fatal("positive scope changed")
 	}
 	_ = s1Fixture(t, image)
 }
@@ -1141,8 +1139,8 @@ func TestCurrentQueryFixtureExportRetainsOriginalFiles(t *testing.T) {
 
 func currentQueryRoleTestFile(t *testing.T) string {
 	t.Helper()
-	prefix, hidden, all := "bench:", "bench:private:", ""
-	roles := []Role{{ID: "fixture_data", Rules: []PermissionRule{{ID: "write", Action: VertexWrite, Effect: Allow, Resource: DataResource, Prefix: &all}}}, {ID: "fixture_query_reader", Rules: []PermissionRule{{ID: "read", Action: VertexRead, Effect: Allow, Resource: DataResource, Prefix: &prefix}, {ID: "deny", Action: VertexRead, Effect: Deny, Resource: DataResource, Prefix: &hidden}, {ID: "query", Action: Query, Effect: Allow, Resource: DataResource, Prefix: &all}}}}
+	prefix, all := "bench:public:", ""
+	roles := []Role{{ID: "fixture_data", Rules: []PermissionRule{{ID: "write", Permission: Write, Resource: DataResource, Prefix: &all}}}, {ID: "fixture_query_reader", Rules: []PermissionRule{{ID: "read", Permission: Read, Resource: DataResource, Prefix: &prefix}}}}
 	raw, err := json.Marshal(roles)
 	if err != nil {
 		t.Fatal(err)

@@ -1,10 +1,15 @@
-/**
- * Default Lantern primary listener URL. Matches the production
- * default (`:6380`) documented in `server/README.md`. Since the #347
- * cutover the primary listener multiplexes Connect / gRPC / gRPC-Web
- * on the same h2c socket, so no separate gateway port is required.
- */
-export const DEFAULT_BASE_URL = "http://localhost:6380";
+/** Fresh production browsers use the same-origin container gateway. */
+export function defaultBaseUrl(origin?: string, development = false): string {
+  // Vite development has no Server proxy. Saved/direct choices are read first
+  // by ConnectionProvider and are never replaced with this initial default.
+  const normalized = origin ? normaliseBaseUrl(origin) : null;
+  return !development && normalized ? normalized : "http://localhost:6380";
+}
+
+export const DEFAULT_BASE_URL = defaultBaseUrl(
+  typeof window === "undefined" ? undefined : window.location.origin,
+  import.meta.env.DEV,
+);
 
 /**
  * Normalises a user-entered base URL by trimming whitespace and stripping a

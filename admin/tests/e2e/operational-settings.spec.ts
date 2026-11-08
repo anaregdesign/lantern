@@ -243,7 +243,7 @@ for (const width of [1280, 390])
     await expect(
       page
         .getByRole("region", { name: "Request admission", exact: true })
-        .getByRole("button"),
+        .getByRole("button", { name: "Edit request admission", exact: true }),
     ).toBeDisabled();
     const capacity = page.getByRole("region", {
       name: "Graph capacity and garbage collection",
@@ -403,4 +403,62 @@ test("operational unavailable owner preserves readonly desired values and Search
       exact: true,
     }),
   ).toBeDisabled();
+});
+
+test("inline drafts, accessible field guidance, invalid values and Cancel preserve node values", async ({
+  page,
+}) => {
+  const fixture = await operationalUI(page);
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto(`${fixture.primary}/settings`);
+  const card = page.getByRole("region", {
+    name: "Slow RPC diagnostics",
+    exact: true,
+  });
+  const row = card.getByRole("row").filter({ hasText: "Threshold (ms)" });
+  await expect(row.getByLabel("Threshold (ms)", { exact: true })).toHaveCount(
+    1,
+  );
+  await card
+    .getByRole("button", { name: "Edit slow rpc diagnostics", exact: true })
+    .click();
+  await card
+    .getByRole("button", {
+      name: "Use this node’s values for adoption",
+      exact: true,
+    })
+    .click();
+  const input = row.getByLabel("Threshold (ms)", { exact: true });
+  await input.fill("-1");
+  await expect(input).toHaveAttribute("aria-invalid", "true");
+  await expect(row).toContainText(
+    "Enter a whole number from 0 to 9223372036854.",
+  );
+  const help = row.getByText("Allowed values and details", { exact: true });
+  await help.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    row.getByText("0 disables slow RPC diagnostics.", { exact: false }),
+  ).toBeVisible();
+  await input.fill("125");
+  await expect(input).not.toHaveAttribute("aria-invalid", "true");
+  await expect(row.locator('[data-label="Effective"]')).toHaveText("500");
+  await expect(row.locator('[data-label="Desired"]')).toHaveText("Not adopted");
+  await card.getByRole("button", { name: "Cancel draft", exact: true }).click();
+  await expect(input).toBeDisabled();
+  await expect(input).toHaveValue("500");
+  await expect(
+    card.getByRole("button", {
+      name: "Review slow rpc diagnostics change",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
 });

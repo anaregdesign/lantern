@@ -1,6 +1,7 @@
 package security
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -13,6 +14,9 @@ func s1Image() Image {
 	for i := range image.Roles {
 		for j := range image.Roles[i].Rules {
 			image.Roles[i].Rules[j].ID = "rule"
+			if j > 0 {
+				image.Roles[i].Rules[j].ID += strconv.Itoa(j)
+			}
 		}
 	}
 	image.Principals = append(image.Principals, Principal{Identity: s1Bob(), State: Active, HumanIssuerConfigRevision: 1})
@@ -41,7 +45,7 @@ func s1Operation(t *testing.T, p *S1Projection, actor Identity, c S1Command) Ope
 }
 func s1Changes(changes ...Change) S1Command { return S1Command{Kind: S1Management, Changes: changes} }
 func s1ReaderRole() Change {
-	return Change{Kind: PutRole, Role: &Role{ID: "new_reader", Rules: []PermissionRule{{ID: "read", Effect: Allow, Action: VertexRead, Resource: DataResource, Prefix: new(string)}}}}
+	return Change{Kind: PutRole, Role: &Role{ID: "new_reader", Rules: []PermissionRule{{ID: "read", Permission: Read, Resource: DataResource, Prefix: new(string)}}}}
 }
 func s1Seal(p *S1Projection, o OperationIdentity, nonce byte, purpose bool) *S1Handoff {
 	// Fixture stands for verified historical evidence, NOT a cryptographic

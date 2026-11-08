@@ -58,6 +58,9 @@ type TokenAuthenticationEvidence struct {
 	// omitzero preserves every existing v1 transcript byte. Native completion
 	// uses its own version and commitment domain, never a synthetic Code flow.
 	Native NativeAuthenticationEvidence `json:",omitzero"`
+	// Optional signed browser-ID-token display metadata. Omitting the empty
+	// value preserves historical evidence bytes and commitments exactly.
+	VerifiedEmail string `json:",omitempty"`
 }
 
 // Commitment is a versioned factual commitment, not a signature or an assertion
@@ -67,6 +70,7 @@ func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
 	nativeRegistration := e.Version == 3 && e.Policy == "lantern-native-registration-v1" && e.Mode == "native-registration"
 	native := nativeLogin || nativeRegistration
 	if (!native && (e.Version != 1 || e.Policy != "lantern-oidc-v1")) || !e.Identity.valid() || e.Identity.Kind != OIDCPrincipal ||
+		e.VerifiedEmail != "" && (!ValidDisplayEmail(e.VerifiedEmail) || native || e.Mode == "access") ||
 		len(e.KeyID) == 0 || len(e.KeyID) > 256 || e.Generation == [16]byte{} || e.ConfigRevision == 0 ||
 		e.Credential == [32]byte{} || e.Key == [32]byte{} || e.Configuration == [32]byte{} || e.AudienceClient == [32]byte{} ||
 		!e.IssuedAt.Present || !e.IssuedAt.Numeric || !e.ExpiresAt.Present || !e.ExpiresAt.Numeric {

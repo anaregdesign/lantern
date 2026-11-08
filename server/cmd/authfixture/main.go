@@ -568,11 +568,11 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 func fixtureRoles() []security.Role {
 	prefix := ""
 	role := security.Role{ID: "fixture_data", Name: "Local conformance data client"}
-	for _, action := range []security.Action{security.VertexRead, security.VertexWrite, security.VertexDelete, security.Query, security.CDCIdentity, security.CDCValue, security.Export, security.ReceiptRead} {
-		role.Rules = append(role.Rules, security.PermissionRule{ID: strings.ReplaceAll(string(action), ".", "_"), Action: action, Effect: security.Allow, Resource: security.DataResource, Prefix: &prefix})
+	for _, permission := range []security.Permission{security.Read, security.Write} {
+		role.Rules = append(role.Rules, security.PermissionRule{ID: string(permission), Permission: permission, Resource: security.DataResource, Prefix: &prefix})
 	}
-	for _, action := range []security.Action{security.OperationsRead, security.SchemaRead} {
-		role.Rules = append(role.Rules, security.PermissionRule{ID: strings.ReplaceAll(string(action), ".", "_"), Action: action, Effect: security.Allow, Resource: security.GlobalResource})
-	}
+	role.Rules = append(role.Rules,
+		security.PermissionRule{ID: "operations_read", Permission: security.Read, Resource: security.OperationsResource},
+		security.PermissionRule{ID: "schema_read", Permission: security.Read, Resource: security.SchemaResource})
 	return []security.Role{role}
 }

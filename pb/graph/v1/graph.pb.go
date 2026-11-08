@@ -2071,7 +2071,10 @@ func (x *PutVertexRequest) GetReceiptContext() *MutationReceiptContext {
 type PutVertexResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server-authoritative result for vertex in the request.
-	Outcome       PutOutcome `protobuf:"varint,1,opt,name=outcome,proto3,enum=graph.v1.PutOutcome" json:"outcome,omitempty"`
+	Outcome PutOutcome `protobuf:"varint,1,opt,name=outcome,proto3,enum=graph.v1.PutOutcome" json:"outcome,omitempty"`
+	// Present when the caller can mutate but cannot read every selected key.
+	// In that case all effect fields are empty for the complete call.
+	Acceptance    *MutationAcceptance `protobuf:"bytes,2,opt,name=acceptance,proto3" json:"acceptance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2111,6 +2114,13 @@ func (x *PutVertexResponse) GetOutcome() PutOutcome {
 		return x.Outcome
 	}
 	return PutOutcome_PUT_OUTCOME_UNSPECIFIED
+}
+
+func (x *PutVertexResponse) GetAcceptance() *MutationAcceptance {
+	if x != nil {
+		return x.Acceptance
+	}
+	return nil
 }
 
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
@@ -2187,7 +2197,10 @@ type PutVerticesResponse struct {
 	// Index-aligned with request.vertices and always the same length. This makes
 	// mixed live/expired/conditional batches unambiguous even with duplicate
 	// keys. An empty request returns an empty list.
-	Outcomes      []PutOutcome `protobuf:"varint,1,rep,packed,name=outcomes,proto3,enum=graph.v1.PutOutcome" json:"outcomes,omitempty"`
+	Outcomes []PutOutcome `protobuf:"varint,1,rep,packed,name=outcomes,proto3,enum=graph.v1.PutOutcome" json:"outcomes,omitempty"`
+	// Present when the caller can mutate but cannot read every selected key.
+	// In that case all effect fields are empty for the complete call.
+	Acceptance    *MutationAcceptance `protobuf:"bytes,2,opt,name=acceptance,proto3" json:"acceptance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2225,6 +2238,13 @@ func (*PutVerticesResponse) Descriptor() ([]byte, []int) {
 func (x *PutVerticesResponse) GetOutcomes() []PutOutcome {
 	if x != nil {
 		return x.Outcomes
+	}
+	return nil
+}
+
+func (x *PutVerticesResponse) GetAcceptance() *MutationAcceptance {
+	if x != nil {
+		return x.Acceptance
 	}
 	return nil
 }
@@ -2666,7 +2686,10 @@ func (x *DeleteVertexRequest) GetReceiptContext() *MutationReceiptContext {
 type DeleteVertexResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// existed is true if the vertex was present and removed by this call.
-	Existed       bool `protobuf:"varint,1,opt,name=existed,proto3" json:"existed,omitempty"`
+	Existed bool `protobuf:"varint,1,opt,name=existed,proto3" json:"existed,omitempty"`
+	// Present when the caller can mutate but cannot read every selected key.
+	// In that case all effect fields are empty for the complete call.
+	Acceptance    *MutationAcceptance `protobuf:"bytes,2,opt,name=acceptance,proto3" json:"acceptance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2706,6 +2729,13 @@ func (x *DeleteVertexResponse) GetExisted() bool {
 		return x.Existed
 	}
 	return false
+}
+
+func (x *DeleteVertexResponse) GetAcceptance() *MutationAcceptance {
+	if x != nil {
+		return x.Acceptance
+	}
+	return nil
 }
 
 // DeleteVerticesRequest removes several vertices in one round trip. Same
@@ -2774,7 +2804,10 @@ type DeleteVerticesResponse struct {
 	// Index-aligned with request.keys and always the same length. A true item
 	// found a stored vertex at its turn in the batch and passed causal admission;
 	// absent, duplicate-after-delete, or causally rejected items are false.
-	Existed       []bool `protobuf:"varint,2,rep,packed,name=existed,proto3" json:"existed,omitempty"`
+	Existed []bool `protobuf:"varint,2,rep,packed,name=existed,proto3" json:"existed,omitempty"`
+	// Present when the caller can mutate but cannot read every selected key.
+	// In that case all effect fields are empty for the complete call.
+	Acceptance    *MutationAcceptance `protobuf:"bytes,3,opt,name=acceptance,proto3" json:"acceptance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2819,6 +2852,13 @@ func (x *DeleteVerticesResponse) GetDeleted() int32 {
 func (x *DeleteVerticesResponse) GetExisted() []bool {
 	if x != nil {
 		return x.Existed
+	}
+	return nil
+}
+
+func (x *DeleteVerticesResponse) GetAcceptance() *MutationAcceptance {
+	if x != nil {
+		return x.Acceptance
 	}
 	return nil
 }
@@ -3621,8 +3661,11 @@ func (x *DeleteVerticesByPrefixRequest) GetDryRun() bool {
 }
 
 type DeleteVerticesByPrefixResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       uint64                 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Deleted uint64                 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	// Present when the caller can mutate but cannot read every selected key.
+	// In that case all effect fields are empty for the complete call.
+	Acceptance    *MutationAcceptance `protobuf:"bytes,2,opt,name=acceptance,proto3" json:"acceptance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3662,6 +3705,13 @@ func (x *DeleteVerticesByPrefixResponse) GetDeleted() uint64 {
 		return x.Deleted
 	}
 	return 0
+}
+
+func (x *DeleteVerticesByPrefixResponse) GetAcceptance() *MutationAcceptance {
+	if x != nil {
+		return x.Acceptance
+	}
+	return nil
 }
 
 // TopVerticesByDegreeRequest ranks the most-connected vertices under a key
@@ -7817,15 +7867,21 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x10PutVertexRequest\x12(\n" +
 	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12\x1b\n" +
 	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\x12I\n" +
-	"\x0freceipt_context\x18\x03 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"C\n" +
+	"\x0freceipt_context\x18\x03 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"\x81\x01\n" +
 	"\x11PutVertexResponse\x12.\n" +
-	"\aoutcome\x18\x01 \x01(\x0e2\x14.graph.v1.PutOutcomeR\aoutcome\"\xaa\x01\n" +
+	"\aoutcome\x18\x01 \x01(\x0e2\x14.graph.v1.PutOutcomeR\aoutcome\x12<\n" +
+	"\n" +
+	"acceptance\x18\x02 \x01(\v2\x1c.graph.v1.MutationAcceptanceR\n" +
+	"acceptance\"\xaa\x01\n" +
 	"\x12PutVerticesRequest\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x1b\n" +
 	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\x12I\n" +
-	"\x0freceipt_context\x18\x03 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"G\n" +
+	"\x0freceipt_context\x18\x03 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"\x85\x01\n" +
 	"\x13PutVerticesResponse\x120\n" +
-	"\boutcomes\x18\x01 \x03(\x0e2\x14.graph.v1.PutOutcomeR\boutcomes\"\x90\x01\n" +
+	"\boutcomes\x18\x01 \x03(\x0e2\x14.graph.v1.PutOutcomeR\boutcomes\x12<\n" +
+	"\n" +
+	"acceptance\x18\x02 \x01(\v2\x1c.graph.v1.MutationAcceptanceR\n" +
+	"acceptance\"\x90\x01\n" +
 	"\x11GraphMutationItem\x121\n" +
 	"\n" +
 	"put_vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexH\x00R\tputVertex\x12;\n" +
@@ -7853,15 +7909,21 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x11max_request_bytes\x18\x02 \x01(\rR\x0fmaxRequestBytes\"r\n" +
 	"\x13DeleteVertexRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12I\n" +
-	"\x0freceipt_context\x18\x02 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"0\n" +
+	"\x0freceipt_context\x18\x02 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"n\n" +
 	"\x14DeleteVertexResponse\x12\x18\n" +
-	"\aexisted\x18\x01 \x01(\bR\aexisted\"v\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexisted\x12<\n" +
+	"\n" +
+	"acceptance\x18\x02 \x01(\v2\x1c.graph.v1.MutationAcceptanceR\n" +
+	"acceptance\"v\n" +
 	"\x15DeleteVerticesRequest\x12\x12\n" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\x12I\n" +
-	"\x0freceipt_context\x18\x02 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"L\n" +
+	"\x0freceipt_context\x18\x02 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"\x8a\x01\n" +
 	"\x16DeleteVerticesResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\x05R\adeleted\x12\x18\n" +
-	"\aexisted\x18\x02 \x03(\bR\aexisted\"\x86\x01\n" +
+	"\aexisted\x18\x02 \x03(\bR\aexisted\x12<\n" +
+	"\n" +
+	"acceptance\x18\x03 \x01(\v2\x1c.graph.v1.MutationAcceptanceR\n" +
+	"acceptance\"\x86\x01\n" +
 	"\x13ScanVerticesRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x16\n" +
@@ -7915,9 +7977,12 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x1dDeleteVerticesByPrefixRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x17\n" +
-	"\adry_run\x18\x03 \x01(\bR\x06dryRun\":\n" +
+	"\adry_run\x18\x03 \x01(\bR\x06dryRun\"x\n" +
 	"\x1eDeleteVerticesByPrefixResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8d\x02\n" +
+	"\adeleted\x18\x01 \x01(\x04R\adeleted\x12<\n" +
+	"\n" +
+	"acceptance\x18\x02 \x01(\v2\x1c.graph.v1.MutationAcceptanceR\n" +
+	"acceptance\"\x8d\x02\n" +
 	"\x1aTopVerticesByDegreeRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\f\n" +
 	"\x01k\x18\x02 \x01(\rR\x01k\x12L\n" +
@@ -8513,172 +8578,177 @@ var file_graph_v1_graph_proto_depIdxs = []int32{
 	16,  // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
 	99,  // 18: graph.v1.PutVertexRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
 	3,   // 19: graph.v1.PutVertexResponse.outcome:type_name -> graph.v1.PutOutcome
-	16,  // 20: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
-	99,  // 21: graph.v1.PutVerticesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	3,   // 22: graph.v1.PutVerticesResponse.outcomes:type_name -> graph.v1.PutOutcome
-	16,  // 23: graph.v1.GraphMutationItem.put_vertex:type_name -> graph.v1.Vertex
-	33,  // 24: graph.v1.GraphMutationItem.add_edge:type_name -> graph.v1.GraphMutationEdgeAdd
-	17,  // 25: graph.v1.GraphMutationEdgeAdd.edge:type_name -> graph.v1.Edge
-	32,  // 26: graph.v1.MutateGraphRequest.items:type_name -> graph.v1.GraphMutationItem
-	99,  // 27: graph.v1.MutateGraphRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	3,   // 28: graph.v1.GraphMutationResult.put_vertex:type_name -> graph.v1.PutOutcome
-	35,  // 29: graph.v1.MutateGraphResponse.results:type_name -> graph.v1.GraphMutationResult
-	61,  // 30: graph.v1.MutateGraphResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	99,  // 31: graph.v1.DeleteVertexRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	99,  // 32: graph.v1.DeleteVerticesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	4,   // 33: graph.v1.ScanVerticesRequest.order:type_name -> graph.v1.ScanOrder
-	16,  // 34: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
-	4,   // 35: graph.v1.ScanVertexKeysRequest.order:type_name -> graph.v1.ScanOrder
-	5,   // 36: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
-	46,  // 37: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
-	6,   // 38: graph.v1.SearchVerticesRequest.projection:type_name -> graph.v1.SearchProjection
-	49,  // 39: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
-	16,  // 40: graph.v1.SearchHit.vertex:type_name -> graph.v1.Vertex
-	7,   // 41: graph.v1.SearchHit.projection_status:type_name -> graph.v1.SearchHitProjectionStatus
-	14,  // 42: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
-	111, // 43: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
-	17,  // 44: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
-	68,  // 45: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	17,  // 46: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
-	68,  // 47: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
-	99,  // 48: graph.v1.DeleteEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	8,   // 49: graph.v1.MutationAcceptance.kind:type_name -> graph.v1.MutationAcceptanceKind
-	61,  // 50: graph.v1.DeleteEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	99,  // 51: graph.v1.DeleteEdgeContributionRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	61,  // 52: graph.v1.DeleteEdgeContributionResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	63,  // 53: graph.v1.DeleteEdgeContributionsRequest.contributions:type_name -> graph.v1.EdgeContributionKey
-	99,  // 54: graph.v1.DeleteEdgeContributionsRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	61,  // 55: graph.v1.DeleteEdgeContributionsResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 56: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
-	68,  // 57: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	99,  // 58: graph.v1.DeleteEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	61,  // 59: graph.v1.DeleteEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	61,  // 60: graph.v1.DeleteEdgesByPrefixResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 61: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
-	99,  // 62: graph.v1.AddEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	61,  // 63: graph.v1.AddEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 64: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
-	99,  // 65: graph.v1.AddEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	61,  // 66: graph.v1.AddEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 67: graph.v1.CreateEdgeRequest.edge:type_name -> graph.v1.Edge
-	99,  // 68: graph.v1.CreateEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	9,   // 69: graph.v1.CreateEdgeResponse.outcome:type_name -> graph.v1.CreateEdgeOutcome
-	61,  // 70: graph.v1.CreateEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 71: graph.v1.CreateEdgesRequest.edges:type_name -> graph.v1.Edge
-	99,  // 72: graph.v1.CreateEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	9,   // 73: graph.v1.CreateEdgesResponse.outcomes:type_name -> graph.v1.CreateEdgeOutcome
-	61,  // 74: graph.v1.CreateEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 75: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
-	3,   // 76: graph.v1.PutEdgeResponse.outcome:type_name -> graph.v1.PutOutcome
-	61,  // 77: graph.v1.PutEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	17,  // 78: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
-	3,   // 79: graph.v1.PutEdgesResponse.outcomes:type_name -> graph.v1.PutOutcome
-	61,  // 80: graph.v1.PutEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
-	10,  // 81: graph.v1.SearchErrorDetail.reason:type_name -> graph.v1.SearchErrorReason
-	5,   // 82: graph.v1.SearchCapabilities.default_match_mode:type_name -> graph.v1.MatchMode
-	90,  // 83: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
-	11,  // 84: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
-	113, // 85: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
-	113, // 86: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
-	112, // 87: graph.v1.CausalMetadataKindStatus.oldest_retention_deadline:type_name -> google.protobuf.Timestamp
-	91,  // 88: graph.v1.CausalMetadataStatus.vertices:type_name -> graph.v1.CausalMetadataKindStatus
-	91,  // 89: graph.v1.CausalMetadataStatus.edges:type_name -> graph.v1.CausalMetadataKindStatus
-	112, // 90: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
-	113, // 91: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
-	113, // 92: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
-	89,  // 93: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
-	92,  // 94: graph.v1.GetServerStatusResponse.causal_metadata:type_name -> graph.v1.CausalMetadataStatus
-	15,  // 95: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
-	112, // 96: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
-	112, // 97: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
-	94,  // 98: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
-	98,  // 99: graph.v1.MutationReceiptContext.endpoint:type_name -> graph.v1.ReceiptEndpoint
-	97,  // 100: graph.v1.GetReceiptCapabilityResponse.policy:type_name -> graph.v1.ReceiptPolicy
-	98,  // 101: graph.v1.GetReceiptCapabilityResponse.endpoint:type_name -> graph.v1.ReceiptEndpoint
-	12,  // 102: graph.v1.GetReceiptCapabilityResponse.supported_mutations:type_name -> graph.v1.ReceiptMutationKind
-	37,  // 103: graph.v1.GetReceiptCapabilityResponse.graph_mutation:type_name -> graph.v1.GraphMutationCapability
-	3,   // 104: graph.v1.ReceiptResult.put_vertex_outcome:type_name -> graph.v1.PutOutcome
-	9,   // 105: graph.v1.ReceiptResult.create_edge_outcome:type_name -> graph.v1.CreateEdgeOutcome
-	102, // 106: graph.v1.MutationReceipt.original_result:type_name -> graph.v1.ReceiptResult
-	13,  // 107: graph.v1.ReceiptStatus.state:type_name -> graph.v1.MutationReceiptState
-	103, // 108: graph.v1.ReceiptStatus.receipt:type_name -> graph.v1.MutationReceipt
-	104, // 109: graph.v1.GetReceiptStatusResponse.status:type_name -> graph.v1.ReceiptStatus
-	104, // 110: graph.v1.GetReceiptStatusesResponse.statuses:type_name -> graph.v1.ReceiptStatus
-	16,  // 111: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
-	17,  // 112: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
-	19,  // 113: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	24,  // 114: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	26,  // 115: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	28,  // 116: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	30,  // 117: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	34,  // 118: graph.v1.LanternService.MutateGraph:input_type -> graph.v1.MutateGraphRequest
-	38,  // 119: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	40,  // 120: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	42,  // 121: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	44,  // 122: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
-	47,  // 123: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
-	50,  // 124: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	52,  // 125: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	54,  // 126: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
-	56,  // 127: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	58,  // 128: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	75,  // 129: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	77,  // 130: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	79,  // 131: graph.v1.LanternService.CreateEdge:input_type -> graph.v1.CreateEdgeRequest
-	81,  // 132: graph.v1.LanternService.CreateEdges:input_type -> graph.v1.CreateEdgesRequest
-	83,  // 133: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	85,  // 134: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	60,  // 135: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	71,  // 136: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	64,  // 137: graph.v1.LanternService.DeleteEdgeContribution:input_type -> graph.v1.DeleteEdgeContributionRequest
-	66,  // 138: graph.v1.LanternService.DeleteEdgeContributions:input_type -> graph.v1.DeleteEdgeContributionsRequest
-	73,  // 139: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
-	69,  // 140: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	87,  // 141: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
-	95,  // 142: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
-	100, // 143: graph.v1.LanternService.GetReceiptCapability:input_type -> graph.v1.GetReceiptCapabilityRequest
-	105, // 144: graph.v1.LanternService.GetReceiptStatus:input_type -> graph.v1.GetReceiptStatusRequest
-	107, // 145: graph.v1.LanternService.GetReceiptStatuses:input_type -> graph.v1.GetReceiptStatusesRequest
-	109, // 146: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
-	23,  // 147: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	25,  // 148: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	27,  // 149: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	29,  // 150: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	31,  // 151: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	36,  // 152: graph.v1.LanternService.MutateGraph:output_type -> graph.v1.MutateGraphResponse
-	39,  // 153: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	41,  // 154: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	43,  // 155: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	45,  // 156: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
-	48,  // 157: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
-	51,  // 158: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	53,  // 159: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	55,  // 160: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
-	57,  // 161: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	59,  // 162: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	76,  // 163: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	78,  // 164: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	80,  // 165: graph.v1.LanternService.CreateEdge:output_type -> graph.v1.CreateEdgeResponse
-	82,  // 166: graph.v1.LanternService.CreateEdges:output_type -> graph.v1.CreateEdgesResponse
-	84,  // 167: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	86,  // 168: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	62,  // 169: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	72,  // 170: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	65,  // 171: graph.v1.LanternService.DeleteEdgeContribution:output_type -> graph.v1.DeleteEdgeContributionResponse
-	67,  // 172: graph.v1.LanternService.DeleteEdgeContributions:output_type -> graph.v1.DeleteEdgeContributionsResponse
-	74,  // 173: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
-	70,  // 174: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	93,  // 175: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
-	96,  // 176: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
-	101, // 177: graph.v1.LanternService.GetReceiptCapability:output_type -> graph.v1.GetReceiptCapabilityResponse
-	106, // 178: graph.v1.LanternService.GetReceiptStatus:output_type -> graph.v1.GetReceiptStatusResponse
-	108, // 179: graph.v1.LanternService.GetReceiptStatuses:output_type -> graph.v1.GetReceiptStatusesResponse
-	110, // 180: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
-	147, // [147:181] is the sub-list for method output_type
-	113, // [113:147] is the sub-list for method input_type
-	113, // [113:113] is the sub-list for extension type_name
-	113, // [113:113] is the sub-list for extension extendee
-	0,   // [0:113] is the sub-list for field type_name
+	61,  // 20: graph.v1.PutVertexResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	16,  // 21: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
+	99,  // 22: graph.v1.PutVerticesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	3,   // 23: graph.v1.PutVerticesResponse.outcomes:type_name -> graph.v1.PutOutcome
+	61,  // 24: graph.v1.PutVerticesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	16,  // 25: graph.v1.GraphMutationItem.put_vertex:type_name -> graph.v1.Vertex
+	33,  // 26: graph.v1.GraphMutationItem.add_edge:type_name -> graph.v1.GraphMutationEdgeAdd
+	17,  // 27: graph.v1.GraphMutationEdgeAdd.edge:type_name -> graph.v1.Edge
+	32,  // 28: graph.v1.MutateGraphRequest.items:type_name -> graph.v1.GraphMutationItem
+	99,  // 29: graph.v1.MutateGraphRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	3,   // 30: graph.v1.GraphMutationResult.put_vertex:type_name -> graph.v1.PutOutcome
+	35,  // 31: graph.v1.MutateGraphResponse.results:type_name -> graph.v1.GraphMutationResult
+	61,  // 32: graph.v1.MutateGraphResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	99,  // 33: graph.v1.DeleteVertexRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 34: graph.v1.DeleteVertexResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	99,  // 35: graph.v1.DeleteVerticesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 36: graph.v1.DeleteVerticesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	4,   // 37: graph.v1.ScanVerticesRequest.order:type_name -> graph.v1.ScanOrder
+	16,  // 38: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	4,   // 39: graph.v1.ScanVertexKeysRequest.order:type_name -> graph.v1.ScanOrder
+	5,   // 40: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
+	46,  // 41: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
+	6,   // 42: graph.v1.SearchVerticesRequest.projection:type_name -> graph.v1.SearchProjection
+	49,  // 43: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
+	16,  // 44: graph.v1.SearchHit.vertex:type_name -> graph.v1.Vertex
+	7,   // 45: graph.v1.SearchHit.projection_status:type_name -> graph.v1.SearchHitProjectionStatus
+	61,  // 46: graph.v1.DeleteVerticesByPrefixResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	14,  // 47: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
+	111, // 48: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
+	17,  // 49: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
+	68,  // 50: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	17,  // 51: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
+	68,  // 52: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
+	99,  // 53: graph.v1.DeleteEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	8,   // 54: graph.v1.MutationAcceptance.kind:type_name -> graph.v1.MutationAcceptanceKind
+	61,  // 55: graph.v1.DeleteEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	99,  // 56: graph.v1.DeleteEdgeContributionRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 57: graph.v1.DeleteEdgeContributionResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	63,  // 58: graph.v1.DeleteEdgeContributionsRequest.contributions:type_name -> graph.v1.EdgeContributionKey
+	99,  // 59: graph.v1.DeleteEdgeContributionsRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 60: graph.v1.DeleteEdgeContributionsResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 61: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
+	68,  // 62: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	99,  // 63: graph.v1.DeleteEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 64: graph.v1.DeleteEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	61,  // 65: graph.v1.DeleteEdgesByPrefixResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 66: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
+	99,  // 67: graph.v1.AddEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 68: graph.v1.AddEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 69: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
+	99,  // 70: graph.v1.AddEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	61,  // 71: graph.v1.AddEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 72: graph.v1.CreateEdgeRequest.edge:type_name -> graph.v1.Edge
+	99,  // 73: graph.v1.CreateEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	9,   // 74: graph.v1.CreateEdgeResponse.outcome:type_name -> graph.v1.CreateEdgeOutcome
+	61,  // 75: graph.v1.CreateEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 76: graph.v1.CreateEdgesRequest.edges:type_name -> graph.v1.Edge
+	99,  // 77: graph.v1.CreateEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	9,   // 78: graph.v1.CreateEdgesResponse.outcomes:type_name -> graph.v1.CreateEdgeOutcome
+	61,  // 79: graph.v1.CreateEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 80: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
+	3,   // 81: graph.v1.PutEdgeResponse.outcome:type_name -> graph.v1.PutOutcome
+	61,  // 82: graph.v1.PutEdgeResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	17,  // 83: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
+	3,   // 84: graph.v1.PutEdgesResponse.outcomes:type_name -> graph.v1.PutOutcome
+	61,  // 85: graph.v1.PutEdgesResponse.acceptance:type_name -> graph.v1.MutationAcceptance
+	10,  // 86: graph.v1.SearchErrorDetail.reason:type_name -> graph.v1.SearchErrorReason
+	5,   // 87: graph.v1.SearchCapabilities.default_match_mode:type_name -> graph.v1.MatchMode
+	90,  // 88: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
+	11,  // 89: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
+	113, // 90: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
+	113, // 91: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
+	112, // 92: graph.v1.CausalMetadataKindStatus.oldest_retention_deadline:type_name -> google.protobuf.Timestamp
+	91,  // 93: graph.v1.CausalMetadataStatus.vertices:type_name -> graph.v1.CausalMetadataKindStatus
+	91,  // 94: graph.v1.CausalMetadataStatus.edges:type_name -> graph.v1.CausalMetadataKindStatus
+	112, // 95: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	113, // 96: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
+	113, // 97: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
+	89,  // 98: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
+	92,  // 99: graph.v1.GetServerStatusResponse.causal_metadata:type_name -> graph.v1.CausalMetadataStatus
+	15,  // 100: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
+	112, // 101: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
+	112, // 102: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
+	94,  // 103: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
+	98,  // 104: graph.v1.MutationReceiptContext.endpoint:type_name -> graph.v1.ReceiptEndpoint
+	97,  // 105: graph.v1.GetReceiptCapabilityResponse.policy:type_name -> graph.v1.ReceiptPolicy
+	98,  // 106: graph.v1.GetReceiptCapabilityResponse.endpoint:type_name -> graph.v1.ReceiptEndpoint
+	12,  // 107: graph.v1.GetReceiptCapabilityResponse.supported_mutations:type_name -> graph.v1.ReceiptMutationKind
+	37,  // 108: graph.v1.GetReceiptCapabilityResponse.graph_mutation:type_name -> graph.v1.GraphMutationCapability
+	3,   // 109: graph.v1.ReceiptResult.put_vertex_outcome:type_name -> graph.v1.PutOutcome
+	9,   // 110: graph.v1.ReceiptResult.create_edge_outcome:type_name -> graph.v1.CreateEdgeOutcome
+	102, // 111: graph.v1.MutationReceipt.original_result:type_name -> graph.v1.ReceiptResult
+	13,  // 112: graph.v1.ReceiptStatus.state:type_name -> graph.v1.MutationReceiptState
+	103, // 113: graph.v1.ReceiptStatus.receipt:type_name -> graph.v1.MutationReceipt
+	104, // 114: graph.v1.GetReceiptStatusResponse.status:type_name -> graph.v1.ReceiptStatus
+	104, // 115: graph.v1.GetReceiptStatusesResponse.statuses:type_name -> graph.v1.ReceiptStatus
+	16,  // 116: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
+	17,  // 117: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
+	19,  // 118: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	24,  // 119: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	26,  // 120: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	28,  // 121: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	30,  // 122: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	34,  // 123: graph.v1.LanternService.MutateGraph:input_type -> graph.v1.MutateGraphRequest
+	38,  // 124: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	40,  // 125: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	42,  // 126: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	44,  // 127: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
+	47,  // 128: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
+	50,  // 129: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	52,  // 130: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	54,  // 131: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
+	56,  // 132: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	58,  // 133: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	75,  // 134: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	77,  // 135: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	79,  // 136: graph.v1.LanternService.CreateEdge:input_type -> graph.v1.CreateEdgeRequest
+	81,  // 137: graph.v1.LanternService.CreateEdges:input_type -> graph.v1.CreateEdgesRequest
+	83,  // 138: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	85,  // 139: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	60,  // 140: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	71,  // 141: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	64,  // 142: graph.v1.LanternService.DeleteEdgeContribution:input_type -> graph.v1.DeleteEdgeContributionRequest
+	66,  // 143: graph.v1.LanternService.DeleteEdgeContributions:input_type -> graph.v1.DeleteEdgeContributionsRequest
+	73,  // 144: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
+	69,  // 145: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	87,  // 146: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	95,  // 147: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
+	100, // 148: graph.v1.LanternService.GetReceiptCapability:input_type -> graph.v1.GetReceiptCapabilityRequest
+	105, // 149: graph.v1.LanternService.GetReceiptStatus:input_type -> graph.v1.GetReceiptStatusRequest
+	107, // 150: graph.v1.LanternService.GetReceiptStatuses:input_type -> graph.v1.GetReceiptStatusesRequest
+	109, // 151: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
+	23,  // 152: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	25,  // 153: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	27,  // 154: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	29,  // 155: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	31,  // 156: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	36,  // 157: graph.v1.LanternService.MutateGraph:output_type -> graph.v1.MutateGraphResponse
+	39,  // 158: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	41,  // 159: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	43,  // 160: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	45,  // 161: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
+	48,  // 162: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
+	51,  // 163: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	53,  // 164: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	55,  // 165: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
+	57,  // 166: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	59,  // 167: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	76,  // 168: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	78,  // 169: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	80,  // 170: graph.v1.LanternService.CreateEdge:output_type -> graph.v1.CreateEdgeResponse
+	82,  // 171: graph.v1.LanternService.CreateEdges:output_type -> graph.v1.CreateEdgesResponse
+	84,  // 172: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	86,  // 173: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	62,  // 174: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	72,  // 175: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	65,  // 176: graph.v1.LanternService.DeleteEdgeContribution:output_type -> graph.v1.DeleteEdgeContributionResponse
+	67,  // 177: graph.v1.LanternService.DeleteEdgeContributions:output_type -> graph.v1.DeleteEdgeContributionsResponse
+	74,  // 178: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
+	70,  // 179: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	93,  // 180: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	96,  // 181: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
+	101, // 182: graph.v1.LanternService.GetReceiptCapability:output_type -> graph.v1.GetReceiptCapabilityResponse
+	106, // 183: graph.v1.LanternService.GetReceiptStatus:output_type -> graph.v1.GetReceiptStatusResponse
+	108, // 184: graph.v1.LanternService.GetReceiptStatuses:output_type -> graph.v1.GetReceiptStatusesResponse
+	110, // 185: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
+	152, // [152:186] is the sub-list for method output_type
+	118, // [118:152] is the sub-list for method input_type
+	118, // [118:118] is the sub-list for extension type_name
+	118, // [118:118] is the sub-list for extension extendee
+	0,   // [0:118] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }

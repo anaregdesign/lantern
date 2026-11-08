@@ -1,28 +1,22 @@
 package authz
 
-type Effect string
+// Permission is the complete grant vocabulary. Write never implies read.
+type Permission string
 
 const (
-	Allow Effect = "allow"
-	Deny  Effect = "deny"
+	Read  Permission = "read"
+	Write Permission = "write"
 )
 
-// PermissionRule belongs exclusively to a Role. A pointer distinguishes an
-// explicit all-data prefix ("") from an omitted prefix on a global rule.
+// PermissionRule is a positive Allow on a typed resource. A data selector is
+// mandatory even for the explicit all-data prefix (""); global resources have
+// no selector. Historical action/effect/pair fields are not an active schema.
 type PermissionRule struct {
 	ID                 string              `json:"id,omitempty"`
-	Effect             Effect              `json:"effect"`
-	Action             Action              `json:"action"`
+	Permission         Permission          `json:"permission"`
 	Resource           ResourceKind        `json:"resource"`
 	Prefix             *string             `json:"prefix,omitempty"`
-	Pair               *PrefixPair         `json:"pair,omitempty"`
 	PrincipalUIDPrefix *PrincipalUIDPrefix `json:"principal_uid_prefix,omitempty"`
-}
-
-// PrefixPair is one directed selector. Both literals belong to the same rule.
-type PrefixPair struct {
-	Tail string `json:"tail_prefix"`
-	Head string `json:"head_prefix"`
 }
 
 type Role struct {

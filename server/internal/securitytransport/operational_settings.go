@@ -163,7 +163,7 @@ func (h *SecurityConnectHandler) GetOperationalSettings(ctx context.Context, req
 	if err := securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	a, err := h.admission(ctx, true)
+	a, err := h.admissionAction(ctx, security.SettingsRead)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +195,7 @@ func (h *SecurityConnectHandler) PreviewOperationalPolicy(ctx context.Context, r
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	a, err := h.admission(ctx, true)
+	a, err := h.admissionAction(ctx, security.SettingsRead)
 	if err != nil {
 		return nil, err
 	}

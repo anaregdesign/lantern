@@ -322,7 +322,7 @@ test("retained policy and UID selectors round-trip without weakening or dropping
         case: "putRegistrationPolicy",
         value: {
           $typeName: "graph.v1.SecurityRegistrationPolicy",
-          version: 1,
+          version: 2,
           enabled: true,
           roleId: "personal_user",
           profiles: [
@@ -330,6 +330,7 @@ test("retained policy and UID selectors round-trip without weakening or dropping
               $typeName: "graph.v1.SecurityRegistrationProfile",
               issuer: "https://accounts.google.com",
               clientProfileId: "mobile",
+              kind: 1,
             },
           ],
         },
@@ -348,8 +349,8 @@ test("retained policy and UID selectors round-trip without weakening or dropping
             {
               $typeName: "graph.v1.SecurityRule",
               id: "read",
-              action: 1,
-              effect: 1,
+              permission: 1,
+              resourceKind: 1,
               resource: {
                 case: "principalUidPrefix",
                 value: {

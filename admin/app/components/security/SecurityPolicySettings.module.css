@@ -1,0 +1,24 @@
+.settings {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding-block: 16px;
+  border-block: 1px solid var(--colorNeutralStroke2);
+  overflow-wrap: anywhere;
+}
+.settings p {
+  margin: 0;
+}
+.fields,
+.profiles {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.fields {
+  border: 1px solid var(--colorNeutralStroke2);
+  padding: 16px;
+}
+.fields legend {
+  font-weight: 600;
+}

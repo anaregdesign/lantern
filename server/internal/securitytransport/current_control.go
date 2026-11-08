@@ -15,7 +15,7 @@ import (
 func currentControlError(err error) error { return connect.NewError(securityErrorCode(err), err) }
 
 func (h *SecurityConnectHandler) currentManagement(ctx context.Context) (*security.Admission, security.CurrentCredentialProducer, error) {
-	a, err := h.admission(ctx, true)
+	a, err := h.admission(ctx, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -31,17 +31,16 @@ func (h *SecurityConnectHandler) currentManagement(ctx context.Context) (*securi
 
 // A control Apply/catch-up may advance the cut. Re-verify the original trusted
 // request producer explicitly; never relabel an already computed query result.
-func (h *SecurityConnectHandler) currentDisclosure(ctx context.Context) (context.Context, *security.Admission, error) {
+func (h *SecurityConnectHandler) currentDisclosure(ctx context.Context, review security.CurrentReview) (context.Context, *security.Admission, error) {
 	ctx, a, err := h.current.RefreshRequest(ctx)
 	if err != nil {
 		return ctx, nil, currentControlError(err)
 	}
-	if !a.Access().AllowsGlobal(security.SecurityManage) {
-		return ctx, nil, currentControlError(security.ErrPermissionDenied)
-	}
-	if err := a.BindCurrentGlobalOutput(ctx, security.SecurityManage); err != nil {
+	intent := review.Operation.Digest()
+	if err := h.current.BindOriginalOutput(ctx, a, review.ID, intent); err != nil {
 		return ctx, nil, currentControlError(err)
 	}
+
 	return ctx, a, nil
 }
 
@@ -97,7 +96,7 @@ func (h *SecurityConnectHandler) prepareCurrentChanges(ctx context.Context, req 
 				response.Requirement = pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY
 			}
 		} else {
-			ctx, a, err = h.currentDisclosure(ctx)
+			ctx, a, err = h.currentDisclosure(ctx, review)
 			if err != nil {
 				return nil, err
 			}
@@ -153,7 +152,7 @@ func (h *SecurityConnectHandler) applyCurrentChanges(ctx context.Context, req *c
 	var proof [32]byte
 	copy(proof[:], req.Msg.AuthorizationProof)
 	result, applyErr := h.current.Apply(ctx, review, producer, proof)
-	ctx, a, err = h.currentDisclosure(ctx)
+	ctx, a, err = h.currentDisclosure(ctx, review)
 	if err != nil {
 		return nil, err
 	}

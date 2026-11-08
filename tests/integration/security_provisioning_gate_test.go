@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Exercise the shipping CLI and required current configuration without opening any
@@ -186,8 +188,8 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 				issuer.client = securityProvisioningBrowserControl(t, bootstrap)
 				identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: issuer.provider.URL, Subject: "admin"}
 				role := &pb.SecurityRole{Id: "singleton_writer", Rules: []*pb.SecurityRule{
-					{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "singleton:"}},
-					{Id: "write", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "singleton:"}},
+					{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "singleton:"}},
+					{Id: "write", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "singleton:"}},
 				}}
 				if _, err := issuer.applyChanges(t, t.Context(), "", []*pb.SecurityChange{
 					{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
@@ -206,8 +208,17 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 				cookies := response.Cookies()
 				csrf := browserCookieValue(cookies, "__Host-lantern-csrf")
 				browserControl := graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, issuer.server.URL+"/browser")
-				if roles, err := browserControl.ListRoles(t.Context(), connect.NewRequest(&pb.ListRolesRequest{})); err != nil || len(roles.Msg.Roles) != 1 {
+				roles, err := browserControl.ListRoles(t.Context(), connect.NewRequest(&pb.ListRolesRequest{}))
+				if err != nil {
 					t.Fatal("browser-only session failed real Connect read", err)
+				}
+				roleIDs := make([]string, len(roles.Msg.Roles))
+				for i, role := range roles.Msg.Roles {
+					roleIDs[i] = role.GetId()
+				}
+				slices.Sort(roleIDs)
+				if !slices.Equal(roleIDs, []string{"data_admin", "personal_user", "security_admin"}) {
+					t.Fatal("browser-only fresh seed Roles", roleIDs)
 				}
 				calls := issuer.fetches.Load()
 				if _, err := control.GetCurrentPrincipal(t.Context(), securityWireRequest(issuer.token(t, "admin", nil), &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated || issuer.fetches.Load() != calls {
@@ -338,8 +349,78 @@ func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roles.Msg.Roles) != 1 || len(users.Msg.Users) != 1 {
+	if len(roles.Msg.Roles) != 3 || len(users.Msg.Users) != 1 {
 		t.Fatal("unexpected fresh setup policy")
+	}
+	// The shipping fresh seed grants separate management and data Roles.
+	seedRoles := map[string]*pb.SecurityRole{}
+	for _, role := range roles.Msg.Roles {
+		seedRoles[role.Id] = role
+	}
+	if seedRoles["security_admin"] == nil || len(seedRoles["security_admin"].Rules) != 4 || seedRoles["data_admin"] == nil || len(seedRoles["data_admin"].Rules) != 2 || seedRoles["personal_user"] == nil {
+		t.Fatal("fresh seed Role contract")
+	}
+	seedPrincipal, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(adminToken, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignments := users.Msg.Users[0].Assignments
+	lockedManagement, removableData := false, false
+	for _, assignment := range assignments {
+		if assignment.RoleId == "security_admin" {
+			lockedManagement = assignment.EnvOwned
+		}
+		if assignment.RoleId == "data_admin" {
+			removableData = !assignment.EnvOwned
+		}
+	}
+	if !lockedManagement || !removableData {
+		t.Fatal("fresh seed assignment ownership")
+	}
+	edgePolicy, err := client.GetEdgePolicy(t.Context(), securityWireRequest(adminToken, &pb.GetEdgePolicyRequest{}))
+	if err != nil || edgePolicy.Msg.Policy.Mode != pb.EdgeEndpointMode_EDGE_ENDPOINT_MODE_READ_READ {
+		t.Fatal("fresh Edge RR default", err)
+	}
+	registration, err := client.GetRegistrationPolicy(t.Context(), securityWireRequest(adminToken, &pb.GetRegistrationPolicyRequest{}))
+	if err != nil || registration.Msg.Policy.Enabled || registration.Msg.Policy.RoleId != "personal_user" {
+		t.Fatal("fresh registration default", err)
+	}
+	for _, expiration := range []*timestamppb.Timestamp{nil, timestamppb.New(time.Now().Add(time.Hour)), timestamppb.New(time.Now().Add(time.Minute))} {
+		result, err := data.PutVertex(t.Context(), securityWireRequest(adminToken, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "seed:crud", Value: &pb.Vertex_String_{String_: "seed value"}, Expiration: expiration}}))
+		if err != nil || result.Msg.Outcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+			t.Fatal("fresh admin CRUD/TTL mutation", err)
+		}
+	}
+	if value, err := data.GetVertex(t.Context(), securityWireRequest(adminToken, &pb.GetVertexRequest{Key: "seed:crud"})); err != nil || value.Msg.Vertex.GetString_() != "seed value" || value.Msg.Vertex.Expiration == nil {
+		t.Fatal("fresh admin TTL read", err)
+	}
+	if deleted, err := data.DeleteVertex(t.Context(), securityWireRequest(adminToken, &pb.DeleteVertexRequest{Key: "seed:crud"})); err != nil || !deleted.Msg.Existed {
+		t.Fatal("fresh admin Delete", err)
+	}
+	if _, err := data.GetVertex(t.Context(), securityWireRequest(adminToken, &pb.GetVertexRequest{Key: "seed:crud"})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatal("fresh admin Delete did not apply", err)
+	}
+	if _, err := data.GetVertex(t.Context(), securityWireRequest(adminToken, &pb.GetVertexRequest{Key: "sys:security:revision"})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatal("data admin exposed internal namespace", err)
+	}
+	if _, err := data.GetServerStatus(t.Context(), securityWireRequest(adminToken, &pb.GetServerStatusRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("fresh admin acquired Operations implicitly", err)
+	}
+	if names, err := currentReflectionServices(t.Context(), &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, origin, "v1", adminToken); connect.CodeOf(err) != connect.CodePermissionDenied || len(names) != 0 {
+		t.Fatal("fresh admin acquired Schema implicitly", err)
+	}
+	// Removing the removable data assignment leaves management available, and
+	// exact supplied configuration on restart must not restore that grant.
+	adminIssuer.client = securityProvisioningBrowserControl(t, adminIssuer)
+	if _, err := adminIssuer.applyChanges(t, t.Context(), "", []*pb.SecurityChange{{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: seedPrincipal.Msg.Identity, RoleId: "data_admin"}}}}); err != nil {
+		t.Fatal("fresh data assignment could not be removed", err)
+	}
+	if _, err := data.GetVertex(t.Context(), securityWireRequest(adminToken, &pb.GetVertexRequest{Key: "seed:crud"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("removed seed data grant remained effective", err)
+	}
+	users, err = client.ListUsers(t.Context(), securityWireRequest(adminToken, &pb.ListUsersRequest{}))
+	if err != nil {
+		t.Fatal(err)
 	}
 	addedToken := addedIssuer.token(t, "reader", nil)
 	if _, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(addedToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated || addedIssuer.fetches.Load() != 0 {
@@ -361,6 +442,9 @@ func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
 	if _, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(adminToken, &pb.GetCurrentPrincipalRequest{})); err != nil {
 		t.Fatal("same supplied JSON restart lost administrator", err)
 	}
+	if _, err := data.PutVertex(t.Context(), securityWireRequest(adminToken, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "seed:restart"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("same configuration restart restored removed data grant", err)
+	}
 	stop()
 	originalIssuers := input["issuers"].([]map[string]any)
 	input["issuers"] = append(append([]map[string]any(nil), originalIssuers...), map[string]any{"issuer": addedIssuer.provider.URL, "api_audience": "api", "algorithms": []string{"EdDSA"}, "human_subject_namespace_qualified": true})
@@ -376,8 +460,13 @@ func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
 		t.Fatal("supplied issuer addition did not reach native trust", err)
 	}
 	afterRoles, err := client.ListRoles(t.Context(), securityWireRequest(adminToken, &pb.ListRolesRequest{}))
-	if err != nil || len(afterRoles.Msg.Roles) != 1 || !proto.Equal(roles.Msg.Roles[0], afterRoles.Msg.Roles[0]) {
-		t.Fatal("issuer configuration created or replaced Roles", err)
+	if err != nil || len(afterRoles.Msg.Roles) != len(roles.Msg.Roles) {
+		t.Fatal("issuer configuration created or removed Roles", err)
+	}
+	for _, role := range afterRoles.Msg.Roles {
+		if !proto.Equal(seedRoles[role.Id], role) {
+			t.Fatal("issuer configuration replaced Role", role.Id)
+		}
 	}
 	afterUsers, err := client.ListUsers(t.Context(), securityWireRequest(adminToken, &pb.ListUsersRequest{}))
 	if err != nil || len(afterUsers.Msg.Users) != 1 || !proto.Equal(users.Msg.Users[0], afterUsers.Msg.Users[0]) {
@@ -389,8 +478,8 @@ func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
 	adminIssuer.client = securityProvisioningBrowserControl(t, adminIssuer)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: addedIssuer.provider.URL, Subject: "reader"}
 	role := &pb.SecurityRole{Id: "added_issuer_writer", Rules: []*pb.SecurityRule{
-		{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "added:"}},
-		{Id: "write", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "added:"}},
+		{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "added:"}},
+		{Id: "write", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "added:"}},
 	}}
 	if _, err := adminIssuer.applyChanges(t, t.Context(), "", []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
@@ -421,7 +510,7 @@ func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
 		t.Fatal("current issuer withdrawal reset native Principal/grants", err)
 	}
 	preservedRoles, err := client.ListRoles(t.Context(), securityWireRequest(adminToken, &pb.ListRolesRequest{}))
-	if err != nil || len(preservedRoles.Msg.Roles) != 2 {
+	if err != nil || len(preservedRoles.Msg.Roles) != 4 {
 		t.Fatal("same supplied initial setup reset later runtime Roles", err)
 	}
 	stop()
@@ -1228,9 +1317,9 @@ func TestBenchHeapAppRealWire(t *testing.T) {
 	issuer.client = securityProvisioningBrowserControl(t, issuer)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: issuer.provider.URL, Subject: "admin"}
 	role := &pb.SecurityRole{Id: "heap_writer", Rules: []*pb.SecurityRule{
-		{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
-		{Id: "write", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
-		{Id: "receipt", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
+		{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
+		{Id: "write", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
+		{Id: "receipt", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
 	}}
 	if _, err := issuer.applyChanges(t, t.Context(), "", []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: role.Id}}}}); err != nil {
 		t.Fatal("current administrator could not enroll heap wire fixture writer", err)

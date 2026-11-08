@@ -8,8 +8,8 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
 	github.com/anaregdesign/lantern/core v0.21.3
 	github.com/anaregdesign/lantern/mcp v0.0.0-00010101000000-000000000000
-	github.com/anaregdesign/lantern/pb v0.16.0
-	github.com/anaregdesign/lantern/sdks/go v0.27.2
+	github.com/anaregdesign/lantern/pb v0.17.0
+	github.com/anaregdesign/lantern/sdks/go v0.28.0
 	github.com/anaregdesign/lantern/server v0.0.0-00010101000000-000000000000
 	github.com/manifoldco/promptui v0.9.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0

@@ -5,6 +5,7 @@ import { getReplicationStatus } from "~/lib/client/infrastructure/api/get-replic
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
 import { opsReducer } from "./reducer";
 import { INITIAL_OPS_STATE } from "./state";
+import { diagnosticsError } from "./diagnostics-error";
 
 /**
  * useOps is the hook the OpsPage consumes. It owns:
@@ -42,7 +43,10 @@ export function useOps() {
             dispatch({
               type: "SERVER_ERROR",
               epoch,
-              error: errorMessage(err),
+              error: diagnosticsError(
+                err,
+                "Server status at the selected Gateway",
+              ),
             });
           }),
         getReplicationStatus(client, { signal })
@@ -52,7 +56,10 @@ export function useOps() {
             dispatch({
               type: "REPLICATION_ERROR",
               epoch,
-              error: errorMessage(err),
+              error: diagnosticsError(
+                err,
+                "Replication status at the selected Gateway",
+              ),
             });
           }),
       ]);
@@ -92,9 +99,4 @@ export function useOps() {
     refresh,
     setPollMs,
   };
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }

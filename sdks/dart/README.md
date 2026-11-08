@@ -199,8 +199,8 @@ final current = await client.getNativeSession();
 ```
 
 Only an existing exact `(issuer, subject)` Principal can sign in. The session
-has fixed eight-hour expiry and is subject to current Role/Deny, suspension,
-issuer configuration and revocation checks on ordinary RPCs. `authTime == null`
+has fixed eight-hour expiry and is subject to current Role Allows, default refusal,
+suspension, issuer configuration and revocation checks on ordinary RPCs. `authTime == null`
 means unknown; successful login never fabricates recent authentication.
 `GoogleNativeCredential` and `AppleNativeCredential` carry provider inputs only
 to Complete; never put a provider ID token into `TokenProvider`.

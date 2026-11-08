@@ -5,9 +5,8 @@
     "rules": [
       {
         "id": "operations-read",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_OPERATIONS_READ",
-        "global": true
+        "permission": "SECURITY_PERMISSION_READ",
+        "resourceKind": "SECURITY_RESOURCE_OPERATIONS"
       }
     ]
   }

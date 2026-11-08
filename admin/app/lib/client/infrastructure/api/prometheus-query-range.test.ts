@@ -172,6 +172,19 @@ describe("queryRange", () => {
     expect((err as PrometheusError).httpStatus).toBe(502);
   });
 
+  it("preserves authentication and permission status even for a JSON error envelope", async () => {
+    for (const status of [401, 403]) {
+      stubFetch(
+        new Response(JSON.stringify({ status: "error", error: "refused" }), {
+          status,
+        }),
+      );
+      await expect(
+        queryRange("/api/prom", { query: "up", start: 0, end: 1, step: 1 }),
+      ).rejects.toMatchObject({ kind: "http", httpStatus: status });
+    }
+  });
+
   it("throws a parse PrometheusError for an SPA index.html fallback (HTTP 200 HTML)", async () => {
     stubFetch(
       new Response("<!DOCTYPE html><html><body>app</body></html>", {

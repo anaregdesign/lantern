@@ -41,6 +41,7 @@ RETAINED_ROOT_TESTS = (
     "TestAuth_MachineRoleBearerRealConnect",
     "TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect",
     "TestAuth_OIDCAdminVertexCountRealConnect",
+    "TestAuth_OIDCBrowserEnrollmentRealConnect",
     "TestAuth_OIDCBrowserLoginFailuresRealConnect",
     "TestAuth_OIDCBrowserSessionRealConnect",
     "TestAuth_OIDCDartScopedChangesFacadeRealConnect",
@@ -55,9 +56,11 @@ RETAINED_ROOT_TESTS = (
     "TestAuth_OIDCScopedChangesRealConnect",
     "TestAuth_OIDCScopedCollectionsRealConnect",
     "TestAuth_OIDCScopedReceiptRealConnect",
+    "TestAuth_OIDCReadWriteTypedResourcesRealConnect",
     "TestAuth_OIDCSecurityChangeCommitProofRealConnect",
     "TestAuth_OIDCSecurityPrecommitRefusalsRealConnect",
     "TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect",
+    "TestAuth_OIDCVerifiedEmailBrowserRealConnect",
     "TestAuth_PublicChangeRejectionPreservesRPCProtocol",
     "TestAuth_PublicChangesBenchmarkConsumerRealWire",
     *RECEIPT_PROBE_TESTS,
@@ -70,7 +73,8 @@ FUNCTIONAL_VALIDATION_CASES = tuple(
         "ordinary_review_apply_foreign_status",
         "full-cut_and_profile_mismatch_refuse_before_dispatch",
         "sdk_and_typed_data_response",
-        "reader_explicit_Deny_and_no_write_grant",
+        "reader_scoped_read_and_no_write_grant",
+        "global_Edge_mode_shared_across_the_current_cohort",
         "machine_data_grants_and_management_refusal",
         "scoped_receipt_export_and_CDC_cut_invalidation",
         "active_export_grant_revocation",
@@ -80,6 +84,10 @@ FUNCTIONAL_VALIDATION_CASES = tuple(
         "stale_administrator_cannot_consume_retained_new_work",
         "public_authorization_stops_after_quorum_loss",
     )
+)
+FUNCTIONAL_VALIDATION_EDGE_RESTART = (
+    f"{ROOT_TEST}/browser_Code_one_exchange_and_CSRF_bootstrap/"
+    "global_Edge_mode_survives_intact_member_restart"
 )
 FUNCTIONAL_VALIDATION_PROTOCOLS = tuple(
     f"{FUNCTIONAL_VALIDATION_CASES[0]}/{mode}"
@@ -97,7 +105,7 @@ CONFIGURED_SOURCE_INTEGRATION_CASES = tuple(
         "public_protocols_and_full_binding",
         "ordinary_review_apply_foreign_status",
         "sdk_and_typed_data_response",
-        "reader_explicit_Deny_and_no_write_grant",
+        "reader_scoped_read_and_no_write_grant",
         "original_stop_observation_remains_separate_from_Apply",
         "active_export_grant_revocation",
         "source_acquisition_budget",
@@ -132,7 +140,7 @@ def proof_contract(kind):
         "synthetic_utc": kind == FUNCTIONAL_VALIDATION,
         "build_kind": "test-fixture" if kind == FUNCTIONAL_VALIDATION else "normal",
         "build_tags": [FIXTURE_TAG] if kind == FUNCTIONAL_VALIDATION else [],
-        "case_contract": "functional-full-v4" if kind == FUNCTIONAL_VALIDATION else "source-cohort-v4",
+        "case_contract": "functional-full-v5" if kind == FUNCTIONAL_VALIDATION else "source-cohort-v5",
     }
 
 
@@ -163,6 +171,7 @@ def required_tests(kind):
     return (
         (
             ROOT_TEST, *SDK_TESTS, *FUNCTIONAL_VALIDATION_CASES,
+            FUNCTIONAL_VALIDATION_EDGE_RESTART,
             *FUNCTIONAL_VALIDATION_PROTOCOLS, *RETAINED_ROOT_TESTS, SCOPED_TEST,
             RECEIPT_PROBE_EDGE_ADD_TEST,
         )

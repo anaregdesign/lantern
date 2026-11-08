@@ -82,7 +82,7 @@ func (o *CurrentAuthority) LogPolicyForAdmission(ctx context.Context, a *Admissi
 	if err := o.currentAdmission(ctx, a, false); err != nil {
 		return LogPolicyProjection{}, err
 	}
-	if !a.Access().AllowsGlobal(SecurityManage) {
+	if !a.Access().AllowsGlobal(SettingsRead) {
 		return LogPolicyProjection{}, ErrPermissionDenied
 	}
 	p, err := o.CurrentLogPolicy(ctx)

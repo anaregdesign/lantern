@@ -4,6 +4,8 @@ import {
   operationalDefinitions,
   operationalDraft,
   operationalValues,
+  operationalFieldError,
+  operationalDraftErrors,
 } from "./operational-settings-fields";
 test("operational forms expose precisely forty-three finite settings in eight atomic groups", () => {
   expect(operationalDefinitions).toHaveLength(8);
@@ -115,4 +117,49 @@ test("operational Search fields show and enforce the existing capability uint32 
       }),
     ).toThrow("at most 4294967295");
   }
+});
+
+test("every operational field has accurate complete input guidance and an SDK-valid example group", () => {
+  for (const group of operationalDefinitions) {
+    const examples: Record<string, string> = {};
+    for (const field of group.fields) {
+      expect(field.help.meaning.length).toBeGreaterThan(15);
+      expect(field.help.details).toContain("Fresh startup default:");
+      expect(field.help.details).toContain("Empty is invalid");
+      expect(operationalFieldError(field, field.help.example)).toBeUndefined();
+      expect(operationalFieldError(field, "")).toBeDefined();
+      examples[field.key] = field.help.example;
+    }
+    expect(() => operationalValues(group.group, examples)).not.toThrow();
+    expect(operationalDraftErrors(group.group, examples)).toEqual({});
+  }
+});
+test("row feedback identifies both fields of invalid policy pairs and exact integer boundaries", () => {
+  expect(
+    operationalDraftErrors(OperationalGroup.RATE, { rps: "0", burst: "1" }),
+  ).toEqual({
+    rps: "RPS and Burst must both be zero or both positive.",
+    burst: "RPS and Burst must both be zero or both positive.",
+  });
+  const group = operationalDefinitions.find(
+    (g) => g.group === OperationalGroup.REPLICATION,
+  )!;
+  const draft = Object.fromEntries(
+    group.fields.map((f) => [f.key, f.help.example]),
+  );
+  const errors = operationalDraftErrors(group.group, {
+    ...draft,
+    pumpBackoffMinMs: "30001",
+  });
+  expect(Object.keys(errors)).toEqual(["pumpBackoffMinMs", "pumpBackoffMaxMs"]);
+  const threshold = operationalDefinitions[0]!.fields[0]!;
+  expect(operationalFieldError(threshold, "9223372036854")).toBeUndefined();
+  expect(operationalFieldError(threshold, "9223372036855")).toContain(
+    "9223372036854",
+  );
+  expect(() =>
+    operationalValues(OperationalGroup.SLOW_RPC, {
+      thresholdMs: "9223372036855",
+    }),
+  ).toThrow();
 });

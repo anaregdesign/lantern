@@ -2,6 +2,12 @@ import { currentSecurityVersionBinding } from "lantern-sdk/web";
 import type {
   ExplainAccessResponse,
   GetRoleTemplatesResponse,
+  GetRoleResponse,
+  GetUserResponse,
+  GetEdgePolicyResponse,
+  GetRegistrationPolicyResponse,
+  SecurityEdgePolicy,
+  SecurityRegistrationPolicy,
   ListIssuersResponse,
   ListRolesResponse,
   ListUsersResponse,
@@ -33,6 +39,15 @@ export interface SecurityManagementPort extends CurrentChangePort {
   issuers(cursor: string, signal: AbortSignal): Promise<ListIssuersResponse>;
   users(cursor: string, signal: AbortSignal): Promise<ListUsersResponse>;
   roles(cursor: string, signal: AbortSignal): Promise<ListRolesResponse>;
+  role(id: string, signal: AbortSignal): Promise<GetRoleResponse>;
+  user(
+    identity: SecurityIdentity,
+    signal: AbortSignal,
+  ): Promise<GetUserResponse>;
+  edgePolicy(signal: AbortSignal): Promise<GetEdgePolicyResponse>;
+  registrationPolicy(
+    signal: AbortSignal,
+  ): Promise<GetRegistrationPolicyResponse>;
   templates(
     prefix: string,
     signal: AbortSignal,
@@ -52,6 +67,8 @@ export interface SecurityManagementPort extends CurrentChangePort {
     key: string | undefined,
     signal: AbortSignal,
     edge?: { tail: string; head: string },
+    permission?: number,
+    resourceKind?: number,
   ): Promise<ExplainAccessResponse>;
 }
 export interface SecurityManagementState extends CurrentChangeState {
@@ -60,6 +77,16 @@ export interface SecurityManagementState extends CurrentChangeState {
   roles: SecurityRole[];
   nextCursor: string;
   templates: SecurityRole[];
+  templatePhase: "idle" | "loading" | "ready" | "error";
+  templateMessage: string;
+  roleCursor: string;
+  policyPhase: "idle" | "loading" | "ready" | "error";
+  policyMessage: string;
+  edgePolicy?: SecurityEdgePolicy;
+  registrationPolicy?: SecurityRegistrationPolicy;
+  joiningRole?: SecurityRole;
+  policyIssuers: SecurityIssuer[];
+  policyIssuerCursor: string;
   audit: CurrentSecurityAuditRecord[];
   auditCursor: string;
   members: SecurityUser[];
@@ -108,6 +135,13 @@ export class SecurityManagementController {
       roles: [],
       nextCursor: "",
       templates: [],
+      templatePhase: "idle",
+      templateMessage: "",
+      roleCursor: "",
+      policyPhase: "idle",
+      policyMessage: "",
+      policyIssuers: [],
+      policyIssuerCursor: "",
       audit: [],
       auditCursor: "",
       members: [],
@@ -192,6 +226,18 @@ export class SecurityManagementController {
           ? this.port.users(cursor, signal)
           : this.port.roles(cursor, signal));
       validateVersion(page.version);
+      const rolePage =
+        this.section === "users"
+          ? await this.port.roles("", signal)
+          : undefined;
+      if (rolePage) {
+        validateVersion(rolePage.version);
+        if (
+          currentSecurityVersionBinding(rolePage.version) !==
+          currentSecurityVersionBinding(page.version)
+        )
+          throw new Error("Policy changed while loading Role choices.");
+      }
       if (!this.current(ticket)) return;
       this.publish({
         phase: "ready",
@@ -199,7 +245,9 @@ export class SecurityManagementController {
         nextCursor: page.nextCursor,
         issuers: "issuers" in page ? page.issuers : [],
         users: "users" in page ? page.users : [],
-        roles: "roles" in page ? page.roles : [],
+        roles: "roles" in page ? page.roles : (rolePage?.roles ?? []),
+        roleCursor:
+          "roles" in page ? page.nextCursor : (rolePage?.nextCursor ?? ""),
         mutation:
           this.state.mutation === "conflict" ||
           this.state.mutation === "rejected"
@@ -218,16 +266,186 @@ export class SecurityManagementController {
         });
     }
   }
+  async loadPolicies(issuerCursor = "") {
+    if (
+      this.state.mutation === "sending" ||
+      this.state.mutation === "unconfirmed"
+    )
+      return;
+    this.workflow.cancelReview();
+    const { ticket, signal } = this.operation();
+    this.publish({ policyPhase: "loading", policyMessage: "" });
+    try {
+      const [edge, registration, issuers, joining] = await Promise.all([
+        this.port.edgePolicy(signal),
+        this.port.registrationPolicy(signal),
+        this.port.issuers(issuerCursor, signal),
+        this.port.role("personal_user", signal).catch((error: unknown) => {
+          if (this.port.failure(error) === "not-found") return undefined;
+          throw error;
+        }),
+      ]);
+      validateVersion(edge.version);
+      for (const response of [registration, issuers, joining]) {
+        if (!response) continue;
+        validateVersion(response.version);
+        if (
+          currentSecurityVersionBinding(edge.version) !==
+          currentSecurityVersionBinding(response.version)
+        )
+          throw new Error("Policy changed while reading shared settings.");
+      }
+      if (
+        !edge.policy ||
+        edge.policy.version !== 1 ||
+        (registration.policy && registration.policy.version !== 2)
+      )
+        throw new Error("Unsupported policy version");
+      if (!this.current(ticket)) return;
+      this.publish({
+        policyPhase: "ready",
+        policyMessage: "",
+        edgePolicy: edge.policy,
+        registrationPolicy: registration.policy,
+        joiningRole: joining?.role,
+        policyIssuers: issuers.issuers,
+        policyIssuerCursor: issuers.nextCursor,
+        version: edge.version,
+      });
+    } catch (error) {
+      if (this.current(ticket))
+        this.publish({
+          policyPhase: "error",
+          policyMessage:
+            this.port.failure(error) === "denied"
+              ? "Shared Security settings require a current Security read grant. Sign in again or ask an administrator."
+              : "Shared Security settings are unavailable or changed. Reload before reviewing a policy change.",
+          edgePolicy: undefined,
+          registrationPolicy: undefined,
+          joiningRole: undefined,
+        });
+    }
+  }
+  resetTemplates() {
+    this.publish({ templates: [], templatePhase: "idle", templateMessage: "" });
+  }
   async loadTemplates(prefix: string) {
     if (this.state.mutation === "sending") return;
+    this.workflow.cancelReview();
     const { ticket, signal } = this.operation();
+    this.publish({
+      templatePhase: "loading",
+      templateMessage: "",
+      templates: [],
+    });
     try {
       const response = await this.port.templates(prefix, signal);
       validateVersion(response.version);
-      if (this.current(ticket)) this.publish({ templates: response.roles });
+      if (this.current(ticket))
+        this.publish({ templates: response.roles, templatePhase: "ready" });
+    } catch (error) {
+      if (this.current(ticket))
+        this.publish({
+          templatePhase: "error",
+          templateMessage:
+            this.port.failure(error) === "denied"
+              ? "Role templates require a current authenticated Security read grant. Sign in again or ask an administrator."
+              : "Role templates are unavailable. Check the Server connection and load again.",
+        });
+    }
+  }
+  async reviewNewRole(label: string, changes: SecurityChange[], id: string) {
+    this.workflow.cancelReview();
+    const { ticket, signal } = this.operation();
+    try {
+      await this.port.role(id, signal);
+      if (this.current(ticket))
+        this.publish({
+          message:
+            "That Role ID already exists. Choose a unique new Role ID; existing Roles are edited from saved details.",
+        });
+    } catch (error) {
+      if (!this.current(ticket)) return;
+      if (this.port.failure(error) === "not-found")
+        this.workflow.review(label, changes);
+      else
+        this.publish({
+          message:
+            "The new Role ID could not be checked. Reload and retry the review; no change was sent.",
+        });
+    }
+  }
+  async readSavedRole(id: string): Promise<SecurityRole | undefined> {
+    const { ticket, signal } = this.operation();
+    try {
+      const response = await this.port.role(id, signal);
+      validateVersion(response.version);
+      if (!response.role || !this.current(ticket)) return;
+      this.publish({
+        phase: "ready",
+        version: response.version,
+        roles: [
+          response.role,
+          ...this.state.roles.filter((role) => role.id !== id),
+        ],
+      });
+      return response.role;
     } catch {
       if (this.current(ticket))
-        this.publish({ message: "Role templates are unavailable." });
+        this.publish({
+          message:
+            "The original change applied, but saved Role details could not be read. Reload before editing again.",
+        });
+    }
+  }
+  async readSavedUser(
+    identity: SecurityIdentity,
+  ): Promise<SecurityUser | undefined> {
+    const { ticket, signal } = this.operation();
+    try {
+      const response = await this.port.user(identity, signal);
+      validateVersion(response.version);
+      if (!response.user || !this.current(ticket)) return;
+      this.publish({
+        phase: "ready",
+        version: response.version,
+        users: [
+          response.user,
+          ...this.state.users.filter(
+            (user) =>
+              JSON.stringify(user.identity) !== JSON.stringify(identity),
+          ),
+        ],
+      });
+      return response.user;
+    } catch {
+      if (this.current(ticket))
+        this.publish({
+          message:
+            "The original change applied, but saved User details could not be read. Reload before editing again.",
+        });
+    }
+  }
+  async loadRoleChoices(cursor = "") {
+    const inspected = this.state.version;
+    if (!inspected || this.state.mutation === "sending") return;
+    const { ticket, signal } = this.operation();
+    try {
+      const page = await this.port.roles(cursor, signal);
+      validateVersion(page.version);
+      if (
+        currentSecurityVersionBinding(page.version) !==
+        currentSecurityVersionBinding(inspected)
+      )
+        throw new Error("Policy changed");
+      if (this.current(ticket))
+        this.publish({ roles: page.roles, roleCursor: page.nextCursor });
+    } catch {
+      if (this.current(ticket))
+        this.publish({
+          message:
+            "Role choices changed or are unavailable. Reload security state before assigning.",
+        });
     }
   }
   async loadRoleMembers(roleId: string, cursor = "") {
@@ -247,9 +465,7 @@ export class SecurityManagementController {
         this.publish({
           memberRole: roleId,
           memberCursor: response.nextCursor,
-          members: response.users.filter((user) =>
-            user.assignments.some((assignment) => assignment.roleId === roleId),
-          ),
+          members: response.users,
         });
     } catch {
       if (this.current(ticket))
@@ -301,6 +517,8 @@ export class SecurityManagementController {
     action: number,
     key?: string,
     edge?: { tail: string; head: string },
+    permission?: number,
+    resourceKind?: number,
   ) {
     if (this.state.mutation === "sending") return;
     const { ticket, signal } = this.operation();
@@ -311,6 +529,8 @@ export class SecurityManagementController {
         key,
         signal,
         edge,
+        permission,
+        resourceKind,
       );
       validateVersion(response.version);
       if (this.current(ticket)) this.publish({ explanation: response });

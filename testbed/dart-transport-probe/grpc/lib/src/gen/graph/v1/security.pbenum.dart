@@ -128,6 +128,12 @@ class SecurityAction extends $pb.ProtobufEnum {
       SecurityAction._(15, _omitEnumNames ? '' : 'SECURITY_ACTION_MANAGE');
   static const SecurityAction SECURITY_ACTION_EDGE_CREATE =
       SecurityAction._(16, _omitEnumNames ? '' : 'SECURITY_ACTION_EDGE_CREATE');
+  static const SecurityAction SECURITY_ACTION_SECURITY_READ = SecurityAction._(
+      17, _omitEnumNames ? '' : 'SECURITY_ACTION_SECURITY_READ');
+  static const SecurityAction SECURITY_ACTION_SETTINGS_READ = SecurityAction._(
+      18, _omitEnumNames ? '' : 'SECURITY_ACTION_SETTINGS_READ');
+  static const SecurityAction SECURITY_ACTION_SETTINGS_WRITE = SecurityAction._(
+      19, _omitEnumNames ? '' : 'SECURITY_ACTION_SETTINGS_WRITE');
 
   static const $core.List<SecurityAction> values = <SecurityAction>[
     SECURITY_ACTION_UNSPECIFIED,
@@ -147,36 +153,75 @@ class SecurityAction extends $pb.ProtobufEnum {
     SECURITY_ACTION_SCHEMA_READ,
     SECURITY_ACTION_MANAGE,
     SECURITY_ACTION_EDGE_CREATE,
+    SECURITY_ACTION_SECURITY_READ,
+    SECURITY_ACTION_SETTINGS_READ,
+    SECURITY_ACTION_SETTINGS_WRITE,
   ];
 
   static final $core.List<SecurityAction?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 16);
+      $pb.ProtobufEnum.$_initByValueList(values, 19);
   static SecurityAction? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
   const SecurityAction._(super.value, super.name);
 }
 
-class SecurityEffect extends $pb.ProtobufEnum {
-  static const SecurityEffect SECURITY_EFFECT_UNSPECIFIED =
-      SecurityEffect._(0, _omitEnumNames ? '' : 'SECURITY_EFFECT_UNSPECIFIED');
-  static const SecurityEffect SECURITY_EFFECT_ALLOW =
-      SecurityEffect._(1, _omitEnumNames ? '' : 'SECURITY_EFFECT_ALLOW');
-  static const SecurityEffect SECURITY_EFFECT_DENY =
-      SecurityEffect._(2, _omitEnumNames ? '' : 'SECURITY_EFFECT_DENY');
+/// Role grants expose exactly two independent verbs on typed resources.
+class SecurityPermission extends $pb.ProtobufEnum {
+  static const SecurityPermission SECURITY_PERMISSION_UNSPECIFIED =
+      SecurityPermission._(
+          0, _omitEnumNames ? '' : 'SECURITY_PERMISSION_UNSPECIFIED');
+  static const SecurityPermission SECURITY_PERMISSION_READ =
+      SecurityPermission._(1, _omitEnumNames ? '' : 'SECURITY_PERMISSION_READ');
+  static const SecurityPermission SECURITY_PERMISSION_WRITE =
+      SecurityPermission._(
+          2, _omitEnumNames ? '' : 'SECURITY_PERMISSION_WRITE');
 
-  static const $core.List<SecurityEffect> values = <SecurityEffect>[
-    SECURITY_EFFECT_UNSPECIFIED,
-    SECURITY_EFFECT_ALLOW,
-    SECURITY_EFFECT_DENY,
+  static const $core.List<SecurityPermission> values = <SecurityPermission>[
+    SECURITY_PERMISSION_UNSPECIFIED,
+    SECURITY_PERMISSION_READ,
+    SECURITY_PERMISSION_WRITE,
   ];
 
-  static final $core.List<SecurityEffect?> _byValue =
+  static final $core.List<SecurityPermission?> _byValue =
       $pb.ProtobufEnum.$_initByValueList(values, 2);
-  static SecurityEffect? valueOf($core.int value) =>
+  static SecurityPermission? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
-  const SecurityEffect._(super.value, super.name);
+  const SecurityPermission._(super.value, super.name);
+}
+
+class SecurityResource extends $pb.ProtobufEnum {
+  static const SecurityResource SECURITY_RESOURCE_UNSPECIFIED =
+      SecurityResource._(
+          0, _omitEnumNames ? '' : 'SECURITY_RESOURCE_UNSPECIFIED');
+  static const SecurityResource SECURITY_RESOURCE_DATA =
+      SecurityResource._(1, _omitEnumNames ? '' : 'SECURITY_RESOURCE_DATA');
+  static const SecurityResource SECURITY_RESOURCE_SECURITY =
+      SecurityResource._(2, _omitEnumNames ? '' : 'SECURITY_RESOURCE_SECURITY');
+  static const SecurityResource SECURITY_RESOURCE_SETTINGS =
+      SecurityResource._(3, _omitEnumNames ? '' : 'SECURITY_RESOURCE_SETTINGS');
+  static const SecurityResource SECURITY_RESOURCE_OPERATIONS =
+      SecurityResource._(
+          4, _omitEnumNames ? '' : 'SECURITY_RESOURCE_OPERATIONS');
+  static const SecurityResource SECURITY_RESOURCE_SCHEMA =
+      SecurityResource._(5, _omitEnumNames ? '' : 'SECURITY_RESOURCE_SCHEMA');
+
+  static const $core.List<SecurityResource> values = <SecurityResource>[
+    SECURITY_RESOURCE_UNSPECIFIED,
+    SECURITY_RESOURCE_DATA,
+    SECURITY_RESOURCE_SECURITY,
+    SECURITY_RESOURCE_SETTINGS,
+    SECURITY_RESOURCE_OPERATIONS,
+    SECURITY_RESOURCE_SCHEMA,
+  ];
+
+  static final $core.List<SecurityResource?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 5);
+  static SecurityResource? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SecurityResource._(super.value, super.name);
 }
 
 class NativeClientKind extends $pb.ProtobufEnum {
@@ -206,6 +251,66 @@ class NativeClientKind extends $pb.ProtobufEnum {
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
   const NativeClientKind._(super.value, super.name);
+}
+
+class RegistrationProfileKind extends $pb.ProtobufEnum {
+  static const RegistrationProfileKind REGISTRATION_PROFILE_KIND_UNSPECIFIED =
+      RegistrationProfileKind._(
+          0, _omitEnumNames ? '' : 'REGISTRATION_PROFILE_KIND_UNSPECIFIED');
+  static const RegistrationProfileKind REGISTRATION_PROFILE_KIND_NATIVE =
+      RegistrationProfileKind._(
+          1, _omitEnumNames ? '' : 'REGISTRATION_PROFILE_KIND_NATIVE');
+  static const RegistrationProfileKind REGISTRATION_PROFILE_KIND_BROWSER =
+      RegistrationProfileKind._(
+          2, _omitEnumNames ? '' : 'REGISTRATION_PROFILE_KIND_BROWSER');
+
+  static const $core.List<RegistrationProfileKind> values =
+      <RegistrationProfileKind>[
+    REGISTRATION_PROFILE_KIND_UNSPECIFIED,
+    REGISTRATION_PROFILE_KIND_NATIVE,
+    REGISTRATION_PROFILE_KIND_BROWSER,
+  ];
+
+  static final $core.List<RegistrationProfileKind?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static RegistrationProfileKind? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const RegistrationProfileKind._(super.value, super.name);
+}
+
+/// One cluster-wide endpoint predicate, captured with the immutable Role cut.
+class EdgeEndpointMode extends $pb.ProtobufEnum {
+  static const EdgeEndpointMode EDGE_ENDPOINT_MODE_UNSPECIFIED =
+      EdgeEndpointMode._(
+          0, _omitEnumNames ? '' : 'EDGE_ENDPOINT_MODE_UNSPECIFIED');
+  static const EdgeEndpointMode EDGE_ENDPOINT_MODE_READ_READ =
+      EdgeEndpointMode._(
+          1, _omitEnumNames ? '' : 'EDGE_ENDPOINT_MODE_READ_READ');
+  static const EdgeEndpointMode EDGE_ENDPOINT_MODE_WRITE_WRITE =
+      EdgeEndpointMode._(
+          2, _omitEnumNames ? '' : 'EDGE_ENDPOINT_MODE_WRITE_WRITE');
+  static const EdgeEndpointMode EDGE_ENDPOINT_MODE_READ_WRITE =
+      EdgeEndpointMode._(
+          3, _omitEnumNames ? '' : 'EDGE_ENDPOINT_MODE_READ_WRITE');
+  static const EdgeEndpointMode EDGE_ENDPOINT_MODE_WRITE_READ =
+      EdgeEndpointMode._(
+          4, _omitEnumNames ? '' : 'EDGE_ENDPOINT_MODE_WRITE_READ');
+
+  static const $core.List<EdgeEndpointMode> values = <EdgeEndpointMode>[
+    EDGE_ENDPOINT_MODE_UNSPECIFIED,
+    EDGE_ENDPOINT_MODE_READ_READ,
+    EDGE_ENDPOINT_MODE_WRITE_WRITE,
+    EDGE_ENDPOINT_MODE_READ_WRITE,
+    EDGE_ENDPOINT_MODE_WRITE_READ,
+  ];
+
+  static final $core.List<EdgeEndpointMode?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static EdgeEndpointMode? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const EdgeEndpointMode._(super.value, super.name);
 }
 
 class ManagedLogLevel extends $pb.ProtobufEnum {

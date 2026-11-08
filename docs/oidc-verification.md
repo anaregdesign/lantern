@@ -44,7 +44,7 @@ session replacement. Operation approval requests
 `max_age=0`, `prompt=login` and an
 essential signed `auth_time` through the OIDC `claims` parameter. Ordinary
 qualified-human management has no fixed age gate. Issuer trust and effective
-`security.manage` expansion use a separate operation-purpose transaction bound
+effective Security/Settings write expansion use a separate operation-purpose transaction bound
 to the final reviewed ID, canonical v1 intent, actor and full current cut.
 Its signed event must follow review under the qualified whole-second NumericDate
 boundary; a same-second event is ambiguous and cannot approve the operation.

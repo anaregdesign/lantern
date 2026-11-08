@@ -543,3 +543,21 @@ test("operational capacity preview rejects a changed cut and ignores a response 
   expect(c.getSnapshot().capacityPreview).toBeUndefined();
   expect(c.getSnapshot().selected).toBeUndefined();
 });
+
+test("canceling inline group drafts discards review without changing effective or desired values", async () => {
+  const f = fixture(),
+    c = f.controller;
+  await c.load();
+  const before = c.getSnapshot().settings;
+  c.select(OperationalGroup.SLOW_RPC, true);
+  c.edit("thresholdMs", "125");
+  await c.review();
+  expect(c.getSnapshot().review).toBeDefined();
+  c.cancelDraft();
+  expect(c.getSnapshot().review).toBeUndefined();
+  expect(c.getSnapshot().selected).toBeUndefined();
+  expect(c.getSnapshot().draft).toBeUndefined();
+  expect(c.getSnapshot().settings).toEqual(before);
+  await c.apply();
+  expect(f.sends()).toBe(0);
+});

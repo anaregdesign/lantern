@@ -40,13 +40,18 @@ void main() {
       expect(iterator.current.bootstrap, isTrue);
       expect(iterator.current.cursor, isNotNull);
       expect(iterator.current.invalidations, isEmpty);
-      await sdk.putVertices([
-        VertexInput(
-          key: 'orders:private:1',
-          value: VertexValue.string('hidden'),
+      expect(
+        await captureMutationReply(
+          () => sdk.putVertices([
+            VertexInput(
+              key: 'orders:private:1',
+              value: VertexValue.string('hidden'),
+            ),
+            VertexInput(key: 'orders:1', value: VertexValue.string('visible')),
+          ]),
         ),
-        VertexInput(key: 'orders:1', value: VertexValue.string('visible')),
-      ]);
+        isA<MutationAcceptedUndisclosed<List<VertexPutResult>>>(),
+      );
       while (await iterator.moveNext()) {
         if (iterator.current.invalidations.isEmpty) continue;
         final invalidation =
@@ -129,16 +134,38 @@ void main() {
         ),
       );
 
-      await expectLater(
-        sdk
-            .watchChanges(
-              prefix: 'orders:',
-              bootstrap: true,
-              projection: ChangeProjection.value,
-            )
-            .first,
-        throwsA(isA<LanternPermissionDeniedException>()),
+      final values = StreamIterator(
+        sdk.watchChanges(
+          prefix: 'orders:',
+          bootstrap: true,
+          projection: ChangeProjection.value,
+          options: LanternCallOptions(timeout: const Duration(seconds: 5)),
+        ),
       );
+      addTearDown(values.cancel);
+      expect(await values.moveNext(), isTrue);
+      expect(values.current.bootstrap, isTrue);
+      await sdk.putVertex(
+        VertexInput(
+          key: 'orders:1',
+          value: VertexValue.string('value-visible'),
+        ),
+      );
+      while (await values.moveNext()) {
+        if (values.current.invalidations.isEmpty) continue;
+        final invalidation =
+            values.current.invalidations.single as VertexInvalidation;
+        expect(invalidation.key, 'orders:1');
+        expect(
+          invalidation.current?.value,
+          isA<StringValue>().having(
+            (value) => value.value,
+            'visible value',
+            'value-visible',
+          ),
+        );
+        break;
+      }
     },
   );
 }

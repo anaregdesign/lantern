@@ -85,6 +85,7 @@ type oidcWireCode struct {
 	nonce, challenge, subject string
 	wrongNonce                bool
 	authTime                  string
+	email, emailVerified      any
 }
 
 // Shared local HTTPS issuer; native current tests use its real wall only for token issuance.
@@ -144,6 +145,12 @@ func newOIDCWireIssuer(t *testing.T) *oidcControlWireFixture {
 			}
 			accessHash := sha512.Sum512([]byte("provider-private-access-token"))
 			claims := map[string]any{"iss": f.provider.URL, "sub": code.subject, "aud": "admin", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix(), "nonce": nonce, "at_hash": base64.RawURLEncoding.EncodeToString(accessHash[:32])}
+			if code.email != nil {
+				claims["email"] = code.email
+			}
+			if code.emailVerified != nil {
+				claims["email_verified"] = code.emailVerified
+			}
 			switch code.authTime {
 			case "missing":
 				delete(claims, "auth_time")
@@ -180,6 +187,15 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*oidcFixtureB
 }
 
 func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap), durableReceipts, publicTLS bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	t.Helper()
+	return newAuthorityWireFixtureSeeded(t, func(bootstrap *oidcFixtureBootstrap, _ string) {
+		if configure != nil {
+			configure(bootstrap)
+		}
+	}, durableReceipts, publicTLS, traversalLimits...)
+}
+
+func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBootstrap, string), durableReceipts, publicTLS bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
 	t.Helper()
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
 		t.Skip("current-authority wire case requires the coordinated functional-validation/configured-source-integration campaign")
@@ -240,7 +256,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	dir := root
 	bootstrap := oidcFixtureBootstrap{AdminSubjects: []string{"admin", "other"}, HumanSubjectNamespaceQualified: true}
 	if configure != nil {
-		configure(&bootstrap)
+		configure(&bootstrap, f.provider.URL)
 	}
 	if bootstrap.Issuer == nil {
 		bootstrap.Issuer = newAuthorityWireSeedIssuer(f.provider.URL, bootstrap.HumanSubjectNamespaceQualified)
@@ -637,6 +653,7 @@ type oidcFixtureBootstrap struct {
 	HumanSubjectNamespaceQualified bool                     `json:"human_subject_namespace_qualified"`
 	Roles                          json.RawMessage          `json:"roles,omitempty"`
 	Machines                       json.RawMessage          `json:"machines,omitempty"`
+	RegistrationPolicy             json.RawMessage          `json:"registration_policy,omitempty"`
 }
 
 func exportAuthorityWireFixture(t *testing.T, dir, issuer string, voters int, bootstrap string) {

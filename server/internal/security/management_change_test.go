@@ -14,7 +14,7 @@ func TestManagementChangeRejectsAmbiguousAndDirectGrantShapes(t *testing.T) {
 		{Kind: PutPrincipal, Identity: &identity, State: Deleted},
 		{Kind: PutAssignment, Identity: &identity, RoleID: "role", State: Active},
 		{Kind: PutIssuer, Issuer: &Issuer{URL: "https://issuer.example", ClientID: "a", APIAudience: "b", Algorithms: []string{"RS256"}, EnvOwned: true}},
-		{Kind: PutRole, Role: &Role{ID: "role", Rules: []PermissionRule{dataRule(Allow, VertexRead, "")}}},
+		{Kind: PutRole, Role: &Role{ID: "role", Rules: []PermissionRule{dataRule(VertexRead, "")}}},
 	} {
 		if err := change.validate(); err == nil {
 			t.Fatal("invalid typed shape accepted", change.Kind)

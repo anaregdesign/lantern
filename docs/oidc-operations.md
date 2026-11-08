@@ -80,26 +80,30 @@ The [Flutter setup](../sdks/dart/example/README.md#native-google-and-apple-login
 lists required platform registration. Four real-provider/platform exits and
 package publication remain separate from merged source and functional-validation/configured-source-integration evidence.
 
-## Native user registration policy
+## User registration policy
 
-The [registration contract](native-user-registration.md) adds an explicit signup
-operation to the OIDC authority. An absent policy disables signup; startup and ordinary
-login do not assign UIDs or create Roles. Before enabling it, review existing
-`users:` data and broad grants for collisions, choose the exact permitted native
-profiles, and install the reviewed `personal_user` Role. Its seven initial Allow
-rules use the typed `PrincipalUIDPrefix` with `literal_before: "users:"` and
-`literal_after: ":"`. Existing Denies still restrict access. Never substitute an
-empty literal prefix or Global resource for a selector an editor does not support.
-The current Admin editor refuses unsupported UID-bound Role editing.
+The [registration contract](native-user-registration.md) uses an explicit signup
+operation. Fresh provisioning creates `personal_user` with Data/read and
+Data/write on the installed `users:<uid>:` prefix and leaves registration OFF.
+Ordinary resume and login never repair a removed Role or withdrawn assignment.
+Older API, configuration and native-history formats are unsupported and fail
+closed. Do not rewrite, delete or reset existing state to bypass incompatibility.
 
-An authorized operator reads `GetRegistrationPolicy` and changes it through the
-existing Prepare/Apply security workflow using `put_registration_policy`.
-Version 1 selects Role `personal_user` and at most 32 exact issuer/profile pairs;
-the list is sorted by issuer, then client profile ID. Opening or expanding it
-requires operation-bound reauthentication. Closing or reducing it is restrictive
-and does not bump Issuer revisions or revoke existing sessions. Suspension,
-deletion, assignment withdrawal, Denies and explicit session revocation retain
-their existing meanings. Actual enablement is a separate deployment decision.
+Admin's shared Security settings reads `GetRegistrationPolicy` and stages
+ON/OFF plus exact eligible profiles through the existing Review/Apply workflow.
+Version 2 selects `personal_user` and at most 32 typed issuer/profile pairs.
+Browser eligibility has kind `browser`, profile ID `browser`, and requires the
+exact enabled browser Issuer/client configuration; native eligibility has kind
+`native` and an existing native client profile ID. Enabling an Issuer alone does
+not open signup. Opening/expanding registration requires operation-bound
+reauthentication. Closing prevents new signup and preserves existing login.
+
+Verified browser Code/PKCE/state/nonce completion and supported native provider
+proofs enter the same durable atomic UID/Principal/initial-Role registration.
+Session issuance follows the applied registration. Email is optional verified
+display metadata and never links identities or grants access. The personal Role
+grants no Security, Settings, Operations, Schema or private peer authority.
+Data/read includes correctly scoped query/CDC/export and receipt disclosure.
 
 Clients use Begin/Prepare/Apply registration and save the exact review before
 Apply. Recovery authenticates the same identity under a distinct purpose and
@@ -174,6 +178,16 @@ reference are supported. External material uses the same typed configuration and
 identity-material format. Generic OFF private-peer controls retain their
 independent workload plane; no authentication environment means standalone OFF.
 
+Browser login requests `openid email`. A signed ID token's `email` is used only
+as optional display metadata when `email_verified` is the JSON boolean `true`
+and the value is a bounded, valid mailbox. Missing, unverified or malformed
+claims do not block a supported identity; Admin falls back to its UID/subject.
+Each successful browser login atomically refreshes this metadata with the
+session, including clearing an unavailable email. Native/API authentication
+does not overwrite it. Current self metadata and authorized User views expose
+only the verified mailbox, never provider tokens. Identical emails across
+Issuers or subjects do not join accounts or supply Role assignments.
+
 Identity is the verified Issuer/subject pair, not email, display name or a client
 header. Machines use dedicated credentials bound only to Roles. The approved
 actor policy allows authorized management reference/status reads, but no
@@ -195,26 +209,31 @@ WAITING and STOPPED separately describe cessation of stale authorization.
 
 ## Security state version boundary
 
-Security image version 2, protocol version 2, namespaced-v1 data and native
-journal/capsule encodings remain versioned contracts. Retiring the old runtime
-does not rename their bytes, synthesize new IDs or reinterpret an old result.
-Old fixed-writer signed revisions, sessions and journals cannot be imported.
+Security image version 3, protocol version 2 and the current native
+execution/model fingerprints define this source. Older APIs, image/data/config
+formats and signed histories are unsupported and fail closed. There is no
+conversion or automatic reset. Preserve existing files; an incompatible
+environment requires an explicit operator decision outside ordinary startup.
 Graph backups and receipt-WAL V9 / archive V4 retain their separate contracts
 and cannot substitute for authority state or custody.
 
 ## Management operation and actor policy
 
-An authenticated end user with current explicit `security.manage` authority may
+An authenticated end user with current explicit Security/write authority may
 perform ordinary management with missing or older signed `auth_time` under
 #1672 after trusted human qualification. This includes creating a mutable scoped data Role and assigning it to
 the exact verified bootstrap identity while preserving the environment-owned
 `security_admin` assignment. Data grants alone do not require additional
-authentication. Bootstrap continues to have no implicit data rights, and
-missing `auth_time` alone does not require extra operator provisioning.
+authentication. Fresh provisioning separately creates `data_admin` (Data/read
+and Data/write on all logical keys) and assigns it to the exact bootstrap
+identity. That data assignment is removable and is not environment-locked.
+`security_admin` retains its protected Security/Settings scope; neither Role
+grants Operations or Schema. Ordinary restart never recreates a modified Role
+or restores a removed data assignment. Missing `auth_time` alone does not
+require extra operator provisioning.
 
-Changes to accepted Issuer/credential trust and effective expansion of
-`security.manage` require reauthentication for each operation. Removing a
-Deny, deleting a Role or removing an assignment may expand authority; assess
+Changes to accepted Issuer/credential trust and expansion of
+effective write authority on Security or Settings require reauthentication for each operation. Changing Roles or assignments may expand authority; assess
 the complete resulting policy. A general recent-session flag is insufficient
 for this operation. The [operation matrix and proof contract](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy)
 binds actor, original full ID, immutable intent and full policy cut to a signed
@@ -305,7 +324,7 @@ closed on incomplete or injected proxy configuration. Missing Server and
 Prometheus routes return API errors, never the SPA shell. Prometheus requests
 perform a Server `/auth/operations` check first, preserving the current session
 and public Host. OFF explicitly permits diagnostics; OIDC requires a current
-`operations.read` Role. After admission, strip cookies and Authorization from
+read Allow on the Operations resource. After admission, strip cookies and Authorization from
 the Prometheus request. Query strings are not forwarded to the authorization
 endpoint. Only GET diagnostics are proxied. This follows the documented Caddy
 [forward_auth](https://caddyserver.com/docs/caddyfile/directives/forward_auth)
@@ -359,12 +378,10 @@ CSRF and source hashes before a separately authorized actual UI/provider run.
 
 [ADR 0012](decisions/0012-oidc-prefix-rbac.md) defines read-only, application
 writer, identity/value CDC, backup exporter, operations observer and security
-administrator scenarios. Permissions always come through Roles. Literal prefix
-Deny wins. CDC value and export actions are explicit; neither is implied by
-ordinary read. A machine with explicit export/read Roles can export its visible,
-referentially closed data subset without an interactive login. Security changes
-follow the approved operation/actor matrix above; machine export permission
-does not grant management mutation.
+administrator scenarios. Permissions always come through Roles.
+Assigned positive Allows combine by union; no match means refusal. Data/read
+includes scoped query, CDC, export and permitted original-receipt disclosure.
+Data/write includes deletion and all TTL changes without management authority.
 
 Logical public keys map to physical `data:` keys. `sys:` metadata never appears
 in business scans, counts, Graph results, public backup or CDC. Ranking uses
@@ -386,9 +403,10 @@ concurrent creation versus Add/Put/Delete and delayed endpoint/tombstone/TTL
 convergence are proven. Protected Add/Put/Create require live endpoints and never
 create, update or revive them; OFF retains legacy Add/Put endpoint creation.
 Edge read requires tail VertexRead and head VertexRead. Every Edge modification
-requires tail VertexRead and head VertexWrite, with matching Deny winning across
-Roles and default deny. Pair selectors and independent Edge grants are rejected.
-VertexDelete remains an independent permission.
+uses the one selected global RR/WW/RW/WR endpoint predicate across
+all users and credentials. Fresh provisioning selects RR. Pair selectors and
+independent Edge grants are rejected. Data/write includes Vertex deletion and
+all lifetime changes; RR intentionally lets endpoint readers edit their Edge.
 
 ## Leaderless S5 — remaining contracts and qualification
 

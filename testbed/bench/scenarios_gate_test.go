@@ -3039,6 +3039,15 @@ func TestManualQualificationRetainsFanOutRepairDiagnostics(t *testing.T) {
 			t.Errorf("peer repair summary missing %q", clause)
 		}
 	}
+	stop := steps["Stop diagnostic cluster"].Run
+	for _, clause := range []string{"compose.native.yml", "compose.graph-snapshot.yml", `down_owned_compose "$COMPOSE_PROJECT_NAME"`, `.Image==$image`, `.Destination=="/run/lantern-config"`} {
+		if !strings.Contains(stop, clause) {
+			t.Errorf("diagnostic cleanup lost owned native profile binding %q", clause)
+		}
+	}
+	if strings.Contains(stop+peerLogs, "deploy/compose/docker-compose.yml") {
+		t.Error("benchmark diagnostics must not compose the independent application stack")
+	}
 }
 
 func TestTTLChurnScenarioCausalBudgetContract(t *testing.T) {

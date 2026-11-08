@@ -31,6 +31,7 @@ func TestCurrentPublicSessionRequiresAppliedThenFreshAdmission(t *testing.T) {
 			e := *facts.Token
 			low, _, _ := view.TimeBounds()
 			e.Mode, e.Profile, e.Nonce = "code", "oidc-id", [32]byte{7}
+			e.VerifiedEmail = "admin@example.test"
 			e.Code = CodeAuthenticationEvidence{Flow: "login", Transaction: [32]byte{8}, Exchange: [32]byte{9}, Nonce: e.Nonce, PKCE: [32]byte{10}, CreatedAt: low.Add(-20 * time.Second), ConsumedAt: low.Add(-10 * time.Second), ExpiresAt: low.Add(time.Minute)}
 			original = &e
 		}
@@ -41,7 +42,7 @@ func TestCurrentPublicSessionRequiresAppliedThenFreshAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	review, session, err := o.PrepareSession(ctx, before, code, strings.Repeat("a", 64), strings.Repeat("b", 64), "")
-	if err != nil || session.ExpiresAt.Sub(session.CreatedAt) != MaxSessionLifetime || !session.AuthTime.IsZero() {
+	if err != nil || session.ExpiresAt.Sub(session.CreatedAt) != MaxSessionLifetime || !session.AuthTime.IsZero() || session.VerifiedEmail != original.VerifiedEmail {
 		t.Fatal("session changed original Code facts/lifetime", err)
 	}
 	if o.ConfirmIssuedSession(ctx, before, session) == nil {
@@ -63,6 +64,11 @@ func TestCurrentPublicSessionRequiresAppliedThenFreshAdmission(t *testing.T) {
 	ctx, after, err := o.RefreshRequest(ctx)
 	if err != nil || o.ConfirmIssuedSession(ctx, after, session) != nil {
 		t.Fatal("same Code facts could not obtain fresh installed view", err)
+	}
+	for _, principal := range after.Snapshot().Image().Principals {
+		if principal.Identity == session.Identity && principal.VerifiedEmail != original.VerifiedEmail {
+			t.Fatal("browser display metadata was not committed atomically")
+		}
 	}
 	// Original expiry is retained on status-first retry, not minted anew.
 	ticks[1].Add(uint64(time.Second))

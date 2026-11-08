@@ -48,7 +48,7 @@ type authorityOutputRequirement struct {
 
 func (r authorityOutputRequirement) freeze() (authorityOutputRequirement, error) {
 	kind, known := actionResource(r.action)
-	if !known || len(r.keys) > 1024 || (kind == GlobalResource && len(r.keys) != 0) || (kind == DataResource && len(r.keys) == 0) {
+	if !known || len(r.keys) > 1024 || (kind != DataResource && len(r.keys) != 0) || (kind == DataResource && len(r.keys) == 0) {
 		return r, ErrPermissionDenied
 	}
 	bytes := 0
@@ -67,7 +67,7 @@ func (r authorityOutputRequirement) allows(p *S1Projection, c authorityCredentia
 		return false
 	}
 	kind, _ := actionResource(r.action)
-	if kind == GlobalResource {
+	if kind != DataResource {
 		return a.AllowsGlobal(r.action)
 	}
 	for _, key := range r.keys {

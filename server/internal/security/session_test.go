@@ -33,6 +33,7 @@ func TestNativeCredentialAndSessionProfile(t *testing.T) {
 		func(s *Session) { s.CSRFDigest = digest }, func(s *Session) { s.Profile = BrowserCookieProfile },
 		func(s *Session) { s.Profile = "" }, func(s *Session) { s.ClientProfileID = "" },
 		func(s *Session) { s.ExpiresAt = s.ExpiresAt.Add(time.Nanosecond) }, func(s *Session) { s.AuthTime = now.Add(time.Second) },
+		func(s *Session) { s.VerifiedEmail = "user@example.test" },
 	} {
 		invalid := s
 		change(&invalid)
@@ -46,6 +47,14 @@ func TestNativeCredentialAndSessionProfile(t *testing.T) {
 	legacy.ServiceOrigin = ""
 	if !legacy.valid() || legacy.CredentialProfile() != BrowserCookieProfile {
 		t.Fatal("historical browser classification changed")
+	}
+	legacy.VerifiedEmail = "user@example.test"
+	if !legacy.valid() {
+		t.Fatal("bounded browser display metadata rejected")
+	}
+	legacy.VerifiedEmail = "<script>@example.test"
+	if legacy.valid() {
+		t.Fatal("unsafe display metadata retained")
 	}
 }
 

@@ -17,7 +17,7 @@ func (c S1ExecutionConfig) Digest() [32]byte {
 	if !c.valid() {
 		return [32]byte{}
 	}
-	return s1Digest("execution-configuration", c)
+	return s1Digest("execution-configuration-allow-only-v3", c)
 }
 
 func s1PolicyConfiguration(limits PolicyLimits) [32]byte {
@@ -26,6 +26,7 @@ func s1PolicyConfiguration(limits PolicyLimits) [32]byte {
 	}
 	return s1Digest("policy-configuration", struct {
 		Version uint16
+		Model   int
 		Policy  PolicyLimits
-	}{S1Version, limits})
+	}{S1Version, ImageVersion, limits})
 }

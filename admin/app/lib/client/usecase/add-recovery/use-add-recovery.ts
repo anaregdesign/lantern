@@ -25,6 +25,7 @@ export function useAddRecovery() {
               state.principal.roles,
               input.tail,
               input.head,
+              state.principal.userId,
             )),
       ),
     [client, state],

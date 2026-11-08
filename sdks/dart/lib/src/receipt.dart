@@ -841,6 +841,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     if (response.outcomes.length != input.length) {
       throw _malformedReceiptResponse(
         context,
@@ -1119,6 +1125,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     if (response.existed.length != input.length) {
       throw _malformedReceiptResponse(
         context,

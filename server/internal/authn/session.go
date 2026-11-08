@@ -18,6 +18,7 @@ type SessionView struct {
 	Admission            *security.Admission
 	Roles                []ManagedRole
 	RecentAuthentication bool
+	VerifiedEmail        string
 }
 
 // InspectSession is shared by browser bootstrap and Connect GetCurrentPrincipal.
@@ -43,6 +44,9 @@ func InspectSession(ctx context.Context, a *security.Admission, current *securit
 	image := a.Snapshot().Image()
 	assigned, locked := make(map[string]bool), make(map[string]bool)
 	for _, user := range image.Principals {
+		if user.Identity == a.Identity() {
+			result.VerifiedEmail = user.VerifiedEmail
+		}
 		for _, assignment := range user.Assignments {
 			if user.Identity == a.Identity() {
 				assigned[assignment.RoleID] = true

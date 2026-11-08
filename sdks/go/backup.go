@@ -159,6 +159,14 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 		if err != nil {
 			return wrapConnectErr(err)
 		}
+		if err := mutationAcceptanceFromProto(resp.Msg); err != nil {
+			if _, accepted := err.(*MutationAcceptance); !accepted {
+				return err
+			}
+			undisclosed = true
+			vbatch = vbatch[:0]
+			return nil
+		}
 		applied, err := appliedPutOutcomeCount(resp.Msg.GetOutcomes(), len(vbatch))
 		if err != nil {
 			return err

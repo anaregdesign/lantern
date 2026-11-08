@@ -276,7 +276,7 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
       if (mounted) {
         setState(
           () => _metadata =
-              'Server search info unavailable: operations.read is required. '
+              'Server search info unavailable: read permission on Operations is required. '
               'Data/search results are independent.',
         );
       }

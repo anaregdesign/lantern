@@ -46,9 +46,9 @@ lease expiry hide protected views until a new authentication check succeeds;
 identity, policy, gateway or selected scope changes abort and clear old results.
 
 **Role scope** suggestions come from the Roles returned by the Server for the
-current principal. Browse uses VertexRead prefixes; search and generated traversal
-commands use the intersection with Query. The picker displays overlapping Deny
-exceptions. Every request still passes the Server's authorization checks, including
+current principal. Browse, search and generated traversal commands use positive
+Logical data Read scopes, including trusted personal-UID slots. Suggestions combine
+by union and are not a client-side authorization decision. Every request still passes the Server's authorization checks, including
 typed CLI commands: their keys and prefixes are never silently rewritten. The
 selection is held in memory and is not a persisted grant.
 
@@ -57,7 +57,8 @@ send. It contains gateway/identity, target and receipt identifiers, without brow
 credentials, tokens or CSRF secrets. A lost or cancelled response remains uncertain
 across reload and login. **Check original Add** reads the existing receipt Status
 API with the original operation ID when receipts are supported and both endpoints
-have current ReceiptRead grants. ReceiptRead is not required for ordinary Add.
+have current scoped data Read authority and the required original-operation
+identity/resource checks. Edge mutation authority is separate from receipt disclosure.
 The check never resends a
 mutation. An unavailable, unobserved, undisclosed or no-longer-provable result keeps
 the request locked. Legacy Add and decaying Add have no original-result receipt in
@@ -234,18 +235,52 @@ operator-managed. Remove a browser secret binding explicitly when removing its
 browser profile. Google accepts only its pinned RS256 profile and provider
 endpoints.
 Permissions belong only to Roles. Prefixes are literal logical keys; all-key
-selection is explicit, and matching Deny wins. ExplainAccess is Server-derived.
+selection is explicit. Rules grant only Read or Write on typed Logical data,
+Security, Settings, Operations or Schema resources. Allows combine across assigned
+Roles; no matching Allow means refusal. Write includes Delete and TTL changes and
+does not imply Read. Data grants never grant management access. ExplainAccess is
+Server-derived. The shared Edge editing policy defaults to readable → readable:
+users with Read on both Vertices can edit eligible Edges. Writable-based modes
+can permit blind edits; Edge reading still requires both endpoint reads.
 Environment-owned Issuers, memberships and Role policies are locked. Mutations
 require a reviewed revision and current explicit authority. Ordinary management
 by a qualified human allows missing or older signed `auth_time`; valid
 authentication, credential/session expiry and current policy admission still apply.
-Changes to accepted Issuer/credential trust and effective `security.manage`
+Changes to accepted Issuer/credential trust and effective management-write
 expansion require purpose-bound per-operation reauthentication. Machine
 management mutations are prohibited. Response loss retains the original change
 ID for status-only recovery. Committed/pending and globally enforced revisions
 are shown separately. OFF exposes setup guidance without
 an anonymous authentication toggle. IdP account/password/MFA management remains
 with the provider. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md).
+
+Security sections start with a bounded, responsive list. Selecting a record opens
+saved details; Edit permissions, Assign members and Explain access are separate
+tasks. Create Role contains Blank Role and From template in one flow. A template
+populates an explicitly unsaved draft, requires a unique new Role ID, and neither
+saves nor assigns anything. Review/Apply uses the inspected policy cut. Successful
+Role Apply reads back saved details; assigning members is an explicit next task.
+User Role choices load one shared catalog page, rather than one request per chip.
+
+Shared Security settings are independent of the selected record. Load their
+current values before staging registration or Edge-mode changes. Registration
+starts OFF; ON requires exact eligible browser/native profiles and the scoped
+`personal_user` Role. Missing Roles are never repaired during registration.
+Turning OFF preserves existing-user login. Policy drafts use the same review,
+operation approval, CAS and original-result recovery as other Security changes.
+
+The field-help inventory is maintained with the editor components. Required
+meaning/examples remain visible; additional constraints use keyboard/touch
+accessible disclosure, without hover-only instructions:
+
+| Form          | Covered fields / guidance                                                                                                                                              |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User          | Exact Issuer, subject, machine identity, account state, saved Role picker, protected assignments and union after removal                                               |
+| Issuer        | HTTPS Issuer, browser client, API audience, exact callback, signing algorithms, secret-binding action/operator handle, enabled state and qualified human/API namespace |
+| Role          | Unique immutable ID, readable name, template starting point/purpose/scope, saved versus draft versus assigned state                                                    |
+| Rule          | Unique rule ID, resource boundary, independent Read/Write, literal/all-data/personal UID scope and exact prefix                                                        |
+| Explain       | Exact Issuer/subject, resource/permission, key or oriented tail/head, authoritative current result                                                                     |
+| Shared policy | All four global Edge modes, fresh RR effects/blind edits, registration ON/OFF, exact eligible/retained profiles, joining Role readiness                                |
 
 The legacy `GetSecurityChangeStatus` contract returns retained commit proof for the original change
 ID, version and enforcement. It does not return item outcomes or prove that
@@ -274,7 +309,7 @@ lost/cleared browser storage is not a server journal or nonexecution proof.
 ## Managed log level
 
 The **Settings** page manages log level through the existing OIDC control plane
-and `security.manage` permission. OFF keeps startup environment ownership. Until
+and Security/Settings resource Write permission. OFF keeps startup environment ownership. Until
 explicit adoption, each node uses its startup environment/default; after adoption,
 the committed policy survives restart and environment changes cannot replace it.
 Log format, listeners and secrets remain outside this screen.
@@ -310,7 +345,7 @@ over HTTPS and pin this upstream to the security writer. `/auth/*`,
 No credentials or client-supplied upstreams enter this configuration.
 
 `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` requires the Server upstream. Every GET
-first passes `/auth/operations` admission, including current `operations.read`
+first passes `/auth/operations` admission, including current Read authority on the Operations resource
 in OIDC. Query parameters stay on the metrics query, and cookies/Authorization
 never reach Prometheus. Missing, invalid or unavailable configuration fails
 closed. The [operations guide](../docs/oidc-operations.md) describes the HTTPS,

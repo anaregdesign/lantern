@@ -131,7 +131,7 @@ Before choosing it, account for these boundaries:
 | **Full replicas, no sharding** | Every HA replica holds the entire graph. The working set must fit in one process's RAM. |
 | **Eventual consistency** | Leaderless replication provides HA, with asynchronous propagation between replicas. It is not linearizable; WAN replication is outside the supported scope. See the [replication contract](docs/replication.md). |
 | **Local graph queries** | Seed-local traversal and ranking are supported; whole-graph offline analytics are outside the intended workload. |
-| **Authentication and authorization** | Authentication defaults to OFF. OIDC enables Role-only prefix Allow/Deny and named machine credentials; HA uses a separate signed-membership mTLS workload plane. See [ADR 0012](docs/decisions/0012-oidc-prefix-rbac.md) for the qualification boundary. |
+| **Authentication and authorization** | Authentication defaults to OFF. OIDC uses Role-only read/write Allows on typed resources, with literal data-prefix scopes and default refusal, plus named machine credentials. HA uses a separate signed-membership mTLS workload plane. See [the authorization model](docs/authorization-model.md) and [ADR 0012](docs/decisions/0012-oidc-prefix-rbac.md) for the qualification boundary. |
 | **Pre-v1 API** | Wire schemas, SDK APIs, CLI grammar, env vars, and metrics may break between releases. Pin versions and review upgrades. |
 
 ## Use it from your language

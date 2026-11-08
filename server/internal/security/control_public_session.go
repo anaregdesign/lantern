@@ -85,7 +85,7 @@ func (o *CurrentAuthority) PrepareSession(ctx context.Context, a *Admission, pro
 	if low.Before(consumed) || !high.Before(expires) {
 		return CurrentReview{}, Session{}, ErrPermissionDenied
 	}
-	s := Session{CSRFDigest: csrf, IssuerConfigRevision: e.ConfigRevision, Digest: digest, Identity: a.Identity(), CreatedAt: low, ExpiresAt: expires, AuthTime: e.AuthTime.Time()}
+	s := Session{CSRFDigest: csrf, IssuerConfigRevision: e.ConfigRevision, Digest: digest, Identity: a.Identity(), CreatedAt: low, ExpiresAt: expires, AuthTime: e.AuthTime.Time(), VerifiedEmail: e.VerifiedEmail}
 	if e.Mode == "native-login" {
 		if csrf != "" || replaces != "" {
 			return CurrentReview{}, Session{}, ErrPermissionDenied
@@ -103,7 +103,7 @@ func (o *CurrentAuthority) ConfirmIssuedSession(ctx context.Context, a *Admissio
 	}
 	e := a.current.credential.claim.Token
 	installed, known := a.Snapshot().Session(s.Digest)
-	if e == nil || !sessionIssuanceEvent(*e) || !known || installed != s || s.Revoked || s.Identity != a.Identity() || s.IssuerConfigRevision != e.ConfigRevision {
+	if e == nil || !sessionIssuanceEvent(*e) || !known || installed != s || s.Revoked || s.Identity != a.Identity() || s.IssuerConfigRevision != e.ConfigRevision || s.VerifiedEmail != e.VerifiedEmail {
 		return ErrPermissionDenied
 	}
 	if e.Mode == "native-login" {

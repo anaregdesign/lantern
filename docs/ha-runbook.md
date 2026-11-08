@@ -138,13 +138,15 @@ production scraping needs an operator-authenticated sidecar.
 
 ### 3.2 Docker Compose
 
-The [default Compose](../deploy/compose/README.md) starts one OFF Server/Admin
-on loopback. `docker-compose.ha.yml` adds three explicitly configured private
-origins using per-node env/material directories and durable state volumes.
-The operator signing private key stays outside them. Public OFF does not
-weaken private membership. OIDC Admin needs an HTTPS public frontend and a
-verified pinned eligible-authority upstream; optional anonymous MCP/Prometheus examples
-are not protected deployment recipes.
+The [canonical Compose stacks](../deploy/compose/README.md) each start three
+Servers, Admin, MCP, Prometheus and three separate mTLS metrics relays.
+The default file is local OFF; `docker-compose.oidc.yml` selects the maintained
+OIDC stack with a verified HTTPS frontend and pinned browser authority.
+Both require explicit compatible immutable images and retained private identity,
+membership and state. Operator signing custody remains outside Server mounts.
+The specialized renewable-membership operator profile is standalone and uses
+its own static/renewable/state directory contract; it is not a canonical-stack
+overlay. Public OFF does not weaken private membership.
 
 SDK failover remains opt-in over fixed known public endpoints. Dynamic pools
 belong to an operator proxy/DNS boundary; clients do not discover membership.
@@ -711,11 +713,10 @@ identity. Unknown or nonempty artifacts are preserved and cause refusal. The
 stable empty `.lantern-snapshot-owner` lease file remains; do not delete it while
 an owner may be active. The directory is exclusive to this staging role.
 
-The local OFF native fixture prepares explicit host-owned spool directories. For
-OFF graph-only Compose, the [operator staging overlay](../deploy/compose/docker-compose.graph-snapshot.yml)
-adds a new named volume per node at `/var/lib/lantern-snapshot-spool`. A matching
-image prepares that empty leaf for its default non-root user with mode 0700;
-fresh public volumes copy up its owner and mode. The
+The canonical OFF Compose stack requires separate precreated host-owned spool
+directories at `/var/lib/lantern-snapshot-spool`, with the configured non-root
+owner and mode 0700. It already declares both byte limits; no extra HA or spool
+overlay is needed. The
 [benchmark overlay](../testbed/bench/compose.graph-snapshot.yml) instead uses
 `nocopy: true` and its existing network-free initializer to prepare only the
 fresh project's three new staging volumes for the driver's explicit UID/GID.
@@ -726,12 +727,12 @@ active path.
 
 The OFF custom-UID membership profile uses the separate
 [staging bind overlay](../deploy/compose/docker-compose.graph-snapshot.membership.yml)
-last, after its replacement mount lists, instead of the named-volume overlay.
+after the standalone `docker-compose.membership.yml` operator profile.
 Operators prepare new `node-i/snapshot-spool` directories with the exact
 workload UID/GID and mode 0700; missing directories are refused without automatic
 creation or a production initializer. Each profile requires the explicit
 container path and both byte limits in its per-node graph-only configuration.
-See the [Compose instructions](../deploy/compose/README.md#explicit-ha).
+See the [Compose instructions](../deploy/compose/README.md).
 
 Keep the dedicated staging volume through ordinary restart and preserve its
 stable owner file. Fresh benchmark teardown removes only its named project's
@@ -894,9 +895,10 @@ kubectl port-forward svc/lantern 6380:6380 &
 
 # Compose
 cd deploy/compose
-# After provisioning the signed cohort described in §2.1:
-docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.ha.yml ps
+# After completing the canonical OFF preparation and one-time initialization:
+docker compose --env-file /absolute/private/off/compose.env up -d --no-build
+docker compose --env-file /absolute/private/off/compose.env ps
+# For OIDC use its separate canonical file and private inputs as documented.
 ```
 
 Then from a host that can reach the cluster:

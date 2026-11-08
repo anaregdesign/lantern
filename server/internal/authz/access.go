@@ -11,6 +11,7 @@ import (
 // Access captures one Principal's explicit Role membership. It is immutable
 // and safe to share for a complete batch; it performs no I/O or graph lookup.
 type Access struct {
+	edgeMode EdgeEndpointMode
 	roles    []*compiledRole
 	cache    *scopeCache
 	setKey   string
@@ -45,7 +46,7 @@ func (p *CompiledPolicy) AccessKey(ids []string, bindings SubjectBindings) (stri
 	}
 	canonical := append([]string(nil), ids...)
 	sort.Strings(canonical)
-	key := strings.Join(canonical, "\x00")
+	key := string(p.edgeMode) + "\x00" + strings.Join(canonical, "\x00")
 	if bindings.PersonalUID != "" {
 		digest := bindings.Digest()
 		key += "\x00\x00" + hex.EncodeToString(digest[:])
@@ -60,7 +61,7 @@ func (p *CompiledPolicy) BindRoles(ids []string, bindings SubjectBindings) (*Acc
 	if err != nil {
 		return nil, err
 	}
-	access := &Access{roles: make([]*compiledRole, 0, len(ids)), cache: p.scopeCache, setKey: key, bindings: bindings}
+	access := &Access{edgeMode: p.edgeMode, roles: make([]*compiledRole, 0, len(ids)), cache: p.scopeCache, setKey: key, bindings: bindings}
 	for _, id := range ids {
 		access.roles = append(access.roles, p.roles[id])
 	}
@@ -86,54 +87,55 @@ func matchesUIDPrefix(prefixes []PrincipalUIDPrefix, key string, bindings Subjec
 	return false
 }
 
-func (p prefixRules) denies(key string, bindings SubjectBindings) bool {
-	return matchesPrefix(p.deny, key) || matchesUIDPrefix(p.uidDeny, key, bindings)
-}
-
 func (p prefixRules) allows(key string, bindings SubjectBindings) bool {
 	return matchesPrefix(p.allow, key) || matchesUIDPrefix(p.uidAllow, key, bindings)
 }
 
 func (a *Access) Allows(action Action, logicalKey string) bool {
-	kind, known := ActionResource(action)
-	if a == nil || !known || kind != DataResource || logicalKey == "" || !utf8.ValidString(logicalKey) {
+	resource, known := ActionResource(action)
+	permission, mapped := OperationPermission(action)
+	return known && mapped && resource == DataResource && a.AllowsData(permission, logicalKey)
+}
+
+func (a *Access) AllowsData(permission Permission, logicalKey string) bool {
+	if a == nil || !ValidPermission(DataResource, permission) || logicalKey == "" || !utf8.ValidString(logicalKey) {
 		return false
 	}
-	allowed := false
 	for _, role := range a.roles {
-		prefixes := role.data[action]
-		if prefixes.denies(logicalKey, a.bindings) {
-			return false
+		if role.data[permission].allows(logicalKey, a.bindings) {
+			return true
 		}
-		allowed = allowed || prefixes.allows(logicalKey, a.bindings)
 	}
-	return allowed
+	return false
+}
+
+// AllowsResource checks only a selector-free typed management resource.
+func (a *Access) AllowsResource(resource ResourceKind, permission Permission) bool {
+	if a == nil || resource == DataResource || !ValidPermission(resource, permission) {
+		return false
+	}
+	for _, role := range a.roles {
+		if role.global[resource][permission] {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Access) AllowsGlobal(action Action) bool {
-	kind, known := ActionResource(action)
-	if a == nil || !known || kind != GlobalResource {
-		return false
-	}
-	allowed := false
-	for _, role := range a.roles {
-		flags := role.global[action]
-		if flags.deny {
-			return false
-		}
-		allowed = allowed || flags.allow
-	}
-	return allowed
+	resource, known := ActionResource(action)
+	permission, mapped := OperationPermission(action)
+	return known && mapped && a.AllowsResource(resource, permission)
 }
 
-// AllowsAll proves a whole-data-domain fast path. Any applicable Deny defeats
-// it, including a descendant Deny alongside an explicit empty-prefix Allow.
+// AllowsAll proves the explicit all-data positive scope.
 func (a *Access) AllowsAll(action Action) bool {
 	switch action {
 	case EdgeRead:
 		return a.AllowsAll(VertexRead)
 	case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
-		return a.AllowsAll(VertexRead) && a.AllowsAll(VertexWrite)
+		tail, head := a.EdgeEndpointActions()
+		return a.AllowsAll(tail) && a.AllowsAll(head)
 	}
 	kind, known := ActionResource(action)
 	if a == nil || !known || kind != DataResource {
@@ -141,24 +143,26 @@ func (a *Access) AllowsAll(action Action) bool {
 	}
 	allowed := false
 	for _, role := range a.roles {
-		rules := role.data[action]
-		if len(rules.deny) > 0 || len(rules.uidDeny) > 0 {
+		permission, ok := OperationPermission(action)
+		if !ok {
 			return false
 		}
+		rules := role.data[permission]
 		allowed = allowed || len(rules.allow) > 0 && rules.allow[0] == ""
 	}
 	return allowed
 }
 
-// AllowsEdge derives authority from Vertex Roles. An Edge belongs to its head:
-// every modification needs tail read and head write. Response disclosure and
+// AllowsEdge derives modifications from the one captured endpoint policy.
+// Reading always needs both endpoint reads. Response disclosure and
 // actual endpoint-creation effects are separate Server checks.
 func (a *Access) AllowsEdge(action Action, tail, head string) bool {
 	switch action {
 	case EdgeRead:
 		return a.Allows(VertexRead, tail) && a.Allows(VertexRead, head)
 	case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
-		return a.Allows(VertexRead, tail) && a.Allows(VertexWrite, head)
+		tailAction, headAction := a.EdgeEndpointActions()
+		return a.Allows(tailAction, tail) && a.Allows(headAction, head)
 	default:
 		return false
 	}

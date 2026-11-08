@@ -19,6 +19,7 @@ type principalAccess struct {
 // Snapshot owns a validated image and its compiled indexes. All fields are
 // private so a caller cannot mutate an installed revision after publication.
 type Snapshot struct {
+	edgePolicy            *EdgePolicy
 	configuredTrustDigest string
 	logPolicy             *LogPolicy
 	operationalPolicies   operationalpolicy.Policies

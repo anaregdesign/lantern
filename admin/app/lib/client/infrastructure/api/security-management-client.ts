@@ -35,6 +35,11 @@ export function createSecurityManagementClient(
       client.listUsers({ limit: 100, cursor }, options(signal)),
     roles: (cursor, signal) =>
       client.listRoles({ limit: 100, cursor }, options(signal)),
+    role: (id, signal) => client.getRole({ id }, options(signal)),
+    user: (identity, signal) => client.getUser({ identity }, options(signal)),
+    edgePolicy: (signal) => client.getEdgePolicy({}, options(signal)),
+    registrationPolicy: (signal) =>
+      client.getRegistrationPolicy({}, options(signal)),
     templates: (prefix, signal) =>
       client.getRoleTemplates({ prefix }, options(signal)),
     audit: async (cursor, signal) => {
@@ -50,9 +55,17 @@ export function createSecurityManagementClient(
     },
     validateIssuer: async (issuer, signal) =>
       (await client.validateIssuer({ issuer }, options(signal))).valid,
-    explain: (identity, action, logicalKey, signal, edge) =>
+    explain: (
+      identity,
+      action,
+      logicalKey,
+      signal,
+      edge,
+      permission,
+      resourceKind,
+    ) =>
       client.explainAccess(
-        { identity, action, logicalKey, edge },
+        { identity, action, logicalKey, edge, permission, resourceKind },
         options(signal),
       ),
     apply: (request, signal) =>

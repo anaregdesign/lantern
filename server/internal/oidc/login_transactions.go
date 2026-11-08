@@ -220,7 +220,7 @@ func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, 
 	query.Set("response_mode", "query")
 	query.Set("client_id", trust.Issuer.ClientID)
 	query.Set("redirect_uri", trust.Issuer.RedirectURI)
-	query.Set("scope", "openid")
+	query.Set("scope", "openid email")
 	query.Set("state", state)
 	query.Set("nonce", nonce)
 	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))

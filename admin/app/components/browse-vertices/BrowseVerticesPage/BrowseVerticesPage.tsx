@@ -51,10 +51,6 @@ import { Pager } from "../Pager/Pager";
 import { SearchParameterLabel } from "../SearchParameterLabel/SearchParameterLabel";
 import styles from "./BrowseVerticesPage.module.css";
 import { useDataScope } from "~/lib/client/usecase/data-scope/use-data-scope";
-import {
-  BROWSE_SCOPE_ACTIONS,
-  QUERY_SCOPE_ACTIONS,
-} from "~/lib/client/usecase/data-scope/scope-options";
 import { ScopeSelector } from "~/components/shared/ScopeSelector/ScopeSelector";
 
 /**
@@ -111,9 +107,7 @@ export function BrowseVerticesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const mode: FindMode =
     searchParams.get("find") === "search" ? "search" : "prefix";
-  const scope = useDataScope(
-    mode === "search" ? QUERY_SCOPE_ACTIONS : BROWSE_SCOPE_ACTIONS,
-  );
+  const scope = useDataScope();
   const [prefix, setPrefix] = useState(scope.prefix);
   const [query, setQuery] = useState("");
   const [searchPrefix, setSearchPrefix] = useState(scope.prefix);
@@ -189,7 +183,6 @@ export function BrowseVerticesPage() {
         <ScopeSelector
           {...scope}
           prefix={searching ? searchPrefix : prefix}
-          denied={scope.exceptions(searching ? searchPrefix : prefix)}
           select={(value) =>
             scope.select(value, value !== (searching ? searchPrefix : prefix))
           }

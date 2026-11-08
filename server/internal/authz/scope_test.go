@@ -15,17 +15,11 @@ func TestScope(t *testing.T) {
 		roles := []Role{{ID: "one"}, {ID: "two"}}
 		for i := range roles {
 			for j := 0; j < 12; j++ {
-				effect, action := Allow, VertexRead
+				permission := Read
 				if random.Intn(2) == 0 {
-					effect = Deny
+					permission = Write
 				}
-				switch random.Intn(3) {
-				case 1:
-					action = Query
-				case 2:
-					action = VertexWrite
-				}
-				roles[i].Rules = append(roles[i].Rules, dataRule(effect, action, prefixes[random.Intn(len(prefixes))]))
+				roles[i].Rules = append(roles[i].Rules, dataRule(permission, prefixes[random.Intn(len(prefixes))]))
 			}
 		}
 		policy, err := CompileRoles(roles, DefaultPolicyLimits())
@@ -71,7 +65,7 @@ func TestScope(t *testing.T) {
 }
 
 func TestScopeConcurrentSharedAccess(t *testing.T) {
-	policy, err := CompileRoles([]Role{{ID: "one", Rules: []PermissionRule{dataRule(Allow, VertexRead, ""), dataRule(Deny, VertexRead, "private:")}}}, DefaultPolicyLimits())
+	policy, err := CompileRoles([]Role{{ID: "one", Rules: []PermissionRule{dataRule(Read, "public:")}}}, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

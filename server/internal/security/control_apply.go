@@ -115,12 +115,12 @@ func (h *S1Handoff) valid(scope SemanticCut) bool {
 		return false
 	}
 	if a.registration == nil {
-		if a.lineage == 0 || a.authentication.Provenance == NativeProviderRegistration || !ordinaryS1Command(command.Kind) {
+		if a.lineage == 0 || a.authentication.Provenance == NativeProviderRegistration || a.authentication.Provenance == BrowserProviderRegistration || !ordinaryS1Command(command.Kind) {
 			return false
 		}
 	} else {
 		r := a.registration
-		if r.Version != 1 || a.authentication.Provenance != NativeProviderRegistration || a.authentication.SessionDigest != "" ||
+		if r.Version != 1 || !validRegistrationProfileKind(r.ProfileKind) || a.authentication.Provenance != registrationProvenance(r.ProfileKind) || a.authentication.SessionDigest != "" ||
 			r.State.Present != (a.lineage != 0) || !r.State.Present && r.State.UserUID != "" ||
 			(command.Kind != S1RegisterPrincipal || r.Original != nil) && (command.Kind != S1IssueSession || r.Original == nil || a.lineage == 0) ||
 			a.purposeEvidence != [32]byte{} || a.purposeBinding != [32]byte{} || !a.purposeDeadline.IsZero() {
@@ -398,5 +398,5 @@ func s1CurrentAuthority(p *S1Projection, h *S1Handoff, c S1Command) bool {
 	default:
 		return false
 	}
-	return c.Kind != S1Management || access.AllowsGlobal(SecurityManage)
+	return c.Kind != S1Management || CanManageChanges(access, c.Changes)
 }

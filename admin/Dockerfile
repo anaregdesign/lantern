@@ -49,6 +49,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 # non-root `caddy` user when bound to port >= 1024, which is why the
 # Caddyfile listens on :8080.
 FROM caddy:2.10-alpine
+ARG COMMIT=
+LABEL org.opencontainers.image.revision=${COMMIT}
 
 # Copy in the SPA build and the Caddy config.
 COPY --from=builder /src/admin/build/client /srv

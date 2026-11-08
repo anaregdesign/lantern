@@ -75,42 +75,28 @@ func TestS1OperationalPolicyAlwaysUsesOrdinaryCapacity(t *testing.T) {
 	}
 }
 
-func TestS1DenyExpansionAndFullAdminClosure(t *testing.T) {
+func TestS1AdminExpansionAndFullAdminClosure(t *testing.T) {
 	image := s1Image()
 	b := s1Bob()
-	image.Roles = append(image.Roles, Role{ID: "deny", Rules: []PermissionRule{{ID: "deny", Effect: Deny, Action: SecurityManage, Resource: GlobalResource}}})
-	image.Principals[1].Assignments = []RoleAssignment{{RoleID: "security_admin"}, {RoleID: "deny"}}
-	s := s1Fixture(t, image)
-	for _, changes := range [][]Change{
-		{{Kind: DeleteAssignment, Identity: &b, RoleID: "deny"}},
-		{{Kind: PutRole, Role: &Role{ID: "deny"}}},
-		{{Kind: DeleteAssignment, Identity: &b, RoleID: "deny"}, {Kind: DeleteRole, RoleID: "deny"}},
-		{{Kind: DeleteRole, RoleID: "deny"}, {Kind: DeleteAssignment, Identity: &b, RoleID: "deny"}},
-	} {
-		a, err := AssessS1(s.projection, s1Operation(t, s.projection, testIdentity(), s1Changes(changes...)))
-		if err != nil || !a.NeedsPurpose || a.ProvenNonexpanding {
-			t.Fatal("Deny revealed admin without purpose/reserve", a, err)
+	base := s1Fixture(t, image)
+	for _, target := range []string{"security_admin"} {
+		assessment, err := AssessS1(base.projection, s1Operation(t, base.projection, testIdentity(), s1Changes(Change{Kind: PutAssignment, Identity: &b, RoleID: target})))
+		if err != nil || !assessment.NeedsPurpose || assessment.ProvenNonexpanding {
+			t.Fatal("management expansion lacked operation approval", assessment, err)
 		}
 	}
-	if _, err := AssessS1(s.projection, s1Operation(t, s.projection, testIdentity(), s1Changes(Change{Kind: DeleteRole, RoleID: "deny"}))); !errors.Is(err, ErrUnknownRole) {
-		t.Fatal("missing dependency omitted", err)
-	}
 	admin := testIdentity()
-	for _, c := range []S1Command{
+	for _, command := range []S1Command{
 		s1Changes(Change{Kind: PutPrincipal, Identity: &admin, State: Suspended}),
 		s1Changes(Change{Kind: DeletePrincipal, Identity: &admin}),
 		s1Changes(Change{Kind: DeleteAssignment, Identity: &admin, RoleID: "security_admin"}),
-		s1Changes(Change{Kind: PutRole, Role: &Role{ID: "security_admin", Rules: []PermissionRule{{ID: "deny", Effect: Deny, Action: SecurityManage, Resource: GlobalResource}}}}),
-		s1Changes(Change{Kind: PutIssuer, Issuer: func() *Issuer { i := image.Issuers[0]; i.ConfigRevision = 0; return &i }()}),
+		s1Changes(Change{Kind: PutRole, Role: &Role{ID: "security_admin"}}),
 	} {
-		base := s1Fixture(t, s1Image())
-		if _, err := AssessS1(base.projection, s1Operation(t, base.projection, admin, c)); !errors.Is(err, ErrLastAdministrator) {
-			t.Fatal("last qualified OIDC human lost", err)
+		if _, err := AssessS1(base.projection, s1Operation(t, base.projection, admin, command)); !errors.Is(err, ErrLastAdministrator) {
+			t.Fatal("last administrator lost", err)
 		}
 	}
-	base := s1Fixture(t, s1Image())
-	data := s1Operation(t, base.projection, admin, s1Changes(Change{Kind: PutAssignment, Identity: &b, RoleID: "reader"}))
-	a, err := AssessS1(base.projection, data)
+	a, err := AssessS1(base.projection, s1Operation(t, base.projection, admin, s1Changes(Change{Kind: PutAssignment, Identity: &b, RoleID: "reader"})))
 	if err != nil || a.NeedsPurpose || a.ProvenNonexpanding {
 		t.Fatal("data expansion classification", err)
 	}
@@ -164,6 +150,36 @@ func TestS1SessionLineageAndExclusiveRotation(t *testing.T) {
 	logout := s1Operation(t, s.projection, actor, S1Command{Kind: S1RevokeSession, SessionDigest: session.Digest, SessionLineage: 1})
 	if _, err := AssessS1(s.projection, logout); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestS1BrowserSessionRefreshesOnlyDisplayMetadata(t *testing.T) {
+	for _, email := range []string{"changed@example.test", ""} {
+		t.Run(email, func(t *testing.T) {
+			image := s1Image()
+			for i := range image.Principals {
+				if image.Principals[i].Identity == testIdentity() {
+					image.Principals[i].VerifiedEmail = "old@example.test"
+				}
+			}
+			state := s1Fixture(t, image)
+			session := testSession()
+			session.CSRFDigest = strings.Repeat("b", 64)
+			session.VerifiedEmail = email
+			operation := s1Operation(t, state.projection, testIdentity(), S1Command{Kind: S1IssueSession, Session: &session, SessionLineage: 1})
+			assessment, err := AssessS1(state.projection, operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, principal := range assessment.Next.snapshot.Image().Principals {
+				if principal.Identity == testIdentity() && principal.VerifiedEmail != email {
+					t.Fatal("successful browser login did not refresh optional display metadata")
+				}
+			}
+			if state.projection.snapshot.Image().Principals[0].VerifiedEmail != "old@example.test" {
+				t.Fatal("review mutated saved Principal")
+			}
+		})
 	}
 }
 

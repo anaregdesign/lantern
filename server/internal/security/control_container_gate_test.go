@@ -173,7 +173,7 @@ func TestContainerCurrentAuthority(t *testing.T) {
 		return
 	}
 	role := func(id string) security.S1Command {
-		return security.S1Command{Kind: security.S1Management, Changes: []security.Change{{Kind: security.PutRole, Role: &security.Role{ID: id, Rules: []security.PermissionRule{{ID: "read", Effect: security.Allow, Action: security.VertexRead, Resource: security.DataResource, Prefix: new(string)}}}}}}
+		return security.S1Command{Kind: security.S1Management, Changes: []security.Change{{Kind: security.PutRole, Role: &security.Role{ID: id, Rules: []security.PermissionRule{{ID: "read", Permission: security.Read, Resource: security.DataResource, Prefix: new(string)}}}}}}
 	}
 	r, err := g.Prepare(p, role("container_applied"))
 	if err != nil {

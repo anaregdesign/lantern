@@ -10,6 +10,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags="-s -w" -o /out/metrics-relay metrics-relay.go
 
 FROM scratch
+ARG COMMIT=
+LABEL org.opencontainers.image.revision=${COMMIT}
 COPY --from=builder /out/metrics-relay /metrics-relay
 USER 65532:65532
 EXPOSE 9443

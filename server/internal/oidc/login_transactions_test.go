@@ -101,7 +101,7 @@ func TestLoginTransactionsPKCESingleUseMixUpAndRestart(t *testing.T) {
 	if query.Get("claims") != "" || query.Get("max_age") != "" || query.Get("prompt") != "" {
 		t.Fatal("ordinary login forced provider reauthentication")
 	}
-	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || strings.Contains(start.String(), state) {
+	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid email" || strings.Contains(start.String(), state) {
 		t.Fatal("unsafe login redirect")
 	}
 	if _, err = manager.Consume(state, start.TransactionCookie, CallbackPath("https://other.example"), ""); err == nil {

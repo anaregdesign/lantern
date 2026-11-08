@@ -26,6 +26,18 @@ test("landing page renders with navigation and gateway connection", async ({
   await expect(page.getByText(CONNECT_URL)).toBeVisible();
 });
 
+test("a fresh browser selects its same-origin Gateway", async ({ page }) => {
+  await page.addInitScript((key) => localStorage.removeItem(key), STORAGE_KEY);
+  await page.goto("/");
+  const origin = new URL(page.url()).origin;
+  await expect(
+    page.getByRole("button", { name: "Change gateway connection" }),
+  ).toContainText(origin);
+  await expect
+    .poll(() => page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY))
+    .toBe(origin);
+});
+
 test.describe("placeholder routes", () => {
   test("Ops route renders the server status card", async ({ page }) => {
     await page.goto("/ops");

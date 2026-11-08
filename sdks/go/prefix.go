@@ -153,6 +153,9 @@ func (l *Lantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opt
 	if err != nil {
 		return 0, err
 	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
+		return 0, err
+	}
 	return resp.GetDeleted(), nil
 }
 

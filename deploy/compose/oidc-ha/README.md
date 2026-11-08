@@ -1,10 +1,11 @@
-# Authenticated three-node Compose example
+# Authenticated three-node Compose stack
 
-[`docker-compose.oidc-ha.yml`](../docker-compose.oidc-ha.yml) includes three fixed
+[`docker-compose.oidc.yml`](../docker-compose.oidc.yml) (shared implementation: `docker-compose.oidc-ha.yml`) includes three fixed
 OIDC Servers, Admin, an HTTPS edge, Prometheus, per-node mTLS metrics relays,
-MCP and a separate membership publisher. Build it from this checkout; this is
-an operator template, not evidence that a published image, real provider account
-or target platform has passed acceptance. It performs no automatic provider
+MCP and a separate membership publisher. Select compatible immutable Server/Admin/MCP
+images and the exact helper source revision using the [image matrix preflight](../README.md#select-one-compatible-immutable-image-matrix). Source-built helpers remain local;
+this is not evidence that a published image, real provider account or target platform
+has passed acceptance. It performs no automatic provider
 registration, account enrollment or permission grant.
 
 The edge publishes only loopback `https://localhost:8443`. Admin and
@@ -91,15 +92,15 @@ contains environment values and must not be shared.
 cd deploy/compose
 dc() { docker compose --project-name lantern-oidc-ha-example \
   --env-file /absolute/private/oidc-ha/compose.env \
-  -f docker-compose.oidc-ha.yml "$@"; }
+  -f docker-compose.oidc.yml "$@"; }
 dc config --quiet
-dc build lantern-0 admin lantern-mcp membershippublisher metrics-0 edge
+# First build/select immutable same-source product and helper images as above.
 # Once, only for this project's three NEW empty state volumes:
 dc --profile prepare run --rm --no-deps prepare-state
 # Once: creates /material/identity and /operator/custody, both previously absent.
 dc --profile provision run --rm --no-deps provision-security
 # Once: initializes the publisher journal; keep it running during node init.
-LANTERN_PUBLISHER_MODE=init dc up -d membershippublisher
+LANTERN_PUBLISHER_MODE=init dc up -d --no-build membershippublisher
 # Sequential explicit native initialization on the actual Linux target:
 dc --profile init run --rm --no-deps init-node-0
 dc --profile init run --rm --no-deps init-node-1
@@ -117,11 +118,11 @@ rerun automatically.
 Create each **new, empty application WAL** with this separate one-time ceremony:
 
 ```sh
-dc -f oidc-ha/initialize-data.yml up -d --wait --wait-timeout 120 \
+dc -f oidc-ha/initialize-data.yml up -d --no-build --wait --wait-timeout 120 \
   lantern-0 lantern-1 lantern-2
 dc stop -t 45 lantern-0 lantern-1 lantern-2 membershippublisher
 # Every ordinary start, including the first full stack start, uses restart:
-dc up -d --wait --wait-timeout 120
+dc up -d --no-build --wait --wait-timeout 120
 dc ps
 ```
 
@@ -162,7 +163,7 @@ changes with current revisions and operation reauthentication where required.
 They are `SecurityChange` ProtoJSON examples, not automatically applied seed
 policy or a bulk request. Replace the API subject with the exact independently
 verified subject and confirm its ACTIVE enrollment. Assign only `ha_mcp_context`
-to the MCP identity. The optional operations Role grants only `OperationsRead`;
+to the MCP identity. The operations Role grants only `read` on the Operations resource;
 assign it explicitly to the intended human operator when using Admin `/ops`.
 
 Put that identity's valid, correctly typed/audienced API JWT into private
@@ -172,7 +173,7 @@ provisioned existing machine credential is an alternative only if the Server
 already accepts it. This example provides no machine token issuance API and
 never grants authority just by adding Issuer trust.
 
-The proposed Role allows Vertex read/write/delete and query for `agents.`,
+The proposed Role allows data read and write (including Delete, TTL edits and scoped query/CDC/export) for `agents.`,
 `claims.demo.`, `notes.` and `demo.`. Edge access is derived from live endpoints
 and those Vertex grants; no independent Edge action is installed. Use `demo.*`
 resource keys and existing endpoints for MCP activity/claims. Global context
@@ -184,7 +185,7 @@ the local Prometheus UI is an operator-only diagnostic endpoint.
 ## Bounded checks and retained restart
 
 After explicit enrollment, the source-only acceptance driver checks verified
-HTTPS/Admin readiness, API allow/deny, exactly three healthy Prometheus targets,
+HTTPS/Admin readiness, API allow/deny, exactly three healthy Prometheus targets plus named per-replica/sum query_range history,
 and actual MCP announce/list/denied-track tools. It creates one random permanent
 `demo.ha_acceptance.*` sentinel once. It never retries mutations or starts/stops
 services; run it only against this isolated example. Evidence contains synthetic
@@ -197,7 +198,7 @@ dc stop -t 45 lantern-mcp edge admin prometheus metrics-0 metrics-1 metrics-2
 dc stop -t 45 lantern-0 lantern-1 lantern-2
 dc stop -t 45 membershippublisher
 # Confirm orderly CLEAN shutdown; preserve all state and private inputs.
-dc up -d --wait --wait-timeout 120
+dc up -d --no-build --wait --wait-timeout 120
 python3 oidc-ha/check.py --phase after --private-directory /absolute/private/oidc-ha \
   --evidence /absolute/private/oidc-ha/checkpoint.json
 ```

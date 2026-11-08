@@ -232,7 +232,7 @@ func TestConfiguredTrustPreservesApplicationSecurityState(t *testing.T) {
 	image.Issuers = append(image.Issuers, google)
 	image.Roles = append(image.Roles, PersonalUserRole())
 	image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID,
-		Profiles: []RegistrationProfile{{Issuer: GoogleIssuer, ClientProfileID: "android"}}}
+		Profiles: []RegistrationProfile{{Issuer: GoogleIssuer, ClientProfileID: "android", Kind: NativeRegistrationProfile}}}
 	base := s1Fixture(t, image).projection
 	issuer := image.Issuers[0].clone()
 	issuer.APIAudience = "changed"

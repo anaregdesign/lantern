@@ -1,5 +1,5 @@
-# OFF graph-only custom-UID staging. Apply LAST, after docker-compose.membership.yml
-# and its !override volume lists, INSTEAD OF docker-compose.graph-snapshot.yml.
+# OFF graph-only staging for the standalone docker-compose.membership.yml
+# operator profile. The canonical OFF stack already owns separate spool binds.
 # The operator prepares each new dedicated directory with mode 0700 and the
 # exact LANTERN_SERVICE_UID:LANTERN_SERVICE_GID owner. Never reuse state, backup
 # or runtime paths.

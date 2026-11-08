@@ -16,10 +16,12 @@ import (
 func currentOriginalFixtureImage(t *testing.T, path, issuer string) Image {
 	t.Helper()
 	var input struct {
-		Issuer                         *Issuer  `json:"issuer,omitempty"`
-		AdminSubjects                  []string `json:"admin_subjects"`
-		HumanSubjectNamespaceQualified bool     `json:"human_subject_namespace_qualified"`
-		Roles                          []Role   `json:"roles"`
+		Issuer                         *Issuer             `json:"issuer,omitempty"`
+		AdminSubjects                  []string            `json:"admin_subjects"`
+		HumanSubjectNamespaceQualified bool                `json:"human_subject_namespace_qualified"`
+		Roles                          []Role              `json:"roles"`
+		EdgePolicy                     *EdgePolicy         `json:"edge_policy,omitempty"`
+		RegistrationPolicy             *RegistrationPolicy `json:"registration_policy,omitempty"`
 		Machines                       []struct {
 			Name        string   `json:"name"`
 			RoleIDs     []string `json:"role_ids"`
@@ -50,9 +52,9 @@ func currentOriginalFixtureImage(t *testing.T, path, issuer string) Image {
 	}
 	defer clear(raw)
 	callback := sha256.Sum256([]byte(issuer))
-	image := Image{Version: ImageVersion, BootstrapRevision: 1,
+	image := Image{Version: ImageVersion, BootstrapRevision: 1, EdgePolicy: input.EdgePolicy.clone(), RegistrationPolicy: input.RegistrationPolicy.clone(),
 		Issuers: []Issuer{{URL: issuer, ConfigRevision: 1, Enabled: true, EnvOwned: true, ClientID: "admin", APIAudience: "api", RedirectURI: fmt.Sprintf("https://admin.example/auth/callback/%x", callback), Algorithms: []string{"EdDSA"}, HumanSubjectNamespaceQualified: input.HumanSubjectNamespaceQualified}},
-		Roles:   []Role{{ID: "security_admin", Name: "Security administrator", Rules: []PermissionRule{{ID: "manage", Effect: Allow, Action: SecurityManage, Resource: GlobalResource}}}},
+		Roles:   []Role{{ID: "security_admin", Name: "Security administrator", Rules: []PermissionRule{{ID: "security-read", Permission: Read, Resource: SecurityResource}, {ID: "security-write", Permission: Write, Resource: SecurityResource}, {ID: "settings-read", Permission: Read, Resource: SettingsResource}, {ID: "settings-write", Permission: Write, Resource: SettingsResource}}}},
 	}
 	if input.Issuer != nil {
 		if input.Issuer.URL != issuer || input.Issuer.ConfigRevision != 1 || !input.Issuer.Enabled || !input.Issuer.EnvOwned {

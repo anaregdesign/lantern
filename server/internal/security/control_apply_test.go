@@ -254,7 +254,17 @@ func TestS1ApplySemanticComparisonRejectsStateChanges(t *testing.T) {
 			}
 			snapshot.policy = policy
 		}},
-		{"access set", func(r *S1ApplyResult) { delete(r.State.projection.snapshot.accessSets, "security_admin") }},
+		{"access set", func(r *S1ApplyResult) {
+			snapshot := r.State.projection.snapshot
+			key, err := snapshot.policy.AccessKey([]string{"security_admin"}, authz.SubjectBindings{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := snapshot.accessSets[key]; !exists {
+				t.Fatal("negative control must select an installed access set")
+			}
+			delete(snapshot.accessSets, key)
+		}},
 		{"principal", func(r *S1ApplyResult) {
 			principal := r.State.projection.snapshot.principals[s1Bob()]
 			principal.state = Suspended

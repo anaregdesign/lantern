@@ -50,6 +50,59 @@ VertexInput vertex(String key, {DateTime? expiresAt}) =>
 Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 25));
 
 void main() {
+  test(
+    'Vertex indexed replies preserve known and undisclosed positions',
+    () async {
+      var puts = 0;
+      final client = direct(
+        FakeTransportBuilder()
+            .unary<
+              graph.PutVerticesRequest,
+              graph.PutVerticesResponse
+            >(LanternService.putVertices, (r, _) {
+              puts++;
+              return puts == 1
+                  ? graph.PutVerticesResponse(
+                      outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+                    )
+                  : graph.PutVerticesResponse(
+                      acceptance: graph.MutationAcceptance(
+                        kind: graph
+                            .MutationAcceptanceKind
+                            .MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED,
+                      ),
+                    );
+            })
+            .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+              LanternService.deleteVertices,
+              (r, _) => graph.DeleteVerticesResponse(
+                acceptance: graph.MutationAcceptance(
+                  kind: graph
+                      .MutationAcceptanceKind
+                      .MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED,
+                ),
+              ),
+            )
+            .build(),
+        batchSize: 1,
+      );
+      addTearDown(client.close);
+      final putsReply = await client.putVertices([
+        vertex('a'),
+        vertex('hidden'),
+      ]);
+      expect(putsReply.items.first, isA<MutationKnownEffect<PutOutcome>>());
+      expect(
+        putsReply.items.last,
+        isA<MutationAcceptedUndisclosed<PutOutcome>>(),
+      );
+      final deletes = await client.deleteVertices(['a', 'hidden']);
+      expect(
+        deletes.items,
+        everyElement(isA<MutationAcceptedUndisclosed<bool>>()),
+      );
+    },
+  );
   test('ordinary plural Delete preserves duplicate/false positions', () async {
     final client = direct(
       FakeTransportBuilder()

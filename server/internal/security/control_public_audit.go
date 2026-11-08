@@ -50,7 +50,7 @@ func (o *CurrentAuthority) Audit(ctx context.Context, a *Admission, exact string
 	if err := o.currentAdmission(ctx, a, false); err != nil {
 		return nil, err
 	}
-	if !a.Access().AllowsGlobal(SecurityManage) || len(exact) > 2048 || !o.origin.network.enterCall() {
+	if !a.Access().AllowsGlobal(SecurityRead) || len(exact) > 2048 || !o.origin.network.enterCall() {
 		return nil, ErrPermissionDenied
 	}
 	defer o.origin.network.calls.Done()

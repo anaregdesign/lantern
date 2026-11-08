@@ -265,7 +265,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "run through the certified OIDC root integration fixture"]
     async fn real_public_scoped_wire() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{RpcErrorKind, TokenError, TokenProvider, VertexInput};
+        use crate::{MutationReply, RpcErrorKind, TokenError, TokenProvider, VertexInput};
         use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
         struct Credential(String);
         impl TokenProvider for Credential {
@@ -297,11 +297,16 @@ mod tests {
             .await?;
         let first = stream.next_frame().await?;
         assert!(first.bootstrap && first.cursor.is_some() && first.invalidations.is_empty());
-        sdk.put_vertices([
-            VertexInput::string("orders:private:1", "hidden"),
-            VertexInput::string("orders:1", "visible"),
-        ])
-        .await?;
+        assert_eq!(
+            MutationReply::from_result(
+                sdk.put_vertices([
+                    VertexInput::string("orders:private:1", "hidden"),
+                    VertexInput::string("orders:1", "visible"),
+                ])
+                .await
+            )?,
+            MutationReply::AcceptedUndisclosed
+        );
         loop {
             let frame = stream.next_frame().await?;
             if frame.invalidations.is_empty() {
@@ -364,7 +369,7 @@ mod tests {
         assert!(
             matches!(denied_create, Err(LanternError::Batch(ref batch)) if matches!(*batch.source, LanternError::Rpc(ref failure) if failure.kind()==RpcErrorKind::PermissionDenied))
         );
-        let denied = sdk
+        let mut values = sdk
             .watch_changes(
                 WatchChangesOptions {
                     prefix: "orders:".into(),
@@ -372,23 +377,21 @@ mod tests {
                     bootstrap: true,
                     ..Default::default()
                 },
-                StreamOptions::default(),
+                StreamOptions::default().with_lifetime(Duration::from_secs(5)),
             )
-            .await;
-        match denied {
-            Err(LanternError::Rpc(error)) => {
-                assert_eq!(error.kind(), RpcErrorKind::PermissionDenied)
+            .await?;
+        assert!(values.next_frame().await?.bootstrap);
+        sdk.put_vertex(VertexInput::string("orders:1", "value-visible"))
+            .await?;
+        loop {
+            let frame = values.next_frame().await?;
+            if frame.invalidations.is_empty() {
+                continue;
             }
-            Ok(mut stream) => {
-                let error = stream
-                    .next_frame()
-                    .await
-                    .expect_err("value projection inherited grant");
-                assert!(
-                    matches!(error,LanternError::Rpc(ref failure) if failure.kind()==RpcErrorKind::PermissionDenied)
-                );
-            }
-            Err(other) => return Err(other.into()),
+            assert!(
+                matches!(&frame.invalidations[..], [ChangeInvalidation::Vertex { key, current: Some(value) }] if key == "orders:1" && value.string_value() == Some("value-visible"))
+            );
+            break;
         }
         Ok(())
     }

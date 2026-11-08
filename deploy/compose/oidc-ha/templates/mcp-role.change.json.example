@@ -4,99 +4,51 @@
     "name": "HA example scoped MCP context",
     "rules": [
       {
-        "id": "agents-vertex-read",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_READ",
+        "id": "agents-read",
+        "permission": "SECURITY_PERMISSION_READ",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "agents."
       },
       {
-        "id": "agents-vertex-write",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "id": "agents-write",
+        "permission": "SECURITY_PERMISSION_WRITE",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "agents."
       },
       {
-        "id": "agents-vertex-delete",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_DELETE",
-        "prefix": "agents."
-      },
-      {
-        "id": "agents-query",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_QUERY",
-        "prefix": "agents."
-      },
-      {
-        "id": "claims-demo-vertex-read",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_READ",
+        "id": "claims-demo-read",
+        "permission": "SECURITY_PERMISSION_READ",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "claims.demo."
       },
       {
-        "id": "claims-demo-vertex-write",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "id": "claims-demo-write",
+        "permission": "SECURITY_PERMISSION_WRITE",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "claims.demo."
       },
       {
-        "id": "claims-demo-vertex-delete",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_DELETE",
-        "prefix": "claims.demo."
-      },
-      {
-        "id": "claims-demo-query",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_QUERY",
-        "prefix": "claims.demo."
-      },
-      {
-        "id": "notes-vertex-read",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_READ",
+        "id": "notes-read",
+        "permission": "SECURITY_PERMISSION_READ",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "notes."
       },
       {
-        "id": "notes-vertex-write",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "id": "notes-write",
+        "permission": "SECURITY_PERMISSION_WRITE",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "notes."
       },
       {
-        "id": "notes-vertex-delete",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_DELETE",
-        "prefix": "notes."
-      },
-      {
-        "id": "notes-query",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_QUERY",
-        "prefix": "notes."
-      },
-      {
-        "id": "demo-vertex-read",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_READ",
+        "id": "demo-read",
+        "permission": "SECURITY_PERMISSION_READ",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "demo."
       },
       {
-        "id": "demo-vertex-write",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_WRITE",
-        "prefix": "demo."
-      },
-      {
-        "id": "demo-vertex-delete",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_VERTEX_DELETE",
-        "prefix": "demo."
-      },
-      {
-        "id": "demo-query",
-        "effect": "SECURITY_EFFECT_ALLOW",
-        "action": "SECURITY_ACTION_QUERY",
+        "id": "demo-write",
+        "permission": "SECURITY_PERMISSION_WRITE",
+        "resourceKind": "SECURITY_RESOURCE_DATA",
         "prefix": "demo."
       }
     ]

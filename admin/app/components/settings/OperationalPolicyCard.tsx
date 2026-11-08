@@ -13,6 +13,7 @@ import {
 import {
   operationalDefinition,
   operationalDraft,
+  operationalDraftErrors,
   type OperationalDraft,
 } from "~/lib/client/usecase/settings/operational-settings-fields";
 import { OperationalSettingField } from "./OperationalSettingField";
@@ -32,6 +33,7 @@ export type OperationalPolicyCardProps = {
   edit(key: string, value: string): void;
   acknowledge(value: boolean): void;
   review(): void;
+  cancel(): void;
 };
 export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
   const { settings, selected, draft, blocked } = props,
@@ -42,6 +44,8 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
     desired = settings.desired?.values
       ? operationalDraft(settings.desired.values)
       : undefined;
+  const fieldErrors =
+    selected && draft ? operationalDraftErrors(settings.group, draft) : {};
   const modeLabels = {
     [OperationalSettingsChangeMode.UNAVAILABLE]: "Unavailable",
     [OperationalSettingsChangeMode.HOT]: "Applies to new work",
@@ -123,53 +127,9 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
           . Check the retained original operation for its outcome.
         </p>
       )}
-      {(effective ||
-        desired ||
-        settings.error === OperationalSettingsError.INVALID_POLICY) && (
-        <div className={styles.tableWrap}>
-          <table>
-            <caption>Values on this node</caption>
-            <thead>
-              <tr>
-                <th scope="col">Setting</th>
-                <th scope="col">Effective</th>
-                <th scope="col">Desired</th>
-                <th scope="col">Effective source</th>
-              </tr>
-            </thead>
-            <tbody>
-              {definition.fields.map((field, index) => (
-                <tr key={field.key}>
-                  <th scope="row">{field.label}</th>
-                  <td>
-                    {effective?.[field.key] ??
-                      (settings.error ===
-                      OperationalSettingsError.INVALID_POLICY
-                        ? "Unknown (invalid startup)"
-                        : "Unavailable")}
-                  </td>
-                  <td>{desired?.[field.key] ?? "Not adopted"}</td>
-                  <td>
-                    {sources[
-                      settings.provenance[index]?.source as keyof typeof sources
-                    ] || "Unavailable"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {!effective &&
-        settings.error === OperationalSettingsError.INVALID_POLICY && (
-          <p>
-            Startup values are invalid and cannot be represented as effective
-            typed values. Enter every field of a valid policy explicitly; no
-            fallback value has been substituted.
-          </p>
-        )}
       {!selected && (
         <Button
+          type="button"
           disabled={
             blocked ||
             (!effective &&
@@ -183,10 +143,11 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
       {selected && !draft && (
         <div>
           <p>
-            Explicit adoption makes this group authoritative in sys. Startup
+            Adoption saves this entire group as a shared policy. Startup
             environment values will no longer override it.
           </p>
           <Button
+            type="button"
             disabled={
               blocked ||
               (!effective &&
@@ -198,134 +159,205 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
           </Button>
         </div>
       )}
-      {selected && draft && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            props.review();
-          }}
-        >
-          <div className={styles.fields}>
-            {definition.fields.map((field) => (
-              <OperationalSettingField
-                key={field.key}
-                field={field}
-                value={draft[field.key] ?? ""}
-                disabled={blocked}
-                change={(value) => props.edit(field.key, value)}
-              />
-            ))}
-          </div>
-          {settings.group === OperationalGroup.CAPACITY && (
-            <section aria-label="Connected-node capacity preview">
-              <Button disabled={blocked} onClick={props.previewCapacity}>
-                Preview connected-node capacity
-              </Button>
-              {props.capacityPreview && (
-                <>
-                  <p>
-                    Member {props.capacityPreview.member}; observed owner
-                    generation{" "}
-                    {props.capacityPreview.effectiveGeneration.toString()}.
-                    Counters are sampled separately and can change. Admission
-                    footprints include retained Put barriers. This local sample
-                    does not predict admission or cluster-wide capacity.
-                  </p>
-                  <div className={styles.tableWrap}>
-                    <table>
-                      <caption>Capacity usage sample</caption>
-                      <thead>
-                        <tr>
-                          <th scope="col">Counter</th>
-                          <th scope="col">Usage</th>
-                          <th scope="col">Over proposed cap</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(
-                          [
-                            [
-                              "Vertex admission footprint",
-                              props.capacityPreview.vertexFootprint,
-                              props.capacityPreview.verticesOverLimit,
-                            ],
-                            [
-                              "Edge admission footprint",
-                              props.capacityPreview.edgeFootprint,
-                              props.capacityPreview.edgesOverLimit,
-                            ],
-                            [
-                              "Vertex causal identities",
-                              props.capacityPreview.vertexCausalEntries,
-                              props.capacityPreview.vertexCausalOverLimit,
-                            ],
-                            [
-                              "Edge causal identities",
-                              props.capacityPreview.edgeCausalEntries,
-                              props.capacityPreview.edgeCausalOverLimit,
-                            ],
-                          ] as const
-                        ).map(([label, count, over]) => (
-                          <tr key={String(label)}>
-                            <th scope="row">{label}</th>
-                            <td>{count.toString()}</td>
-                            <td>{over ? "Yes" : "No"}</td>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          props.review();
+        }}
+      >
+        <div className={styles.tableWrap}>
+          <table className={styles.values}>
+            <caption>
+              {selected && draft
+                ? "Unsaved draft — Review and Apply to save this group"
+                : "Values on this node"}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Setting</th>
+                <th scope="col">Effective</th>
+                <th scope="col">Desired</th>
+                <th scope="col">Draft</th>
+                <th scope="col">Effective source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {definition.fields.map((field, index) => (
+                <tr key={field.key}>
+                  <th scope="row">{field.label}</th>
+                  <td data-label="Effective">
+                    {effective?.[field.key] ??
+                      (settings.error ===
+                      OperationalSettingsError.INVALID_POLICY
+                        ? "Unknown (invalid startup)"
+                        : "Unavailable")}
+                  </td>
+                  <td data-label="Desired">
+                    {desired?.[field.key] ?? "Not adopted"}
+                  </td>
+                  <td data-label="Draft">
+                    <OperationalSettingField
+                      field={field}
+                      value={
+                        draft?.[field.key] ??
+                        desired?.[field.key] ??
+                        effective?.[field.key] ??
+                        ""
+                      }
+                      disabled={!selected || !draft || blocked}
+                      editing={!!selected && !!draft}
+                      validationError={fieldErrors[field.key]}
+                      change={(value) => props.edit(field.key, value)}
+                    />
+                  </td>
+                  <td data-label="Effective source">
+                    {sources[
+                      settings.provenance[index]?.source as keyof typeof sources
+                    ] || "Unavailable"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!effective &&
+          settings.error === OperationalSettingsError.INVALID_POLICY && (
+            <p>
+              Startup values are invalid and cannot be represented as effective
+              typed values. Enter every field of a valid policy explicitly; no
+              fallback value has been substituted.
+            </p>
+          )}
+        {selected && draft && (
+          <div className={styles.actions}>
+            {settings.group === OperationalGroup.CAPACITY && (
+              <section aria-label="Connected-node capacity preview">
+                <Button
+                  type="button"
+                  disabled={blocked}
+                  onClick={props.previewCapacity}
+                >
+                  Preview connected-node capacity
+                </Button>
+                {props.capacityPreview && (
+                  <>
+                    <p>
+                      Member {props.capacityPreview.member}; observed owner
+                      generation{" "}
+                      {props.capacityPreview.effectiveGeneration.toString()}.
+                      Counters are sampled separately and can change. Admission
+                      footprints include retained Put barriers. This local
+                      sample does not predict admission or cluster-wide
+                      capacity.
+                    </p>
+                    <div className={styles.tableWrap}>
+                      <table>
+                        <caption>Capacity usage sample</caption>
+                        <thead>
+                          <tr>
+                            <th scope="col">Counter</th>
+                            <th scope="col">Usage</th>
+                            <th scope="col">Over proposed cap</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </section>
-          )}
-          {props.retentionRequired && (
-            <section aria-label="Connected-node retention preview">
-              <p>
-                Preview samples this connected node only. The catalog can change
-                before future scheduled production; this does not predict
-                cluster-wide deletions.
-              </p>
-              <Button disabled={blocked} onClick={props.previewBackup}>
-                Preview connected-node retention
-              </Button>
-              {props.backupPreview && (
+                        </thead>
+                        <tbody>
+                          {(
+                            [
+                              [
+                                "Vertex admission footprint",
+                                props.capacityPreview.vertexFootprint,
+                                props.capacityPreview.verticesOverLimit,
+                              ],
+                              [
+                                "Edge admission footprint",
+                                props.capacityPreview.edgeFootprint,
+                                props.capacityPreview.edgesOverLimit,
+                              ],
+                              [
+                                "Vertex causal identities",
+                                props.capacityPreview.vertexCausalEntries,
+                                props.capacityPreview.vertexCausalOverLimit,
+                              ],
+                              [
+                                "Edge causal identities",
+                                props.capacityPreview.edgeCausalEntries,
+                                props.capacityPreview.edgeCausalOverLimit,
+                              ],
+                            ] as const
+                          ).map(([label, count, over]) => (
+                            <tr key={String(label)}>
+                              <th scope="row">{label}</th>
+                              <td>{count.toString()}</td>
+                              <td>{over ? "Yes" : "No"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </section>
+            )}
+            {props.retentionRequired && (
+              <section aria-label="Connected-node retention preview">
                 <p>
-                  {props.backupPreview.complete
-                    ? "Complete sample"
-                    : "Incomplete sample"}
-                  : {props.backupPreview.validBackups.toString()} valid backups
-                  ({props.backupPreview.validBytes.toString()} bytes);{" "}
-                  {props.backupPreview.pruneBackups.toString()} removal
-                  candidates ({props.backupPreview.pruneBytes.toString()}{" "}
-                  bytes). Informational sample fingerprint:{" "}
-                  {props.backupPreview.fingerprint || "unavailable"}.
+                  Preview samples this connected node only. The catalog can
+                  change before future scheduled production; this does not
+                  predict cluster-wide deletions.
                 </p>
-              )}
-            </section>
-          )}
-          {props.retentionRequired && (
-            <Checkbox
-              checked={props.retentionAcknowledged}
-              disabled={blocked || !props.backupPreview?.complete}
-              label="I acknowledge that future retention may remove older backups; Review and Apply do not delete them."
-              onChange={(_, data) => props.acknowledge(data.checked === true)}
-            />
-          )}
-          <Button
-            appearance="primary"
-            type="submit"
-            disabled={
-              blocked ||
-              (props.retentionRequired &&
-                (!props.retentionAcknowledged ||
-                  !props.backupPreview?.complete))
-            }
-          >
-            Review {definition.label.toLowerCase()} change
+                <Button
+                  type="button"
+                  disabled={blocked}
+                  onClick={props.previewBackup}
+                >
+                  Preview connected-node retention
+                </Button>
+                {props.backupPreview && (
+                  <p>
+                    {props.backupPreview.complete
+                      ? "Complete sample"
+                      : "Incomplete sample"}
+                    : {props.backupPreview.validBackups.toString()} valid
+                    backups ({props.backupPreview.validBytes.toString()} bytes);{" "}
+                    {props.backupPreview.pruneBackups.toString()} removal
+                    candidates ({props.backupPreview.pruneBytes.toString()}{" "}
+                    bytes). Informational sample fingerprint:{" "}
+                    {props.backupPreview.fingerprint || "unavailable"}.
+                  </p>
+                )}
+              </section>
+            )}
+            {props.retentionRequired && (
+              <Checkbox
+                checked={props.retentionAcknowledged}
+                disabled={blocked || !props.backupPreview?.complete}
+                label="I acknowledge that future retention may remove older backups; Review and Apply do not delete them."
+                onChange={(_, data) => props.acknowledge(data.checked === true)}
+              />
+            )}
+            <Button
+              appearance="primary"
+              type="submit"
+              disabled={
+                blocked ||
+                (props.retentionRequired &&
+                  (!props.retentionAcknowledged ||
+                    !props.backupPreview?.complete))
+              }
+            >
+              Review {definition.label.toLowerCase()} change
+            </Button>
+            <Button type="button" disabled={blocked} onClick={props.cancel}>
+              Cancel draft
+            </Button>
+          </div>
+        )}
+        {selected && !draft && (
+          <Button type="button" disabled={blocked} onClick={props.cancel}>
+            Cancel editing
           </Button>
-        </form>
-      )}
+        )}
+      </form>
     </section>
   );
 }

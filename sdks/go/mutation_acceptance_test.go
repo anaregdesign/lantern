@@ -10,6 +10,11 @@ import (
 
 func TestMutationAcceptanceParsingAndRetryClassification(t *testing.T) {
 	for _, response := range []proto.Message{
+		&pb.PutVertexResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
+		&pb.PutVerticesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
+		&pb.DeleteVertexResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
+		&pb.DeleteVerticesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
+		&pb.DeleteVerticesByPrefixResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
 		&pb.AddEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
 		&pb.CreateEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
 		&pb.PutEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}},
@@ -37,6 +42,9 @@ func TestMutationAcceptanceParsingAndRetryClassification(t *testing.T) {
 		nil, (*pb.AddEdgesResponse)(nil),
 		&pb.AddEdgesResponse{Acceptance: &pb.MutationAcceptance{}},
 		&pb.AddEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind(99)}},
+		&pb.PutVerticesResponse{Acceptance: valid, Outcomes: []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}},
+		&pb.DeleteVerticesResponse{Acceptance: valid, Existed: []bool{false}},
+		&pb.DeleteVerticesByPrefixResponse{Acceptance: valid, Deleted: 1},
 		&pb.AddEdgesResponse{Acceptance: valid, Written: 1},
 		&pb.AddEdgesResponse{Acceptance: valid, EffectiveWeights: []float32{0}},
 		&pb.DeleteEdgesResponse{Acceptance: valid, Existed: []bool{false}},

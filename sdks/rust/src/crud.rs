@@ -14,7 +14,7 @@ use crate::{
         DeleteEdgeContributionsResponse, DeleteEdgesRequest, DeleteEdgesResponse,
         DeleteVerticesRequest, DeleteVerticesResponse, EdgeContributionKey, EdgeKey,
         GetEdgesRequest, GetEdgesResponse, GetVerticesRequest, GetVerticesResponse,
-        PutEdgesRequest, PutVerticesRequest,
+        PutEdgesRequest, PutVerticesRequest, PutVerticesResponse,
     },
     mutation::accepted_undisclosed,
     transport::RetryClass,
@@ -177,6 +177,7 @@ impl LanternClient {
             RetryClass::UnconditionalPut
         };
         let mut outcomes = Vec::with_capacity(vertices.len());
+        let mut undisclosed = false;
         for range in ranges {
             let response = self
                 .data_unary_at(make(range.clone()), deadline, retry, |svc, req| {
@@ -184,9 +185,18 @@ impl LanternClient {
                 })
                 .await
                 .map_err(|source| failed_chunk(range.start, source))?;
-            let chunk = validate_put_outcomes(&vertices[range.clone()], response.outcomes)
-                .map_err(|source| failed_chunk(range.start, source))?;
+            let chunk = match validate_vertex_put_response(&vertices[range.clone()], response) {
+                Ok(chunk) => chunk,
+                Err(LanternError::MutationAcceptedUndisclosed) => {
+                    undisclosed = true;
+                    continue;
+                }
+                Err(source) => return Err(failed_chunk(range.start, source)),
+            };
             outcomes.extend(chunk);
+        }
+        if undisclosed {
+            return Err(LanternError::MutationAcceptedUndisclosed);
         }
         Ok(outcomes)
     }
@@ -260,6 +270,7 @@ impl LanternClient {
         )?;
         let mut existed = Vec::with_capacity(keys.len());
         let mut deleted = 0;
+        let mut undisclosed = false;
         for range in ranges {
             let response = self
                 .data_unary_at(
@@ -270,10 +281,19 @@ impl LanternClient {
                 )
                 .await
                 .map_err(|source| failed_chunk(range.start, source))?;
-            let chunk = validate_delete_vertices(range.len(), response)
-                .map_err(|source| failed_chunk(range.start, source))?;
+            let chunk = match validate_delete_vertices(range.len(), response) {
+                Ok(chunk) => chunk,
+                Err(LanternError::MutationAcceptedUndisclosed) => {
+                    undisclosed = true;
+                    continue;
+                }
+                Err(source) => return Err(failed_chunk(range.start, source)),
+            };
             deleted += chunk.deleted;
             existed.extend(chunk.existed);
+        }
+        if undisclosed {
+            return Err(LanternError::MutationAcceptedUndisclosed);
         }
         Ok(DeleteBatch { deleted, existed })
     }
@@ -1033,10 +1053,26 @@ fn validate_outcomes<'a>(
         .collect()
 }
 
+fn validate_vertex_put_response(
+    items: &[Vertex],
+    response: PutVerticesResponse,
+) -> Result<Vec<PutOutcome>, LanternError> {
+    if accepted_undisclosed(response.acceptance.as_ref(), !response.outcomes.is_empty())? {
+        return Err(LanternError::MutationAcceptedUndisclosed);
+    }
+    validate_put_outcomes(items, response.outcomes)
+}
+
 fn validate_delete_vertices(
     expected: usize,
     response: DeleteVerticesResponse,
 ) -> Result<DeleteBatch, LanternError> {
+    if accepted_undisclosed(
+        response.acceptance.as_ref(),
+        response.deleted != 0 || !response.existed.is_empty(),
+    )? {
+        return Err(LanternError::MutationAcceptedUndisclosed);
+    }
     validate_delete(expected, response.deleted, response.existed)
 }
 

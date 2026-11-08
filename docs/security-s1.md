@@ -25,7 +25,7 @@ Canonical structures have fixed versioned field order, no maps/floats, and
 retain request item/Role-rule order. They are internal S1 encoding contracts,
 not a deployed public codec or a signature verification protocol.
 
-The cut binds full compiled Image (Role/Deny, all identities, human enrollment,
+The cut binds full compiled Image (typed positive Role rules and global Edge policy, all identities, human enrollment,
 Issuer configuration, sessions, machines, operator locks and audit), separately
 sorted session-lineage floors, generation, semantic sequence, previous-cut
 digest, successful semantic-event ancestry and explicit independent fences.
@@ -52,14 +52,14 @@ No causal invalidation of already established descendants is fabricated.
 
 All management items use existing typed validation and detached full-batch
 reduction. Compilation verifies every Role/Issuer/identity dependency and the
-last active qualified OIDC human with effective `security.manage`. Unknown or
-removed assigned Roles fail closed; no Deny dependency is silently omitted.
+last active qualified OIDC human with effective Security/write. Unknown or
+removed assigned Roles fail closed; no policy dependency is silently omitted.
 
 | Command | Supported semantic effect | Additional check |
 | --- | --- | --- |
 | issuer.put | Create/reconfigure exact Issuer, increment config revision | Trust purpose; operator lock; invalidate affected sessions and advance lineage; human enrollment remains revision-bound |
 | issuer.disable / issuer.delete | Disable/tombstone Issuer and revoke its sessions | Trust purpose; operator lock; advance affected lineage; full qualified-admin closure |
-| role.put / role.delete | Replace/delete exact Role within complete batch | All references; Deny precedence; effective expansion over every principal |
+| role.put / role.delete | Replace/delete exact Role within complete batch | All references; Allow union/default refusal; effective expansion over every principal |
 | principal.put | Create/activate/suspend exact identity | Cannot resurrect deleted principal; suspension revokes sessions and advances lineage |
 | principal.delete | Tombstone exact identity and remove assignments | Revoke sessions and advance lineage; operator-owned memberships preserved |
 | assignment.put / assignment.delete | Exact Role membership | Registered Role; no cluster_replica; operator-owned deletion forbidden |
@@ -75,7 +75,7 @@ unsupported in this S1 command surface. Their existing production entry points
 remain unchanged. Session issue/logout are pure semantic contracts here, not
 new routes or authentication/session minting paths.
 
-Effective `security.manage` expansion, including Deny rule/assignment removal,
+Effective `security.manage` expansion, including indirect Role/assignment changes,
 activation and indirect Role changes, requires exact operation-bound purpose.
 Every Issuer trust operation does too. Data-only expansion remains ordinary.
 Reserve eligibility is a separate full-closure proof: all effective global
@@ -138,7 +138,7 @@ S3; no old numerical bounds become guarantees here.
 
 ## Validation
 
-Focused typed tests exercise all supported management kinds, Deny expansion,
+Focused typed tests exercise all supported management kinds, management-resource expansion,
 last qualified OIDC administrator closure, Issuer incarnation, immutable
 identity/outcomes, equal-generation different policy, semantic ABA, authentic
 scope before ownership, missing prefix, NOOP, terminal rejection replay,

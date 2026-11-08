@@ -11,6 +11,8 @@ import (
 func applyManagementChanges(image *Image, changes []Change) error {
 	for _, change := range changes {
 		switch change.Kind {
+		case PutEdgePolicy:
+			image.EdgePolicy = change.EdgePolicy.clone()
 		case PutOperationalPolicy:
 			if err := applyOperationalPolicy(image, change.OperationalPolicy); err != nil {
 				return err

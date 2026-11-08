@@ -40,6 +40,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Distroless static + nonroot. The MCP server serves Streamable HTTP; it
 # needs no shell, no package manager, and no writable filesystem.
 FROM gcr.io/distroless/static:nonroot
+ARG COMMIT=
+LABEL org.opencontainers.image.revision=${COMMIT}
 
 # Default Lantern endpoint and ping timeout. Override at runtime via -e.
 # LANTERN_MCP_HTTP_ADDR binds 0.0.0.0 (not the loopback default the bare

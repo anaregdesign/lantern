@@ -410,3 +410,19 @@ describe("managed log settings", () => {
     );
   });
 });
+
+test("canceling a log level draft invalidates review and preserves saved settings", async () => {
+  const f = fixture(),
+    c = f.controller;
+  await c.load();
+  const before = c.getSnapshot().settings;
+  c.editLevel(ManagedLogLevel.WARN);
+  await c.review();
+  expect(c.getSnapshot().review).toBeDefined();
+  c.cancelDraft();
+  expect(c.getSnapshot().review).toBeUndefined();
+  expect(c.getSnapshot().settings).toEqual(before);
+  expect(settingsView(c.getSnapshot(), true).canReview).toBe(false);
+  await c.apply();
+  expect(f.sends()).toBe(0);
+});

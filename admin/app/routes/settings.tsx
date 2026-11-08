@@ -56,6 +56,7 @@ export default function SettingsRoute() {
         void controller?.apply();
       }}
       cancel={() => controller?.change.cancelReview()}
+      cancelDraft={() => controller?.cancelDraft()}
       checkStatus={() => {
         void controller?.checkStatus();
       }}

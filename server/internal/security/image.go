@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	ImageVersion       = 2
+	ImageVersion       = 3
 	MaxImageBytes      = 4 << 20
 	MaxIssuers         = 64
 	MaxPrincipals      = 10000
@@ -40,6 +40,7 @@ type Image struct {
 	Sessions                []Session                   `json:"sessions"`
 	MachineCredentials      []MachineCredential         `json:"machine_credentials,omitempty"`
 	Audit                   []AuditRecord               `json:"audit,omitempty"`
+	EdgePolicy              *EdgePolicy                 `json:"edge_policy,omitempty"`
 	RegistrationPolicy      *RegistrationPolicy         `json:"registration_policy,omitempty"`
 	LogPolicy               *LogPolicy                  `json:"log_policy,omitempty"`
 	OperationalPolicies     *operationalpolicy.Policies `json:"operational_policies,omitempty"`
@@ -51,14 +52,9 @@ func CompileImage(image Image, limits PolicyLimits) (*Snapshot, error) {
 	return compileImage(image, limits, nil)
 }
 
+// Every active image requires a qualified usable human administrator. Decoder
+// input does not select a weaker historical admission policy.
 func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapshot, error) {
-	return compileImageAdmission(image, limits, previous, true)
-}
-
-// Historical images retain their original signed encoding and validation
-// contract. New writes always require a qualified human administrator. Reading
-// a legacy cut does not enroll its OIDC principals or permit their mutations.
-func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot, requireHuman bool) (*Snapshot, error) {
 	if (image.ConfiguredTrustRevision == 0) != (image.ConfiguredTrustDigest == "") || image.ConfiguredTrustDigest != "" && !validHexDigest(image.ConfiguredTrustDigest) || image.Version != ImageVersion || image.BootstrapDigest != "" && !validHexDigest(image.BootstrapDigest) || len(image.Issuers) > MaxIssuers ||
 		len(image.Principals) > MaxPrincipals || len(image.Sessions) > MaxSessions || len(image.Audit) > retainedChanges || len(image.MachineCredentials) > MaxMachineCredentials {
 		return nil, ErrInvalidImage
@@ -66,7 +62,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	if err := validateAudit(image.Audit); err != nil {
 		return nil, err
 	}
-	if !image.RegistrationPolicy.valid() || !image.LogPolicy.valid() {
+	if !image.EdgePolicy.valid() || !image.RegistrationPolicy.valid() || !image.LogPolicy.valid() {
 		return nil, ErrInvalidImage
 	}
 	if image.OperationalPolicies != nil && image.OperationalPolicies.ValidateNilAllowed() != nil {
@@ -79,7 +75,10 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	// Sessions and Principal state can change without rebuilding Role ranges.
 	// This cache is private and only reuses an already validated policy with
 	// identical limits and canonical Role bytes.
-	roleBytes, err := json.Marshal(image.Roles)
+	roleBytes, err := json.Marshal(struct {
+		Roles    []Role
+		EdgeMode authz.EdgeEndpointMode
+	}{image.Roles, image.EdgePolicy.mode()})
 	if err != nil {
 		return nil, ErrInvalidPolicy
 	}
@@ -87,12 +86,12 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	if previous != nil && previous.limits == limits && bytes.Equal(roleBytes, previous.roleBytes) {
 		policy = previous.policy
 	} else {
-		policy, err = CompileRoles(image.Roles, limits)
+		policy, err = authz.CompileRolesWithEdgeMode(image.Roles, limits, image.EdgePolicy.mode())
 		if err != nil {
 			return nil, err
 		}
 	}
-	snapshot := &Snapshot{configuredTrustDigest: image.ConfiguredTrustDigest, logPolicy: image.LogPolicy.clone(), policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
+	snapshot := &Snapshot{edgePolicy: image.EdgePolicy.clone(), configuredTrustDigest: image.ConfiguredTrustDigest, logPolicy: image.LogPolicy.clone(), policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
 		principals: make(map[Identity]principalAccess, len(image.Principals)), sessions: make(map[string]Session, len(image.Sessions))}
 	if image.OperationalPolicies != nil {
 		snapshot.operationalPolicies = image.OperationalPolicies.Clone()
@@ -115,6 +114,9 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	}
 	uids := make(map[string]Identity)
 	for _, principal := range image.Principals {
+		if principal.VerifiedEmail != "" && (principal.Identity.Kind != OIDCPrincipal || !ValidDisplayEmail(principal.VerifiedEmail)) {
+			return nil, ErrInvalidImage
+		}
 		if principal.UserUID != "" {
 			if principal.Identity.Kind != OIDCPrincipal || !authz.ValidPersonalUID(principal.UserUID) {
 				return nil, fmt.Errorf("%w: Principal UID", ErrInvalidImage)
@@ -191,7 +193,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 		if identity.Kind != OIDCPrincipal {
 			continue
 		}
-		if requireHuman && !snapshot.HumanIdentity(identity) {
+		if !snapshot.HumanIdentity(identity) {
 			continue
 		}
 		access, active := snapshot.AccessFor(identity)
@@ -221,14 +223,7 @@ func DecodeImage(encoded []byte, limits PolicyLimits) (*Snapshot, error) {
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: trailing input", ErrInvalidImage)
 	}
-	legacy := true
-	for _, principal := range image.Principals {
-		legacy = legacy && principal.HumanIssuerConfigRevision == 0
-	}
-	for _, issuer := range image.Issuers {
-		legacy = legacy && !issuer.HumanSubjectNamespaceQualified
-	}
-	snapshot, err := compileImageAdmission(image, limits, nil, !legacy)
+	snapshot, err := CompileImage(image, limits)
 	if err != nil {
 		return nil, err
 	}

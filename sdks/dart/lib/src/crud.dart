@@ -110,6 +110,7 @@ extension LanternCrud on LanternClient {
     required LanternCallOptions? options,
   }) async {
     _ensureOpen();
+    var undisclosed = false;
     final input = List<VertexInput>.unmodifiable(inputs);
     _validateBatch(input.length, batchSize);
     final sampledAt = _clock().toUtc();
@@ -140,6 +141,13 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
         if (response.outcomes.length != end - offset) {
           throw _internalSdkException(
             'server returned misaligned vertex Put outcomes',
@@ -157,9 +165,10 @@ extension LanternCrud on LanternClient {
         }
         results.addAll(chunkResults);
       } on Exception catch (error) {
-        _throwBatchOrCause(results.length, error);
+        _throwBatchOrCause(offset, error);
       }
     }
+    if (undisclosed) throw const MutationAcceptance();
     if (results.isEmpty) return List.unmodifiable(results);
     final observedAt = _clock().toUtc();
     return List.unmodifiable([
@@ -187,6 +196,7 @@ extension LanternCrud on LanternClient {
     LanternCallOptions? options,
   }) async {
     _ensureOpen();
+    var undisclosed = false;
     final input = List<String>.unmodifiable(keys);
     _validateBatch(input.length, batchSize);
     final callOptions = _freezeCallOptions(options);
@@ -209,11 +219,19 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
         deleted += response.deleted;
       } on Exception catch (error) {
-        _throwBatchOrCause(deleted, error);
+        _throwBatchOrCause(offset, error);
       }
     }
+    if (undisclosed) throw const MutationAcceptance();
     return deleted;
   }
 

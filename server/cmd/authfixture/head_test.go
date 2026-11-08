@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/anaregdesign/lantern/core/privatefile"
+	"github.com/anaregdesign/lantern/server/internal/authz"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
@@ -46,12 +47,12 @@ func TestHeadFixturePreservesNativeRoleAndPrivateCredentialBoundaries(t *testing
 		t.Fatal("Head credential leaked in metadata", err)
 	}
 	roles := result.security.Roles
-	compiled, err := security.CompileRoles(roles, security.DefaultPolicyLimits())
+	compiled, err := authz.CompileRolesWithEdgeMode(roles, security.DefaultPolicyLimits(), result.security.EdgePolicy.Mode)
 	if err != nil {
 		t.Fatal(err)
 	}
 	access, err := compiled.ForRoles([]string{"fixture_head_writer"})
-	if err != nil || !access.AllowsEdge(security.EdgeWrite, "physical-head:tails:1", "physical-head:heads:1") || access.AllowsEdge(security.EdgeRead, "physical-head:tails:1", "physical-head:heads:1") || access.AllowsEdge(security.EdgeWrite, "physical-head:tails:1", "physical-head:heads:denied:1") || access.Allows(security.VertexDelete, "physical-head:heads:1") {
+	if err != nil || !access.AllowsEdge(security.EdgeWrite, "physical-head:tails:1", "physical-head:heads:allowed:1") || access.AllowsEdge(security.EdgeRead, "physical-head:tails:1", "physical-head:heads:allowed:1") || access.AllowsEdge(security.EdgeWrite, "physical-head:tails:1", "physical-head:heads:denied:1") || !access.Allows(security.VertexDelete, "physical-head:heads:allowed:1") {
 		t.Fatal("Head Role boundary invalid", err)
 	}
 }

@@ -13,7 +13,7 @@ import (
 )
 
 // Disclosure depends only on the admitted policy and public request, never on
-// whether an Edge exists or a conditional mutation would actually succeed.
+// whether a Vertex or Edge exists or a conditional mutation would actually succeed.
 func blindMutationRequired(access *security.Access, request proto.Message) bool {
 	if access == nil {
 		return false
@@ -28,8 +28,29 @@ func blindMutationRequired(access *security.Access, request proto.Message) bool 
 		return false
 	}
 	switch req := request.(type) {
+	case *pb.PutVertexRequest:
+		return !access.Allows(security.VertexRead, req.GetVertex().GetKey())
+	case *pb.PutVerticesRequest:
+		for _, vertex := range req.GetVertices() {
+			if !access.Allows(security.VertexRead, vertex.GetKey()) {
+				return true
+			}
+		}
+	case *pb.DeleteVertexRequest:
+		return !access.Allows(security.VertexRead, req.GetKey())
+	case *pb.DeleteVerticesRequest:
+		for _, key := range req.GetKeys() {
+			if !access.Allows(security.VertexRead, key) {
+				return true
+			}
+		}
+	case *pb.DeleteVerticesByPrefixRequest:
+		return !access.Scope(security.VertexDelete).Within(req.GetPrefix()).IsSubsetOf(access.Scope(security.VertexRead))
 	case *pb.MutateGraphRequest:
 		for _, item := range req.GetItems() {
+			if vertex := item.GetPutVertex(); vertex != nil && !access.Allows(security.VertexRead, vertex.GetKey()) {
+				return true
+			}
 			if edge := item.GetAddEdge().GetEdge(); edge != nil && blind(edge.GetTail(), edge.GetHead()) {
 				return true
 			}
@@ -63,7 +84,10 @@ func blindMutationRequired(access *security.Access, request proto.Message) bool 
 			}
 		}
 	case *pb.DeleteEdgesByPrefixRequest:
-		return !access.Scope(security.VertexWrite).Within(req.GetHeadPrefix()).IsSubsetOf(access.Scope(security.VertexRead))
+		tailAction, headAction := access.EdgeEndpointActions()
+		read := access.Scope(security.VertexRead)
+		return !access.Scope(tailAction).Within(req.GetTailPrefix()).IsSubsetOf(read) ||
+			!access.Scope(headAction).Within(req.GetHeadPrefix()).IsSubsetOf(read)
 	}
 	return false
 }

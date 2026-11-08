@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  SecurityAction,
-  SecurityEffect,
+  SecurityPermission,
+  SecurityResource,
   type SecurityIssuer,
 } from "lantern-sdk/web";
 import {
@@ -38,23 +38,23 @@ describe("explicit security drafts", () => {
     draft.rules[0].prefix = "sys:auth";
     expect(() => buildRole(draft)).toThrow("logical");
   });
-  test("Deny is retained and capability resource choices are explicit", () => {
+  test("only read/write positive grants on typed resources are editable", () => {
     const draft = {
       ...roleDraft(),
       id: "observer",
       name: "Observer",
-      rules: [
-        {
-          ...newRule(1),
-          effect: SecurityEffect.DENY,
-          action: SecurityAction.OPERATIONS_READ,
-          global: true,
-        },
-      ],
+      rules: [{ ...newRule(1), resourceKind: SecurityResource.OPERATIONS }],
     };
-    expect(buildRole(draft).rules[0].effect).toBe(SecurityEffect.DENY);
-    draft.rules[0].global = false;
-    expect(() => buildRole(draft)).toThrow("scope");
+    const rule = buildRole(draft).rules[0];
+    expect(rule.permission).toBe(SecurityPermission.READ);
+    expect(rule.resourceKind).toBe(SecurityResource.OPERATIONS);
+    expect(rule.resource).toEqual({ case: undefined });
+    draft.rules[0].permission = SecurityPermission.WRITE;
+    expect(() => buildRole(draft)).toThrow("Read only");
+    draft.rules[0].resourceKind = SecurityResource.SECURITY;
+    expect(buildRole(draft).rules[0].permission).toBe(SecurityPermission.WRITE);
+    draft.rules[0].permission = 999 as SecurityPermission;
+    expect(() => buildRole(draft)).toThrow("supported resource");
   });
   test("Issuer writes strip read metadata; secret preserve, clear and replace differ", () => {
     const draft = {
@@ -275,43 +275,40 @@ test("Server-owned Role locks are not client-owned policy metadata", () => {
   expect(buildRole(mutable).envOwned).toBe(false);
 });
 
-test("UID and unknown selectors cannot become an empty literal draft", () => {
+test("personal UID scope is preserved without becoming an all-data grant", () => {
   const role = buildRole({
     ...roleDraft(),
     id: "personal",
     name: "Personal",
-    rules: [{ ...newRule(1), prefix: "users:" }],
+    rules: [{ ...newRule(1), personal: true }],
   });
-  role.rules[0].resource = {
+  expect(role.rules[0].resource).toEqual({
     case: "principalUidPrefix",
     value: {
       $typeName: "graph.v1.SecurityPrincipalUIDPrefix",
       literalBefore: "users:",
       literalAfter: ":",
     },
-  };
-  expect(() => roleDraft(role)).toThrow("unsupported");
-  expect(role.rules[0].resource.case).toBe("principalUidPrefix");
+  });
+  expect(buildRole(roleDraft(role))).toEqual(role);
   role.rules[0].resource = { case: undefined };
-  expect(() => roleDraft(role)).toThrow("unsupported");
-  role.rules[0].resource = { case: "global", value: false };
   expect(() => roleDraft(role)).toThrow("unsupported");
 });
 
-test("Head-managed Roles contain Vertex prefix grants, not derived Edge operations", () => {
+test("data permissions preserve literal scopes and never introduce independent Edge grants", () => {
   const draft = {
     ...roleDraft(),
     id: "relationships",
-    name: "Head relationships",
+    name: "Relationships",
     rules: [
       {
         ...newRule(1),
-        action: SecurityAction.VERTEX_READ,
+        permission: SecurityPermission.READ,
         prefix: "users:alice:",
       },
       {
         ...newRule(2),
-        action: SecurityAction.VERTEX_WRITE,
+        permission: SecurityPermission.WRITE,
         prefix: "profiles:",
       },
     ],
@@ -322,18 +319,15 @@ test("Head-managed Roles contain Vertex prefix grants, not derived Edge operatio
     { case: "prefix", value: "profiles:" },
   ]);
   expect(buildRole(roleDraft(role))).toEqual(role);
-  for (const action of [
-    SecurityAction.EDGE_READ,
-    SecurityAction.EDGE_CREATE,
-    SecurityAction.EDGE_ADD,
-    SecurityAction.EDGE_WRITE,
-    SecurityAction.EDGE_DELETE,
-  ]) {
-    expect(() =>
-      buildRole({
-        ...draft,
-        rules: [{ ...newRule(1), action, allKeys: true }],
-      }),
-    ).toThrow("action");
-  }
+  expect(
+    role.rules.every((rule) => rule.resourceKind === SecurityResource.DATA),
+  ).toBe(true);
+  expect(() =>
+    buildRole({
+      ...draft,
+      rules: [
+        { ...newRule(1), resourceKind: 999 as SecurityResource, allKeys: true },
+      ],
+    }),
+  ).toThrow("supported resource");
 });

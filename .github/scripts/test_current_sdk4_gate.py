@@ -159,8 +159,8 @@ class SDK4ReceiptTest(unittest.TestCase):
 
     def test_complete_distinct_contracts_and_old_schema_refusal(self):
         for kind, contract in (
-            (gate.FUNCTIONAL_VALIDATION, "functional-full-v4"),
-            (gate.CONFIGURED_SOURCE_INTEGRATION, "source-cohort-v4"),
+            (gate.FUNCTIONAL_VALIDATION, "functional-full-v5"),
+            (gate.CONFIGURED_SOURCE_INTEGRATION, "source-cohort-v5"),
         ):
             self.configure(kind)
             self.assertEqual(self.receipt["proof"]["case_contract"], contract)
@@ -410,7 +410,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         names = re.findall(r'runCase\("([^"]+)"', public)
         names += ["active export grant revocation"]
         expected = {f"{gate.ROOT_TEST}/{name.replace(' ', '_')}" for name in names}
-        self.assertEqual(len(expected), 13)
+        self.assertEqual(len(expected), 14)
         self.assertEqual(set(gate.FUNCTIONAL_VALIDATION_CASES), expected)
         self.assertEqual(len(gate.FUNCTIONAL_VALIDATION_PROTOCOLS), 5)
         omitted = expected | set(gate.FUNCTIONAL_VALIDATION_PROTOCOLS)
@@ -423,6 +423,27 @@ class SDK4ReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "absent, duplicated or incomplete"):
             self.verify()
         self.assertNotIn("export-events.jsonl", gate.log_names(gate.FUNCTIONAL_VALIDATION))
+
+    def test_global_edge_mode_and_restart_are_mandatory_only_in_the_controlled_cohort(self):
+        required = gate.required_tests(gate.FUNCTIONAL_VALIDATION)
+        cases = (
+            f"{gate.ROOT_TEST}/global_Edge_mode_shared_across_the_current_cohort",
+            gate.FUNCTIONAL_VALIDATION_EDGE_RESTART,
+            "TestAuth_OIDCReadWriteTypedResourcesRealConnect",
+            "TestAuth_OIDCBrowserEnrollmentRealConnect",
+            "TestAuth_OIDCVerifiedEmailBrowserRealConnect",
+        )
+        self.configure(gate.FUNCTIONAL_VALIDATION)
+        complete = events(kind=gate.FUNCTIONAL_VALIDATION)
+        for name in cases:
+            with self.subTest(name=name):
+                self.assertEqual(required.count(name), 1)
+                self.assertNotIn(name, gate.required_tests(gate.CONFIGURED_SOURCE_INTEGRATION))
+                self.write_events([row for row in complete if row.get("Test") != name])
+                self.save()
+                with self.assertRaisesRegex(ValueError, "absent, duplicated or incomplete"):
+                    self.verify()
+        self.assertEqual(len(gate.CONFIGURED_SOURCE_INTEGRATION_CASES), 7)
 
     def test_functional_validation_requires_actual_export_and_mechanism_bodies(self):
         for logfile, name in (

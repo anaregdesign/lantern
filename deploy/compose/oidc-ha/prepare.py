@@ -43,7 +43,7 @@ def prepare(directory: Path) -> None:
         write_private(directory / f"config/lantern-{i}/startup.json", json.dumps(config, indent=2) + "\n")
         write_private(directory / f"config/lantern-{i}/receipt.env", f"LANTERN_NODE_ID={secrets.token_hex(16)}\nLANTERN_RECEIPT_EPOCH={shared_epoch}\n")
     write_private(directory / "mcp.env", "# Inject an explicitly enrolled, scoped API JWT accepted by this Server.\nLANTERN_TOKEN=REPLACE_ACCEPTED_SCOPED_API_JWT\n")
-    write_private(directory / "compose.env", f"LANTERN_HA_PRIVATE_DIRECTORY='{directory}'\nLANTERN_RUN_UID={os.getuid()}\nLANTERN_RUN_GID={os.getgid()}\nLANTERN_EDGE_PORT=8443\nLANTERN_MCP_PORT=6390\nLANTERN_PROMETHEUS_PORT=9091\n")
+    write_private(directory / "compose.env", f"LANTERN_HA_PRIVATE_DIRECTORY='{directory}'\nLANTERN_RUN_UID={os.getuid()}\nLANTERN_RUN_GID={os.getgid()}\nLANTERN_EDGE_PORT=8443\nLANTERN_MCP_PORT=6390\nLANTERN_PROMETHEUS_PORT=9091\n# Select immutable compatible images after image_matrix.py succeeds.\nLANTERN_COMPOSE_SOURCE=REPLACE_EXACT_COMMIT\nLANTERN_IMAGE=REPLACE_IMMUTABLE_SERVER_IMAGE\nLANTERN_ADMIN_IMAGE=REPLACE_IMMUTABLE_ADMIN_IMAGE\nLANTERN_MCP_IMAGE=REPLACE_IMMUTABLE_MCP_IMAGE\nLANTERN_METRICS_RELAY_IMAGE=REPLACE_IMMUTABLE_METRICS_RELAY_IMAGE\nLANTERN_PUBLISHER_IMAGE=REPLACE_IMMUTABLE_PUBLISHER_IMAGE\nLANTERN_EDGE_IMAGE=REPLACE_IMMUTABLE_EDGE_IMAGE\n")
     for name in ["mcp-role.change.json.example", "operations-role.change.json.example", "service-principal.changes.json.example"]:
         write_private(directory / name, (templates / name).read_text())
     write_private(directory / "TLS-REQUIRED.txt", """Replace placeholders privately before any container starts.

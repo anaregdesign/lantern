@@ -37,18 +37,18 @@ func TestSecurityNativeClientSecretReadAndUpdateBoundary(t *testing.T) {
 }
 
 func TestSecurityCodecStrictContract(t *testing.T) {
-	role := &pb.SecurityRole{Id: "reader", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}}}}
+	role := &pb.SecurityRole{Id: "reader", Rules: []*pb.SecurityRule{{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}}}}
 	decoded, err := decodeSecurityRole(role)
-	if err != nil || *decoded.Rules[0].Prefix != "orders:" || decoded.Rules[0].Action != security.VertexRead {
+	if err != nil || *decoded.Rules[0].Prefix != "orders:" || decoded.Rules[0].Permission != security.Read || !proto.Equal(role, encodeSecurityRole(decoded)) {
 		t.Fatal(decoded, err)
 	}
-	if encodeSecurityRole(decoded).Rules[0].GetPrefix() != "orders:" {
-		t.Fatal("logical prefix changed")
-	}
 	for _, bad := range []*pb.SecurityRule{
-		{Id: "bad", Effect: pb.SecurityEffect(99), Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{}},
-		{Id: "bad", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction(99), Resource: &pb.SecurityRule_Prefix{}},
-		{Id: "bad", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_MANAGE, Resource: &pb.SecurityRule_Global{Global: false}},
+		{Id: "bad", Permission: pb.SecurityPermission(99), ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_Prefix{}},
+		{Id: "bad", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource(99)},
+		{Id: "bad", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA},
+		{Id: "bad", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SECURITY, Resource: &pb.SecurityRule_Prefix{}},
+		{Id: "bad", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_OPERATIONS},
+		{Id: "bad", Permission: pb.SecurityPermission_SECURITY_PERMISSION_WRITE, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SCHEMA},
 	} {
 		role.Rules = []*pb.SecurityRule{bad}
 		if _, err := decodeSecurityRole(role); err == nil {
@@ -57,10 +57,9 @@ func TestSecurityCodecStrictContract(t *testing.T) {
 	}
 	change := &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "reader"}}}
 	nested := change.GetPutRole()
-	nested.ProtoReflect().SetUnknown(protowire.AppendTag(nil, 999, protowire.VarintType))
-	nested.ProtoReflect().SetUnknown(append(nested.ProtoReflect().GetUnknown(), 1))
+	nested.ProtoReflect().SetUnknown(append(protowire.AppendTag(nil, 999, protowire.VarintType), 1))
 	if strictSecurityMessage(change) == nil {
-		t.Fatal("unknown direct-grant field ignored")
+		t.Fatal("unknown direct grant field ignored")
 	}
 	issuer := encodeSecurityIssuer(security.Issuer{URL: "https://idp.example", SecretRef: "private_binding", ConfigRevision: 3})
 	if issuer.SecretRef != nil || issuer.ConfigRevision != 3 {
@@ -71,30 +70,14 @@ func TestSecurityCodecStrictContract(t *testing.T) {
 	}
 }
 
-func TestSecurityCodecRejectsObsoleteEdgeGrantsAndPairSelectors(t *testing.T) {
-	for _, action := range []pb.SecurityAction{
-		pb.SecurityAction_SECURITY_ACTION_VERTEX_READ,
-		pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ,
-		pb.SecurityAction_SECURITY_ACTION_EDGE_READ,
-		pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE,
-	} {
-		for _, resource := range []*pb.SecurityRule_Pair{
-			{}, {Pair: &pb.SecurityPrefixPair{TailPrefix: "users:", HeadPrefix: "targets:"}},
-		} {
-			role := &pb.SecurityRole{Id: "obsolete", Rules: []*pb.SecurityRule{{Id: "rule", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: resource}}}
-			if _, err := decodeSecurityRole(role); err == nil {
-				t.Fatal("obsolete pair decoded", action, resource)
-			}
-		}
-	}
-	for _, action := range []pb.SecurityAction{
-		pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE,
-		pb.SecurityAction_SECURITY_ACTION_EDGE_ADD, pb.SecurityAction_SECURITY_ACTION_EDGE_WRITE,
-		pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE,
-	} {
-		role := &pb.SecurityRole{Id: "obsolete", Rules: []*pb.SecurityRule{{Id: "rule", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: ""}}}}
-		if _, err := decodeSecurityRole(role); err == nil {
-			t.Fatal("obsolete Edge grant decoded", action)
+func TestSecurityCodecRejectsRetiredSelectors(t *testing.T) {
+	// Old global and pair tags are no longer part of the active wire schema.
+	// Strict decoding rejects these bytes rather than broadening the new grant.
+	for _, tag := range []protowire.Number{2, 3, 5, 6} {
+		rule := &pb.SecurityRule{Id: "old", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_SECURITY}
+		rule.ProtoReflect().SetUnknown(append(protowire.AppendTag(nil, tag, protowire.BytesType), 0))
+		if _, err := decodeSecurityRole(&pb.SecurityRole{Id: "old", Rules: []*pb.SecurityRule{rule}}); err == nil {
+			t.Fatal("retired selector accepted", tag)
 		}
 	}
 }
@@ -119,7 +102,7 @@ func TestSecurityRoleReadMetadataCannotBecomeAWrite(t *testing.T) {
 }
 
 func TestSecurityCodecUIDSelector(t *testing.T) {
-	role := &pb.SecurityRole{Id: "personal", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_PrincipalUidPrefix{PrincipalUidPrefix: &pb.SecurityPrincipalUIDPrefix{LiteralBefore: "users:", LiteralAfter: ":"}}}}}
+	role := &pb.SecurityRole{Id: "personal", Rules: []*pb.SecurityRule{{Id: "read", Permission: pb.SecurityPermission_SECURITY_PERMISSION_READ, ResourceKind: pb.SecurityResource_SECURITY_RESOURCE_DATA, Resource: &pb.SecurityRule_PrincipalUidPrefix{PrincipalUidPrefix: &pb.SecurityPrincipalUIDPrefix{LiteralBefore: "users:", LiteralAfter: ":"}}}}}
 	decoded, err := decodeSecurityRole(role)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +111,7 @@ func TestSecurityCodecUIDSelector(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded := encodeSecurityRole(decoded)
-	if !proto.Equal(role, encoded) || encoded.Rules[0].GetGlobal() || encoded.Rules[0].GetPrincipalUidPrefix() == nil {
+	if !proto.Equal(role, encoded) || encoded.Rules[0].GetPrincipalUidPrefix() == nil {
 		t.Fatal("UID selector changed in round trip")
 	}
 	for _, resource := range []*pb.SecurityRule_PrincipalUidPrefix{nil, {}, {PrincipalUidPrefix: &pb.SecurityPrincipalUIDPrefix{}}} {
@@ -142,7 +125,7 @@ func TestSecurityCodecUIDSelector(t *testing.T) {
 		}
 	}
 	role.Rules[0].Resource = &pb.SecurityRule_PrincipalUidPrefix{PrincipalUidPrefix: &pb.SecurityPrincipalUIDPrefix{LiteralBefore: "users:", LiteralAfter: ":"}}
-	role.Rules[0].Action = pb.SecurityAction_SECURITY_ACTION_MANAGE
+	role.Rules[0].ResourceKind = pb.SecurityResource_SECURITY_RESOURCE_SECURITY
 	decoded, err = decodeSecurityRole(role)
 	if err == nil {
 		_, err = security.CompileRoles([]security.Role{decoded}, security.DefaultPolicyLimits())
@@ -150,7 +133,7 @@ func TestSecurityCodecUIDSelector(t *testing.T) {
 	if err == nil {
 		t.Fatal("UID selector became global authority")
 	}
-	invalid := security.Role{ID: "invalid", Rules: []security.PermissionRule{{Action: security.VertexRead, Effect: security.Allow, Resource: security.DataResource}}}
+	invalid := security.Role{ID: "invalid", Rules: []security.PermissionRule{{Permission: security.Read, Resource: security.DataResource}}}
 	if encodeSecurityRole(invalid) != nil {
 		t.Fatal("missing data selector became Global")
 	}

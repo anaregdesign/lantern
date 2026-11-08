@@ -42,18 +42,13 @@ func TestTransportProbeScopeAndHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"probe/connect/value", "probe/grpc/ios-success/value"} {
-		for _, action := range []security.Action{security.VertexRead, security.VertexWrite, security.Export} {
+		for _, action := range []security.Action{security.VertexRead, security.VertexWrite, security.VertexDelete, security.Query, security.CDCIdentity, security.CDCValue, security.Export, security.ReceiptRead} {
 			if !access.Allows(action, key) {
 				t.Fatal("required probe action denied", action)
 			}
 		}
-		for _, action := range []security.Action{security.VertexDelete, security.Query, security.CDCValue, security.ReceiptRead} {
-			if access.Allows(action, key) {
-				t.Fatal("probe has unrelated capability", action)
-			}
-		}
 	}
-	if access.Allows(security.VertexRead, "probe/connect-other/value") || access.Allows(security.VertexWrite, "other/value") || access.AllowsGlobal(security.SecurityManage) {
+	if access.Allows(security.VertexRead, "probe/connect-other/value") || access.Allows(security.VertexWrite, "other/value") || access.AllowsGlobal(security.SecurityManage) || access.AllowsGlobal(security.OperationsRead) || access.AllowsGlobal(security.SchemaRead) {
 		t.Fatal("probe escaped its literal prefixes or acquired administration")
 	}
 	file, err := os.Open(result.TokenFile)

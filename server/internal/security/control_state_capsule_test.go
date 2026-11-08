@@ -81,7 +81,7 @@ func TestS2CapsuleCompleteLedgerOverflowsWithValidS1Bounds(t *testing.T) {
 		rules := make([]PermissionRule, 128)
 		for j := range rules {
 			prefix := strings.Repeat("x", 1021) + "<>&" // Escaping counts as real bytes.
-			rules[j] = PermissionRule{ID: "rule", Effect: Allow, Action: VertexRead, Resource: DataResource, Prefix: &prefix}
+			rules[j] = PermissionRule{ID: "rule", Permission: Read, Resource: DataResource, Prefix: &prefix}
 		}
 		roles[i] = Change{Kind: PutRole, Role: &Role{ID: "large" + string(rune('a'+i)), Rules: rules}}
 	}
