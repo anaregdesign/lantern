@@ -471,15 +471,6 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 	}
 }
 
-// connectCode unwraps the connect error code from an SDK error chain.
-func connectCode(err error) connect.Code {
-	var ce *connect.Error
-	if errors.As(err, &ce) {
-		return ce.Code()
-	}
-	return 0
-}
-
 // The two reflection versions have the same message wire shape. An explicit
 // method path prevents the client from falling back and hiding a broken mount.
 func currentReflectionServices(ctx context.Context, client *http.Client, baseURL, version, token string) ([]string, error) {
