@@ -178,6 +178,15 @@ reference are supported. External material uses the same typed configuration and
 identity-material format. Generic OFF private-peer controls retain their
 independent workload plane; no authentication environment means standalone OFF.
 
+Before returning an ordinary browser login or operation-purpose redirect, Server
+waits until the current qualified UTC lower endpoint reaches that transaction's
+saved creation upper endpoint (#2094). Timers only pace native-bound checks;
+the original expiry and request cancellation remain binding. Server then
+rechecks the exact Issuer/cut before publishing the transaction cookie and
+authorization URL. Callback consumption retains its strict whole-interval and
+single-use checks, and the Code exchange is not repeated. Native Begin/Complete
+keeps its separate contract.
+
 Browser login requests `openid email`. A signed ID token's `email` is used only
 as optional display metadata when `email_verified` is the JSON boolean `true`
 and the value is a bounded, valid mailbox. Missing, unverified or malformed

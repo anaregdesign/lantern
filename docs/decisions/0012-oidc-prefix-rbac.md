@@ -292,6 +292,12 @@ transport stays in `service`, and provider retains construction, certification
 and lifecycle ownership. See [the extraction design](../login-session-workflows.md)
 for concrete APIs and the unchanged opaque-evidence/output ordering.
 
+Ordinary browser login and purpose navigation wait for the native qualified
+lower endpoint to reach the newly saved transaction's creation upper endpoint
+before exposing its authorization URL (#2094). `internal/authn` retains the
+original expiry/cancellation and rechecks the exact Issuer/cut before binding
+output; callback consumption keeps its whole-interval and single-use guards.
+
 The purpose callback branches before ordinary session issuance or cookie writes;
 generic session step-up cannot authorize an operation. A typed, fully bound
 pre-persistence authorization refusal permits same-ID proof reacquisition only
