@@ -275,6 +275,9 @@ func (s *s3aSigner) close() {
 	case ed25519.PrivateKey:
 		clear(key)
 	case *ecdsa.PrivateKey:
+		// D owns the scalar storage. Encoding APIs expose separate bytes, not
+		// these limbs; no public destruction API replaces this best-effort wipe.
+		// Retain the deprecated access rather than merely clearing an encoding.
 		zero(key.D)
 	case *rsa.PrivateKey:
 		zero(key.D)
@@ -284,6 +287,9 @@ func (s *s3aSigner) close() {
 		zero(key.Precomputed.Dp)
 		zero(key.Precomputed.Dq)
 		zero(key.Precomputed.Qinv)
+		// Precompute still allocates independent legacy extra-prime CRT values.
+		// Retain this deprecated access to wipe their owned storage as well;
+		// dropping references is not equivalent to best-effort erasure.
 		for _, value := range key.Precomputed.CRTValues {
 			zero(value.Exp)
 			zero(value.Coeff)
