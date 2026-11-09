@@ -1056,6 +1056,15 @@ test("a new Role draft cannot overwrite an existing Role ID", async ({
   const fixture = await securityUI(page);
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
+  const review = page.getByRole("dialog", {
+    name: "Review changes",
+    exact: true,
+  });
+  await expect(review).toBeVisible();
+  await review
+    .getByRole("button", { name: "Back to editing", exact: true })
+    .click();
+  await expect(review).toHaveCount(0);
   await page
     .getByRole("textbox", { name: "Role ID", exact: true })
     .fill("reader");
