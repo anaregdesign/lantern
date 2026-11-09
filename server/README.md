@@ -43,6 +43,10 @@ The server listens on:
   `/readyz` and `/healthz/ready` (readiness, gated by replication catch-up).
 
 Both ports are configurable via environment variables (see below).
+A verified fixed one-member workload does not wait for a remote replication
+bootstrap callback. Its current authority, membership and drain checks still gate
+readiness. Empty dynamic discovery or unavailable members in a larger fixed
+cohort do not qualify as a singleton.
 
 ## Package layout
 

@@ -15,6 +15,16 @@ func (s workloadPeerSource) Resolve(ctx context.Context) ([]string, error) {
 	}
 	return s.peer.ApprovedOrigins()
 }
+
+// fixedSingleton distinguishes a verified immutable topology from an empty
+// discovery result. Serving authority and continuing membership validity remain
+// independently enforced by the security runtime and workers.
+func (s workloadPeerSource) fixedSingleton() bool {
+	return s.peer != nil && len(s.peer.config.FixedMembers) == 1 &&
+		s.peer.config.FixedMembers[0].Identity == s.peer.config.SelfIdentity &&
+		s.peer.CheckWorkload(context.Background()) == nil
+}
+
 func NewWorkloadPeerResolver(peer *PeerIdentityRuntime) *PeerResolver {
 	if peer == nil {
 		return &PeerResolver{}
