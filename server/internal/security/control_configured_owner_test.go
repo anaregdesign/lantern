@@ -621,52 +621,70 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 // CHOSEN datagram. This fault changes delivery only: signatures, fixed voters,
 // native journals, the one configured worker and its ordinary renewal are real.
 func TestConfiguredOwnerStartupConvergenceAfterDroppedChosenTLS(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	_, owners, _ := authorityTestCompositeConfiguredMembersWithRenewal(t, 3, 2, nil, configuredIntent(t), true, func(id uint32, ownerCtx context.Context) {
-		if id != 2 {
-			<-ownerCtx.Done()
-		}
-	})
-	var dropped atomic.Uint64
-	for _, owner := range owners {
-		trust := owner.network.kernel.trust
-		owner.network.hooks.beforeSend = func(_ context.Context, target uint32, raw []byte) error {
-			if target != 3 || len(raw) <= len(s2cMessageMagic) || raw[len(s2cMessageMagic)] != s2cChosen {
-				return nil
+	for _, test := range []struct {
+		name       string
+		bothParked bool
+	}{
+		{name: "member_3"},
+		{name: "both_parked_peers", bothParked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			_, owners, _ := authorityTestCompositeConfiguredMembersWithRenewal(t, 3, 2, nil, configuredIntent(t), true, func(id uint32, ownerCtx context.Context) {
+				if id != 2 {
+					<-ownerCtx.Done()
+				}
+			})
+			var dropped [4]atomic.Uint64
+			for _, owner := range owners {
+				trust := owner.network.kernel.trust
+				owner.network.hooks.beforeSend = func(_ context.Context, target uint32, raw []byte) error {
+					if (target != 3 && (!test.bothParked || target != 1)) || len(raw) <= len(s2cMessageMagic) || raw[len(s2cMessageMagic)] != s2cChosen {
+						return nil
+					}
+					message, err := s2cDecodeMessage(trust, raw)
+					if err != nil {
+						return err
+					}
+					if message.slot == 2 {
+						dropped[target].Add(1)
+						return errS3AWire
+					}
+					return nil
+				}
 			}
-			message, err := s2cDecodeMessage(trust, raw)
+			defer func() {
+				for _, member := range []uint32{1, 3} {
+					if member == 3 || test.bothParked {
+						t.Logf("initial slot-2 CHOSEN deliveries refused to fixed member %d: %d", member, dropped[member].Load())
+					}
+				}
+			}()
+			statement := configuredOwnerStatement(owners[1].network.kernel)
+			votes, err := owners[1].collectConfiguredEndorsements(ctx, statement)
 			if err != nil {
-				return err
+				t.Fatal("initial native endorsements", err)
 			}
-			if message.slot == 2 {
-				dropped.Add(1)
-				return errS3AWire
+			value, err := owners[1].sealConfigured(ctx, statement, votes)
+			if err != nil {
+				t.Fatal("initial native seal", err)
 			}
-			return nil
-		}
-	}
-	defer func() { t.Logf("initial slot-2 CHOSEN deliveries refused to fixed member 3: %d", dropped.Load()) }()
-	statement := configuredOwnerStatement(owners[1].network.kernel)
-	votes, err := owners[1].collectConfiguredEndorsements(ctx, statement)
-	if err != nil {
-		t.Fatal("initial native endorsements", err)
-	}
-	value, err := owners[1].sealConfigured(ctx, statement, votes)
-	if err != nil {
-		t.Fatal("initial native seal", err)
-	}
-	if _, err := owners[1].network.Drive(ctx, value); err != nil {
-		t.Fatal("initial native configuration", err)
-	}
-	authorityTestConverge(t, owners)
-	workerOwner := owners[2]
-	workerOwner.network.workers.Add(1)
-	go workerOwner.configuredLoop()
-	var startup configuredOwnerStartupObservation
-	configuredOwnerTestWaitForStartup(t, ctx, owners, workerOwner, &startup)
-	if dropped.Load() == 0 {
-		t.Fatal("fixture never refused a genuine initial CHOSEN delivery")
+			if _, err := owners[1].network.Drive(ctx, value); err != nil {
+				t.Fatal("initial native configuration", err)
+			}
+			authorityTestConverge(t, owners)
+			workerOwner := owners[2]
+			workerOwner.network.workers.Add(1)
+			go workerOwner.configuredLoop()
+			var startup configuredOwnerStartupObservation
+			configuredOwnerTestWaitForStartup(t, ctx, owners, workerOwner, &startup)
+			for _, member := range []uint32{1, 3} {
+				if (member == 3 || test.bothParked) && dropped[member].Load() == 0 {
+					t.Fatal("fixture never refused a genuine initial CHOSEN delivery to fixed member", member)
+				}
+			}
+		})
 	}
 }
 
@@ -675,6 +693,7 @@ func TestConfiguredOwnerStartupConvergenceAfterDroppedChosenTLS(t *testing.T) {
 type configuredOwnerStateObservation struct {
 	Member                                  uint32
 	Slot, Records                           uint64
+	Prefix, ActivePrefix                    [32]byte
 	Accepted, AcceptedValueNonzero          bool
 	Chosen, ConfigurationMatches            bool
 	StartupRecoveryPending, Pending, Active bool
@@ -699,7 +718,7 @@ func configuredOwnerTestStates(owners map[uint32]*authorityOriginOwner) []config
 		k.gate.Lock()
 		r := o.network.receiver
 		s := configuredOwnerStateObservation{Member: id, Slot: k.replayState.slot, Records: k.p.count,
-			Accepted: k.accepted != nil, Chosen: k.chosen != nil, ConfigurationMatches: k.configuredReadyLocked(),
+			Prefix: k.replayState.prefix, Accepted: k.accepted != nil, Chosen: k.chosen != nil, ConfigurationMatches: k.configuredReadyLocked(),
 			StartupRecoveryPending: r.startupRecoveryPending, Pending: r.pending != nil, Active: r.active != nil,
 			Closed: o.closed || k.closed || o.network.closed.Load(), KernelUnknown: k.unknown != nil}
 		if k.accepted != nil {
@@ -710,6 +729,7 @@ func configuredOwnerTestStates(owners map[uint32]*authorityOriginOwner) []config
 		}
 		if r.active != nil {
 			s.ActiveSlot = r.active.certificate.request.statement.Slot
+			s.ActivePrefix = r.active.certificate.request.statement.Prefix
 		}
 		k.gate.Unlock()
 		states = append(states, s)
@@ -735,26 +755,33 @@ func configuredOwnerTestWait(t *testing.T, ctx context.Context, owners map[uint3
 
 func configuredOwnerTestWaitForStartup(t *testing.T, ctx context.Context, owners map[uint32]*authorityOriginOwner, worker *authorityOriginOwner, observed *configuredOwnerStartupObservation) {
 	t.Helper()
-	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must install its recovered prefix certificate", func() bool {
+	var settledPrefix [32]byte
+	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must settle its recovered prefix", func() bool {
 		for _, state := range configuredOwnerTestStates(owners) {
-			if state.Member == worker.network.kernel.config.Member {
-				return state.Slot == 2 && !state.AcceptedValueNonzero && !state.Chosen && state.ConfigurationMatches && !state.StartupRecoveryPending && state.Active && state.ActiveSlot == 2
+			if state.Member == worker.network.kernel.config.Member && state.Slot == 2 && !state.AcceptedValueNonzero && !state.Chosen && state.ConfigurationMatches && !state.StartupRecoveryPending && state.Prefix != [32]byte{} {
+				settledPrefix = state.Prefix
+				return true
 			}
 		}
 		return false
 	})
 	// Only the survivor owns a configured worker here; the other members have
-	// automatic renewal/catch-up parked. Its cleared fence and native slot-2
-	// certificate show startup publication, not delivery to every peer or current
-	// public readiness. Recover a missed CHOSEN through the existing authenticated
-	// range path inside the original 30s, then retain the original Ready poll.
-	// No extra Ready/time probe or test-issued renewal competes with the worker.
+	// automatic renewal/catch-up parked. Its settled prefix and cleared fence
+	// show local recovery completion, not delivery to every peer or a usable
+	// certificate. Parked peers may need that prefix before they can sign the
+	// worker's renewal. Recover missed CHOSEN through the existing authenticated
+	// range path inside the original 30s, then require this same prefix's active
+	// certificate and the original all-three/public Ready check. No extra
+	// Ready/time probe or test-issued renewal competes with the worker.
 	authorityTestConvergeContext(t, ctx, owners)
 	configuredOwnerTestWait(t, ctx, owners, observed, "initial matching worker must close its unresolved suffix", func() bool {
 		for _, state := range configuredOwnerTestStates(owners) {
 			// Preserve the original value comparison; a retained NOOP ACCEPT
 			// has a zero value too. Presence remains separately diagnostic.
-			if state.Slot != 2 || state.AcceptedValueNonzero || !state.ConfigurationMatches {
+			if state.Slot != 2 || state.Prefix != settledPrefix || state.AcceptedValueNonzero || !state.ConfigurationMatches {
+				return false
+			}
+			if state.Member == worker.network.kernel.config.Member && (state.StartupRecoveryPending || state.Chosen || !state.Active || state.ActiveSlot != 2 || state.ActivePrefix != settledPrefix) {
 				return false
 			}
 		}
