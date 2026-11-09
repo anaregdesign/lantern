@@ -433,3 +433,31 @@ test("logout recovery survives gateway disposal and retains each new session ope
   expect(recovery.forPrincipal(session().principal!)).toHaveLength(2);
   next.dispose();
 });
+
+test("editing owner survives same-authority suspension but changes with auth binding, CSRF or refusal", async () => {
+  let current: BrowserSession | null = session();
+  const c = fixture({ session: async () => current });
+  await c.refresh();
+  const first = c.getDraftOwner();
+  expect(first).toBeDefined();
+  const checking = c.refresh(true);
+  expect(c.getDraftOwner()).toBeUndefined();
+  await checking;
+  expect(c.getDraftOwner()).toBe(first);
+  current = session("2");
+  await c.refresh();
+  const changed = c.getDraftOwner();
+  expect(changed).not.toBe(first);
+  current = session("2", "B".repeat(43));
+  await c.refresh();
+  expect(c.getDraftOwner()).not.toBe(changed);
+  current = null;
+  await c.refresh(true);
+  expect(c.getDraftOwner()).toBeUndefined();
+  current = session();
+  await c.refresh();
+  expect(c.getDraftOwner()).not.toBe(first);
+  c.invalidateSession();
+  expect(c.getDraftOwner()).toBeUndefined();
+  c.dispose();
+});

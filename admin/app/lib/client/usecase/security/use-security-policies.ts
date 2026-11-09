@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef } from "react";
+import { useSecurityDraftField } from "./use-security-draft-field";
+import type { SecurityPolicyIntent } from "./security-draft-recovery";
 import {
   EdgeEndpointMode,
   currentSecurityVersionBinding,
@@ -22,12 +24,54 @@ export function useSecurityPolicies(
   controller: SecurityManagementController,
   state: SecurityManagementState,
 ) {
-  const [edgeDraft, setEdgeDraft] = useState<EdgeEndpointMode>();
+  const fields = useRef<Record<string, unknown>>({});
+  const restoring = useRef(false);
+  const retain = () => {
+    if (restoring.current) return;
+    const value = fields.current as unknown as SecurityPolicyIntent;
+    controller.retainPolicyIntent({
+      edgeDraft: value.edgeDraft,
+      enrollmentDraft: value.enrollmentDraft,
+      edgeVersion: value.edgeVersion,
+      enrollmentVersion: value.enrollmentVersion,
+    });
+  };
+  const [edgeDraft, setEdgeDraft] = useSecurityDraftField<EdgeEndpointMode>(
+    "edgeDraft",
+    fields,
+    retain,
+  );
   const [enrollmentDraft, setEnrollmentDraft] =
-    useState<SecurityRegistrationPolicy>();
-  const [edgeVersion, setEdgeVersion] = useState("");
-  const [enrollmentVersion, setEnrollmentVersion] = useState("");
-  const [error, setError] = useState("");
+    useSecurityDraftField<SecurityRegistrationPolicy>(
+      "enrollmentDraft",
+      fields,
+      retain,
+    );
+  const [edgeVersion, setEdgeVersion] = useSecurityDraftField(
+    "edgeVersion",
+    fields,
+    retain,
+    "",
+  );
+  const [enrollmentVersion, setEnrollmentVersion] = useSecurityDraftField(
+    "enrollmentVersion",
+    fields,
+    retain,
+    "",
+  );
+  const [error, setError] = useSecurityDraftField("error", fields, retain, "");
+  const restored = state.restoredIntent?.policies;
+  useEffect(() => {
+    if (!restored) return;
+    restoring.current = true;
+    setEdgeDraft(restored.edgeDraft);
+    setEnrollmentDraft(restored.enrollmentDraft);
+    setEdgeVersion(restored.edgeVersion);
+    setEnrollmentVersion(restored.enrollmentVersion);
+    restoring.current = false;
+    retain();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controller, restored]);
   const reset = () => {
     controller.cancelReview();
     setEdgeDraft(undefined);

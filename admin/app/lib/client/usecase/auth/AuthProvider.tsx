@@ -12,6 +12,7 @@ import {
 } from "./auth-state";
 import { SecurityChangeRecovery } from "~/lib/client/usecase/security/security-management";
 import { AuthContext } from "./use-auth";
+import { SecurityDraftRecovery } from "~/lib/client/usecase/security/security-draft-recovery";
 import { AddRecoveryStore } from "~/lib/client/usecase/add-recovery/add-recovery";
 import { browserAddRecoveryStorage } from "~/lib/client/infrastructure/browser/add-recovery-storage";
 import { browserSecurityRecoveryStorage } from "~/lib/client/infrastructure/browser/security-change-recovery-storage";
@@ -40,6 +41,7 @@ export function AuthProvider({
     () => new SecurityChangeRecovery(browserSecurityRecoveryStorage()),
     [],
   );
+  const drafts = useMemo(() => new SecurityDraftRecovery(), []);
   const logoutRecovery = useMemo(() => new SessionRevocationRecovery(), []);
   const controller = useMemo(
     () =>
@@ -59,6 +61,7 @@ export function AuthProvider({
     void controller.refresh();
     const stop = lifecycle.watch((logout) => {
       if (logout) {
+        drafts.clear();
         controller.invalidateSession();
       }
       void controller.refresh(controller.getSnapshot().kind !== "off");
@@ -71,20 +74,26 @@ export function AuthProvider({
       stop();
       controller.dispose();
     };
-  }, [controller, lifecycle, recovery]);
+  }, [controller, lifecycle, recovery, drafts]);
+  useEffect(() => {
+    if (state.kind !== "ready" && state.kind !== "checking") drafts.clear();
+  }, [state.kind, drafts]);
   const value = useMemo(
     () => ({
       state,
       controller,
       recovery,
+      drafts,
+      draftOwner: controller.getDraftOwner(),
       adds,
       logout: async () => {
+        drafts.clear();
         const pending = controller.logout();
         lifecycle.announceLogout();
         await pending;
       },
     }),
-    [state, controller, lifecycle, recovery, adds],
+    [state, controller, lifecycle, recovery, drafts, adds],
   );
   return (
     <AuthContext.Provider key={connection.baseUrl} value={value}>

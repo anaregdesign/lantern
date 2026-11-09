@@ -136,6 +136,11 @@ export async function securityUI(
     authorization?: string;
   }> = [];
   const version = toJson(SecurityVersionSchema, currentVersion);
+  // Browser-only admission differs from Security RPC admission.
+  const authVersion = {
+    ...(version as Record<string, unknown>),
+    admissionBinding: Buffer.alloc(32, 31).toString("base64"),
+  };
   const profile = toJson(CurrentAuthorityProfileSchema, currentProfile);
   let preparations = 0;
   let retained = makeReview();
@@ -318,7 +323,7 @@ export async function securityUI(
             issuer: "https://idp.example",
             subject: "admin",
           },
-          version,
+          version: authVersion,
           roles: options.roles ?? [],
           expiresAt: new Date(Date.now() + 25_000).toISOString(),
           recentAuthentication: options.recent !== false,

@@ -5,6 +5,7 @@ import {
   type SecuritySection,
   type SecurityChangeRecovery,
 } from "./security-management";
+import type { SecurityDraftRecovery } from "./security-draft-recovery";
 
 export function useSecurityManagement(
   port: SecurityManagementPort,
@@ -12,11 +13,21 @@ export function useSecurityManagement(
   signal: AbortSignal,
   recovery?: SecurityChangeRecovery,
   owner = "",
+  drafts?: SecurityDraftRecovery,
+  draftOwner?: object,
 ) {
   const controller = useMemo(
     () =>
-      new SecurityManagementController(port, section, signal, recovery, owner),
-    [port, section, signal, recovery, owner],
+      new SecurityManagementController(
+        port,
+        section,
+        signal,
+        recovery,
+        owner,
+        drafts,
+        draftOwner,
+      ),
+    [port, section, signal, recovery, owner, drafts, draftOwner],
   );
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -24,7 +35,7 @@ export function useSecurityManagement(
     controller.getSnapshot,
   );
   useEffect(() => {
-    void controller.load();
+    void controller.initialize();
     return () => controller.dispose();
   }, [controller]);
   return { controller, state };

@@ -264,6 +264,17 @@ cut. **Back to editing** keeps the draft; **Discard changes** removes it. Succes
 Role saves read back saved details; assigning members is an explicit next task.
 User Role choices load one shared catalog page, rather than one request per chip.
 
+Authentication revalidation continues to hide protected views and cancel old
+requests. Unsent Security editing intent can survive the check in bounded
+app-memory (three sections, 1 MiB total, 30 minutes), then returns only after
+fresh authorized reads match the same gateway, identity, session and complete
+policy binding. Saved records and permission flags are read again; retained
+intent is not authority. Reauthentication attempts keep the exact reviewed
+operation, but approval must be checked again before Save. Logout, refused
+validation or changed authority discards this unsent intent; document replacement
+also ends it. Possibly dispatched changes instead keep their separate original
+identity and require status recovery, without an automatic Apply or replacement.
+
 Shared Security settings are independent of the selected record. Load their
 current values before staging registration or Edge-mode changes. Registration
 starts OFF; ON requires exact eligible browser/native profiles and the scoped

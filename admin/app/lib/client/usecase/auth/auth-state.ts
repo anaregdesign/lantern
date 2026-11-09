@@ -117,6 +117,9 @@ export class AuthController {
   private scopeIdentity = "";
   private deadline?: ReturnType<typeof setTimeout>;
   private logoutMessage = "";
+  private draftAuthority?: { partition: string; csrf: string; owner: object };
+  getDraftOwner = (): object | undefined =>
+    this.state.kind === "ready" ? this.draftAuthority?.owner : undefined;
   getLogoutMessage = () => this.logoutMessage;
   hasLogoutRecord = () => this.logoutRecovery.hasRecords();
   constructor(
@@ -167,11 +170,13 @@ export class AuthController {
     this.publish({ kind: "checking", epoch: this.state.epoch + 1 });
   }
   dispose() {
+    this.draftAuthority = undefined;
     this.ticket++;
     this.request?.abort();
     this.invalidate();
   }
   invalidateSession() {
+    this.draftAuthority = undefined;
     if (this.state.kind === "ready")
       this.blockedCSRF = this.state.principal.csrfToken;
     this.suspend();
@@ -194,6 +199,7 @@ export class AuthController {
       if (!caps.ready)
         throw new Error("Authentication service is unavailable.");
       if (caps.mode === AuthMode.OFF) {
+        this.draftAuthority = undefined;
         this.selectedScope = "";
         this.scopeIdentity = "";
         if (caps.loginIssuers.length || caps.loginPath)
@@ -218,6 +224,7 @@ export class AuthController {
       const session = await this.gateway.session(request.signal);
       if (ticket !== this.ticket) return;
       if (session === null) {
+        this.draftAuthority = undefined;
         this.invalidate();
         this.publish({
           kind: "login",
@@ -273,6 +280,15 @@ export class AuthController {
         },
         Math.min(remaining - 1000, 15_000),
       );
+      if (
+        this.draftAuthority?.partition !== partition ||
+        this.draftAuthority.csrf !== principal.csrfToken
+      )
+        this.draftAuthority = {
+          partition,
+          csrf: principal.csrfToken,
+          owner: {},
+        };
       this.publish({
         kind: "ready",
         epoch,
@@ -283,6 +299,7 @@ export class AuthController {
       });
     } catch (error) {
       if (ticket !== this.ticket) return;
+      this.draftAuthority = undefined;
       this.invalidate();
       this.publish({
         kind: "error",
@@ -301,6 +318,7 @@ export class AuthController {
       !state.issuers.some((candidate) => candidate.issuer === issuer)
     )
       return;
+    this.draftAuthority = undefined;
     this.suspend();
     this.gateway.login(issuer);
   }
