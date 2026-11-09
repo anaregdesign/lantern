@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import { getServerStatus } from "~/lib/client/infrastructure/api/get-server-status";
 import { getReplicationStatus } from "~/lib/client/infrastructure/api/get-replication-status";
@@ -6,6 +6,7 @@ import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-cl
 import { opsReducer } from "./reducer";
 import { INITIAL_OPS_STATE } from "./state";
 import { diagnosticsError } from "./diagnostics-error";
+import { startPolling } from "./polling";
 
 /**
  * useOps is the hook the OpsPage consumes. It owns:
@@ -23,9 +24,9 @@ export function useOps() {
   const [state, dispatch] = useReducer(opsReducer, INITIAL_OPS_STATE);
   // epochRef carries the latest dispatched epoch so the polling
   // closure does not depend on state (which would re-create the
-  // setInterval handler every render and reset the timer).
-  const epochRef = useRef(state.fetchEpoch);
-  epochRef.current = state.fetchEpoch;
+  // polling lifecycle every render and reset the timer).
+  const epochRef = useRef(0);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const fetchRound = useCallback(
     async (signal: AbortSignal) => {
@@ -37,9 +38,12 @@ export function useOps() {
       // epoch so a stale round can be discarded atomically.
       await Promise.allSettled([
         getServerStatus(client, { signal })
-          .then((data) => dispatch({ type: "SERVER_LOADED", epoch, data }))
+          .then((data) => {
+            if (!signal.aborted)
+              dispatch({ type: "SERVER_LOADED", epoch, data });
+          })
           .catch((err: unknown) => {
-            if ((err as Error)?.name === "AbortError") return;
+            if (signal.aborted || (err as Error)?.name === "AbortError") return;
             dispatch({
               type: "SERVER_ERROR",
               epoch,
@@ -50,9 +54,12 @@ export function useOps() {
             });
           }),
         getReplicationStatus(client, { signal })
-          .then((data) => dispatch({ type: "REPLICATION_LOADED", epoch, data }))
+          .then((data) => {
+            if (!signal.aborted)
+              dispatch({ type: "REPLICATION_LOADED", epoch, data });
+          })
           .catch((err: unknown) => {
-            if ((err as Error)?.name === "AbortError") return;
+            if (signal.aborted || (err as Error)?.name === "AbortError") return;
             dispatch({
               type: "REPLICATION_ERROR",
               epoch,
@@ -68,10 +75,8 @@ export function useOps() {
   );
 
   const refresh = useCallback(() => {
-    const ctl = new AbortController();
-    void fetchRound(ctl.signal);
-    return () => ctl.abort();
-  }, [fetchRound]);
+    setRefreshNonce((value) => value + 1);
+  }, []);
 
   const setPollMs = useCallback((ms: number) => {
     dispatch({ type: "SET_POLL_MS", pollMs: ms });
@@ -79,20 +84,10 @@ export function useOps() {
 
   // First-paint fetch + polling timer. The cleanup aborts any
   // in-flight requests on unmount or before a re-fetch fires.
-  useEffect(() => {
-    const ctl = new AbortController();
-    void fetchRound(ctl.signal);
-    if (state.pollMs <= 0) {
-      return () => ctl.abort();
-    }
-    const id = window.setInterval(() => {
-      void fetchRound(ctl.signal);
-    }, state.pollMs);
-    return () => {
-      window.clearInterval(id);
-      ctl.abort();
-    };
-  }, [fetchRound, state.pollMs]);
+  useEffect(
+    () => startPolling(fetchRound, state.pollMs),
+    [fetchRound, state.pollMs, refreshNonce],
+  );
 
   return {
     state,

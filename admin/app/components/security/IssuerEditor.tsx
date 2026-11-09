@@ -180,7 +180,7 @@ export function IssuerEditor({
         <div className={styles.actions}>
           <Button onClick={editor.validateIssuer}>Validate with Server</Button>
           <Button type="submit" appearance="primary">
-            Review Issuer change
+            Review changes
           </Button>
           {draft.existing && (
             <>

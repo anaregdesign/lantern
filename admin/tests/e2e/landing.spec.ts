@@ -2,10 +2,12 @@ import { expect, test } from "@playwright/test";
 import { CONNECT_URL, STORAGE_KEY } from "./helpers";
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(({ key, url }) => localStorage.setItem(key, url), {
-    key: STORAGE_KEY,
-    url: CONNECT_URL,
-  });
+  await page.addInitScript(
+    ({ key, url }) => {
+      if (!localStorage.getItem(key)) localStorage.setItem(key, url);
+    },
+    { key: STORAGE_KEY, url: CONNECT_URL },
+  );
 });
 
 test("landing page renders with navigation and gateway connection", async ({
@@ -51,3 +53,50 @@ test.describe("placeholder routes", () => {
     await expect(page.getByTestId("ops-replication-card")).toBeVisible();
   });
 });
+
+for (const width of [1280, 390]) {
+  test(`Gateway changes stay drafts until saved at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/");
+    const saved = () =>
+      page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+    const switcher = page.getByRole("button", {
+      name: "Change gateway connection",
+    });
+    const dialog = page.getByRole("dialog", {
+      name: "Lantern gateway connection",
+    });
+    const input = dialog.getByRole("textbox", { name: "Base URL" });
+    const defaultUrl = new URL(page.url()).origin;
+
+    await switcher.click();
+    await dialog.getByRole("button", { name: "Reset to default" }).click();
+    await expect(input).toHaveValue(defaultUrl);
+    await expect(dialog.getByRole("status")).toContainText("Unsaved changes");
+    expect(await saved()).toBe(CONNECT_URL);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(switcher).toContainText(CONNECT_URL);
+    await page.reload();
+    await expect(switcher).toContainText(CONNECT_URL);
+
+    await switcher.click();
+    await input.fill("invalid gateway");
+    await input.press("Enter");
+    await expect(
+      dialog.getByText("Enter an http(s) URL like http://localhost:6380"),
+    ).toBeVisible();
+    expect(await saved()).toBe(CONNECT_URL);
+    await dialog.getByRole("button", { name: "Reset to default" }).click();
+    await expect(
+      dialog.getByRole("button", { name: "Save changes" }),
+    ).toBeInViewport();
+    await input.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect(switcher).toContainText(defaultUrl);
+    await expect.poll(saved).toBe(defaultUrl);
+    await page.reload();
+    await expect(switcher).toContainText(defaultUrl);
+  });
+}

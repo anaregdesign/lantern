@@ -84,13 +84,14 @@ export function RoleEditor({
         <div className={styles.actions}>
           <Button onClick={editor.addRule}>Add rule</Button>
           <Button type="submit" appearance="primary">
-            Review Role change
+            Review changes
           </Button>
           {draft.existing && (
             <Button onClick={editor.deleteRole}>Review Role deletion</Button>
           )}
         </div>
       </fieldset>
+      <p>Review your changes, then select Save changes to save this Role.</p>
       <p>
         Read on both endpoints may allow Edge edits under the shared readable →
         readable policy. Writable modes may allow blind edits. Ask Server to

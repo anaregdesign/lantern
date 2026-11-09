@@ -1,5 +1,9 @@
-import { Button, Title3 } from "@fluentui/react-components";
-import { SecurityAuthorizationRequirement } from "lantern-sdk/web";
+import { Button } from "@fluentui/react-components";
+import { SaveReviewDialog } from "~/components/shared/SaveReviewDialog";
+import {
+  RegistrationProfileKind,
+  SecurityAuthorizationRequirement,
+} from "lantern-sdk/web";
 import type { SecurityManagementState } from "~/lib/client/usecase/security/security-management";
 import { reviewSummary } from "~/lib/client/usecase/security/security-drafts";
 import styles from "./ChangeReview.module.css";
@@ -11,6 +15,7 @@ export function ChangeReview({
   cancel,
   authorize,
   checkAuthorization,
+  message,
 }: {
   review: NonNullable<SecurityManagementState["review"]>;
   busy: boolean;
@@ -18,17 +23,64 @@ export function ChangeReview({
   cancel(): void;
   authorize(): void;
   checkAuthorization(): void;
+  message?: string;
 }) {
   return (
-    <section className={styles.review} aria-label="Review security change">
-      <Title3>Review security change</Title3>
+    <SaveReviewDialog
+      busy={busy}
+      canSave={review.approval === "ordinary" || review.approval === "approved"}
+      save={apply}
+      back={cancel}
+      message={message}
+      messageIntent={review.approval === "failed" ? "error" : "info"}
+      actions={
+        <>
+          {(review.approval === "required" ||
+            (review.approval === "failed" &&
+              review.requirement ===
+                SecurityAuthorizationRequirement.REAUTHENTICATION)) && (
+            <Button disabled={busy} onClick={authorize}>
+              Reauthenticate reviewed change
+            </Button>
+          )}
+          {review.approval === "authenticating" && (
+            <Button disabled={busy} onClick={checkAuthorization}>
+              Check reauthentication
+            </Button>
+          )}
+        </>
+      }
+    >
       <p>{review.label}</p>
+      {review.changes.map(({ operation }, index) =>
+        operation.case === "putRegistrationPolicy" ? (
+          <section key={index} aria-label="Registration changes">
+            <p>
+              New-user registration: {operation.value.enabled ? "ON" : "OFF"}
+            </p>
+            <p>Joining Role: {operation.value.roleId}</p>
+            <ul>
+              {operation.value.profiles.map((profile) => (
+                <li
+                  key={`${profile.issuer}/${profile.kind}/${profile.clientProfileId}`}
+                >
+                  {profile.issuer} ·{" "}
+                  {profile.kind === RegistrationProfileKind.BROWSER
+                    ? "Browser"
+                    : "Native"}{" "}
+                  ({profile.clientProfileId})
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null,
+      )}
       <p>Policy cut {review.version.currentCut?.sequence.toString()}</p>
       <details>
         <summary>Change details</summary>
         <pre className={styles.details}>{reviewSummary(review.changes)}</pre>
       </details>
-      {review.approval === "preparing" && (
+      {review.approval === "preparing" && !message && (
         <p>Checking the reviewed change with Server…</p>
       )}
       {(review.approval === "required" ||
@@ -43,34 +95,6 @@ export function ChangeReview({
       {review.approval === "approved" && (
         <p>This exact reviewed change has been approved.</p>
       )}
-      <div className={styles.actions}>
-        <Button
-          disabled={
-            busy ||
-            (review.approval !== "ordinary" && review.approval !== "approved")
-          }
-          appearance="primary"
-          onClick={apply}
-        >
-          Apply reviewed change
-        </Button>
-        {(review.approval === "required" ||
-          (review.approval === "failed" &&
-            review.requirement ===
-              SecurityAuthorizationRequirement.REAUTHENTICATION)) && (
-          <Button disabled={busy} onClick={authorize}>
-            Reauthenticate reviewed change
-          </Button>
-        )}
-        {review.approval === "authenticating" && (
-          <Button disabled={busy} onClick={checkAuthorization}>
-            Check reauthentication
-          </Button>
-        )}
-        <Button disabled={busy} onClick={cancel}>
-          Cancel review
-        </Button>
-      </div>
-    </section>
+    </SaveReviewDialog>
   );
 }

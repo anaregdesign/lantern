@@ -169,7 +169,7 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
           <table className={styles.values}>
             <caption>
               {selected && draft
-                ? "Unsaved draft — Review and Apply to save this group"
+                ? "Unsaved changes. Review changes, then select Save changes."
                 : "Values on this node"}
             </caption>
             <thead>
@@ -331,7 +331,7 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
               <Checkbox
                 checked={props.retentionAcknowledged}
                 disabled={blocked || !props.backupPreview?.complete}
-                label="I acknowledge that future retention may remove older backups; Review and Apply do not delete them."
+                label="I acknowledge that future retention may remove older backups; Review and Save do not delete them."
                 onChange={(_, data) => props.acknowledge(data.checked === true)}
               />
             )}
@@ -345,10 +345,10 @@ export function OperationalPolicyCard(props: OperationalPolicyCardProps) {
                     !props.backupPreview?.complete))
               }
             >
-              Review {definition.label.toLowerCase()} change
+              Review changes
             </Button>
             <Button type="button" disabled={blocked} onClick={props.cancel}>
-              Cancel draft
+              Discard changes
             </Button>
           </div>
         )}

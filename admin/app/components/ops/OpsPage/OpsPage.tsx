@@ -53,8 +53,8 @@ export function OpsPage() {
         <div>
           <h1 className={styles.title}>Ops</h1>
           <p className={styles.lead}>
-            Server status and replication health, polled every{" "}
-            {Math.round(DEFAULT_POLL_MS / 1000)}s.
+            Server status, replication health and metrics. Auto-poll waits{" "}
+            {Math.round(DEFAULT_POLL_MS / 1000)}s after each completed round.
           </p>
         </div>
         <div className={styles.toolbar}>

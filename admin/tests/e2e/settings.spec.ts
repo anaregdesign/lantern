@@ -11,10 +11,10 @@ async function reviewLogLevel(page: import("@playwright/test").Page) {
     .getByLabel("New log level", { exact: true })
     .selectOption({ label: "Warn" });
   await page
-    .getByRole("button", { name: "Review log level change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    page.getByRole("button", { name: "Save changes", exact: true }),
   ).toBeEnabled();
 }
 
@@ -36,14 +36,27 @@ for (const width of [1280, 390]) {
     ).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "Review log level change",
+        name: "Review changes",
         exact: true,
       }),
     ).toBeDisabled();
     await reviewLogLevel(page);
+    const dialog = page.getByRole("dialog", {
+      name: "Review changes",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
     await expect(
-      page.getByRole("region", {
-        name: "Review log level change",
+      dialog.getByRole("button", { name: "Save changes", exact: true }),
+    ).toBeInViewport();
+    await page.keyboard.press("Shift+Tab");
+    await expect(dialog.locator(":focus")).toHaveCount(1);
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(0);
+    await expect(
+      page.getByRole("dialog", {
+        name: "Review changes",
         exact: true,
       }),
     ).toContainText("Applying this review can prevent an older server version");
@@ -51,7 +64,7 @@ for (const width of [1280, 390]) {
       page.getByRole("region", { name: "Original change status", exact: true }),
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+      page.getByRole("button", { name: "Save changes", exact: true }),
     ).toBeEnabled();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
@@ -60,10 +73,10 @@ for (const width of [1280, 390]) {
       animations: "disabled",
     });
     await expect(
-      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+      page.getByRole("button", { name: "Save changes", exact: true }),
     ).toBeEnabled();
     await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .getByRole("button", { name: "Save changes", exact: true })
       .click();
     await expect(
       page.getByText("The log policy was committed.", { exact: false }),
@@ -111,12 +124,13 @@ test("response loss and page reload recover the same original without a second A
   const fixture = await securityUI(page, { apply: "lost" });
   await page.goto(`${fixture.primary}/settings`);
   await reviewLogLevel(page);
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The response was not confirmed.", { exact: false }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Review changes", exact: true }),
+  ).toHaveCount(0);
   const first = fixture.calls.find(
     (call) => call.method === "ApplySecurityChanges",
   );
@@ -133,7 +147,7 @@ test("response loss and page reload recover the same original without a second A
     page.getByText("The original change is not confirmed.", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review log level change", exact: true }),
+    page.getByRole("button", { name: "Review changes", exact: true }),
   ).toBeDisabled();
   await page.screenshot({
     path: testInfo.outputPath("settings-original-unknown-1280.png"),
@@ -168,23 +182,21 @@ test("a conflict requires reload and a fresh review", async ({ page }) => {
   const fixture = await securityUI(page, { apply: "conflict" });
   await page.goto(`${fixture.primary}/settings`);
   await reviewLogLevel(page);
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The original change was refused.", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review log level change", exact: true }),
+    page.getByRole("button", { name: "Review changes", exact: true }),
   ).toBeDisabled();
   await page
     .getByRole("button", { name: "Reload settings", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "Review log level change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    page.getByRole("button", { name: "Save changes", exact: true }),
   ).toBeEnabled();
   expect(
     fixture.calls.filter((call) => call.method === "PrepareSecurityChanges"),
@@ -217,11 +229,60 @@ test("partial adoption remains visible and cancelling review sends no Apply", as
   });
   await reviewLogLevel(page);
   await page
-    .getByRole("button", { name: "Cancel review", exact: true })
+    .getByRole("button", { name: "Back to editing", exact: true })
     .click();
   await expect(
-    page.getByRole("region", { name: "Review log level change", exact: true }),
+    page.getByRole("dialog", { name: "Review changes", exact: true }),
   ).toHaveCount(0);
+  await expect(page.getByLabel("New log level", { exact: true })).toHaveValue(
+    "3",
+  );
+  await page
+    .getByRole("region", { name: "Log level settings", exact: true })
+    .getByRole("button", { name: "Discard changes", exact: true })
+    .click();
+  await expect(page.getByLabel("New log level", { exact: true })).toHaveValue(
+    "0",
+  );
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(0);
+});
+
+test("review errors remain visible in the save dialog and Escape returns to the draft", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page);
+  await page.route(`${fixture.primary}/**/PrepareSecurityChanges`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "unavailable", message: "Unavailable" }),
+    }),
+  );
+  await page.goto(`${fixture.primary}/settings`);
+  await page
+    .getByLabel("New log level", { exact: true })
+    .selectOption({ label: "Warn" });
+  await page
+    .getByRole("region", { name: "Log level settings", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Review changes",
+    exact: true,
+  });
+  await expect(dialog).toContainText(
+    "The reviewed change could not be checked.",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Save changes", exact: true }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByLabel("New log level", { exact: true })).toHaveValue(
+    "3",
+  );
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(0);
@@ -280,7 +341,7 @@ test("a member without an owned origin exposes settings without an editor", asyn
     page.getByLabel("New log level", { exact: true }),
   ).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "Review log level change", exact: true }),
+    page.getByRole("button", { name: "Review changes", exact: true }),
   ).toBeDisabled();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
@@ -293,9 +354,7 @@ test("unknown log policy leaves session revocation available and recovers the sa
   const fixture = await securityUI(page, { logRecoveryAfterRevocation: true });
   await page.goto(`${fixture.primary}/settings`);
   await reviewLogLevel(page);
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The response was not confirmed.", { exact: false }),
   ).toBeVisible();
@@ -321,11 +380,9 @@ test("unknown log policy leaves session revocation available and recovers the sa
     .getByRole("button", { name: "Review session revocation", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    page.getByRole("button", { name: "Save changes", exact: true }),
   ).toBeEnabled();
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The original change applied.", { exact: false }),
   ).toBeVisible();
@@ -356,7 +413,7 @@ test("unknown log policy leaves session revocation available and recovers the sa
     }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review log level change", exact: true }),
+    page.getByRole("button", { name: "Review changes", exact: true }),
   ).toBeDisabled();
   await page
     .getByRole("button", { name: "Check original change status", exact: true })

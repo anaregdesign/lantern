@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   EdgeEndpointMode,
   currentSecurityVersionBinding,
+  type SecurityChange,
   type SecurityRegistrationPolicy,
   type SecurityRegistrationProfile,
 } from "lantern-sdk/web";
@@ -55,6 +56,12 @@ export function useSecurityPolicies(
     }
   };
   return {
+    apply: async () => {
+      await controller.apply();
+      if (controller.getSnapshot().mutation !== "applied") return;
+      reset();
+      await controller.loadPolicies();
+    },
     error,
     edgeMode: edgeDraft ?? state.edgePolicy?.mode,
     edgeDirty: edgeDraft !== undefined,
@@ -90,55 +97,59 @@ export function useSecurityPolicies(
                 enrollmentProfileKey(item) !== enrollmentProfileKey(profile),
             ),
       })),
-    reviewEdge: () => {
-      if (edgeVersion !== currentSecurityVersionBinding(state.version)) {
+    reviewChanges: () => {
+      setError("");
+      const version = currentSecurityVersionBinding(state.version);
+      if (
+        (edgeDraft !== undefined && edgeVersion !== version) ||
+        (enrollmentDraft !== undefined && enrollmentVersion !== version)
+      ) {
         setError(
           "The inspected policy changed. Reload shared settings before reviewing the draft.",
         );
         return;
       }
-      if (!EDGE_MODES.some(([mode]) => mode === edgeDraft)) {
-        setError("Choose one supported tail → head mode.");
-        return;
-      }
-      controller.review(
-        `Change shared Edge editing to ${EDGE_MODES.find(([mode]) => mode === edgeDraft)?.[1]}; affects every user and credential`,
-        [
+      const changes: SecurityChange[] = [];
+      const labels: string[] = [];
+      if (edgeDraft !== undefined) {
+        const mode = EDGE_MODES.find(([mode]) => mode === edgeDraft);
+        if (!mode) {
+          setError("Choose one supported tail → head mode.");
+          return;
+        }
+        changes.push(
           change({
             case: "putEdgePolicy",
             value: {
               $typeName: "graph.v1.SecurityEdgePolicy",
               version: 1,
-              mode: edgeDraft!,
+              mode: edgeDraft,
             },
           }),
-        ],
-      );
-    },
-    reviewEnrollment: () => {
-      if (!enrollmentDraft) return;
-      if (enrollmentVersion !== currentSecurityVersionBinding(state.version)) {
-        setError(
-          "The inspected policy changed. Reload shared settings before reviewing the draft.",
         );
-        return;
+        labels.push(`Shared Edge editing: ${mode[1]}`);
       }
-      if (enrollmentDraft.enabled && !enrollmentDraft.profiles.length) {
-        setError(
-          "Select at least one eligible profile before enabling registration.",
+      if (enrollmentDraft) {
+        if (enrollmentDraft.enabled && !enrollmentDraft.profiles.length) {
+          setError(
+            "Select at least one eligible profile before enabling registration.",
+          );
+          return;
+        }
+        if (enrollmentDraft.enabled && !state.joiningRole) {
+          setError(
+            "personal_user is missing. Ask an administrator to create its scoped Role through a reviewed change before enabling registration.",
+          );
+          return;
+        }
+        changes.push(
+          change({ case: "putRegistrationPolicy", value: enrollmentDraft }),
         );
-        return;
-      }
-      if (enrollmentDraft.enabled && !state.joiningRole) {
-        setError(
-          "personal_user is missing. Ask an administrator to create its scoped Role through a reviewed change before enabling registration.",
+        labels.push(
+          `${enrollmentDraft.enabled ? "Enable" : "Disable"} new-user registration; joining Role personal_user; existing users retain login`,
         );
-        return;
       }
-      controller.review(
-        `${enrollmentDraft.enabled ? "Enable" : "Disable"} new-user registration; joining Role personal_user; existing users retain login`,
-        [change({ case: "putRegistrationPolicy", value: enrollmentDraft })],
-      );
+      if (changes.length) controller.review(labels.join(". "), changes);
     },
   };
 }

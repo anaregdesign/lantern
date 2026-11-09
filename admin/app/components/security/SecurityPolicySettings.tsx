@@ -66,8 +66,8 @@ export function SecurityPolicySettings({
       {state.policyPhase === "ready" && (
         <>
           <p>
-            Inspected saved values. After Apply, reload this section for the
-            current saved policy.
+            Edit settings, select Review changes, then Save changes in the
+            confirmation dialog. Changes are not saved automatically.
           </p>
           <fieldset disabled={disabled} className={styles.fields}>
             <legend>Edge editing</legend>
@@ -107,12 +107,6 @@ export function SecurityPolicySettings({
                 Edge-edit access.
               </p>
             )}
-            <Button
-              disabled={!policies.edgeDirty}
-              onClick={policies.reviewEdge}
-            >
-              Review shared Edge rule
-            </Button>
           </fieldset>
           <fieldset disabled={disabled} className={styles.fields}>
             <legend>New-user registration</legend>
@@ -136,53 +130,6 @@ export function SecurityPolicySettings({
                 }
               />
             </Field>
-            <p>
-              Joining Role: <strong>personal_user</strong>. Fresh-install
-              default: Logical data Read + Write on users:&lt;trusted UID&gt;:,
-              including Delete and TTL changes. Its saved permissions may have
-              been narrowed or removed.
-            </p>
-            {!state.joiningRole ? (
-              <p role="alert">
-                Joining Role is missing. Create the scoped personal_user Role
-                through a reviewed management change before enabling
-                registration. Normal startup and registration never recreate it.
-              </p>
-            ) : (
-              <section aria-label="Saved joining Role permissions">
-                <p>
-                  <strong>Current saved permissions</strong>
-                </p>
-                <FieldHelp
-                  meaning="These are the saved personal_user rules returned by Server, including their exact scope. Registration does not restore or expand them."
-                  details="Read and Write are independent. A Read-only Role adds no Write grant; an empty Role adds no permissions. Narrower trusted-UID prefixes limit the namespace covered by each listed rule. Server validates the joining Role and decides actual access."
-                />
-                {state.joiningRole.rules.length === 0 ? (
-                  <p>No saved permissions; this Role adds no access.</p>
-                ) : (
-                  <ul>
-                    {state.joiningRole.rules.map((rule) => (
-                      <li key={rule.id}>
-                        {rule.id}: Allow{" "}
-                        {PERMISSIONS.find(
-                          ([permission]) => permission === rule.permission,
-                        )?.[1] ??
-                          `Unsupported permission (${rule.permission})`}{" "}
-                        on{" "}
-                        {RESOURCES.find(
-                          ([resource]) => resource === rule.resourceKind,
-                        )?.[1] ?? `Unsupported resource (${rule.resourceKind})`}
-                        {rule.resource.case === "prefix"
-                          ? ` · ${rule.resource.value || "all logical data keys (empty prefix)"}`
-                          : rule.resource.case === "principalUidPrefix"
-                            ? ` · ${rule.resource.value.literalBefore}<trusted UID>${rule.resource.value.literalAfter}`
-                            : ""}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-            )}
             <fieldset className={styles.profiles}>
               <legend>Eligible enrollment profiles</legend>
               <FieldHelp
@@ -220,27 +167,106 @@ export function SecurityPolicySettings({
                 Next enrollment Issuer page
               </Button>
             )}
-            {policies.enrollmentDirty && (
-              <p role="status">
-                Unsaved registration draft. Existing users and Role assignments
-                are unchanged until Apply.
+            {!state.joiningRole && (
+              <p role="alert">
+                Joining Role personal_user is missing. Ask an administrator to
+                create its scoped Role before enabling registration.
               </p>
             )}
-            <Button
-              disabled={!policies.enrollmentDirty}
-              onClick={policies.reviewEnrollment}
-            >
-              Review registration policy
-            </Button>
+            <details>
+              <summary>View joining Role and saved permissions</summary>
+              <p>
+                Joining Role: <strong>personal_user</strong>. Fresh-install
+                default: Logical data Read + Write on users:&lt;trusted
+                UID&gt;:, including Delete and TTL changes. Its saved
+                permissions may have been narrowed or removed.
+              </p>
+              {!state.joiningRole ? (
+                <p role="alert">
+                  Joining Role is missing. Create the scoped personal_user Role
+                  through a reviewed management change before enabling
+                  registration. Normal startup and registration never recreate
+                  it.
+                </p>
+              ) : (
+                <section aria-label="Saved joining Role permissions">
+                  <p>
+                    <strong>Current saved permissions</strong>
+                  </p>
+                  <FieldHelp
+                    meaning="These are the saved personal_user rules returned by Server, including their exact scope. Registration does not restore or expand them."
+                    details="Read and Write are independent. A Read-only Role adds no Write grant; an empty Role adds no permissions. Narrower trusted-UID prefixes limit the namespace covered by each listed rule. Server validates the joining Role and decides actual access."
+                  />
+                  {state.joiningRole.rules.length === 0 ? (
+                    <p>No saved permissions; this Role adds no access.</p>
+                  ) : (
+                    <ul>
+                      {state.joiningRole.rules.map((rule) => (
+                        <li key={rule.id}>
+                          {rule.id}: Allow{" "}
+                          {PERMISSIONS.find(
+                            ([permission]) => permission === rule.permission,
+                          )?.[1] ??
+                            `Unsupported permission (${rule.permission})`}{" "}
+                          on{" "}
+                          {RESOURCES.find(
+                            ([resource]) => resource === rule.resourceKind,
+                          )?.[1] ??
+                            `Unsupported resource (${rule.resourceKind})`}
+                          {rule.resource.case === "prefix"
+                            ? ` · ${rule.resource.value || "all logical data keys (empty prefix)"}`
+                            : rule.resource.case === "principalUidPrefix"
+                              ? ` · ${rule.resource.value.literalBefore}<trusted UID>${rule.resource.value.literalAfter}`
+                              : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+            </details>
+            {policies.enrollmentDirty && (
+              <p role="status">
+                Unsaved registration draft. Select Review changes, then Save
+                changes to save the registration policy.
+              </p>
+            )}
+            {draft?.enabled && !draft.profiles.length && (
+              <p>
+                Select at least one eligible profile before saving registration.
+              </p>
+            )}
           </fieldset>
-          {(policies.edgeDirty || policies.enrollmentDirty) && (
-            <Button
-              disabled={busy || state.mutation === "unconfirmed"}
-              onClick={policies.cancel}
-            >
-              Cancel shared policy drafts
-            </Button>
-          )}
+          <div className={styles.saveActions}>
+            <span role="status">
+              {policies.edgeDirty || policies.enrollmentDirty
+                ? "Unsaved changes · Review all shared settings together"
+                : "No unsaved changes"}
+            </span>
+            <div className={styles.buttons}>
+              <Button
+                disabled={
+                  disabled || (!policies.edgeDirty && !policies.enrollmentDirty)
+                }
+                onClick={policies.cancel}
+              >
+                Discard changes
+              </Button>
+              <Button
+                appearance="primary"
+                disabled={
+                  disabled ||
+                  (!policies.edgeDirty && !policies.enrollmentDirty) ||
+                  (policies.enrollmentDirty &&
+                    draft?.enabled &&
+                    (!draft.profiles.length || !state.joiningRole))
+                }
+                onClick={policies.reviewChanges}
+              >
+                Review changes
+              </Button>
+            </div>
+          </div>
         </>
       )}
     </section>
