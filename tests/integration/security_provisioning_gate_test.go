@@ -195,7 +195,7 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 						response, err := client.Get("http://" + metrics + path)
 						if err == nil {
 							status = response.StatusCode
-							response.Body.Close()
+							_ = response.Body.Close()
 							if status == http.StatusOK {
 								break
 							}
