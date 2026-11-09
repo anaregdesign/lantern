@@ -1230,9 +1230,13 @@ for (const width of [1280, 390]) {
       fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
     ).toHaveLength(1);
     await reviewButton.click();
-    await dialog
-      .getByRole("button", { name: "Save changes", exact: true })
-      .press("Enter");
+    const save = dialog.getByRole("button", {
+      name: "Save changes",
+      exact: true,
+    });
+    await expect(save).toBeEnabled();
+    await save.press("Enter");
+    await expect(dialog).toHaveCount(0);
     await page
       .getByRole("button", {
         name: "Load shared Security settings",
