@@ -1056,6 +1056,15 @@ test("a new Role draft cannot overwrite an existing Role ID", async ({
   const fixture = await securityUI(page);
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
+  const review = page.getByRole("dialog", {
+    name: "Review changes",
+    exact: true,
+  });
+  await expect(review).toBeVisible();
+  await review
+    .getByRole("button", { name: "Back to editing", exact: true })
+    .click();
+  await expect(review).toHaveCount(0);
   await page
     .getByRole("textbox", { name: "Role ID", exact: true })
     .fill("reader");
@@ -1221,9 +1230,13 @@ for (const width of [1280, 390]) {
       fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
     ).toHaveLength(1);
     await reviewButton.click();
-    await dialog
-      .getByRole("button", { name: "Save changes", exact: true })
-      .press("Enter");
+    const save = dialog.getByRole("button", {
+      name: "Save changes",
+      exact: true,
+    });
+    await expect(save).toBeEnabled();
+    await save.press("Enter");
+    await expect(dialog).toHaveCount(0);
     await page
       .getByRole("button", {
         name: "Load shared Security settings",
