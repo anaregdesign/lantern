@@ -21,7 +21,7 @@ EXPECTED = {f'{EVIDENCE}/{platform}{suffix}.json'
 SCENARIOS = frozenset({
     'authenticated_https', 'invalid_contribution_identity',
     'indexed_duplicate_missing_expired', 'selective_delete_preserves_put_base',
-    'identity_cdc_edge_refetch', 'unsupported_offline_family',
+    'identity_cdc_edge_refetch', 'advertised_contribution_delete_capability',
     'dispatch_marker_before_send', 'committed_response_loss',
     'physical_sigkill_status_first', 'original_true_false_replay',
     'no_mutation_resend_after_restart',

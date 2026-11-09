@@ -7,7 +7,6 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
-import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/receipt_attestation.dart';
@@ -22,7 +21,7 @@ const contributionScenarios = <String>{
   'indexed_duplicate_missing_expired',
   'selective_delete_preserves_put_base',
   'identity_cdc_edge_refetch',
-  'unsupported_offline_family',
+  'advertised_contribution_delete_capability',
   'dispatch_marker_before_send',
   'committed_response_loss',
   'physical_sigkill_status_first',
@@ -291,15 +290,13 @@ void main() {
           },
         );
         await attestation.verifyScenario(
-          'unsupported_offline_family',
+          'advertised_contribution_delete_capability',
           () async {
-            final remote = LanternClientOfflineRemote(direct);
             final capability =
-                await remote.getReceiptCapability()
-                    as OfflineReceiptCapabilityEnabled;
+                await direct.getReceiptCapability() as ReceiptCapabilityEnabled;
             expect(
-              capability.supports(ReceiptMutationKind.edgeContributionDelete),
-              isFalse,
+              capability.supportedMutations,
+              contains(ReceiptMutationKind.edgeContributionDelete),
             );
           },
         );
@@ -361,11 +358,6 @@ void main() {
                   (status.receipt! as EdgeContributionDeleteReceipt).existed,
             ),
             [true, false],
-          );
-          final remote = LanternClientOfflineRemote(direct);
-          await expectLater(
-            remote.getReceiptStatus(context.operationIds.first),
-            throwsA(isA<OfflineRemoteProtocolException>()),
           );
         });
         await fixture.sealProxyHandoff();
