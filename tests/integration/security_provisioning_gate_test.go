@@ -164,7 +164,8 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 			env = securityProvisioningEnvironment(string(ref))
 			public := securityProvisioningAddress(t)
 			_, port, _ := net.SplitHostPort(public)
-			env = append(env, "LANTERN_PORT="+port, "LANTERN_METRICS_ADDR=", "LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=false", "LANTERN_DRAIN_DELAY_SECONDS=0")
+			metrics := securityProvisioningAddress(t)
+			env = append(env, "LANTERN_PORT="+port, "LANTERN_METRICS_ADDR="+metrics, "LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=false", "LANTERN_DRAIN_DELAY_SECONDS=0")
 			before := securityProvisioningSnapshot(t, root)
 			if _, err := securityProvisioningCommand(t, binary, env); err == nil {
 				t.Fatal("ordinary startup initialized missing native state")
@@ -181,6 +182,32 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 			}
 			issuer.server = &httptest.Server{URL: "http://" + public}
 			stop := securityProvisioningStart(t, binary, env, issuer.server.URL)
+			assertReady := func() {
+				t.Helper()
+				client := &http.Client{Timeout: time.Second}
+				// AuthCapabilities can become current before the readiness
+				// worker publishes its next observation. Await the probe's own
+				// condition within the same bounded startup allowance.
+				deadline := time.Now().Add(20 * time.Second)
+				for _, path := range []string{"/readyz", "/healthz/ready"} {
+					status := 0
+					for time.Now().Before(deadline) {
+						response, err := client.Get("http://" + metrics + path)
+						if err == nil {
+							status = response.StatusCode
+							_ = response.Body.Close()
+							if status == http.StatusOK {
+								break
+							}
+						}
+						time.Sleep(20 * time.Millisecond)
+					}
+					if status != http.StatusOK {
+						t.Fatalf("singleton %s = %d, want 200 before startup deadline", path, status)
+					}
+				}
+			}
+			assertReady()
 			httpClient := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
 			control := graphv1connect.NewLanternSecurityServiceClient(httpClient, issuer.server.URL)
 			if bootstrap != nil {
@@ -243,6 +270,7 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 			}
 			stop()
 			stop = securityProvisioningStart(t, binary, env, issuer.server.URL)
+			assertReady()
 			if !browser {
 				if _, err := control.GetCurrentPrincipal(t.Context(), securityWireRequest(issuer.token(t, "admin", nil), &pb.GetCurrentPrincipalRequest{})); err != nil {
 					t.Fatal("clean restart lost provisioned identity", err)

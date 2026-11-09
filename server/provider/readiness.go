@@ -32,9 +32,15 @@ func loadReadinessConfig(reader *envconfig.Reader) ReadinessConfig {
 
 // NewReadinessGate constructs the readiness Gate that drives the overall
 // ("") gRPC health entry. Either static peers or a dynamic resolver selects
-// peer mode; only a topology with neither bypasses lag gating.
+// peer mode, except an authenticated workload with a verified fixed singleton
+// topology. An empty dynamic discovery result is never singleton proof.
 func NewReadinessGate(rc ReadinessConfig, pc PeerConfig, resolver *PeerResolver, hc *HealthChecker) *readiness.Gate {
 	hasDynamicPeers := resolver != nil && resolver.Source != nil
+	if hasDynamicPeers {
+		if source, ok := resolver.Source.(workloadPeerSource); ok && source.fixedSingleton() {
+			hasDynamicPeers = false
+		}
+	}
 	return readiness.NewGate(rc.MaxLag, len(pc.Peers) > 0 || hasDynamicPeers, hc)
 }
 
