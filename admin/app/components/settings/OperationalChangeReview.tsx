@@ -1,4 +1,4 @@
-import { Button, Title3 } from "@fluentui/react-components";
+import { Button } from "@fluentui/react-components";
 import {
   SecurityAuthorizationRequirement,
   validateOperationalValues,
@@ -9,9 +9,12 @@ import {
   operationalDraft,
 } from "~/lib/client/usecase/settings/operational-settings-fields";
 import styles from "./OperationalChangeReview.module.css";
+import { SaveReviewDialog } from "~/components/shared/SaveReviewDialog";
 export function OperationalChangeReview({
   review,
   busy,
+  blocked,
+  message,
   apply,
   cancel,
   authorize,
@@ -19,6 +22,8 @@ export function OperationalChangeReview({
 }: {
   review: NonNullable<OperationalSettingsState["review"]>;
   busy: boolean;
+  blocked: boolean;
+  message: string;
   apply(): void;
   cancel(): void;
   authorize(): void;
@@ -40,11 +45,31 @@ export function OperationalChangeReview({
     (review.approval === "failed" &&
       review.requirement === SecurityAuthorizationRequirement.REAUTHENTICATION);
   return (
-    <section
-      className={styles.review}
-      aria-label="Review operational policy change"
+    <SaveReviewDialog
+      busy={busy}
+      canSave={
+        !blocked &&
+        (review.approval === "ordinary" || review.approval === "approved")
+      }
+      save={apply}
+      back={cancel}
+      message={message}
+      messageIntent={review.approval === "failed" ? "error" : "info"}
+      actions={
+        <>
+          {requiresAuthorization && (
+            <Button disabled={busy} onClick={authorize}>
+              Reauthenticate reviewed change
+            </Button>
+          )}
+          {review.approval === "authenticating" && (
+            <Button disabled={busy} onClick={checkAuthorization}>
+              Check reauthentication
+            </Button>
+          )}
+        </>
+      }
     >
-      <Title3 as="h3">Review {definition.label.toLowerCase()} change</Title3>
       <p>{review.label}</p>
       <p>
         Expected generation {change.expectedGeneration.toString()}. All fields
@@ -74,11 +99,11 @@ export function OperationalChangeReview({
       )}
       {change.retentionReductionAcknowledged && (
         <p>
-          Future retention deletion has been acknowledged. Review and Apply do
+          Future retention deletion has been acknowledged. Review and Save do
           not delete backups.
         </p>
       )}
-      {review.approval === "preparing" && (
+      {review.approval === "preparing" && !message && (
         <p>Checking the exact reviewed change with Server…</p>
       )}
       {requiresAuthorization && (
@@ -87,31 +112,6 @@ export function OperationalChangeReview({
       {review.approval === "approved" && (
         <p>This exact reviewed change has been approved.</p>
       )}
-      <div className={styles.actions}>
-        <Button
-          appearance="primary"
-          disabled={
-            busy ||
-            (review.approval !== "ordinary" && review.approval !== "approved")
-          }
-          onClick={apply}
-        >
-          Apply reviewed operational change
-        </Button>
-        {requiresAuthorization && (
-          <Button disabled={busy} onClick={authorize}>
-            Reauthenticate reviewed operational change
-          </Button>
-        )}
-        {review.approval === "authenticating" && (
-          <Button disabled={busy} onClick={checkAuthorization}>
-            Check operational reauthentication
-          </Button>
-        )}
-        <Button disabled={busy} onClick={cancel}>
-          Cancel operational review
-        </Button>
-      </div>
-    </section>
+    </SaveReviewDialog>
   );
 }

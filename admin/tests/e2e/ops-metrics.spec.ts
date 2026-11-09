@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 
 import { CONNECT_URL, STORAGE_KEY } from "./helpers";
+import { METRIC_PANELS } from "../../app/lib/client/usecase/ops/metrics/catalog";
 
 /**
  * Ops Metrics (#524) — the Prometheus time-series half of the Ops page.
@@ -173,6 +174,185 @@ test.describe("Ops metrics section", () => {
     await expect(page.getByTestId("ops-server-error")).toContainText(
       "read permission on Operations",
     );
+  });
+
+  test("bounds slow metric requests and waits for the completed round before polling", async ({
+    page,
+  }) => {
+    await page.clock.install({ time: new Date("2026-11-09T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-11-09T01:00:00Z"));
+    const blocked: Route[] = [];
+    let requests = 0;
+    let hold = true;
+    const respond = (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(matrixEnvelope(Math.floor(Date.now() / 1000))),
+      });
+    await page.route("**/api/prom/api/v1/query_range*", async (route) => {
+      requests++;
+      if (hold) blocked.push(route);
+      else await respond(route);
+    });
+    await page.goto("/ops");
+    await expect.poll(() => requests).toBe(4);
+    await page.clock.fastForward(20_000);
+    expect(requests).toBe(4);
+    hold = false;
+    await Promise.all(blocked.map(respond));
+    const perRound = METRIC_PANELS.reduce(
+      (count, panel) => count + panel.queries.length,
+      0,
+    );
+    await expect.poll(() => requests).toBe(perRound);
+    await expect(
+      page.getByTestId("ops-metric-goroutines-summary"),
+    ).toBeVisible();
+    await page.clock.fastForward(4999);
+    expect(requests).toBe(perRound);
+    await page.clock.fastForward(1);
+    await expect.poll(() => requests).toBe(perRound * 2);
+  });
+
+  test("a failed panel query still waits for its slow sibling before the next poll", async ({
+    page,
+  }) => {
+    await page.clock.install({ time: new Date("2026-11-09T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-11-09T01:00:00Z"));
+    let requests = 0;
+    let held: Route | undefined;
+    let hold = true;
+    const respond = (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(matrixEnvelope(Math.floor(Date.now() / 1000))),
+      });
+    await page.route("**/api/prom/api/v1/query_range*", async (route) => {
+      requests++;
+      const query = new URL(route.request().url()).searchParams.get("query")!;
+      if (query.includes("lantern_vertices"))
+        await route.fulfill({ status: 503, body: "upstream unavailable" });
+      else if (hold && query.includes("lantern_edges")) held = route;
+      else await respond(route);
+    });
+    await page.goto("/ops");
+    const perRound = METRIC_PANELS.reduce(
+      (count, panel) => count + panel.queries.length,
+      0,
+    );
+    await expect.poll(() => requests).toBe(perRound);
+    await page.clock.fastForward(20_000);
+    expect(requests).toBe(perRound);
+    hold = false;
+    await respond(held!);
+    await expect(page.getByTestId("ops-metric-cache-size-error")).toContainText(
+      "unavailable",
+    );
+    await expect(
+      page.getByTestId("ops-metric-goroutines-summary"),
+    ).toBeVisible();
+    await page.clock.fastForward(5000);
+    await expect.poll(() => requests).toBe(perRound * 2);
+  });
+
+  test("range, mode, refresh and endpoint transitions discard queued old queries", async ({
+    page,
+  }, testInfo) => {
+    const blocked: Route[] = [];
+    let hold = true;
+    const now = Math.floor(Date.now() / 1000);
+    await page.route("**/api/v1/query_range*", async (route) => {
+      if (hold) blocked.push(route);
+      else
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(matrixEnvelope(now)),
+        });
+    });
+    await page.goto("/ops");
+    await expect.poll(() => blocked.length).toBe(4);
+    await page
+      .getByTestId("ops-metrics-range")
+      .getByRole("tab", { name: "15m" })
+      .click();
+    await expect.poll(() => blocked.length).toBe(8);
+    await page
+      .getByTestId("ops-metrics-agg-mode")
+      .getByRole("tab", { name: "Sum", exact: true })
+      .click();
+    await expect.poll(() => blocked.length).toBe(12);
+    await page.getByTestId("ops-refresh").click();
+    await expect.poll(() => blocked.length).toBe(16);
+    await page.getByTestId("ops-prometheus-switcher").click();
+    await page.getByTestId("ops-prometheus-input").fill("/metrics-next");
+    await page.getByTestId("ops-prometheus-save").click();
+    await expect
+      .poll(
+        () =>
+          blocked.filter((route) =>
+            route.request().url().includes("/metrics-next/"),
+          ).length,
+      )
+      .toBe(4);
+    expect(blocked).toHaveLength(20);
+    hold = false;
+    // An aborted browser request may already be gone. Finishing its route
+    // must not restore a stale panel or dispatch queued work from that round.
+    await Promise.all(
+      blocked.map((route) =>
+        route
+          .fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify(matrixEnvelope(now)),
+          })
+          .catch(() => {}),
+      ),
+    );
+    await expect(
+      page.getByTestId("ops-metric-cache-size-summary"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metric-goroutines-summary"),
+    ).toBeVisible();
+    await expect(page.getByTestId("ops-metrics-degraded")).toHaveCount(0);
+    await page.screenshot({
+      path: testInfo.outputPath("ops-polling-desktop.png"),
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTestId("ops-refresh").scrollIntoViewIfNeeded();
+    await expect(page.getByTestId("ops-refresh")).toBeInViewport();
+    await page.screenshot({
+      path: testInfo.outputPath("ops-polling-mobile.png"),
+      fullPage: true,
+    });
+  });
+
+  test("status polling waits for slow RPCs and stops after leaving Ops", async ({
+    page,
+  }) => {
+    await page.clock.install();
+    const blocked: Route[] = [];
+    await page.route("**/graph.v1.LanternService/GetServerStatus", (route) => {
+      blocked.push(route);
+    });
+    await page.goto("/ops");
+    await expect.poll(() => blocked.length).toBe(1);
+    await page.clock.fastForward(20_000);
+    expect(blocked).toHaveLength(1);
+    await page.getByRole("link", { name: "Home", exact: true }).click();
+    await blocked[0]
+      .fulfill({ response: await blocked[0].fetch() })
+      .catch(() => {});
+    await page.clock.fastForward(20_000);
+    expect(blocked).toHaveLength(1);
+    await expect(
+      page.getByRole("heading", { level: 1, name: /Lantern Admin/ }),
+    ).toBeVisible();
   });
 
   test("renders charts when query_range is mocked", async ({ page }) => {
@@ -355,3 +535,61 @@ test.describe("Ops metrics section", () => {
     );
   });
 });
+
+for (const width of [1280, 390]) {
+  test(`Prometheus changes stay drafts until saved at ${width}px`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ({ key, value }) => localStorage.setItem(key, value),
+      { key: STORAGE_KEY, value: CONNECT_URL },
+    );
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/ops");
+    const saved = () =>
+      page.evaluate(() => localStorage.getItem("lantern.admin.prometheusUrl"));
+    const switcher = page.getByTestId("ops-prometheus-switcher");
+    const dialog = page.getByRole("dialog", {
+      name: "Prometheus query endpoint",
+    });
+    const input = dialog.getByRole("textbox", { name: "Query base URL" });
+
+    await switcher.click();
+    await input.fill("/metrics-preview");
+    await expect(dialog.getByRole("status")).toContainText("Unsaved changes");
+    expect(await saved()).toBe("/api/prom");
+    await input.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect(switcher).toContainText("/metrics-preview");
+    await expect.poll(saved).toBe("/metrics-preview");
+
+    await switcher.click();
+    await dialog.getByRole("button", { name: "Reset to default" }).click();
+    await expect(input).toHaveValue("/api/prom");
+    expect(await saved()).toBe("/metrics-preview");
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(switcher).toContainText("/metrics-preview");
+    await page.reload();
+    await expect(switcher).toContainText("/metrics-preview");
+
+    await switcher.click();
+    await input.fill("invalid endpoint");
+    await input.press("Enter");
+    await expect(
+      dialog.getByText(
+        "Enter a same-origin path like /api/prom or an http(s) URL",
+      ),
+    ).toBeVisible();
+    expect(await saved()).toBe("/metrics-preview");
+    await dialog.getByRole("button", { name: "Reset to default" }).click();
+    await expect(
+      dialog.getByRole("button", { name: "Save changes" }),
+    ).toBeInViewport();
+    await input.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect(switcher).toContainText("/api/prom");
+    await expect.poll(saved).toBe("/api/prom");
+    await page.reload();
+    await expect(switcher).toContainText("/api/prom");
+  });
+}

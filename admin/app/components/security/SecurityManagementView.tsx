@@ -1,4 +1,5 @@
 import { CurrentSecurityDisposition } from "lantern-sdk/web";
+import { useEffect, useRef } from "react";
 import {
   Button,
   MessageBar,
@@ -66,21 +67,34 @@ export function SecurityManagementView({
     state.mutation === "pending" ||
     state.phase !== "ready";
   const editing = editor.mode === "edit" || editor.mode === "create";
+  const showReview =
+    !!state.review &&
+    state.mutation !== "unconfirmed" &&
+    state.mutation !== "pending";
+  const feedback = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (state.message && !showReview && state.mutation !== "idle") {
+      feedback.current?.focus();
+      feedback.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [state.message, state.mutation, showReview]);
   return (
     <div className={styles.view}>
-      {state.message && (
-        <MessageBar
-          layout="multiline"
-          intent={
-            state.phase === "error" ||
-            state.mutation === "conflict" ||
-            state.mutation === "rejected"
-              ? "error"
-              : "info"
-          }
-        >
-          <MessageBarBody>{state.message}</MessageBarBody>
-        </MessageBar>
+      {state.message && !showReview && (
+        <div ref={feedback} tabIndex={-1}>
+          <MessageBar
+            layout="multiline"
+            intent={
+              state.phase === "error" ||
+              state.mutation === "conflict" ||
+              state.mutation === "rejected"
+                ? "error"
+                : "info"
+            }
+          >
+            <MessageBarBody>{state.message}</MessageBarBody>
+          </MessageBar>
+        </div>
       )}
       {editor.error && (
         <MessageBar intent="error" layout="multiline">
@@ -254,12 +268,19 @@ export function SecurityManagementView({
           )}
         </section>
       )}
-      {state.review && (
+      {showReview && state.review && (
         <ChangeReview
           review={state.review}
           busy={busy}
+          message={state.message}
           apply={() => {
-            void editor.apply();
+            const operation = state.review?.changes[0]?.operation.case;
+            if (
+              operation === "putEdgePolicy" ||
+              operation === "putRegistrationPolicy"
+            )
+              void policies.apply();
+            else void editor.apply();
           }}
           cancel={() => controller.cancelReview()}
           authorize={() => {

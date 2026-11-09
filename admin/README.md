@@ -258,8 +258,10 @@ Security sections start with a bounded, responsive list. Selecting a record open
 saved details; Edit permissions, Assign members and Explain access are separate
 tasks. Create Role contains Blank Role and From template in one flow. A template
 populates an explicitly unsaved draft, requires a unique new Role ID, and neither
-saves nor assigns anything. Review/Apply uses the inspected policy cut. Successful
-Role Apply reads back saved details; assigning members is an explicit next task.
+saves nor assigns anything. **Review changes** opens a focused confirmation dialog;
+**Save changes** persists the exact reviewed operation using the inspected policy
+cut. **Back to editing** keeps the draft; **Discard changes** removes it. Successful
+Role saves read back saved details; assigning members is an explicit next task.
 User Role choices load one shared catalog page, rather than one request per chip.
 
 Shared Security settings are independent of the selected record. Load their
@@ -268,6 +270,12 @@ starts OFF; ON requires exact eligible browser/native profiles and the scoped
 `personal_user` Role. Missing Roles are never repaired during registration.
 Turning OFF preserves existing-user login. Policy drafts use the same review,
 operation approval, CAS and original-result recovery as other Security changes.
+One **Review changes** action includes every pending shared setting, including
+Edge and registration changes together. Select the eligible profiles before
+reviewing registration. Successful saves reload the current shared policy.
+Settings uses the same review/save dialog. Gateway and Prometheus endpoint
+dialogs save directly with **Save changes**; **Reset to default** only stages a
+draft, and **Cancel** leaves the saved endpoint intact.
 
 The field-help inventory is maintained with the editor components. Required
 meaning/examples remain visible; additional constraints use keyboard/touch

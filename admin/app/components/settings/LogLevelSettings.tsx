@@ -91,7 +91,7 @@ export function LogLevelSettings({
                     <FieldHelp
                       meaning="Minimum severity recorded in structured logs. Higher levels record fewer events."
                       example="Warn records warnings and errors."
-                      details="Choose Debug, Info, Warn, or Error. Fresh startup default: Info. Empty does not select a default. Changes apply to new log events after successful Apply; environment settings no longer override an adopted policy."
+                      details="Choose Debug, Info, Warn, or Error. Fresh startup default: Info. Empty does not select a default. Changes apply to new log events after successful Save; environment settings no longer override an adopted policy."
                     />
                   }
                 >
@@ -117,12 +117,25 @@ export function LogLevelSettings({
           </tbody>
         </table>
       </div>
-      <Button appearance="primary" disabled={!view.canReview} onClick={review}>
-        Review log level change
-      </Button>
-      <Button disabled={view.blocked} onClick={cancelDraft}>
-        Cancel log level draft
-      </Button>
+      <div className={styles.saveActions}>
+        <p>
+          {view.canReview
+            ? "Unsaved changes. Review changes, then select Save changes."
+            : "Changes stay in this section until you review and save them."}
+        </p>
+        <div className={styles.buttons}>
+          <Button disabled={view.blocked} onClick={cancelDraft}>
+            Discard changes
+          </Button>
+          <Button
+            appearance="primary"
+            disabled={!view.canReview}
+            onClick={review}
+          >
+            Review changes
+          </Button>
+        </div>
+      </div>
     </section>
   );
 }

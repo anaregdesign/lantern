@@ -123,7 +123,7 @@ export function UserEditor({
                 onClick={editor.saveUser}
                 disabled={draft.state === SecurityPrincipalState.DELETED}
               >
-                Review user state
+                Review changes
               </Button>
               {draft.existing && (
                 <>

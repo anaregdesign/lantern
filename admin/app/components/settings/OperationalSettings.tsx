@@ -24,6 +24,8 @@ export function OperationalSettings({
   blocked: boolean;
 }) {
   const busy = state.mutation === "sending";
+  const showReview =
+    !!state.review && !["unconfirmed", "pending"].includes(state.mutation);
   return (
     <section className={styles.groups} aria-label="Operational policies">
       <Title3 as="h2">Operational policies</Title3>
@@ -34,7 +36,7 @@ export function OperationalSettings({
         listeners, storage, trust and secret values remain outside these
         policies.
       </p>
-      {state.message && (
+      {state.message && !showReview && (
         <MessageBar
           intent={
             state.phase === "error" ||
@@ -111,10 +113,12 @@ export function OperationalSettings({
             />
           ) : null;
         })}
-      {state.review && (
+      {state.review && showReview && (
         <OperationalChangeReview
           review={state.review}
           busy={busy}
+          blocked={blocked}
+          message={state.message}
           apply={() => void controller?.apply()}
           cancel={() => controller?.change.cancelReview()}
           authorize={() => void controller?.change.authorize()}

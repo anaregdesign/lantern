@@ -22,3 +22,27 @@
 .fields legend {
   font-weight: 600;
 }
+.saveActions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--colorNeutralStroke2);
+  background: var(--colorNeutralBackground1);
+  z-index: 1;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .saveActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

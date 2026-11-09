@@ -215,13 +215,13 @@ async function reviewSlow(page: Page) {
   await card.getByLabel("Threshold (ms)", { exact: true }).fill("125");
   await card
     .getByRole("button", {
-      name: "Review slow rpc diagnostics change",
+      name: "Review changes",
       exact: true,
     })
     .click();
   await expect(
     page.getByRole("button", {
-      name: "Apply reviewed operational change",
+      name: "Save changes",
       exact: true,
     }),
   ).toBeEnabled();
@@ -291,20 +291,30 @@ for (const width of [1280, 390])
     await expect(sample).toHaveCount(0);
     await expect(
       capacity.getByRole("button", {
-        name: "Review graph capacity and garbage collection change",
+        name: "Review changes",
         exact: true,
       }),
     ).toBeEnabled();
     await reviewSlow(page);
+    const dialog = page.getByRole("dialog", {
+      name: "Review changes",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
     await expect(
-      page.getByRole("region", {
-        name: "Review operational policy change",
+      dialog.getByRole("button", { name: "Save changes", exact: true }),
+    ).toBeInViewport();
+    await page.keyboard.press("Shift+Tab");
+    await expect(dialog.locator(":focus")).toHaveCount(1);
+    await expect(
+      page.getByRole("dialog", {
+        name: "Review changes",
         exact: true,
       }),
     ).toContainText("Expected generation 0");
     await page
       .getByRole("button", {
-        name: "Apply reviewed operational change",
+        name: "Save changes",
         exact: true,
       })
       .click();
@@ -341,13 +351,16 @@ test("operational response loss reload recovers exact original without another A
   await reviewSlow(page);
   await page
     .getByRole("button", {
-      name: "Apply reviewed operational change",
+      name: "Save changes",
       exact: true,
     })
     .click();
   await expect(
-    page.getByRole("region", { name: "Operational policies", exact: true }),
-  ).toContainText("The response was not confirmed.");
+    page.getByText("The response was not confirmed.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Review changes", exact: true }),
+  ).toHaveCount(0);
   const first = fixture.calls.find((c) => c.method === "ApplySecurityChanges")!;
   await page.reload();
   const card = page.getByRole("region", {
@@ -444,12 +457,14 @@ test("inline drafts, accessible field guidance, invalid values and Cancel preser
   await expect(input).not.toHaveAttribute("aria-invalid", "true");
   await expect(row.locator('[data-label="Effective"]')).toHaveText("500");
   await expect(row.locator('[data-label="Desired"]')).toHaveText("Not adopted");
-  await card.getByRole("button", { name: "Cancel draft", exact: true }).click();
+  await card
+    .getByRole("button", { name: "Discard changes", exact: true })
+    .click();
   await expect(input).toBeDisabled();
   await expect(input).toHaveValue("500");
   await expect(
     card.getByRole("button", {
-      name: "Review slow rpc diagnostics change",
+      name: "Review changes",
       exact: true,
     }),
   ).toHaveCount(0);

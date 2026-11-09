@@ -10,6 +10,19 @@
 .panel > button {
   align-self: flex-start;
 }
+.saveActions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.saveActions p {
+  margin: 0;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .values {
   display: grid;
   grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr);
@@ -42,6 +55,10 @@
   }
   .values dd {
     margin-bottom: 8px;
+  }
+  .buttons {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 }
 .tableWrap {

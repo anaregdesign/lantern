@@ -132,7 +132,7 @@ test("OFF shows setup guidance without security mutation controls", async ({
     page.getByText("Authentication is off.", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review Issuer change" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toHaveCount(0);
   expect(
     await page.evaluate(() => localStorage.getItem("lantern.admin.authToken")),
@@ -145,7 +145,7 @@ test("login fails closed", async ({ page }) => {
     page.getByRole("button", { name: "Sign in with Example" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review user state" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toHaveCount(0);
 });
 test("unavailable capabilities do not render data or OFF controls", async ({
@@ -157,7 +157,7 @@ test("unavailable capabilities do not render data or OFF controls", async ({
     page.getByText("Authentication service is unavailable."),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review Role change" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toHaveCount(0);
 });
 test("logout clears protected views", async ({ page }) => {
@@ -190,7 +190,7 @@ for (const width of [1280, 390]) {
       .getByRole("button", { name: "Create Role", exact: true })
       .click();
     await expect(
-      page.getByRole("button", { name: "Review Role change" }),
+      page.getByRole("button", { name: "Review changes" }),
     ).toBeVisible();
     expect(fixture.calls.some((call) => call.method === "ListRoles")).toBe(
       true,

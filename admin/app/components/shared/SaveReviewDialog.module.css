@@ -1,0 +1,36 @@
+.surface {
+  box-sizing: border-box;
+  width: min(720px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+.body {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 80px);
+  min-width: 0;
+}
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-inline-end: 8px;
+}
+.content p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+@media (max-width: 520px) {
+  .actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}

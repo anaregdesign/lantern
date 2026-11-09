@@ -28,7 +28,7 @@ export interface PrometheusSwitcherProps {
  * Prometheus endpoint is only meaningful on this page.
  */
 export function PrometheusSwitcher({ prometheus }: PrometheusSwitcherProps) {
-  const { prometheusUrl, setPrometheusUrl, reset } = prometheus;
+  const { prometheusUrl, setPrometheusUrl } = prometheus;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(prometheusUrl);
   const [error, setError] = useState<string | null>(null);
@@ -66,51 +66,65 @@ export function PrometheusSwitcher({ prometheus }: PrometheusSwitcherProps) {
         </DialogTrigger>
       </div>
       <DialogSurface>
-        <DialogBody>
-          <DialogTitle>Prometheus query endpoint</DialogTitle>
-          <DialogContent>
-            <div className={styles.dialogBody}>
-              <Field
-                label="Query base URL"
-                validationState={error ? "error" : "none"}
-                validationMessage={error ?? undefined}
-                hint={`Default: ${DEFAULT_PROMETHEUS_URL} (reverse-proxied to Prometheus). The SPA appends /api/v1/query_range.`}
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave();
+          }}
+        >
+          <DialogBody>
+            <DialogTitle>Prometheus query endpoint</DialogTitle>
+            <DialogContent>
+              <div className={styles.dialogBody}>
+                <Field
+                  label="Query base URL"
+                  validationState={error ? "error" : "none"}
+                  validationMessage={error ?? undefined}
+                  hint={`Default: ${DEFAULT_PROMETHEUS_URL} (reverse-proxied to Prometheus). The SPA appends /api/v1/query_range.`}
+                >
+                  <Input
+                    value={draft}
+                    onChange={(_, data) => {
+                      setDraft(data.value);
+                      setError(null);
+                    }}
+                    placeholder={DEFAULT_PROMETHEUS_URL}
+                    data-testid="ops-prometheus-input"
+                  />
+                </Field>
+                <p className={styles.draftStatus} role="status">
+                  {draft !== prometheusUrl
+                    ? "Unsaved changes. Select Save changes to use this URL."
+                    : "Edit the URL, then select Save changes."}
+                </p>
+              </div>
+            </DialogContent>
+            <DialogActions className={styles.actions}>
+              <Button
+                appearance="secondary"
+                type="button"
+                onClick={() => {
+                  setDraft(DEFAULT_PROMETHEUS_URL);
+                  setError(null);
+                }}
               >
-                <Input
-                  value={draft}
-                  onChange={(_, data) => {
-                    setDraft(data.value);
-                    setError(null);
-                  }}
-                  placeholder={DEFAULT_PROMETHEUS_URL}
-                  data-testid="ops-prometheus-input"
-                />
-              </Field>
-            </div>
-          </DialogContent>
-          <DialogActions>
-            <Button
-              appearance="secondary"
-              onClick={() => {
-                reset();
-                setDraft(DEFAULT_PROMETHEUS_URL);
-                setError(null);
-              }}
-            >
-              Reset
-            </Button>
-            <DialogTrigger disableButtonEnhancement>
-              <Button appearance="secondary">Cancel</Button>
-            </DialogTrigger>
-            <Button
-              appearance="primary"
-              onClick={onSave}
-              data-testid="ops-prometheus-save"
-            >
-              Save
-            </Button>
-          </DialogActions>
-        </DialogBody>
+                Reset to default
+              </Button>
+              <DialogTrigger disableButtonEnhancement>
+                <Button appearance="secondary" type="button">
+                  Cancel
+                </Button>
+              </DialogTrigger>
+              <Button
+                appearance="primary"
+                type="submit"
+                data-testid="ops-prometheus-save"
+              >
+                Save changes
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </form>
       </DialogSurface>
     </Dialog>
   );

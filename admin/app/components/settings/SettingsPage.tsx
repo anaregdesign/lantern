@@ -33,6 +33,8 @@ export type SettingsPageProps = {
 
 export function SettingsPage(props: SettingsPageProps) {
   const { authentication, state, view } = props;
+  const showReview =
+    !!state.review && !["unconfirmed", "pending"].includes(state.mutation);
   return (
     <section className={styles.page}>
       <Title2 as="h1">Settings</Title2>
@@ -49,7 +51,7 @@ export function SettingsPage(props: SettingsPageProps) {
             Changes are saved as shared policy. Application status below
             describes this connected node.
           </p>
-          {state.message && (
+          {state.message && !showReview && (
             <MessageBar
               intent={
                 state.phase === "error" ||
@@ -109,11 +111,13 @@ export function SettingsPage(props: SettingsPageProps) {
             />
           )}
           {props.children}
-          {state.review && (
+          {state.review && showReview && (
             <SettingsChangeReview
               review={state.review}
               firstAdoption={view.firstAdoption}
               busy={view.busy}
+              blocked={view.blocked}
+              message={state.message}
               apply={props.apply}
               cancel={props.cancel}
               authorize={props.authorize}

@@ -22,10 +22,10 @@ async function reviewRole(page: import("@playwright/test").Page) {
     .getByLabel("Rule 1 logical prefix", { exact: true })
     .fill("tenant:");
   await page
-    .getByRole("button", { name: "Review Role change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
 }
-test("audit interrupts slow review preparation and permits explicit fresh review", async ({
+test("canceling slow review returns to the draft and permits a fresh review", async ({
   page,
 }) => {
   const fixture = await securityUI(page);
@@ -55,40 +55,33 @@ test("audit interrupts slow review preparation and permits explicit fresh review
     await page.goto(`${fixture.primary}/security/roles`);
     await reviewRole(page);
     await received;
+    const review = page.getByRole("dialog", {
+      name: "Review changes",
+      exact: true,
+    });
+    await expect(review).toBeVisible();
     await expect(
-      page
-        .getByRole("region", { name: "Review security change", exact: true })
-        .getByText("Checking the reviewed change with Server…", {
-          exact: true,
-        }),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Load audit", exact: true }).click();
-    await expect(
-      page.getByText("The review check was interrupted.", { exact: false }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("Checking the reviewed change with Server…", {
-        exact: true,
-      }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+      review.getByRole("button", { name: "Save changes", exact: true }),
     ).toBeDisabled();
+    await review
+      .getByRole("button", { name: "Back to editing", exact: true })
+      .click();
+    await expect(review).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "Review Role change", exact: true }),
-    ).toBeEnabled();
+      page.getByRole("textbox", { name: "Role name", exact: true }),
+    ).toHaveValue("Scoped reader");
     release();
     await page
-      .getByRole("button", { name: "Review Role change", exact: true })
+      .getByRole("button", { name: "Review changes", exact: true })
       .click();
     await expect(
-      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+      review.getByRole("button", { name: "Save changes", exact: true }),
     ).toBeEnabled();
     expect(
       fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
     ).toHaveLength(0);
-    await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
+    await review
+      .getByRole("button", { name: "Save changes", exact: true })
       .click();
     await expect(
       page.getByText("The original change applied.", { exact: false }),
@@ -141,10 +134,10 @@ for (const width of [1280, 390]) {
       ).toHaveCount(0);
     }
     await page
-      .getByRole("button", { name: "Review Role change", exact: true })
+      .getByRole("button", { name: "Review changes", exact: true })
       .click();
     await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .getByRole("button", { name: "Save changes", exact: true })
       .click();
     await expect(
       page.getByText("The original change applied.", { exact: false }),
@@ -219,10 +212,10 @@ for (const width of [1280, 390]) {
     await page.goto(`${fixture.primary}/security/roles`);
     await reviewRole(page);
     await expect(
-      page.getByRole("region", { name: "Review security change" }),
+      page.getByRole("dialog", { name: "Review changes" }),
     ).toBeVisible();
     await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .getByRole("button", { name: "Save changes", exact: true })
       .click();
     await expect(
       page.getByText("The original change applied.", { exact: false }),
@@ -283,12 +276,12 @@ test("response loss performs status-only recovery", async ({ page }) => {
   const fixture = await securityUI(page, { apply: "lost" });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(
     page.getByText("The response was not confirmed.", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review Role change" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toBeDisabled();
   await page
     .getByRole("button", { name: "Check original change status" })
@@ -324,7 +317,7 @@ for (const width of [1280, 390]) {
     });
     await page.goto(`${fixture.primary}/security/roles`);
     await reviewRole(page);
-    await page.getByRole("button", { name: "Apply reviewed change" }).click();
+    await page.getByRole("button", { name: "Save changes" }).click();
     await expect(
       page.getByText("The response was not confirmed.", { exact: false }),
     ).toBeVisible();
@@ -399,7 +392,7 @@ test("unknown status retains the original ID and disables another Apply", async 
   const fixture = await securityUI(page, { apply: "lost", status: "unknown" });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await page
     .getByRole("button", { name: "Check original change status" })
     .click();
@@ -407,7 +400,7 @@ test("unknown status retains the original ID and disables another Apply", async 
     page.getByText("Change status is unavailable.", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review Role change" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toBeDisabled();
   await expect(page.getByText("Original commit", { exact: false })).toHaveCount(
     0,
@@ -423,7 +416,7 @@ test("mismatched status preserves the original Apply outcomes and pending state"
   const fixture = await securityUI(page, { status: "mismatch" });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await page
     .getByRole("button", { name: "Check original change status" })
     .click();
@@ -446,21 +439,21 @@ test("revision conflict requires reload and another review", async ({
   const fixture = await securityUI(page, { apply: "conflict" });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(
     page.getByText("The original operation was rejected: REJECTED_CAS.", {
       exact: false,
     }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(
+    0,
+  );
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Review Role change" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toBeDisabled();
   await page.getByRole("button", { name: "Reload security state" }).click();
   await expect(
-    page.getByRole("button", { name: "Review Role change" }),
+    page.getByRole("button", { name: "Review changes" }),
   ).toBeEnabled();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
@@ -473,9 +466,9 @@ test("ordinary Role review applies with an older ordinary session", async ({
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change" }),
+    page.getByRole("button", { name: "Save changes" }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
@@ -495,7 +488,7 @@ test("high-impact review keeps the Admin window active through operation approva
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change" }),
+    page.getByRole("button", { name: "Save changes" }),
   ).toBeDisabled();
   const popupPromise = page.waitForEvent("popup");
   await page
@@ -509,9 +502,9 @@ test("high-impact review keeps the Admin window active through operation approva
   expect(page.url()).toBe(`${fixture.primary}/security/roles`);
   await page.getByRole("button", { name: "Check reauthentication" }).click();
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change" }),
+    page.getByRole("button", { name: "Save changes" }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   const review = fixture.calls.find(
     (call) => call.method === "PrepareSecurityChanges",
   )!.body.currentReview as Record<string, unknown>;
@@ -548,7 +541,7 @@ test("user membership uses exact identity and environment locks", async ({
   ).toBeDisabled();
   await page.getByLabel("Existing Role ID").selectOption("cdc-identity");
   await page.getByRole("button", { name: "Review Role assignment" }).click();
-  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   expect(
     (
       fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
@@ -591,10 +584,10 @@ for (const profile of ["browser", "API"] as const) {
         .fill("lantern-api");
     }
     await page
-      .getByRole("button", { name: "Review Issuer change", exact: true })
+      .getByRole("button", { name: "Review changes", exact: true })
       .click();
     await expect(
-      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+      page.getByRole("button", { name: "Save changes", exact: true }),
     ).toBeEnabled();
     const prepared = fixture.calls.find(
       (call) => call.method === "PrepareSecurityChanges",
@@ -629,7 +622,7 @@ test("Issuer editor rejects a partial browser profile before review", async ({
     .getByRole("textbox", { name: "Browser client ID", exact: true })
     .fill("partial-browser");
   await page
-    .getByRole("button", { name: "Review Issuer change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
   await expect(
     page.getByText(
@@ -806,19 +799,17 @@ test("original rejection allows correction only after a fresh review with anothe
   const fixture = await securityUI(page, { apply: "unknown-role-once" });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The original operation was rejected: REJECTED_INVARIANT.", {
       exact: false,
     }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    page.getByRole("button", { name: "Save changes", exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Review Role change", exact: true }),
+    page.getByRole("button", { name: "Review changes", exact: true }),
   ).toBeDisabled();
   const first = fixture.calls.filter(
     (call) => call.method === "ApplySecurityChanges",
@@ -833,14 +824,12 @@ test("original rejection allows correction only after a fresh review with anothe
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
   await page
-    .getByRole("button", { name: "Review Role change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The original change applied.", { exact: false }),
   ).toBeVisible();
@@ -865,7 +854,7 @@ for (const width of [1280, 390]) {
     await page.goto(`${fixture.primary}/security/roles`);
     await reviewRole(page);
     await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .getByRole("button", { name: "Save changes", exact: true })
       .click();
     await expect(
       page.getByText("The response was not confirmed.", { exact: false }),
@@ -928,9 +917,7 @@ test("generic committed-ID conflict remains status-only across route remount", a
   });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("The response was not confirmed.", { exact: false }),
   ).toBeVisible();
@@ -1020,11 +1007,9 @@ test("Role template selection creates an unsaved draft, then saved details and e
     .getByRole("textbox", { name: "Role ID", exact: true })
     .fill("project-reader");
   await page
-    .getByRole("button", { name: "Review Role change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page
       .getByRole("region", { name: "Saved record details" })
@@ -1057,9 +1042,7 @@ test("Role template selection creates an unsaved draft, then saved details and e
   await page
     .getByRole("button", { name: "Review Role assignment", exact: true })
     .click();
-  await page
-    .getByRole("button", { name: "Apply reviewed change", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page
       .getByRole("region", { name: "Saved record details" })
@@ -1077,7 +1060,7 @@ test("a new Role draft cannot overwrite an existing Role ID", async ({
     .getByRole("textbox", { name: "Role ID", exact: true })
     .fill("reader");
   await page
-    .getByRole("button", { name: "Review Role change", exact: true })
+    .getByRole("button", { name: "Review changes", exact: true })
     .click();
   await expect(
     page.getByText("That Role ID already exists.", { exact: false }),
@@ -1090,7 +1073,7 @@ test("a new Role draft cannot overwrite an existing Role ID", async ({
 for (const width of [1280, 390]) {
   test(`shared Edge and registration policies stage, review and read back at ${width}px`, async ({
     page,
-  }) => {
+  }, testInfo) => {
     const fixture = await securityUI(page, {
       roles: [
         {
@@ -1125,6 +1108,9 @@ for (const width of [1280, 390]) {
       name: "Shared Security settings",
       exact: true,
     });
+    await settings
+      .getByText("View joining Role and saved permissions", { exact: true })
+      .click();
     const joining = settings.getByRole("region", {
       name: "Saved joining Role permissions",
       exact: true,
@@ -1162,10 +1148,10 @@ for (const width of [1280, 390]) {
       fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
     ).toHaveLength(0);
     await settings
-      .getByRole("button", { name: "Review shared Edge rule", exact: true })
+      .getByRole("button", { name: "Review changes", exact: true })
       .click();
     await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .getByRole("button", { name: "Save changes", exact: true })
       .click();
     await page
       .getByRole("button", {
@@ -1182,18 +1168,62 @@ for (const width of [1280, 390]) {
         exact: true,
       })
       .check();
+    const registration = settings.getByRole("group", {
+      name: "New-user registration",
+      exact: true,
+    });
+    await expect(
+      settings.getByRole("button", { name: "Review changes", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      registration.getByText(
+        "Select at least one eligible profile before saving registration.",
+      ),
+    ).toBeVisible();
     await settings
       .getByRole("checkbox", {
         name: "https://idp.example · Browser (browser)",
         exact: true,
       })
       .check();
-    await settings
-      .getByRole("button", { name: "Review registration policy", exact: true })
-      .click();
-    await page
-      .getByRole("button", { name: "Apply reviewed change", exact: true })
-      .click();
+    const reviewButton = settings.getByRole("button", {
+      name: "Review changes",
+      exact: true,
+    });
+    await reviewButton.click();
+    const dialog = page.getByRole("dialog", {
+      name: "Review changes",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("region", { name: "Registration changes", exact: true }),
+    ).toContainText("https://idp.example · Browser (browser)");
+    await expect
+      .poll(() =>
+        dialog.evaluate((element) => element.contains(document.activeElement)),
+      )
+      .toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`registration-review-${width}.png`),
+      animations: "disabled",
+    });
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      registration.getByRole("checkbox", {
+        name: "Allow new-user registration",
+        exact: true,
+      }),
+    ).toBeChecked();
+    await expect(reviewButton).toBeFocused();
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(1);
+    await reviewButton.click();
+    await dialog
+      .getByRole("button", { name: "Save changes", exact: true })
+      .press("Enter");
     await page
       .getByRole("button", {
         name: "Load shared Security settings",
@@ -1264,4 +1294,79 @@ test("read-only users can inspect saved records and verified email is rendered a
   expect(
     fixture.calls.some((call) => call.method === "ApplySecurityChanges"),
   ).toBe(false);
+});
+
+test("shared review saves every dirty setting in one reviewed operation", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page, {
+    roles: [{ id: "personal_user", name: "Personal user", rules: [] }],
+  });
+  await page.goto(`${fixture.primary}/security/issuers`);
+  await page
+    .getByRole("button", { name: "Load shared Security settings", exact: true })
+    .click();
+  const settings = page.getByRole("region", {
+    name: "Shared Security settings",
+    exact: true,
+  });
+  await settings
+    .getByLabel("Shared Edge editing rule", { exact: true })
+    .selectOption({ label: "writable → readable" });
+  await settings
+    .getByRole("checkbox", { name: "Allow new-user registration", exact: true })
+    .check();
+  await settings
+    .getByRole("checkbox", {
+      name: "https://idp.example · Browser (browser)",
+      exact: true,
+    })
+    .check();
+  await settings
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  const review = page.getByRole("dialog", {
+    name: "Review changes",
+    exact: true,
+  });
+  await expect(review).toContainText(
+    "Shared Edge editing: writable → readable",
+  );
+  await expect(
+    review.getByRole("region", { name: "Registration changes", exact: true }),
+  ).toContainText("New-user registration: ON");
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(0);
+  await review
+    .getByRole("button", { name: "Back to editing", exact: true })
+    .click();
+  await expect(
+    settings.getByRole("checkbox", {
+      name: "Allow new-user registration",
+      exact: true,
+    }),
+  ).toBeChecked();
+  await settings
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  await review
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click();
+  await expect(
+    settings.getByText("Current: ON.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    settings.getByText("Current: writable → readable", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    settings.getByText("No unsaved changes", { exact: true }),
+  ).toBeVisible();
+  const writes = fixture.calls.filter(
+    (call) => call.method === "ApplySecurityChanges",
+  );
+  expect(writes).toHaveLength(1);
+  expect(
+    (writes[0].body.currentReview as { changes: unknown[] }).changes,
+  ).toHaveLength(2);
 });

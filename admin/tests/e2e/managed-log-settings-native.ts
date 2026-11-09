@@ -259,12 +259,12 @@ async function failureDiagnostics(error: unknown) {
           exact: true,
         }),
         threshold: currentPage.getByLabel("Threshold (ms)", { exact: true }),
-        review: currentPage.getByRole("region", {
-          name: "Review log level change",
+        review: currentPage.getByRole("dialog", {
+          name: "Review changes",
           exact: true,
         }),
         apply: currentPage.getByRole("button", {
-          name: "Apply reviewed change",
+          name: "Save changes",
           exact: true,
         }),
       };
@@ -832,15 +832,9 @@ async function run(m: Manifest): Promise<Result> {
   const settingsMethod = operational
     ? "GetOperationalSettings"
     : "GetLogSettings";
-  const reviewButton = operational
-    ? "Review slow rpc diagnostics change"
-    : "Review log level change";
-  const reviewRegion = operational
-    ? "Review operational policy change"
-    : "Review log level change";
-  const applyButton = operational
-    ? "Apply reviewed operational change"
-    : "Apply reviewed change";
+  const reviewButton = "Review changes";
+  const reviewRegion = "Review changes";
+  const applyButton = "Save changes";
   const editor = operational ? "Threshold (ms)" : "New log level";
   const statusLabel = operational
     ? "Check original operational change status"
@@ -1006,7 +1000,13 @@ async function run(m: Manifest): Promise<Result> {
   } else {
     await page.getByLabel(editor, { exact: true }).selectOption(String(target));
   }
-  await page.getByRole("button", { name: reviewButton, exact: true }).click();
+  await page
+    .getByRole("region", {
+      name: operational ? "Slow RPC diagnostics" : "Log level settings",
+      exact: true,
+    })
+    .getByRole("button", { name: reviewButton, exact: true })
+    .click();
   const apply = page.getByRole("button", {
     name: applyButton,
     exact: true,
@@ -1176,7 +1176,7 @@ async function run(m: Manifest): Promise<Result> {
     authentication.getByText("Sign in to Lantern", { exact: true }),
   ).toBeVisible();
   await check(
-    page.getByRole("region", { name: reviewRegion, exact: true }),
+    page.getByRole("dialog", { name: reviewRegion, exact: true }),
   ).toHaveCount(0);
   await check(
     page.getByRole("button", { name: applyButton, exact: true }),
