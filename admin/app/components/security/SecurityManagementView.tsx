@@ -49,6 +49,8 @@ export function SecurityManagementView({
     signal,
     auth.recovery,
     owner,
+    auth.drafts,
+    auth.draftOwner,
   );
   const editor = useSecurityEditor(controller);
   const policies = useSecurityPolicies(controller, state);

@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef } from "react";
+import { useSecurityDraftField } from "./use-security-draft-field";
+import type { SecurityEditorIntent } from "./security-draft-recovery";
 import {
   SecurityAction,
   SecurityPermission,
@@ -28,33 +30,180 @@ import {
 } from "./security-drafts";
 
 export function useSecurityEditor(controller: SecurityManagementController) {
-  const [selectedVersion, setSelectedVersion] = useState("");
-  const [mode, setMode] = useState<
+  const fields = useRef<Record<string, unknown>>({});
+  const restoring = useRef(false);
+  const retain = () => {
+    if (restoring.current) return;
+    const draft = fields.current as {
+      mode:
+        | SecurityEditorIntent["mode"]
+        | "list"
+        | "details"
+        | "members"
+        | "explain";
+      selectedKind: SecurityEditorIntent["selectedKind"];
+      selectedVersion: string;
+      savedIssuer?: SecurityIssuer;
+      savedRole?: SecurityRole;
+      savedUser?: SecurityUser;
+      issuer: IssuerDraft;
+      role: RoleDraft;
+      user: UserDraft;
+      templateName: string;
+      roleSource: SecurityEditorIntent["roleSource"];
+    };
+    if (draft.mode !== "create" && draft.mode !== "edit") {
+      controller.retainEditorIntent(undefined);
+      return;
+    }
+    const {
+      locked: _issuerLocked,
+      existing: _issuerExisting,
+      hasSecretBinding: _secretBinding,
+      nativeClients: _nativeClients,
+      ...issuer
+    } = draft.issuer;
+    const {
+      locked: _roleLocked,
+      existing: _roleExisting,
+      ...role
+    } = draft.role;
+    const {
+      existing: _userExisting,
+      assignments: _assignments,
+      ...user
+    } = draft.user;
+    controller.retainEditorIntent({
+      mode: draft.mode,
+      selectedKind: draft.selectedKind,
+      selectedVersion: draft.selectedVersion,
+      issuerKey: draft.savedIssuer?.issuer,
+      roleKey: draft.savedRole?.id,
+      userKey: draft.savedUser?.identity,
+      issuer,
+      role,
+      user,
+      templateName: draft.templateName,
+      roleSource: draft.roleSource,
+    });
+  };
+  const [selectedVersion, setSelectedVersion] = useSecurityDraftField(
+    "selectedVersion",
+    fields,
+    retain,
+    "",
+  );
+  const [mode, setMode] = useSecurityDraftField<
     "list" | "details" | "create" | "edit" | "members" | "explain"
-  >("list");
-  const [selectedKind, setSelectedKind] = useState<
+  >("mode", fields, retain, "list");
+  const [selectedKind, setSelectedKind] = useSecurityDraftField<
     "issuers" | "users" | "roles"
-  >("roles");
-  const [savedIssuer, setSavedIssuer] = useState<SecurityIssuer>();
-  const [savedRole, setSavedRole] = useState<SecurityRole>();
-  const [savedUser, setSavedUser] = useState<SecurityUser>();
-  const [templateName, setTemplateName] = useState("");
-  const [roleSource, setRoleSource] = useState<"blank" | "template">("blank");
-  const [issuer, setIssuer] = useState(issuerDraft);
-  const [role, setRole] = useState(roleDraft);
-  const [user, setUser] = useState(userDraft);
-  const [error, setError] = useState("");
-  const [templatePrefix, setTemplatePrefix] = useState("");
-  const [explanation, setExplanation] = useState<ExplanationDraft>({
-    issuer: "",
-    subject: "",
-    permission: SecurityPermission.READ,
-    resourceKind: SecurityResource.DATA,
-    key: "",
-    edge: false,
-    tail: "",
-    head: "",
-  });
+  >("selectedKind", fields, retain, "roles");
+  const [savedIssuer, setSavedIssuer] = useSecurityDraftField<SecurityIssuer>(
+    "savedIssuer",
+    fields,
+    retain,
+  );
+  const [savedRole, setSavedRole] = useSecurityDraftField<SecurityRole>(
+    "savedRole",
+    fields,
+    retain,
+  );
+  const [savedUser, setSavedUser] = useSecurityDraftField<SecurityUser>(
+    "savedUser",
+    fields,
+    retain,
+  );
+  const [templateName, setTemplateName] = useSecurityDraftField(
+    "templateName",
+    fields,
+    retain,
+    "",
+  );
+  const [roleSource, setRoleSource] = useSecurityDraftField<
+    "blank" | "template"
+  >("roleSource", fields, retain, "blank");
+  const [issuer, setIssuer] = useSecurityDraftField(
+    "issuer",
+    fields,
+    retain,
+    issuerDraft,
+  );
+  const [role, setRole] = useSecurityDraftField(
+    "role",
+    fields,
+    retain,
+    roleDraft,
+  );
+  const [user, setUser] = useSecurityDraftField(
+    "user",
+    fields,
+    retain,
+    userDraft,
+  );
+  const [error, setError] = useSecurityDraftField("error", fields, retain, "");
+  const [templatePrefix, setTemplatePrefix] = useSecurityDraftField(
+    "templatePrefix",
+    fields,
+    retain,
+    "",
+  );
+  const [explanation, setExplanation] = useSecurityDraftField<ExplanationDraft>(
+    "explanation",
+    fields,
+    retain,
+    {
+      issuer: "",
+      subject: "",
+      permission: SecurityPermission.READ,
+      resourceKind: SecurityResource.DATA,
+      key: "",
+      edge: false,
+      tail: "",
+      head: "",
+    },
+  );
+  const restored = controller.getSnapshot().restoredIntent?.editor;
+  const selection = controller.getSnapshot().restoredSelection;
+  useEffect(() => {
+    if (!restored) return;
+    restoring.current = true;
+    try {
+      setSavedIssuer(selection?.issuer);
+      setSavedRole(selection?.role);
+      setSavedUser(selection?.user);
+      setIssuer({
+        ...issuerDraft(selection?.issuer),
+        ...restored.issuer,
+        ...(selection?.issuer ? { issuer: selection.issuer.issuer } : {}),
+      });
+      setRole({
+        ...roleDraft(selection?.role),
+        ...restored.role,
+        ...(selection?.role ? { id: selection.role.id } : {}),
+      });
+      setUser(
+        selection?.user
+          ? {
+              ...userDraft(selection.user),
+              state: restored.user.state,
+              roleId: restored.user.roleId,
+            }
+          : { ...userDraft(), ...restored.user },
+      );
+      setSelectedKind(restored.selectedKind);
+      setSelectedVersion(restored.selectedVersion);
+      setTemplateName(restored.templateName);
+      setRoleSource(restored.roleSource);
+      setMode(restored.mode);
+    } finally {
+      restoring.current = false;
+    }
+    retain();
+    // Restoration runs once for this validated controller metadata object.
+    // Setters retain synchronous edits; their identity is intentionally local.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controller, restored, selection]);
   const captureVersion = () => {
     const version = controller.getSnapshot().version;
     setSelectedVersion(version ? currentSecurityVersionBinding(version) : "");

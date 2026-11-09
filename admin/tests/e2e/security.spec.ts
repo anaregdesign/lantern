@@ -324,6 +324,16 @@ for (const width of [1280, 390]) {
     const sent = fixture.calls.find(
       (call) => call.method === "ApplySecurityChanges",
     )!;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(
+      page.getByRole("button", { name: "Check original change status" }),
+    ).toBeVisible();
+    expect(
+      fixture.calls.filter((call) => call.method === "PrepareSecurityChanges"),
+    ).toHaveLength(1);
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(1);
     await page
       .getByRole("navigation", { name: "Security", exact: true })
       .getByRole("link", { name: "Users", exact: true })
@@ -500,6 +510,19 @@ test("high-impact review keeps the Admin window active through operation approva
     popup.getByText("Authentication recorded.", { exact: false }),
   ).toBeVisible();
   expect(page.url()).toBe(`${fixture.primary}/security/roles`);
+  // Normal provider popup focus returns through a fresh auth lifetime.
+  await page.bringToFront();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(
+    page.getByRole("button", { name: "Check reauthentication" }),
+  ).toBeVisible();
+  expect(
+    fixture.calls.filter((call) => call.method === "PrepareSecurityChanges"),
+  ).toHaveLength(1);
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(0);
+
   await page.getByRole("button", { name: "Check reauthentication" }).click();
   await expect(
     page.getByRole("button", { name: "Save changes" }),
@@ -1382,4 +1405,185 @@ test("shared review saves every dirty setting in one reviewed operation", async 
   expect(
     (writes[0].body.currentReview as { changes: unknown[] }).changes,
   ).toHaveLength(2);
+});
+
+for (const [trigger, width] of [
+  ["deadline", 1280],
+  ["focus", 390],
+] as const) {
+  test(`shared Security review survives ${trigger} revalidation at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    if (trigger === "deadline") await page.clock.install({ time: new Date() });
+    const fixture = await securityUI(page, {
+      roles: [{ id: "personal_user", name: "Personal user", rules: [] }],
+    });
+    await page.goto(`${fixture.primary}/security/issuers`);
+    await page
+      .getByRole("button", {
+        name: "Load shared Security settings",
+        exact: true,
+      })
+      .click();
+    const settings = page.getByRole("region", {
+      name: "Shared Security settings",
+      exact: true,
+    });
+    await settings
+      .getByRole("checkbox", {
+        name: "Allow new-user registration",
+        exact: true,
+      })
+      .check();
+    await settings
+      .getByRole("checkbox", {
+        name: "https://idp.example · Browser (browser)",
+        exact: true,
+      })
+      .check();
+    await settings
+      .getByRole("button", { name: "Review changes", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "Review changes",
+      exact: true,
+    });
+    await expect(
+      dialog.getByRole("button", { name: "Save changes", exact: true }),
+    ).toBeEnabled();
+    let release = () => {};
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(`${fixture.primary}/auth/session`, async (route) => {
+      await paused;
+      try {
+        await route.fallback();
+      } catch (error) {
+        if (!route.request().failure()) throw error;
+      }
+    });
+    try {
+      if (trigger === "deadline") await page.clock.runFor(15_001);
+      else await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(
+        page.getByText("Checking authentication", { exact: true }),
+      ).toBeVisible();
+      await expect(dialog).toHaveCount(0);
+      release();
+      await expect(dialog).toBeVisible();
+      await expect(
+        dialog.getByRole("region", {
+          name: "Registration changes",
+          exact: true,
+        }),
+      ).toContainText("Browser (browser)");
+      expect(
+        fixture.calls.filter(
+          (call) => call.method === "PrepareSecurityChanges",
+        ),
+      ).toHaveLength(1);
+      expect(
+        fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+      ).toHaveLength(0);
+      await page.screenshot({
+        path: testInfo.outputPath(`restored-security-${trigger}-${width}.png`),
+        animations: "disabled",
+      });
+      await dialog
+        .getByRole("button", { name: "Back to editing", exact: true })
+        .click();
+      await expect(
+        settings.getByRole("checkbox", {
+          name: "Allow new-user registration",
+          exact: true,
+        }),
+      ).toBeChecked();
+      await expect(
+        settings.getByRole("checkbox", {
+          name: "https://idp.example · Browser (browser)",
+          exact: true,
+        }),
+      ).toBeChecked();
+    } finally {
+      release();
+    }
+  });
+}
+
+test("refused fresh Security reads discard a retained review and logout clears draft intent", async ({
+  page,
+}) => {
+  const options = {
+    denied: false,
+    roles: [{ id: "personal_user", name: "Personal user", rules: [] }],
+  };
+  const fixture = await securityUI(page, options);
+  await page.goto(`${fixture.primary}/security/issuers`);
+  await page
+    .getByRole("button", { name: "Load shared Security settings", exact: true })
+    .click();
+  const settings = page.getByRole("region", {
+    name: "Shared Security settings",
+    exact: true,
+  });
+  await settings
+    .getByRole("checkbox", { name: "Allow new-user registration", exact: true })
+    .check();
+  await settings
+    .getByRole("checkbox", {
+      name: "https://idp.example · Browser (browser)",
+      exact: true,
+    })
+    .check();
+  await settings
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Review changes", exact: true }),
+  ).toBeVisible();
+  options.denied = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(
+    page.getByText("Security management permission is required.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Review changes", exact: true }),
+  ).toHaveCount(0);
+  options.denied = false;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(
+    page.getByRole("button", {
+      name: "Load shared Security settings",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    settings.getByRole("checkbox", {
+      name: "Allow new-user registration",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Load shared Security settings", exact: true })
+    .click();
+  await settings
+    .getByRole("checkbox", { name: "Allow new-user registration", exact: true })
+    .check();
+  await settings
+    .getByRole("checkbox", {
+      name: "https://idp.example · Browser (browser)",
+      exact: true,
+    })
+    .check();
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Sign in with Example", exact: true }),
+  ).toBeVisible();
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(0);
 });

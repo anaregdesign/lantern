@@ -1,4 +1,7 @@
-import { currentSecurityVersionBinding } from "lantern-sdk/web";
+import {
+  copySecurityContract,
+  currentSecurityVersionBinding,
+} from "lantern-sdk/web";
 import type {
   ExplainAccessResponse,
   GetRoleTemplatesResponse,
@@ -34,6 +37,13 @@ export type {
   SecurityFailure,
   SecurityAuthorizationWindow,
 } from "../current-change/current-change";
+import {
+  SecurityDraftRecovery,
+  recoverableSecurityReview,
+  type SecurityDraftIntent,
+  type SecurityEditorIntent,
+  type SecurityPolicyIntent,
+} from "./security-draft-recovery";
 export type SecuritySection = "issuers" | "users" | "roles";
 export interface SecurityManagementPort extends CurrentChangePort {
   issuers(cursor: string, signal: AbortSignal): Promise<ListIssuersResponse>;
@@ -72,6 +82,12 @@ export interface SecurityManagementPort extends CurrentChangePort {
   ): Promise<ExplainAccessResponse>;
 }
 export interface SecurityManagementState extends CurrentChangeState {
+  restoredIntent?: SecurityDraftIntent;
+  restoredSelection?: {
+    issuer?: SecurityIssuer;
+    role?: SecurityRole;
+    user?: SecurityUser;
+  };
   issuers: SecurityIssuer[];
   users: SecurityUser[];
   roles: SecurityRole[];
@@ -115,13 +131,18 @@ export class SecurityManagementController {
   private readonly unsubscribeWorkflow: () => void;
   private disposed = false;
   private state: SecurityManagementState;
+  private intent?: SecurityDraftIntent;
+  private retentionReady = false;
   constructor(
     private readonly port: SecurityManagementPort,
     private readonly section: SecuritySection,
     private readonly scope: AbortSignal,
     recovery?: SecurityChangeRecovery,
     recoveryOwner = "",
+    private readonly drafts?: SecurityDraftRecovery,
+    private readonly draftOwner?: object,
   ) {
+    this.intent = draftOwner ? drafts?.read(draftOwner, section) : undefined;
     this.workflow = new CurrentChangeController(
       port,
       scope,
@@ -150,8 +171,136 @@ export class SecurityManagementController {
     };
     this.unsubscribeWorkflow = this.workflow.subscribe(() => {
       this.state = { ...this.state, ...this.workflow.getSnapshot() };
+      this.retain();
       this.listeners.forEach((listener) => listener());
     });
+  }
+  private retain() {
+    if (
+      !this.retentionReady ||
+      !this.drafts ||
+      !this.draftOwner ||
+      this.disposed ||
+      this.scope.aborted
+    )
+      return;
+    if (
+      !this.state.version ||
+      this.state.mutation !== "idle" ||
+      this.state.recoveryBlocked
+    ) {
+      this.drafts.clear(this.draftOwner, this.section);
+      this.intent = undefined;
+      return;
+    }
+    this.intent = {
+      ...this.intent,
+      binding: currentSecurityVersionBinding(this.state.version),
+      policyLoaded:
+        this.state.policyPhase === "ready" || !!this.intent?.policyLoaded,
+      review: recoverableSecurityReview(this.state.review),
+    };
+    this.drafts.write(this.draftOwner, this.section, this.intent);
+  }
+  retainEditorIntent(editor: SecurityEditorIntent | undefined) {
+    if (!this.retentionReady) return;
+    this.intent = { binding: "", policyLoaded: false, ...this.intent, editor };
+    this.retain();
+  }
+  retainPolicyIntent(policies: SecurityPolicyIntent) {
+    if (!this.retentionReady) return;
+    this.intent = {
+      binding: "",
+      policyLoaded: false,
+      ...this.intent,
+      policies,
+    };
+    this.retain();
+  }
+  /** Reads are serial: each owns the same cancellation/request ticket. */
+  async initialize() {
+    const retained = this.intent && copySecurityContract(this.intent);
+    await this.load();
+    if (this.disposed || this.scope.aborted) return;
+    let restored: SecurityDraftIntent | undefined;
+    let selection: SecurityManagementState["restoredSelection"];
+    try {
+      if (
+        retained &&
+        this.state.phase === "ready" &&
+        this.state.version &&
+        this.state.mutation === "idle" &&
+        !this.state.recoveryBlocked
+      ) {
+        const matches = () =>
+          this.state.version &&
+          currentSecurityVersionBinding(this.state.version) ===
+            retained.binding;
+        if (!matches()) throw new Error("Policy binding changed");
+        if (retained.policyLoaded) {
+          await this.loadPolicies();
+          if (this.state.policyPhase !== "ready" || !matches())
+            throw new Error("Shared policy validation failed");
+        }
+        const editor = retained.editor;
+        if (editor?.mode === "edit") {
+          selection = {};
+          if (editor.selectedKind === "issuers") {
+            selection.issuer = this.state.issuers.find(
+              (value) => value.issuer === editor.issuerKey,
+            );
+            if (!selection.issuer)
+              throw new Error("Selected Issuer unavailable");
+          } else {
+            const { ticket, signal } = this.operation();
+            if (editor.selectedKind === "roles" && editor.roleKey) {
+              const response = await this.port.role(editor.roleKey, signal);
+              validateVersion(response.version);
+              if (
+                !this.current(ticket) ||
+                currentSecurityVersionBinding(response.version) !==
+                  retained.binding ||
+                !response.role
+              )
+                throw new Error("Selected Role changed");
+              selection.role = response.role;
+            } else if (editor.selectedKind === "users" && editor.userKey) {
+              const response = await this.port.user(editor.userKey, signal);
+              validateVersion(response.version);
+              if (
+                !this.current(ticket) ||
+                currentSecurityVersionBinding(response.version) !==
+                  retained.binding ||
+                !response.user
+              )
+                throw new Error("Selected User changed");
+              selection.user = response.user;
+            } else throw new Error("Selected record missing");
+          }
+        }
+        if (!matches() || this.disposed || this.scope.aborted) return;
+        if (retained.review && !this.workflow.restoreReview(retained.review))
+          throw new Error("Original status has priority");
+        restored = retained;
+      }
+    } catch {
+      if (this.disposed || this.scope.aborted) return;
+      this.intent = undefined;
+      this.drafts?.clear(this.draftOwner, this.section);
+      if (!this.disposed && !this.scope.aborted)
+        this.publish({
+          message:
+            "The saved editing intent could not be revalidated. Reload and review current policy before editing again.",
+        });
+    }
+    if (this.disposed || this.scope.aborted) return;
+    if (!restored) {
+      this.intent = undefined;
+      this.drafts?.clear(this.draftOwner, this.section);
+    }
+    this.retentionReady = true;
+    if (restored)
+      this.publish({ restoredIntent: restored, restoredSelection: selection });
   }
   getSnapshot = (): SecurityManagementState => this.state;
   subscribe = (listener: () => void) => {
@@ -163,6 +312,7 @@ export class SecurityManagementController {
   private publish(patch: Partial<SecurityManagementState>) {
     if (this.disposed || this.scope.aborted) return;
     this.state = { ...this.state, ...patch };
+    this.retain();
     const workflowPatch: Partial<CurrentChangeState> = {};
     for (const key of workflowFields) {
       if (key in patch) Object.assign(workflowPatch, { [key]: patch[key] });

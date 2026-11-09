@@ -319,6 +319,31 @@ export class CurrentChangeController {
         });
     }
   }
+  /** Restore unsent metadata only after the caller's fresh authorized reads. */
+  restoreReview(review: NonNullable<CurrentChangeState["review"]>): boolean {
+    if (
+      this.disposed ||
+      this.scope.aborted ||
+      this.state.phase !== "ready" ||
+      !this.state.version ||
+      this.state.mutation !== "idle" ||
+      this.pending ||
+      this.needsOriginalStatus ||
+      this.recoveryUnavailable ||
+      !review.contract ||
+      currentSecurityVersionBinding(review.version) !==
+        currentSecurityVersionBinding(this.state.version) ||
+      review.authorizationProof
+    )
+      return false;
+    validatePreparedCurrentReview(review.contract, {
+      profile: this.state.version.currentProfile,
+      expectedCut: this.state.version.currentCut,
+      changes: review.changes,
+    });
+    this.publish({ review: copySecurityContract(review), message: "" });
+    return true;
+  }
   private reviewRequest(
     review: NonNullable<CurrentChangeState["review"]>,
   ): CurrentSecurityReview {

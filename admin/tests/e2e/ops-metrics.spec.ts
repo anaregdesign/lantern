@@ -345,6 +345,10 @@ test.describe("Ops metrics section", () => {
     await page.clock.fastForward(20_000);
     expect(blocked).toHaveLength(1);
     await page.getByRole("link", { name: "Home", exact: true }).click();
+    // The SPA transition must commit before completing the old polling round.
+    await expect(
+      page.getByRole("heading", { level: 1, name: /Lantern Admin/ }),
+    ).toBeVisible();
     await blocked[0]
       .fulfill({ response: await blocked[0].fetch() })
       .catch(() => {});

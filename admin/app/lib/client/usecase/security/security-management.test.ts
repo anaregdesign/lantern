@@ -6,6 +6,7 @@ import {
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
   currentOriginalBinding,
+  currentSecurityVersionBinding,
   type CurrentSecurityReview,
   type CurrentSecurityChangeResult,
   type CurrentSecurityInvocationRejected,
@@ -30,6 +31,7 @@ import {
   securityRecoveryOwner,
   type SecurityRecoveryStorage,
 } from "./security-change-recovery";
+import { SecurityDraftRecovery } from "./security-draft-recovery";
 const owner = securityRecoveryOwner("https://admin.example", {
   identity: review().actor,
   version,
@@ -64,6 +66,8 @@ function fixture(
   scope = new AbortController(),
   recovery?: SecurityChangeRecovery,
   recoveryOwner = owner,
+  drafts?: SecurityDraftRecovery,
+  draftOwner?: object,
 ) {
   const port: SecurityManagementPort = {
     edgePolicy: async () => ({
@@ -139,6 +143,8 @@ function fixture(
     scope.signal,
     recovery,
     recoveryOwner,
+    drafts,
+    draftOwner,
   );
 }
 async function ready(c: SecurityManagementController) {
@@ -973,5 +979,204 @@ describe("new Role uniqueness and saved readback", () => {
     expect(await c.readSavedRole(role.id)).toEqual(role);
     expect(c.getSnapshot().roles).toEqual([role]);
     c.dispose();
+  });
+});
+
+describe("editing intent across authenticated revalidation", () => {
+  test("fresh serial policy reads restore the exact unsent review without Prepare or Apply", async () => {
+    const drafts = new SecurityDraftRecovery();
+    const draftOwner = {};
+    const scope = new AbortController();
+    let prepares = 0,
+      sends = 0;
+    const overrides: Partial<SecurityManagementPort> = {
+      role: async () => ({ $typeName: "graph.v1.GetRoleResponse", version }),
+      prepare: async (r) => {
+        prepares++;
+        return prepare(r);
+      },
+      apply: async (r) => {
+        sends++;
+        return acknowledgement(result(r.currentReview));
+      },
+    };
+    const first = fixture(
+      overrides,
+      scope,
+      undefined,
+      owner,
+      drafts,
+      draftOwner,
+    );
+    await first.initialize();
+    await first.loadPolicies();
+    first.retainPolicyIntent({
+      edgeDraft: 2,
+      edgeVersion: currentSecurityVersionBinding(version),
+      enrollmentVersion: "",
+    });
+    await first.review("Unsent policy intent", changes);
+    const original = first.getSnapshot().review!.contract!;
+    scope.abort();
+    first.dispose();
+    const restored = fixture(
+      overrides,
+      new AbortController(),
+      undefined,
+      owner,
+      drafts,
+      draftOwner,
+    );
+    await restored.initialize();
+    expect(restored.getSnapshot().phase).toBe("ready");
+    expect(restored.getSnapshot().policyPhase).toBe("ready");
+    expect(restored.getSnapshot().restoredIntent?.policies?.edgeDraft).toBe(2);
+    expect(restored.getSnapshot().review?.contract).toEqual(original);
+    expect(prepares).toBe(1);
+    expect(sends).toBe(0);
+    await restored.apply();
+    expect(sends).toBe(1);
+    restored.dispose();
+  });
+  test("restored expansion retains its original approval attempt but requires a fresh proof check", async () => {
+    const drafts = new SecurityDraftRecovery();
+    const draftOwner = {};
+    let sends = 0;
+    const scope = new AbortController();
+    const overrides: Partial<SecurityManagementPort> = {
+      prepare: async (r) =>
+        prepare(r, SecurityAuthorizationRequirement.REAUTHENTICATION),
+      apply: async (r) => {
+        sends++;
+        return acknowledgement(result(r.currentReview));
+      },
+    };
+    const first = fixture(
+      overrides,
+      scope,
+      undefined,
+      owner,
+      drafts,
+      draftOwner,
+    );
+    await first.initialize();
+    await first.review("Trust expansion", changes);
+    await first.authorize();
+    await first.checkAuthorization();
+    expect(first.getSnapshot().review?.approval).toBe("approved");
+    const id = first.getSnapshot().review!.contract!.changeId;
+    scope.abort();
+    first.dispose();
+    const restored = fixture(
+      overrides,
+      new AbortController(),
+      undefined,
+      owner,
+      drafts,
+      draftOwner,
+    );
+    await restored.initialize();
+    expect(restored.getSnapshot().review?.approval).toBe("authenticating");
+    expect(restored.getSnapshot().review?.authorizationProof).toBeUndefined();
+    expect(restored.getSnapshot().review?.contract?.changeId).toEqual(id);
+    await restored.apply();
+    expect(sends).toBe(0);
+    await restored.checkAuthorization();
+    await restored.apply();
+    expect(sends).toBe(1);
+    restored.dispose();
+  });
+  test("changed policy, unavailable reads and a new opaque auth owner discard unsent intent", async () => {
+    for (const failure of ["cut", "denied", "owner"] as const) {
+      const drafts = new SecurityDraftRecovery();
+      const draftOwner = {};
+      const scope = new AbortController();
+      const first = fixture({}, scope, undefined, owner, drafts, draftOwner);
+      await first.initialize();
+      await first.review("Unsent", changes);
+      scope.abort();
+      first.dispose();
+      const nextVersion = {
+        ...version,
+        currentCut: { ...version.currentCut!, sequence: 2n },
+      };
+      const restored = fixture(
+        failure === "denied"
+          ? {
+              roles: async () => {
+                throw new Error("denied");
+              },
+            }
+          : failure === "cut"
+            ? {
+                roles: async () => ({
+                  $typeName: "graph.v1.ListRolesResponse",
+                  roles: [],
+                  nextCursor: "",
+                  version: nextVersion,
+                }),
+              }
+            : {},
+        new AbortController(),
+        undefined,
+        owner,
+        drafts,
+        failure === "owner" ? {} : draftOwner,
+      );
+      await restored.initialize();
+      expect(restored.getSnapshot().review).toBeUndefined();
+      expect(restored.getSnapshot().restoredIntent).toBeUndefined();
+      restored.dispose();
+    }
+  });
+  test("possibly dispatched originals take precedence over any unsent snapshot", async () => {
+    const drafts = new SecurityDraftRecovery();
+    const draftOwner = {};
+    const recovery = new SecurityChangeRecovery(memoryStorage());
+    const scope = new AbortController();
+    let sends = 0;
+    const first = fixture(
+      {
+        apply: async () => {
+          sends++;
+          throw new Error("response lost");
+        },
+      },
+      scope,
+      recovery,
+      owner,
+      drafts,
+      draftOwner,
+    );
+    await first.initialize();
+    await first.review("Original", changes);
+    const unsent = drafts.read(draftOwner, "roles")!;
+    await first.apply();
+    expect(first.getSnapshot().mutation).toBe("unconfirmed");
+    // Even a stale unsent snapshot cannot outrank original-operation recovery.
+    drafts.write(draftOwner, "roles", unsent);
+    scope.abort();
+    first.dispose();
+    const restored = fixture(
+      {
+        apply: async () => {
+          sends++;
+          throw new Error("must not send");
+        },
+      },
+      new AbortController(),
+      recovery,
+      owner,
+      drafts,
+      draftOwner,
+    );
+    await restored.initialize();
+    expect(restored.getSnapshot().mutation).toBe("unconfirmed");
+    expect(restored.getSnapshot().review).toBeUndefined();
+    await restored.apply();
+    expect(sends).toBe(1);
+    await restored.checkStatus();
+    expect(restored.getSnapshot().mutation).toBe("applied");
+    restored.dispose();
   });
 });
