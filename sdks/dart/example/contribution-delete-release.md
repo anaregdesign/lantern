@@ -1,8 +1,11 @@
 # Contribution Delete Dart release qualification
 
-Issue [#1530](https://github.com/anaregdesign/lantern/issues/1530) adds the online
-`lantern_client 0.4.1` contribution Delete family. The offline outbox remains
-unsupported for this operation; no new durable offline intent is included.
+Issue [#1530](https://github.com/anaregdesign/lantern/issues/1530) introduced the
+online `lantern_client 0.4.1` contribution Delete family. This runbook also
+qualifies later parent candidates, including `lantern_client 0.5.0`.
+The independent Offline package added durable contribution Delete in 0.5.0
+under [#1586](https://github.com/anaregdesign/lantern/issues/1586); its physical
+and publication exits remain separate from the parent target.
 The public SDK exposes `EdgeContributionRef`, plural-canonical direct and
 receipt-bearing Delete, distinct `EdgeContributionDeleteReceipt` originals,
 and identity CDC `deleteEdgeContribution`. A CDC frame invalidates its edge
@@ -24,10 +27,18 @@ Merge source, tests and release preparation first. Freeze one clean exact
 profile target is `integration_test/physical_contribution_delete_test.dart`.
 Its fixed eleven-scenario matrix tests authenticated platform-trusted HTTPS,
 invalid IDs, index-aligned duplicates/missing/expired IDs, Put-base retention,
-CDC edge re-fetch, offline unsupported-family rejection, persisted dispatch
+CDC edge re-fetch, advertised contribution Delete capability, persisted dispatch
 marker before send, actual committed-response socket drop, genuine SIGKILL and
 same-installed-binary relaunch, status-first no-resend and original true/false
 receipt replay. A host/simulator run or a rebuilt/reinstalled app is insufficient.
+
+The parent target tests the parent SDK only. Offline contribution Delete and
+its receipt decoding are supported by the independent Offline package and
+retain their separate physical release matrix; parent publication does not
+require that adapter to reject the operation. The current eleven-scenario
+matrix uses `advertised_contribution_delete_capability`. Historical records
+with `unsupported_offline_family` keep their original source and cannot
+qualify a current release.
 
 Use the private runtime BFF and five HTTPS defines described in
 [receipt-attestation.md](receipt-attestation.md). Start the existing proxy with
@@ -68,8 +79,8 @@ verification; discard and rerun evidence older than 30 days.
 After both captures pass, commit only `android.json`, `android-marker.json`,
 `ios.json` and `ios-marker.json` under `example/evidence/contribution-delete/`
 as the immediate evidence-only child of the tested source. Before pushing
-its unused `sdks/dart/v0.4.1` tag, run the complete local quality gate and
-`scripts/physical_contribution_release_gate.py --tag sdks/dart/v0.4.1`.
+its unused `sdks/dart/v0.5.0` tag, run the complete local quality gate and
+`scripts/physical_contribution_release_gate.py --tag sdks/dart/v0.5.0`.
 The tag's full Dart/native Gate and read-only parent preflight enforce the
 same source, exact scenario sets and physical records. Publication is the
 existing protected pub.dev OIDC workflow; package-admin approval remains
