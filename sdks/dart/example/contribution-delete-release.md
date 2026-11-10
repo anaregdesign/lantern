@@ -51,8 +51,11 @@ RPC, synthetic state and physical device identity before each run.
 The born-expired seed uses a fixed past UTC timestamp and verifies its effective
 weight before Delete. A device-relative one-second offset is insufficient when
 device and server clocks differ; application TTL timestamps remain caller-owned.
-Identity CDC preserves repeated edge pairs for duplicate request positions;
-the fixture verifies both invalidations and re-fetches the effective edge.
+The target opens public identity-only `WatchChanges` for its exact Run-key
+prefix and waits for the opaque bootstrap checkpoint before Delete. It requires
+a matching `EdgeInvalidation` and re-fetches the effective edge; public CDC does
+not prove mutation operation metadata, duplicate counts or frame grouping.
+Private replication `Subscribe` does not qualify this public target (#2127).
 
 Build once and install the exact signed profile APK or Runner.app. Launch the
 app and wait for its content-free `lantern-contribution-phase.json` to say
