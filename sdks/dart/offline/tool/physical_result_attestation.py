@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 
 from physical_release_gate import SUITES
+from physical_receipt_attestation import validate_record_fixture
 
 
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -64,6 +65,7 @@ def _utc(value, label):
 
 def validate_private_result(
     marker_path, record_path, built_binary_path, *, platform, suite, launched_after,
+    fixture_provenance=None,
 ):
     if platform not in ("android", "ios") or suite not in MARKER_KINDS:
         raise ValueError("unsupported physical result target")
@@ -114,6 +116,11 @@ def validate_private_result(
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     if digest != marker["installedBinarySha256"]:
         raise ValueError("signed build bytes differ from installed device bytes")
+    validate_record_fixture(
+        record, record.get("testedCommit"), "physical", marker_path=marker_path,
+        started_at=marker["startedAt"], finished_at=marker["updatedAt"],
+        fixture_provenance=fixture_provenance, capture=True,
+    )
     return digest
 
 
@@ -125,11 +132,14 @@ def main():
     parser.add_argument("--platform", choices=("android", "ios"), required=True)
     parser.add_argument("--suite", choices=tuple(MARKER_KINDS), required=True)
     parser.add_argument("--launched-after", required=True)
+    parser.add_argument("--fixture-provenance", type=Path,
+                        help="verified final private sidecar; required for controlled schema-2 host records")
     args = parser.parse_args()
     validate_private_result(
         args.marker, args.record, args.built_binary,
         platform=args.platform, suite=args.suite,
         launched_after=args.launched_after,
+        fixture_provenance=args.fixture_provenance,
     )
     print("physical on-device marker, record, and signed build bytes match")
 

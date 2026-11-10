@@ -480,7 +480,7 @@ func runNativeFixtureServing(t *testing.T, ctx context.Context, f *nativeLoginWi
 	if err := writeNativeFixtureServingExport(options, issued, verified); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("native_fixture_ready schema=1 accounts=2")
+	t.Logf("native_fixture_ready schema=%d accounts=2", options.schema())
 	reason, err := waitNativeFixtureServing(ctx, filepath.Join(options.ExportDir, "release"), options.Lifetime, func() error {
 		healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
@@ -498,5 +498,9 @@ func runNativeFixtureServing(t *testing.T, ctx context.Context, f *nativeLoginWi
 	if err != nil {
 		t.Fatal("native serving owner lifetime", err)
 	}
-	t.Log("native_fixture_stopped reason=" + reason)
+	if options.TimeSource == "controlled-source" {
+		t.Logf("native_fixture_stopped reason=%s stopped_at=%s", reason, time.Now().UTC().Format(time.RFC3339Nano))
+	} else {
+		t.Log("native_fixture_stopped reason=" + reason)
+	}
 }

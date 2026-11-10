@@ -60,12 +60,15 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   final exact-source runtime qualification is still pending. Namespace isolation does not prove policy
   freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.
 
-- **Time qualification (#1820/#1946)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build configured-source-integration reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/repeated-source receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. #1820 replaces only repeated external-source functional qualification. The owner-approved #1946 local-only migration makes full local77's current wire step complete controlled-source functional-validation, isolates inherited qualification opt-ins and retires automatic configured-source acquisition from the local plan and its adoption bootstrap. The other 76 steps and required selected CI, exact pre-tag and native-environment configured-source-integration remain mandatory; historical failures retain their meaning.
+- **Time qualification (#1820/#1946/#2119)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build configured-source-integration reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/repeated-source receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. #1820/#1946 retire repeated external-source acquisition from the local functional gate/bootstrap; the current full local79 runs controlled functional-validation. Required selected PR/main, exact pre-tag and selected native-environment configured-source-integration remain mandatory. #2119 adds explicit test-only controlled physical serving, not a production selector or fallback. Use real NTP only for mandatory qualifications, with no ad hoc probe/retry loop; historical failures retain their meaning.
 - **Native validation fixtures (#1610/#1613/#1635)**: private workload TLS and signed membership apply in OFF and OIDC. Public SDK CDC uses opaque WatchChanges; legacy static-token/public Subscribe fixtures do not qualify current source. Operator diagnostics cannot weaken production guards.
   The opt-in registered native A/B and physical machine/Head profiles are distinct
   [preparation inputs](sdks/dart/example/installed-factory-acceptance.md)
-  (#1809/#1811/#1766/#1610); neither substitutes for final configured-source-integration,
-  real-provider or physical-device acceptance.
+  (#1809/#1811/#1766/#1610). Under #2119, full final-source signed-phone assertions
+  with verified controlled-fixture provenance may qualify device/application behavior.
+  Fixture setup/lifecycle alone cannot qualify a device, real provider, real UTC,
+  deployment or normal configured-source-integration. Keep normal `--serve` unchanged;
+  `--serve-controlled` is a separate compile-time test-only route.
 - **iOS smoke operation evidence (#1818)**: `launch_stall` alone covers install, native-launch and later pre-body stalls; use retained operation records, not historical ENOENT or migration logs, to distinguish observed stages without claiming a platform cause.
 
 - **Approved management target (#1672/#1608/#1609/#2085)**: ordinary end-user management drops the blanket five-minute gate; valid authentication, exact identity, current Roles, credential/session expiry, CSRF/CAS, policy freshness, env-owned locks and administrator invariants remain. Trust changes or effective Security/Settings `write` expansion require per-operation reauthentication; data grants alone do not. Reference/status reads require the relevant typed resource's `read` grant. Machines may perform authorized reference/status reads, but no management mutation. Legitimate end-user Bearer eligibility remains; trusted classification of the mixed Bearer path is still under review. Google Security bundle/extra-claim app verification is optional outside baseline gates. Final exact-source and actual-provider acceptance remain separate; the historical `93d53789` behavior does not qualify the current source. See [ADR 0012](docs/decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy).
@@ -282,7 +285,7 @@ The load-bearing always-on essentials:
   functional-validation PASS / configured-source-integration NOT_RUN is not release qualification; executed configured-source-integration failure stays FAIL.
   Whole-interval expiry and native leases remain mandatory. Ordinary affected local
   checks defer exact integration functional-validation/configured-source-integration to hosted CI. Under #1946,
-  the full local77 runs complete functional-validation in `current-functional-wire`,
+  the current full local79 runs complete functional-validation in `current-functional-wire`,
   strips inherited fixture/time/native/child activation controls and leaves required
   configured-source-integration independent. Dedicated runners set their own flags;
   ordinary tool/dependency/application settings stay intact. Policy adoption uses
@@ -291,7 +294,7 @@ The load-bearing always-on essentials:
   CONTRIBUTING. Unknown inputs require full. Policy changes use the previous full
   contract, except the explicit #1820 migration and #1946 local-only adoption use their
   approved scoped contracts while retaining every other mandatory check. #1946
-  requires the revised local77 without rerunning its retired local external-source bootstrap.
+  requires the current local gate without rerunning its retired local external-source bootstrap.
   Hosted exact-merge/main,
   release/environment configured-source-integration, archives
   and physical evidence remain independent. Full Windows Rust compatibility moves

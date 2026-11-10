@@ -608,6 +608,28 @@ external-source diagnostic tests additionally require the `lantern_source_qualif
 build tag; ordinary unit invocations cannot enable them just by inheriting an
 environment flag.
 
+The owner-approved [#2119](https://github.com/anaregdesign/lantern/issues/2119)
+physical fixture uses explicit `native_login_gate.py --serve-controlled` with
+`--serve-profile native|physical`. Both executables are `go test -c` binaries
+tagged `lantern_test_time`; continuously sampled native elapsed time and private
+loopback UDP advance the fixture without external NTP, frozen time or jumps.
+Normal `--serve`, production source selection and all quorum, native-lease,
+whole-interval expiry, membership, WAL, TLS and custody guards remain unchanged.
+Normal and controlled descriptors, builds and lifecycle receipts cannot be mixed.
+
+Full final-source assertions on the actual signed Android/iPhone installation
+may qualify device/application behavior with verified, explicitly disclosed
+controlled-backend provenance. The fixture lifecycle alone does not qualify a
+phone, actual identity provider, real UTC/source path, deployment or normal
+configured-source-integration. Capture a separate private fixture-provenance
+record and embed its content-free summary in schema-2 host evidence records;
+phone markers and the four/eight-file release-child paths remain unchanged.
+Legacy schema-1 records cannot claim controlled provenance. Rebuild from the
+new frozen merged source; preserve old binaries and FAILs without relabeling.
+The current local79 remains controlled; mandatory selected PR/main and exact
+release/selected-environment normal qualification remain blocking. No repeated
+normal physical bootstrap, ad hoc external NTP diagnostic or retry loop is added.
+
 `configured-source-integration` prebuilds SDK dependencies, then uses the fixed time
 source and normal constructor. Each owner must acquire its own fresh anchor. Complete
 process-owned counters record attempts, actual UDP writes and installations separately

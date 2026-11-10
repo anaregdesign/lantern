@@ -12,6 +12,8 @@ from physical_receipt_attestation import (
     RECEIPT_TARGET,
     load_receipt_record,
     validate_archived_receipt_evidence,
+    fixture_record_fields,
+    validate_record_fixture,
 )
 
 
@@ -117,7 +119,7 @@ def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
     contract = SUITES[suite]
     expected_kind = f"physical-{platform}"
     if (
-        record.get("schema") != 1
+        type(record.get("schema")) is not int or record.get("schema") not in (1, 2)
         or record.get("kind") != contract["kind"]
         or record.get("repository") != "anaregdesign/lantern"
         or record.get("testedCommit") != tested_sha
@@ -128,11 +130,11 @@ def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
         or record.get("limitations") != []
     ):
         raise ValueError(f"{platform} physical evidence identity or result is invalid")
-    if set(record) != {
+    if set(record) != fixture_record_fields(record, {
         "schema", "kind", "repository", "testedCommit", "recordedAt",
         "physicalDevice", "contentFree", "cleanCheckout", "toolchain",
         "application", "platform", "network", "scenarios", "result", "limitations",
-    }:
+    }):
         raise ValueError(f"{platform} physical evidence has unexpected or missing fields")
     recorded_at = record["recordedAt"]
     when = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
@@ -183,6 +185,7 @@ def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
         or set(scenarios) != required_scenarios
     ):
         raise ValueError(f"{platform} physical release matrix is incomplete")
+    validate_record_fixture(record, tested_sha, "physical")
     if (
         ci_record.get("schema") != 1
         or ci_record.get("kind") != "ci_mobile_revision_evidence"

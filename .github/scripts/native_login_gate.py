@@ -20,10 +20,17 @@ otherwise --lifetime-seconds stops serving. No destructive gate cases run here.
 exports rotating same-identity machine credentials and a separate minimal Head
 writer with a certified six-hour receipt policy. It performs no native login and
 cannot substitute for the default registered native A/B controller evidence.
+
+--serve-controlled is a separate test-only serving mode for either profile.
+Both test binaries use lantern_test_time and loopback controlled UTC; no
+/etc/ntp.conf is read or mounted. Schema-2 exports and explicit provenance keep
+this device/application functional evidence separate from normal-source,
+real-provider, UTC, deployment and release qualification.
 """
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -62,6 +69,7 @@ CASES = (
 )
 SERVING_CASE = ROOT_TEST + "/native_fixture_serving_export"
 NORMAL_SOURCE_MARKER = "production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H"
+CONTROLLED_SOURCE_MARKER = "test-build controlled source: native sampler and loopback UDP; synthetic UTC; shared current composition, three voters, two origins, observer"
 
 
 @dataclass(frozen=True)
@@ -72,8 +80,11 @@ class ServingOptions:
     lifetime_seconds: int = 540
     prefix: str = "orders:"
     profile: str = "native"
+    time_source: str = "configured-source"
 
     def validate(self):
+        if self.time_source not in ("configured-source", "controlled-source"):
+            raise ValueError("explicit configured-source or controlled-source serving required")
         if self.profile not in ("native", "physical") or self.profile == "physical" and self.prefix != "orders:":
             raise ValueError("explicit native or fixed-scope physical serving profile required")
         origin = urlsplit(self.origin)
@@ -115,25 +126,54 @@ def require_cases(log):
         raise RuntimeError("native wire cases did not all execute successfully")
 
 
-def require_serving(log, profile="native"):
+def controlled_serving_stop(log, profile="native"):
+    """Return the one controlled owner's canonical RFC3339Nano UTC stop time."""
     if profile not in ("native", "physical"):
         raise ValueError("unknown serving profile")
+    lines = re.findall(r"\b(?:native|physical)_fixture_stopped\b[^\r\n]*", log)
+    timestamp = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{0,8}[1-9])?Z"
+    match = re.fullmatch(profile + r"_fixture_stopped reason=(?:released|timeout) stopped_at=(" + timestamp + ")", lines[0]) if len(lines) == 1 else None
+    if match is None:
+        raise RuntimeError("controlled serving requires one exact timestamped stop")
+    stopped_at = match[1]
+    try:
+        datetime.fromisoformat(stopped_at.removesuffix("Z") + "+00:00")
+    except ValueError:
+        raise RuntimeError("controlled serving stop timestamp is invalid") from None
+    return stopped_at
+
+
+def require_serving(log, profile="native", time_source="configured-source"):
+    if profile not in ("native", "physical"):
+        raise ValueError("unknown serving profile")
+    if time_source not in ("configured-source", "controlled-source"):
+        raise ValueError("unknown serving time source")
+    controlled = time_source == "controlled-source"
+    source_marker = CONTROLLED_SOURCE_MARKER if controlled else NORMAL_SOURCE_MARKER
+    source_prefix = "test-build controlled source:" if controlled else "production native constructor:"
+    other_source_prefix = "production native constructor:" if controlled else "test-build controlled source:"
     case = SERVING_CASE if profile == "native" else ROOT_TEST + "/physical_fixture_serving_export"
     marker = "native" if profile == "native" else "physical"
     ready = "accounts=2" if profile == "native" else "observer_credentials=2 writer_credentials=1"
+    ready_lines = re.findall(r"\b(?:native|physical)_fixture_ready\b[^\r\n]*", log)
+    expected_ready = f"{marker}_fixture_ready schema={2 if controlled else 1} {ready}"
+    if controlled:
+        controlled_serving_stop(log, profile)
+    stopped_lines = re.findall(r"\b(?:native|physical)_fixture_stopped\b[^\r\n]*", log)
+    normal_stop = stopped_lines in ([f"{marker}_fixture_stopped reason=released"], [f"{marker}_fixture_stopped reason=timeout"])
     other = "physical" if profile == "native" else "native"
     for name in (ROOT_TEST, case):
         if len(re.findall(r"(?m)^\s*--- PASS: " + re.escape(name) + r" \(", log)) != 1:
             raise RuntimeError("native serving lifecycle did not complete")
     if ("--- SKIP:" in log or "--- FAIL:" in log or
-            log.count(NORMAL_SOURCE_MARKER) != 1 or "test-build controlled source:" in log or
-            log.count(f"{marker}_fixture_ready schema=1 {ready}") != 1 or
-            len(re.findall(marker + r"_fixture_stopped reason=(released|timeout)\b", log)) != 1 or
+            log.count(source_marker) != 1 or log.count(source_prefix) != 1 or other_source_prefix in log or
+            ready_lines != [expected_ready] or
+            (not controlled and not normal_stop) or
             f"{other}_fixture_ready" in log or f"/{other}_fixture_serving_export" in log or
             re.findall(r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", log) !=
             [(str(i), mode, "true") for mode in ("fresh", "resume") for i in (1, 2, 3)] or
             any(ROOT_TEST + "/" + case in log for case in CASES)):
-        raise RuntimeError("native serving evidence missing, synthetic-time, destructive or failed")
+        raise RuntimeError("native serving evidence missing, mixed-source, destructive or failed")
 
 
 def run(root, evidence, serving=None):
@@ -158,10 +198,15 @@ def run(root, evidence, serving=None):
         private.mkdir(mode=0o700)
     name = "lantern-native-login-" + uuid.uuid4().hex[:12]
     receipt = {"schema": 1, "status": "RUNNING", "proof": "controlled-source deterministic provider fixture; no real provider/device/UTC qualification", "started": time.time(), "commands": []}
+    controlled = serving is None or serving.time_source == "controlled-source"
     if serving is not None:
-        receipt.update({"mode": "serving", "build_tags": [], "synthetic_utc": False,
+        receipt.update({"mode": "serving", "source_kind": serving.time_source,
+                        "build_kind": "test-only" if controlled else "normal",
+                        "build_tags": ["lantern_test_time"] if controlled else [], "synthetic_utc": controlled,
                         "serving_profile": serving.profile,
-                        "proof": "normal-build configured-source " + serving.profile + " fixture serving lifecycle only; ordinary native gate/configured-source-integration/real provider/device acceptance NOT_RUN"})
+                        "serving_lifetime_seconds": serving.lifetime_seconds,
+                        "serving_origin_sha256": hashlib.sha256(serving.origin.encode()).hexdigest(),
+                        "proof": ("test-only controlled-source " if controlled else "normal-build configured-source ") + serving.profile + " fixture serving lifecycle only; ordinary native gate/configured-source-integration/real provider/device acceptance NOT_RUN"})
 
     def save():
         write_private(evidence / "receipt.json", json.dumps(receipt, indent=2) + "\n")
@@ -196,25 +241,27 @@ def run(root, evidence, serving=None):
         env = {**os.environ, "GOOS": "linux", "GOARCH": arch, "CGO_ENABLED": "0"}
         if serving is not None:
             if env.get("GOFLAGS") or subprocess.check_output(["go", "env", "GOFLAGS"], cwd=root, env=env).strip():
-                raise ValueError("normal-build native serving refuses GOFLAGS overrides")
+                raise ValueError("native serving refuses GOFLAGS overrides")
+        if serving is not None and not controlled:
             config = Path("/etc/ntp.conf").read_bytes()
             if not 0 < len(config) <= 4096:
                 raise ValueError("existing configured native source missing/oversize")
             receipt["source_config_sha256"] = hashlib.sha256(config).hexdigest()
         for package, binary in (("./server/internal/security", "security.test"), ("./tests/integration", "integration.test")):
-            command(["go", "test", "-c", *([] if serving else ["-tags=lantern_test_time"]), "-o", str(build / binary), package], env=env)
+            command(["go", "test", "-c", *(["-tags=lantern_test_time"] if controlled else []), "-o", str(build / binary), package], env=env)
         # Private host umask must not prevent the non-root container user from
         # executing these public-code programs. Runtime state stays private.
         write_private(build / "Dockerfile", 'FROM scratch\nCOPY --chmod=0555 security.test /security.test\nCOPY --chmod=0555 integration.test /integration.test\nENTRYPOINT ["/integration.test"]\n')
-        label = "lantern.task=1809-native-serving" if serving else "lantern.task=1750-native-login"
+        label = ("lantern.task=2119-controlled-serving" if controlled else "lantern.task=1809-native-serving") if serving else "lantern.task=1750-native-login"
         command(["docker", "build", "--pull=false", "--network=none", "--label", label, "-t", name, str(build)])
         image_created = True
         receipt["image"] = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", name], text=True).strip()
         receipt["binaries"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in build.glob("*.test")}
         args = ["docker", "run", "--rm", "--pull=never", "--name", name, "--label", label, "--network=bridge" if serving else "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", f"{os.getuid()}:{os.getgid()}" if serving else "65534:65534", "--pids-limit=256", "--memory=2g", "--cpus=4", "--sysctl", "net.ipv4.ip_unprivileged_port_start=0", "--tmpfs", ("/work" if serving else "/tmp") + ":rw,nosuid,nodev,size=512m,mode=1777"]
         if serving is not None:
-            args += ["--mount", "type=bind,source=/etc/ntp.conf,target=/etc/ntp.conf,readonly",
-                     "--mount", f"type=bind,source={private},target=/native-fixture",
+            if not controlled:
+                args += ["--mount", "type=bind,source=/etc/ntp.conf,target=/etc/ntp.conf,readonly"]
+            args += ["--mount", f"type=bind,source={private},target=/native-fixture",
                      "--publish", f"127.0.0.1:{serving.publish_port}:{serving.listen_port}/tcp"]
         for host in HOSTS:
             args += ["--add-host", host + ":127.0.0.1"]
@@ -228,15 +275,18 @@ def run(root, evidence, serving=None):
                                 "LANTERN_NATIVE_FIXTURE_EXPORT_DIR": "/native-fixture"})
             if serving.profile == "physical":
                 environment["LANTERN_NATIVE_FIXTURE_PROFILE"] = "physical"
+            if controlled:
+                environment["LANTERN_NATIVE_FIXTURE_TIME_SOURCE"] = "controlled-source"
         for key, value in environment.items():
             args += ["--env", key + "=" + value]
         timeout = serving.lifetime_seconds + 300 if serving else 240
         args += [receipt["image"], "-test.v", "-test.run=^" + ROOT_TEST + "$", f"-test.timeout={timeout}s" if serving else "-test.timeout=4m"]
+        save()  # READY consumers need immutable image/binary/source bindings while serving.
         command(args, timeout=timeout + 20)
         last_log = evidence / receipt["commands"][-1]["log"]
         if serving is not None:
             log = last_log.read_text()
-            require_serving(log, serving.profile)
+            require_serving(log, serving.profile, serving.time_source)
             receipt["native_owner_constructors"] = [
                 {"node": int(node), "phase": "initialize" if mode == "fresh" else "serve", "mode": mode}
                 for node, mode, _ in re.findall(r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", log)
@@ -267,7 +317,9 @@ def main(argv=None):
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--fresh-child", action="store_true",
                         help="retain a new child directory for this execution")
-    parser.add_argument("--serve", action="store_true", help="normal-build synthetic native serving/export only")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--serve", action="store_true", help="normal-build synthetic native serving/export only")
+    modes.add_argument("--serve-controlled", action="store_true", help="test-only controlled-source serving/export; no configured-source qualification")
     parser.add_argument("--service-origin", help="exact HTTPS origin used by the consuming client")
     parser.add_argument("--listen-port", type=int, help="selected container TLS port")
     parser.add_argument("--publish-port", type=int, help="publish only on this host loopback port")
@@ -277,19 +329,20 @@ def main(argv=None):
                         help="native registered A/B (default), or scoped rotating machine/Head receipt fixture")
     args = parser.parse_args(argv)
     serving = None
-    if args.serve:
+    if args.serve or args.serve_controlled:
         if args.service_origin is None or args.listen_port is None or args.publish_port is None:
-            parser.error("--serve requires --service-origin, --listen-port and --publish-port")
+            parser.error("serving requires --service-origin, --listen-port and --publish-port")
         serving = ServingOptions(args.service_origin, args.listen_port, args.publish_port,
                                  args.lifetime_seconds if args.lifetime_seconds is not None else 540,
                                  args.prefix if args.prefix is not None else "orders:",
-                                 args.serve_profile if args.serve_profile is not None else "native")
+                                 args.serve_profile if args.serve_profile is not None else "native",
+                                 "controlled-source" if args.serve_controlled else "configured-source")
         try:
             serving.validate()
         except ValueError as error:
             parser.error(str(error))
     elif any(value is not None for value in (args.service_origin, args.listen_port, args.publish_port, args.lifetime_seconds, args.prefix, args.serve_profile)):
-        parser.error("serving options require --serve")
+        parser.error("serving options require --serve or --serve-controlled")
     if args.fresh_child:
         args.evidence = args.evidence / str(uuid.uuid4())
     root = Path(__file__).resolve().parents[2]

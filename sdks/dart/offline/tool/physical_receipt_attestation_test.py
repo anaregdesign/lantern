@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib.util
 import io
 import json
 from pathlib import Path
@@ -11,6 +12,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import physical_receipt_attestation as attestation
+
+fixture_tools = attestation.fixture_provenance_tools()
 
 
 COMMIT = "a" * 40
@@ -110,6 +113,95 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
         self.record_path.write_text(json.dumps(record))
 
         return self.validate_files(**overrides)
+
+    def controlled(self, marker, record, profile="physical"):
+        record["schema"] = 2
+        record["fixture"] = {
+            "schema": 1, "profile": profile, "sourceCommit": COMMIT,
+            "sourceKind": "controlled-source", "buildKind": "test-only",
+            "buildTags": ["lantern_test_time"], "syntheticUtc": True,
+            "imageSha256": "1" * 64, "descriptorSha256": "2" * 64,
+            "receiptSha256": "3" * 64, "sidecarSha256": "4" * 64,
+            "preparedAt": utc(self.started - timedelta(seconds=1)),
+            "servingUntil": utc(self.finished + timedelta(seconds=1)),
+            "lifecycleFinishedAt": utc(self.finished + timedelta(seconds=1)),
+            "servingStoppedAt": utc(self.finished),
+            "deviceStartedAt": marker["startedAt"], "deviceFinishedAt": marker["finishedAt"],
+            "phoneMarkerSha256": hashlib.sha256(json.dumps(marker).encode()).hexdigest(),
+            "recordPayloadSha256": fixture_tools.digest(fixture_tools.encoded(record)),
+        }
+        return record["fixture"]
+
+    def test_controlled_capture_requires_verified_private_provenance_but_archive_does_not(self):
+        marker, record, scenarios = self.final_fixture()
+        marker["target"] = attestation.CONTRIBUTION_TARGET
+        record["application"]["target"] = attestation.CONTRIBUTION_TARGET
+        record["kind"] = "physical_edge_contribution_delete_evidence"
+        summary = self.controlled(marker, record)
+        options = {"target": attestation.CONTRIBUTION_TARGET, "required_scenarios": scenarios}
+        with self.assertRaisesRegex(ValueError, "requires --fixture-provenance"):
+            self.validate(marker, record, **options)
+        sidecar = self.directory / "physical-fixture-provenance.json"
+        with patch.object(fixture_tools, "public_summary", return_value=summary) as verify:
+            self.assertEqual(self.validate(marker, record, fixture_provenance=sidecar, **options),
+                             marker["installedBinarySha256"])
+            self.assertEqual(verify.call_args.args[:3], (sidecar, COMMIT, "physical"))
+        with patch.object(fixture_tools, "public_summary", side_effect=AssertionError("private read")):
+            attestation.validate_archived_receipt_evidence(
+                self.marker_path, self.record_path, tested_commit=COMMIT, platform="android",
+                required_scenarios=scenarios, now=self.now, target=attestation.CONTRIBUTION_TARGET,
+            )
+
+    def test_controlled_record_rejects_relabeling_marker_payload_and_interval_changes(self):
+        for change in (
+            lambda m, r: r.update(schema=1),
+            lambda m, r: r["fixture"].update(sourceCommit="f" * 40),
+            lambda m, r: r["fixture"].update(sourceKind="configured-source", buildKind="normal",
+                                           buildTags=[], syntheticUtc=False),
+            lambda m, r: r["fixture"].update(phoneMarkerSha256="f" * 64),
+            lambda m, r: r["fixture"].update(deviceFinishedAt=r["fixture"]["servingUntil"]),
+            lambda m, r: r["fixture"].update(servingStoppedAt=r["fixture"]["deviceStartedAt"]),
+            lambda m, r: r.update(recordedAt=utc(self.recorded + timedelta(seconds=1))),
+        ):
+            with self.subTest(change=change):
+                marker, record, scenarios = self.final_fixture()
+                self.controlled(marker, record)
+                change(marker, record)
+                self.marker_path.write_text(json.dumps(marker))
+                self.record_path.write_text(json.dumps(record))
+                with self.assertRaises(ValueError):
+                    attestation.validate_archived_receipt_evidence(
+                        self.marker_path, self.record_path, tested_commit=COMMIT, platform="android",
+                        required_scenarios=scenarios, now=self.now,
+                    )
+
+    def test_capture_checks_final_sidecar_equality_and_t18_native_profile(self):
+        marker, record = self.fixture()
+        target = "integration_test/physical_installed_factory_test.dart"
+        marker["target"] = target
+        record["application"]["target"] = target
+        summary = self.controlled(marker, record, "native")
+        with patch.object(fixture_tools, "public_summary", return_value=summary) as verify:
+            self.validate(marker, record, target=target, fixture_provenance=self.directory / "sidecar")
+            self.assertEqual(verify.call_args.args[2], "native")
+        with patch.object(fixture_tools, "public_summary", return_value={**summary, "receiptSha256": "f" * 64}):
+            with self.assertRaisesRegex(ValueError, "differs from verified"):
+                self.validate(marker, record, target=target, fixture_provenance=self.directory / "sidecar")
+
+    def test_legacy_normal_record_cannot_attach_controlled_sidecar(self):
+        marker, record = self.fixture()
+        with self.assertRaisesRegex(ValueError, "legacy record cannot claim"):
+            self.validate(marker, record, fixture_provenance=self.directory / "sidecar")
+
+    def test_legacy_tool_import_is_independent_of_repository_only_verifier(self):
+        copied = self.directory / "physical_receipt_attestation.py"
+        copied.write_bytes(Path(attestation.__file__).read_bytes())
+        spec = importlib.util.spec_from_file_location("isolated_physical_receipt", copied)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.validate_record_fixture({"schema": 1}, COMMIT, "physical")
+        with self.assertRaisesRegex(ValueError, "repository verifier"):
+            module.validate_record_fixture({"schema": 2}, COMMIT, "physical")
 
     def validate_files(self, **overrides):
         options = {

@@ -5,7 +5,10 @@
 and T18 of [#1766](https://github.com/anaregdesign/lantern/issues/1766).
 Preparing or compiling it does not accept the physical Android/iPhone,
 publication, archive-equality or real-provider exits. The coordinator freezes
-the merged source and owns those independent exits.
+the merged source and owns those independent exits. Under
+[#2119](https://github.com/anaregdesign/lantern/issues/2119), the complete signed
+phone assertions may qualify device/application behavior with explicitly verified
+controlled-backend provenance; they do not qualify a real provider or real UTC.
 
 ## Fixture and ownership prerequisites
 
@@ -46,7 +49,7 @@ credential. The target refuses to overwrite one. Each run owns fresh
 genuine application data, an installation sentinel, Keychain state or native
 lock to make a restore/owner hold disappear.
 
-### Opt-in current-v2 native export
+### Opt-in controlled native export
 
 From the clean merged repository root, use its pinned Go toolchain and a new
 private evidence directory outside the checkout:
@@ -54,18 +57,24 @@ private evidence directory outside the checkout:
 ```bash
 GOTOOLCHAIN="go$(awk '$1 == "go" {print $2; exit}' go.mod)" \
   python3 -B .github/scripts/native_login_gate.py \
-  --evidence "$NATIVE_FIXTURE_EVIDENCE" --serve \
+  --evidence "$NATIVE_FIXTURE_EVIDENCE" --serve-controlled --serve-profile native \
   --service-origin "$NATIVE_SERVICE_ORIGIN" \
   --listen-port 16443 --publish-port 18443 --prefix orders: \
   --lifetime-seconds 540
 ```
 
-This foreground command is separate from the unchanged default functional-validation native gate
-and its other opt-ins. Serving uses normal builds, a new task-labeled scratch
-container, actual configured NTP over a bridge, the existing `/etc/ntp.conf`
-mounted read-only, and only `127.0.0.1:18443` published to container TLS port
-`16443`. It refuses root-owned artifacts and `GOFLAGS` overrides. No host DNS,
-clock, credential, provider or production policy changes occur.
+This foreground command is separate from the default functional-validation native
+gate. Both exporter and serving executables are test binaries built with
+`lantern_test_time`. A private loopback UDP source and continuously sampled native
+elapsed time advance the fixture without real NTP, frozen time or jumps. It uses
+a new task-labeled scratch container and publishes only `127.0.0.1:18443` to TLS
+port `16443`. It refuses root-owned artifacts and `GOFLAGS` overrides.
+No host DNS, clock, credential, provider or production policy changes occur.
+
+The unchanged normal-build route uses `--serve` instead; the flags are mutually
+exclusive. Normal serving uses the existing read-only `/etc/ntp.conf` and actual
+configured NTP. It is not repeated as a prerequisite for controlled phone tests;
+mandatory normal configured-source qualifications remain separate and blocking.
 
 The coordinator owns the container/tunnel/BFF lifecycle. Wait for
 `$NATIVE_FIXTURE_EVIDENCE/private/ready` before reading these private files:
@@ -73,13 +82,19 @@ The coordinator owns the container/tunnel/BFF lifecycle. Wait for
 | File | Contract |
 | --- | --- |
 | `private/ca.pem` | Fixture listener CA, mode 0600; no private key is exported. Use it to verify the parent-owned forwarding hop, never disable verification. |
-| `private/fixture.json` | Mode 0600; `schema: 1`, `kind: synthetic-native-serving`, exact `endpoint`/`prefix`, `ca_file: ca.pem`, finite RFC3339 `serving_until`, and `accounts.a`/`accounts.b`, each with original `access_token` and verified fixed `expires_at`. |
+| `private/fixture.json` | Mode 0600; controlled `schema: 2`, `kind: controlled-native-serving`, exact `endpoint`/`prefix`, `ca_file: ca.pem`, finite serving interval, and `accounts.a`/`accounts.b`, each with original `access_token` and verified fixed `expires_at`. |
 | `private/ready` | Created last, only after registered identities, original session verification and real orders read/write/delete, receipt capability, Query and scoped WatchChanges checks. It is removed at shutdown. |
+
+Controlled schema 2 also requires `source_kind: controlled-source`,
+`build_kind: test-only`, `build_tags: [lantern_test_time]` and
+`synthetic_utc: true`. The normal route keeps schema 1 and
+`kind: synthetic-native-serving` unchanged. Reject missing, mixed or relabeled
+provenance rather than inferring the source kind from an endpoint or token.
 
 ### Separate physical receipt/Head profile
 
 For the existing smoke/CDC/contribution/receipt/Head targets, select
-`--serve-profile physical` on the same normal-build `--serve` command.
+`--serve-profile physical` on the controlled `--serve-controlled` command.
 This is the independent [#1811](https://github.com/anaregdesign/lantern/issues/1811)
 machine fixture, **not** a substitute for registered native A/B or T18.
 The default native profile remains unchanged, including its one-hour/32-entry/
@@ -106,12 +121,14 @@ retention is exactly **six hours**, maximum entries **1,024**, and maximum bytes
 These policy values do not extend signed membership or the finite serving
 window. A timeout or authority failure never completes a phone test.
 
-`private/fixture.json` instead has `kind: current-physical-serving`,
+Controlled `private/fixture.json` instead has `schema: 2`,
+`kind: controlled-physical-serving`, the same controlled provenance fields,
 `endpoint`, `ca_file`, `serving_until`, `credentials` containing
 `observer_tokens` (exactly two), `writer_token` and `expires_at`, plus
 `receipt_retention_ms`, `receipt_max_entries` and `receipt_max_bytes` from the
-actual capability. It contains no native account/session claim. Both kinds
-use the same production-guarded runtime and cleanup protocol. The selected
+actual capability. It contains no native account/session claim. Normal `--serve`
+retains schema 1 and `kind: current-physical-serving`. Both profiles preserve
+the guarded runtime and cleanup protocol. The selected
 profile is recorded separately in the private runner receipt and its exact
 lifecycle case is required; native and machine lifecycle logs cannot substitute
 for one another.
@@ -126,9 +143,11 @@ remain mandatory. Restore device settings after each family.
 
 The native profile's fixture Principals are registered through public
 Begin/Prepare/Apply against the existing PersonalUserRole before new native
-login credentials are exported. The actual serving mode is a synthetic
-prerequisite, not full configured-source-integration, real-provider or physical
-acceptance. The ordinary full local gate retains independent functional-validation/configured-source-integration execution.
+login credentials are exported. Serving lifecycle completion alone is a synthetic
+prerequisite, not configured-source-integration, real-provider or physical
+acceptance. The current full local79 runs controlled functional-validation;
+mandatory normal selected PR/main, exact pre-tag and selected-environment
+configured-source-integration remain independent.
 
 Keep the existing signed-membership maximum unchanged. Serving is bounded to
 15–540 seconds, default/max 540; at export, signed membership must cover the
@@ -153,6 +172,61 @@ Otherwise the finite timeout ends it. Require the foreground driver to exit
 zero and `receipt.json` to report `PASS` after owner cleanup/join. Current guard
 failure remains `FAIL`. Lifecycle completion is not device acceptance. Serving
 does not run the ordinary destructive native/registration subtests.
+
+### Fixture provenance at phone capture
+
+Verify the matching source, image, build kind and all six init/resume constructors
+in the final successful driver receipt. Capture and retain a separate private
+fixture-provenance record binding that receipt and descriptor to the finite
+serving interval. A schema-2 host device record carries its content-free `fixture`
+summary, including the provenance hash and actual phone-marker binding. Keep the
+credential-bearing descriptor and raw logs private; never put them in Git.
+
+After READY and before installing/launching the phone target, prepare the binding
+and independently retain the printed SHA-256:
+
+```bash
+python3 -B .github/scripts/physical_fixture_provenance.py prepare \
+  --evidence "$NATIVE_FIXTURE_EVIDENCE" --expected-head "$TESTED_SHA" \
+  --profile native --source-kind controlled-source \
+  --output "$NATIVE_FIXTURE_EVIDENCE/physical-fixture-binding.json"
+```
+
+Use `--profile physical` for the machine profile. After the observed phone pass
+and successful release/join, finalize with that retained binding hash:
+
+```bash
+python3 -B .github/scripts/physical_fixture_provenance.py finalize \
+  --evidence "$NATIVE_FIXTURE_EVIDENCE" \
+  --binding "$NATIVE_FIXTURE_EVIDENCE/physical-fixture-binding.json" \
+  --binding-sha256 "$PREPARED_BINDING_SHA256" \
+  --output "$NATIVE_FIXTURE_EVIDENCE/physical-fixture-provenance.json"
+```
+
+Observe the full phone pass before the serving interval ends, capture the final
+proxy trace, release/join the fixture successfully, then validate capture with
+`--fixture-provenance`. The existing capture window and on-device byte comparison
+still apply. Missing provenance, a failed lifecycle, source/build mismatch or a
+phone body outside the interval fails closed. Normal legacy schema-1 host records
+cannot silently describe a controlled backend.
+
+Assemble the schema-2 record explicitly with the maintained
+`.github/scripts/physical_fixture_provenance.py` API `public_summary(...)`.
+Supply the actual marker's `startedAt` and `finishedAt` (`updatedAt` for smoke/CDC),
+SHA-256 of its **raw captured bytes**, and `digest(encoded(payload))`, where
+`payload` is the schema-2 host record excluding `fixture`. `encoded` uses sorted
+JSON keys, compact separators and one trailing newline. The API re-verifies the
+final private sidecar; the capture CLI remains read-only and compares the exact
+assembled summary. Public `servingStoppedAt` and `lifecycleFinishedAt` also fence
+early release: device completion must not follow actual serving stop, even if the
+nominal `servingUntil` is later. Retain the private driver evidence alongside the
+sidecar so capture can reverify its binaries, logs, descriptor and receipt.
+
+Rebuild final-source signed phone artifacts after the implementation merges;
+retaining an old signed binary does not qualify the new source. No extra public
+sidecar is added to the four/eight-file evidence child. Full phone assertions,
+same-install SIGKILL/status-first recovery and private custody remain required;
+normal exact-source configured-source-integration still precedes publication.
 
 ## Runtime defines and launch
 

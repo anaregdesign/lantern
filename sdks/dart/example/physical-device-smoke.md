@@ -5,6 +5,15 @@ contract changes. Simulator and emulator CI cannot prove physical iOS
 local-network privacy, radio changes, or Android Doze behavior. Record actual
 device output here; do not infer a pass from a build artifact.
 
+For current synthetic SDK/receipt/CDC/factory runs,
+[#2119](https://github.com/anaregdesign/lantern/issues/2119) permits the separate
+[controlled serving profile](installed-factory-acceptance.md#opt-in-controlled-native-export).
+Actual final-source signed-phone assertions with verified, disclosed fixture
+provenance may qualify device/application behavior. The fixture lifecycle alone
+does not qualify a phone, actual provider, real UTC/source path or deployment.
+Normal exact-source configured-source-integration remains mandatory before
+publication; do not repeat normal physical bootstraps or add external NTP probes.
+
 ## Run command
 
 Use a LAN-reachable HTTPS endpoint and runtime token BFF:
@@ -512,6 +521,13 @@ platform package ID and each target's own installed binary SHA-256, device
 model/OS without an identifier, and `network` with `transport: Connect/HTTPS`,
 authenticated and platform-trusted TLS both true, plus a sanitized topology
 description. Set `application.target` to the corresponding integration test.
+
+Controlled-backend captures use host record schema 2 with a content-free `fixture`
+summary checked against the separate private fixture-provenance record. This binds
+the matching source/build/image, final lifecycle PASS and actual device-marker
+hash/times to its finite serving interval. The phone marker is unchanged. Preserve
+legacy schema-1 records as normal-only history; never relabel them as controlled
+captures or copy old signed binaries into a new source qualification.
 
 The smoke `scenarios` array must contain the ten native smoke scenarios listed in
 the example above, plus `platform_trusted_tls`, `untrusted_tls_rejection`,
