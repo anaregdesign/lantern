@@ -19,13 +19,16 @@ from git_test_fixture import synchronous_git_maintenance
 
 
 class NativeLoginGateTest(unittest.TestCase):
-    def execute(self, mode, profile="native"):
+    def execute(self, mode, profile="native", time_source="configured-source"):
         serving = mode.startswith("serve_")
+        controlled = serving and time_source == "controlled-source"
         outcome = mode.removeprefix("serve_")
         source_config = b"server unit-fixture.invalid\n"
         original_read_bytes = Path.read_bytes
 
         def fixture_read_bytes(path):
+            if controlled and path == Path("/etc/ntp.conf"):
+                raise AssertionError("controlled serving must not read NTP configuration")
             return source_config if path == Path("/etc/ntp.conf") else original_read_bytes(path)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -45,9 +48,10 @@ class NativeLoginGateTest(unittest.TestCase):
                 case = gate.SERVING_CASE if profile == "native" else gate.ROOT_TEST + "/physical_fixture_serving_export"
                 marker = "native" if profile == "native" else "physical"
                 ready = "accounts=2" if profile == "native" else "observer_credentials=2 writer_credentials=1"
-                log = gate.NORMAL_SOURCE_MARKER + "\n"
+                log = (gate.CONTROLLED_SOURCE_MARKER if controlled else gate.NORMAL_SOURCE_MARKER) + "\n"
                 log += "\n".join(f"current_constructor node={i} mode={mode} passed=true" for mode in ("fresh", "resume") for i in (1, 2, 3))
-                log += f"\n{marker}_fixture_ready schema=1 {ready}\n{marker}_fixture_stopped reason=released\n--- PASS: {case} (0.01s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\nPASS\n"
+                stopped_at = " stopped_at=2026-11-10T22:00:00.123456789Z" if controlled else ""
+                log += f"\n{marker}_fixture_ready schema={2 if controlled else 1} {ready}\n{marker}_fixture_stopped reason=released{stopped_at}\n--- PASS: {case} (0.01s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\nPASS\n"
             script = f"#!{sys.executable}\n" + '''\
 import json, os
 from pathlib import Path
@@ -63,6 +67,12 @@ if name == 'go':
 elif args[:2] == ['image', 'inspect']:
     print('sha256:fixture')
 elif args[0] == 'run':
+    if os.environ['SERVING'] == '1':
+        receipt = json.loads(Path(os.environ['READY_RECEIPT_SOURCE']).read_text())
+        assert receipt['status'] == 'RUNNING'
+        assert receipt['image'] == 'sha256:fixture'
+        assert set(receipt['binaries']) == {'security.test', 'integration.test'}
+        Path(os.environ['READY_RECEIPT']).write_text(json.dumps(receipt))
     text = os.environ['CASE_LOG']
     mode = os.environ['MODE'].removeprefix('serve_')
     if mode == 'missing':
@@ -82,8 +92,11 @@ elif args[0] == 'run':
             with patch.dict(os.environ, ordinary_environment(os.environ), clear=True), \
                     patch.object(Path, "read_bytes", fixture_read_bytes), patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                          "CALLS": str(base / "calls"), "MODE": mode, "CASE_LOG": log,
+                                         "SERVING": "1" if serving else "0",
+                                         "READY_RECEIPT_SOURCE": str(base / "evidence/receipt.json"),
+                                         "READY_RECEIPT": str(base / "ready-receipt.json"),
                                          "GOFLAGS": ""}):
-                options = gate.ServingOptions("https://installed.example", 16443, 18443, profile=profile) if serving else None
+                options = gate.ServingOptions("https://installed.example", 16443, 18443, profile=profile, time_source=time_source) if serving else None
                 destinations = [base / "evidence"]
                 if mode == "repeat":
                     destinations = []
@@ -112,7 +125,7 @@ elif args[0] == 'run':
             self.assertEqual(receipt["status"], "PASS" if outcome in ("pass", "repeat") else "FAIL")
             calls = [json.loads(row) for row in (base / "calls").read_text().splitlines()]
             self.assertEqual([c[1] for c in calls if c[0] == "go" and c[1] != ["env", "GOFLAGS"]], [
-                ["test", "-c", *([] if serving else ["-tags=lantern_test_time"]), "-o", str(destination / "build" / binary), package]
+                ["test", "-c", *(["-tags=lantern_test_time"] if not serving or controlled else []), "-o", str(destination / "build" / binary), package]
                 for destination in destinations
                 for package, binary in (("./server/internal/security", "security.test"), ("./tests/integration", "integration.test"))])
             run = next(args for name, args in reversed(calls) if name == "docker" and args[0] == "run")
@@ -128,10 +141,10 @@ elif args[0] == 'run':
             self.assertNotIn("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION", environment)
             if serving:
                 self.assertEqual([run[i + 1] for i, arg in enumerate(run) if arg == "--mount"], [
-                    "type=bind,source=/etc/ntp.conf,target=/etc/ntp.conf,readonly",
+                    *([] if controlled else ["type=bind,source=/etc/ntp.conf,target=/etc/ntp.conf,readonly"]),
                     f"type=bind,source={destinations[-1] / 'private'},target=/native-fixture"])
                 self.assertEqual([run[i + 1] for i, arg in enumerate(run) if arg == "--publish"], ["127.0.0.1:18443:16443/tcp"])
-                self.assertIn("lantern.task=1809-native-serving", run)
+                self.assertIn("lantern.task=2119-controlled-serving" if controlled else "lantern.task=1809-native-serving", run)
                 self.assertIn("/work:rw,nosuid,nodev,size=512m,mode=1777", run)
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_ORIGIN"], options.origin)
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_PREFIX"], "orders:")
@@ -140,9 +153,21 @@ elif args[0] == 'run':
                 self.assertEqual(environment["TMPDIR"], "/work")
                 self.assertEqual(environment.get("LANTERN_NATIVE_FIXTURE_PROFILE", "native"), profile)
                 self.assertEqual(receipt["serving_profile"], profile)
-                self.assertEqual(receipt["build_tags"], [])
-                self.assertFalse(receipt["synthetic_utc"])
-                self.assertEqual(receipt["source_config_sha256"], hashlib.sha256(source_config).hexdigest())
+                self.assertEqual(receipt["source_kind"], time_source)
+                self.assertEqual(receipt["build_kind"], "test-only" if controlled else "normal")
+                self.assertEqual(receipt["build_tags"], ["lantern_test_time"] if controlled else [])
+                self.assertEqual(receipt["synthetic_utc"], controlled)
+                self.assertEqual(receipt["serving_lifetime_seconds"], 540)
+                self.assertEqual(receipt["serving_origin_sha256"], hashlib.sha256(options.origin.encode()).hexdigest())
+                ready_receipt = json.loads((base / "ready-receipt.json").read_text())
+                for field in ("head", "tree", "source_sha256", "image", "binaries", "source_kind", "build_kind", "build_tags", "synthetic_utc", "serving_origin_sha256", "serving_lifetime_seconds"):
+                    self.assertEqual(ready_receipt[field], receipt[field])
+                if controlled:
+                    self.assertNotIn("source_config_sha256", receipt)
+                    self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_TIME_SOURCE"], "controlled-source")
+                else:
+                    self.assertEqual(receipt["source_config_sha256"], hashlib.sha256(source_config).hexdigest())
+                    self.assertNotIn("LANTERN_NATIVE_FIXTURE_TIME_SOURCE", environment)
                 if outcome in ("pass", "changed"):
                     self.assertEqual(receipt["native_owner_constructors"], [
                         {"node": i, "phase": phase, "mode": mode}
@@ -202,6 +227,12 @@ elif args[0] == 'run':
             with self.subTest(mode=mode):
                 self.execute("serve_" + mode, profile="physical")
 
+    def test_controlled_serving_tags_both_binaries_without_ntp_config_and_retains_failures(self):
+        for profile in ("native", "physical"):
+            for mode in ("pass", "missing", "skip", "changed", "failure"):
+                with self.subTest(profile=profile, mode=mode):
+                    self.execute("serve_" + mode, profile=profile, time_source="controlled-source")
+
     def test_serving_options_are_explicit_canonical_and_bounded(self):
         valid = {"origin": "https://installed.example:18443", "listen_port": 16443, "publish_port": 18443}
         gate.ServingOptions(**valid).validate()
@@ -210,10 +241,13 @@ elif args[0] == 'run':
                        {"origin": "https://Installed.example"}, {"origin": "https://installed.example:0"},
                        {"prefix": "other:"}, {"prefix": "orders:bad\n:"}, {"prefix": "orders:" + "x" * 128 + ":"},
                        {"listen_port": 443}, {"publish_port": 0}, {"lifetime_seconds": 0}, {"lifetime_seconds": 541},
-                       {"profile": "unknown"}, {"profile": "physical", "prefix": "orders:custom:"}):
+                       {"profile": "unknown"}, {"profile": "physical", "prefix": "orders:custom:"},
+                       {"time_source": "unknown"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 gate.ServingOptions(**(valid | change)).validate()
-        for args in (["--service-origin", valid["origin"]], ["--serve"], ["--serve", "--service-origin", valid["origin"], "--listen-port", "16443"]):
+        for args in (["--service-origin", valid["origin"]], ["--serve"], ["--serve-controlled"],
+                     ["--serve", "--serve-controlled"],
+                     ["--serve", "--service-origin", valid["origin"], "--listen-port", "16443"]):
             with self.subTest(args=args), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 gate.main(["--evidence", "unused", *args])
         with patch.object(gate, "run", return_value={"status": "PASS", "development_changes": False}) as run, redirect_stdout(io.StringIO()):
@@ -225,6 +259,12 @@ elif args[0] == 'run':
             gate.main(["--evidence", "unused", "--serve", "--serve-profile", "physical",
                        "--service-origin", valid["origin"], "--listen-port", "16443", "--publish-port", "18443"])
             self.assertEqual(run.call_args.args[2].profile, "physical")
+
+        for profile in ("native", "physical"):
+            with self.subTest(profile=profile), patch.object(gate, "run", return_value={"status": "PASS", "development_changes": False}) as run, redirect_stdout(io.StringIO()):
+                gate.main(["--evidence", "unused", "--serve-controlled", "--serve-profile", profile,
+                           "--service-origin", valid["origin"], "--listen-port", "16443", "--publish-port", "18443"])
+                self.assertEqual(run.call_args.args[2], gate.ServingOptions(valid["origin"], 16443, 18443, profile=profile, time_source="controlled-source"))
 
     def test_serving_refuses_controlled_missing_or_destructive_evidence(self):
         log = gate.NORMAL_SOURCE_MARKER + "\n"
@@ -238,6 +278,10 @@ elif args[0] == 'run':
         with self.assertRaises(RuntimeError):
             gate.require_serving(physical)
         for invalid in (log.replace(gate.NORMAL_SOURCE_MARKER, "test-build controlled source: fixture"),
+                        log.replace("schema=1", "schema=2"),
+                        log + "native_fixture_ready schema=2 accounts=2\n",
+                        log + "native_fixture_stopped reason=unknown\n",
+                        log + gate.CONTROLLED_SOURCE_MARKER + "\n",
                         log.replace("node=2", "node=1"), log.replace("reason=timeout", "reason=unknown"),
                         log.replace("current_constructor node=2 mode=fresh passed=true\n", ""),
                         log.replace("current_constructor node=3 mode=resume passed=true", "current_constructor node=3 mode=resume passed=false"),
@@ -249,21 +293,60 @@ elif args[0] == 'run':
             with self.subTest(log=invalid), self.assertRaises(RuntimeError):
                 gate.require_serving(invalid)
 
-    def test_serving_refuses_root_and_non_normal_build_overrides(self):
-        options = gate.ServingOptions("https://installed.example", 16443, 18443)
+        controlled = log.replace(gate.NORMAL_SOURCE_MARKER, gate.CONTROLLED_SOURCE_MARKER).replace("schema=1", "schema=2").replace("reason=timeout", "reason=timeout stopped_at=2026-11-10T22:00:00.123456789Z")
+        gate.require_serving(controlled, time_source="controlled-source")
+        controlled_physical = controlled.replace("native_fixture", "physical_fixture").replace("accounts=2", "observer_credentials=2 writer_credentials=1")
+        gate.require_serving(controlled_physical, "physical", "controlled-source")
+        for invalid in (log, controlled.replace("schema=2", "schema=1"),
+                        controlled + "native_fixture_ready schema=1 accounts=2\n",
+                        controlled + gate.NORMAL_SOURCE_MARKER + "\n",
+                        controlled + "test-build controlled source: another\n",
+                        controlled.replace(" stopped_at=2026-11-10T22:00:00.123456789Z", ""),
+                        controlled + "native_fixture_stopped reason=released stopped_at=2026-11-10T22:00:01Z\n",
+                        controlled + "physical_fixture_stopped reason=unknown\n",
+                        controlled.replace("node=2", "node=1"),
+                        controlled.replace("reason=timeout", "reason=unknown"),
+                        controlled + "--- SKIP: fixture\n",
+                        controlled + f"--- PASS: {gate.ROOT_TEST}/{gate.CASES[0]} (0.1s)\n",
+                        controlled_physical):
+            with self.subTest(log=invalid), self.assertRaises(RuntimeError):
+                gate.require_serving(invalid, time_source="controlled-source")
+        with self.assertRaises(ValueError):
+            gate.require_serving(controlled, time_source="unknown")
+
+    def test_controlled_stop_timestamp_is_one_canonical_utc_observation(self):
+        for timestamp in ("2026-11-10T22:00:00Z", "2026-11-10T22:00:00.1Z",
+                          "2026-11-10T22:00:00.123456789Z"):
+            for profile in ("native", "physical"):
+                with self.subTest(timestamp=timestamp, profile=profile):
+                    line = f"{profile}_fixture_stopped reason=released stopped_at={timestamp}\n"
+                    self.assertEqual(gate.controlled_serving_stop(line, profile), timestamp)
+        for timestamp in ("2026-02-30T22:00:00Z", "2026-11-10T25:00:00Z",
+                          "2026-11-10T22:00:00+00:00", "2026-11-10T22:00:00.10Z",
+                          "2026-11-10T22:00:00.000000000Z", "2026-11-10T22:00:00.1234567891Z",
+                          "2026-11-10T22:00:00Z stopped_at=2026-11-10T22:00:01Z"):
+            with self.subTest(timestamp=timestamp), self.assertRaises(RuntimeError):
+                gate.controlled_serving_stop(f"native_fixture_stopped reason=timeout stopped_at={timestamp}\n")
+        with self.assertRaises(RuntimeError):
+            gate.controlled_serving_stop("physical_fixture_stopped reason=released stopped_at=2026-11-10T22:00:00Z\n")
+
+    def test_serving_refuses_root_and_build_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
-            with patch.object(gate.os, "getuid", return_value=0), self.assertRaises(ValueError):
-                gate.run(root, Path(directory) / "root-evidence", options)
-            with patch.object(gate.os, "getuid", return_value=501), self.assertRaises(ValueError):
-                gate.run(root, root / "private-evidence", options)
-            for source in ("environment", "go environment"):
-                evidence = Path(directory) / source
-                with self.subTest(source=source), patch.object(gate.os, "getuid", return_value=501), patch.dict(os.environ, {"GOFLAGS": "-tags=lantern_test_time" if source == "environment" else ""}), patch.object(gate.subprocess, "check_output", side_effect=lambda args, **kwargs: b"-tags=lantern_test_time" if args == ["go", "env", "GOFLAGS"] else "" if kwargs.get("text") else b""), self.assertRaises(ValueError):
-                    gate.run(root, evidence, options)
-                self.assertEqual(json.loads((evidence / "receipt.json").read_text())["status"], "FAIL")
-                self.assertEqual(list((evidence / "build").iterdir()), [])
+            for time_source in ("configured-source", "controlled-source"):
+                options = gate.ServingOptions("https://installed.example", 16443, 18443, time_source=time_source)
+                with self.subTest(time_source=time_source):
+                    with patch.object(gate.os, "getuid", return_value=0), self.assertRaises(ValueError):
+                        gate.run(root, Path(directory) / "root-evidence", options)
+                    with patch.object(gate.os, "getuid", return_value=501), self.assertRaises(ValueError):
+                        gate.run(root, root / "private-evidence", options)
+                for source in ("environment", "go environment"):
+                    evidence = Path(directory) / f"{time_source}-{source}"
+                    with self.subTest(time_source=time_source, source=source), patch.object(gate.os, "getuid", return_value=501), patch.dict(os.environ, {"GOFLAGS": "-tags=lantern_test_time" if source == "environment" else ""}), patch.object(gate.subprocess, "check_output", side_effect=lambda args, **kwargs: b"-tags=lantern_test_time" if args == ["go", "env", "GOFLAGS"] else "" if kwargs.get("text") else b""), self.assertRaises(ValueError):
+                        gate.run(root, evidence, options)
+                    self.assertEqual(json.loads((evidence / "receipt.json").read_text())["status"], "FAIL")
+                    self.assertEqual(list((evidence / "build").iterdir()), [])
 
     def test_native_fixture_is_fresh_and_required_by_local_and_hosted_gates(self):
         plan = steps(Path("/tmp/evidence"))

@@ -107,6 +107,13 @@ rotating observer and separate Head writer. Its short signed-membership/serving
 window is independent of retention; prebuild and finish both launches in one
 declared window. The default native A/B profile and local
 `authfixture -receipt/-head-edge` do not satisfy this receipt fixture contract.
+For synthetic device/application qualification, use its explicit
+`--serve-controlled --serve-profile physical` route under
+[#2119](https://github.com/anaregdesign/lantern/issues/2119), with continuously
+advancing native elapsed time and private loopback UDP. All receipt/WAL,
+membership, expiry, same-responder and TLS guards remain. Normal `--serve` and
+mandatory configured-source-integration are independent; neither a fixture
+lifecycle nor a controlled physical pass proves real UTC or a real provider.
 Start `tool/physical_receipt_proxy.dart` with
 `LANTERN_RECEIPT_PROXY_CONFIG` pointing to a mode-600 private JSON file
 outside the repository. Its six keys are `listenHost`, `listenPort`,
@@ -201,7 +208,25 @@ has `transport: Connect/HTTPS`, `authenticated: true`,
 `platformTrustedTls: true`, `fault: committed-response-socket-drop`.
 Do not include a URL, IP, token, graph key/value, device ID, or raw trace
 in this record or the marker. Copy the private pair outside the checkout
-first; within 30 minutes of `recordedAt`, run:
+first and validate within the existing 30-minute capture window.
+
+For a controlled backend, create host record schema 2 instead and add the exact
+content-free `fixture` summary from the maintained private provenance verifier.
+Keep the phone marker unchanged. Observe its pass inside the declared interval,
+capture the final proxy trace, release/join the fixture with lifecycle PASS, then
+verify the private provenance and run the command below with
+`--fixture-provenance "$NATIVE_FIXTURE_EVIDENCE/physical-fixture-provenance.json"`.
+The summary binds source/build/image, descriptor and final receipt hashes, the
+private provenance hash, actual phone-marker hash/times and the record payload.
+Missing, mixed, relabeled or out-of-window provenance fails; schema-1 records are
+normal-only historical evidence. Private descriptors contain credentials and
+must not be published. The embedded summary adds no fifth/ninth public file and
+does not replace any scenario, SIGKILL, installed-byte or custody check.
+Retain the original canonical fixture evidence directory, including its sibling
+binding, binaries, logs and descriptor: moving only the sidecar into the phone's
+private capture directory cannot satisfy re-verification. The maintained
+[prepare/finalize commands](installed-factory-acceptance.md#fixture-provenance-at-phone-capture)
+run before phone launch and after fixture stop, respectively.
 
 ```bash
 python3 ../offline/tool/physical_receipt_attestation.py \

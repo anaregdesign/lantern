@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -135,12 +136,19 @@ func runPhysicalFixtureServing(t *testing.T, ctx context.Context, provisionDir, 
 			t.Fatal(err)
 		}
 	}
-	until := time.Now().UTC().Add(options.Lifetime)
+	from := time.Now().UTC()
+	until := from.Add(options.Lifetime)
 	if !until.Add(15*time.Second).Before(options.MembershipExpires) || !credentials.ExpiresAt.After(until) {
 		t.Fatal("signed physical fixture membership/credentials have insufficient remaining lifetime")
 	}
 	export := map[string]any{"schema": 1, "kind": "current-physical-serving", "endpoint": options.Origin, "ca_file": "ca.pem", "serving_until": until, "credentials": credentials,
 		"receipt_retention_ms": capability.Msg.Policy.RetentionMs, "receipt_max_entries": capability.Msg.Policy.MaxEntries, "receipt_max_bytes": capability.Msg.Policy.MaxBytes}
+	if options.TimeSource == "controlled-source" {
+		provenance := options.provenance()
+		export["schema"], export["kind"] = 2, "controlled-physical-serving"
+		export["source_kind"], export["build_kind"], export["build_tags"], export["synthetic_utc"] = provenance.SourceKind, provenance.BuildKind, provenance.BuildTags, provenance.SyntheticUTC
+		export["serving_from"] = from
+	}
 	raw, err = json.MarshalIndent(export, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -148,10 +156,10 @@ func runPhysicalFixtureServing(t *testing.T, ctx context.Context, provisionDir, 
 	if err := createPrivateTestFile(filepath.Join(options.ExportDir, "fixture.json"), append(raw, '\n')); err != nil {
 		t.Fatal(err)
 	}
-	if err := createPrivateTestFile(filepath.Join(options.ExportDir, "ready"), []byte("current physical fixture schema 1\n")); err != nil {
+	if err := createPrivateTestFile(filepath.Join(options.ExportDir, "ready"), []byte(fmt.Sprintf("current physical fixture schema %d\n", options.schema()))); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("physical_fixture_ready schema=1 observer_credentials=2 writer_credentials=1")
+	t.Logf("physical_fixture_ready schema=%d observer_credentials=2 writer_credentials=1", options.schema())
 	reason, err := waitNativeFixtureServing(ctx, filepath.Join(options.ExportDir, "release"), options.Lifetime, func() error {
 		healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
@@ -167,5 +175,9 @@ func runPhysicalFixtureServing(t *testing.T, ctx context.Context, provisionDir, 
 	if err != nil {
 		t.Fatal("physical serving owner lifetime", err)
 	}
-	t.Log("physical_fixture_stopped reason=" + reason)
+	if options.TimeSource == "controlled-source" {
+		t.Logf("physical_fixture_stopped reason=%s stopped_at=%s", reason, time.Now().UTC().Format(time.RFC3339Nano))
+	} else {
+		t.Log("physical_fixture_stopped reason=" + reason)
+	}
 }

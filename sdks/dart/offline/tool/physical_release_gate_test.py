@@ -8,9 +8,12 @@ from unittest.mock import patch
 import physical_release_gate as gate
 from physical_receipt_attestation import (
     MAX_EVIDENCE_BYTES,
+    fixture_provenance_tools,
     validate_archived_receipt_evidence,
 )
 
+
+fixture_tools = fixture_provenance_tools()
 
 TESTED = "a" * 40
 TAG = "b" * 40
@@ -103,7 +106,62 @@ def receipt_marker(platform, record):
     }
 
 
+def controlled_record(record, marker=None):
+    record["schema"] = 2
+    now = datetime.now(timezone.utc)
+    started = marker["startedAt"] if marker else _utc(now - timedelta(seconds=50))
+    finished = marker["finishedAt"] if marker else _utc(now - timedelta(seconds=10))
+    start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+    finish = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+    record["fixture"] = {
+        "schema": 1, "profile": "physical", "sourceCommit": TESTED,
+        "sourceKind": "controlled-source", "buildKind": "test-only",
+        "buildTags": ["lantern_test_time"], "syntheticUtc": True,
+        "imageSha256": "1" * 64, "descriptorSha256": "2" * 64,
+        "receiptSha256": "3" * 64, "sidecarSha256": "4" * 64,
+        "preparedAt": _utc(start - timedelta(seconds=1)),
+        "servingUntil": _utc(finish + timedelta(seconds=1)),
+        "lifecycleFinishedAt": _utc(finish + timedelta(seconds=1)),
+        "servingStoppedAt": _utc(finish),
+        "deviceStartedAt": started, "deviceFinishedAt": finished,
+        "phoneMarkerSha256": (fixture_tools.digest(json.dumps(marker).encode()) if marker else "5" * 64),
+        "recordPayloadSha256": fixture_tools.digest(fixture_tools.encoded(record)),
+    }
+    return record
+
+
 class PhysicalReleaseGateTest(unittest.TestCase):
+    def test_controlled_records_qualify_same_eight_paths_without_private_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence, ci_dir = self._write_evidence(directory)
+            for platform in ("android", "ios"):
+                for suite, contract in gate.SUITES.items():
+                    path = evidence / f"{platform}{contract['suffix']}.json"
+                    record = json.loads(path.read_text())
+                    marker = json.loads((evidence / f"{platform}-receipt-marker.json").read_text()) if suite == "receipt" else None
+                    path.write_text(json.dumps(controlled_record(record, marker)))
+            with patch.object(gate, "source_identity"), patch.object(
+                fixture_tools, "public_summary", side_effect=AssertionError("private read"),
+            ):
+                gate.validate(TAG, evidence, ci_dir, "123", "1")
+            self.assertEqual(len(list(evidence.glob("*.json"))), 8)
+
+    def test_controlled_archive_rejects_hidden_or_relabelled_provenance(self):
+        for change in (
+            lambda r: r.pop("fixture"),
+            lambda r: r.update(schema=1),
+            lambda r: r["fixture"].update(sourceCommit="f" * 40),
+            lambda r: r["fixture"].update(sourceKind="configured-source", buildKind="normal", buildTags=[], syntheticUtc=False),
+            lambda r: r["fixture"].update(deviceFinishedAt=r["fixture"]["servingUntil"]),
+            lambda r: r["fixture"].update(servingStoppedAt=r["fixture"]["deviceStartedAt"]),
+            lambda r: r["fixture"].update(recordPayloadSha256="f" * 64),
+        ):
+            record, ci = fixtures("android")
+            controlled_record(record)
+            change(record)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                gate.validate_record(record, ci, "android", TESTED)
+
     def _write_evidence(self, directory):
         evidence = Path(directory) / "physical"
         ci_dir = Path(directory) / "ci"

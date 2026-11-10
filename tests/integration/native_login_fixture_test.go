@@ -49,13 +49,14 @@ var nativeFixtureHosts = []string{"accounts.google.com", "oauth2.googleapis.com"
 type nativeFixtureServingOptions struct {
 	Origin, Prefix, ExportDir string
 	Profile                   string
+	TimeSource                string
 	ListenPort                int
 	Lifetime                  time.Duration
 	MembershipExpires         time.Time
 }
 
 func nativeFixtureServingFromEnv(getenv func(string) string) (*nativeFixtureServingOptions, error) {
-	keys := []string{"ORIGIN", "PREFIX", "EXPORT_DIR", "LISTEN_PORT", "LIFETIME_SECONDS", "PROFILE"}
+	keys := []string{"ORIGIN", "PREFIX", "EXPORT_DIR", "LISTEN_PORT", "LIFETIME_SECONDS", "PROFILE", "TIME_SOURCE"}
 	if getenv("LANTERN_NATIVE_FIXTURE_SERVE") == "" {
 		for _, key := range keys {
 			if getenv("LANTERN_NATIVE_FIXTURE_"+key) != "" {
@@ -64,16 +65,29 @@ func nativeFixtureServingFromEnv(getenv func(string) string) (*nativeFixtureServ
 		}
 		return nil, nil
 	}
-	if getenv("LANTERN_NATIVE_FIXTURE_SERVE") != "1" || getenv("LANTERN_NATIVE_LOGIN_GATE") != "1" || getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" ||
-		!strings.HasPrefix(currentSourceMarker, "production native constructor:") {
-		return nil, errors.New("native serving requires the explicit normal-build current/native gate")
+	if getenv("LANTERN_NATIVE_FIXTURE_SERVE") != "1" || getenv("LANTERN_NATIVE_LOGIN_GATE") != "1" || getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
+		return nil, errors.New("native serving requires the explicit current/native gate")
 	}
-	for _, key := range []string{"LANTERN_CURRENT_PUBLIC_SDK4", "LANTERN_CURRENT_MEMBERSHIP_GATE", "LANTERN_CURRENT_MEMBERSHIP_CONTAINER", "LANTERN_CURRENT_FIXTURE_HOSTS", "LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE", "LANTERN_CURRENT_DATA_HA"} {
+	timeSource := "configured-source"
+	switch getenv("LANTERN_NATIVE_FIXTURE_TIME_SOURCE") {
+	case "":
+		if !strings.HasPrefix(currentSourceMarker, "production native constructor:") {
+			return nil, errors.New("normal serving requires the production native constructor")
+		}
+	case "controlled-source":
+		if !strings.HasPrefix(currentSourceMarker, "test-build controlled source:") {
+			return nil, errors.New("controlled serving requires a controlled-source test build")
+		}
+		timeSource = "controlled-source"
+	default:
+		return nil, errors.New("unknown fixture time source")
+	}
+	for _, key := range []string{"LANTERN_CURRENT_PUBLIC_SDK4", "LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION", "LANTERN_CURRENT_MEMBERSHIP_GATE", "LANTERN_CURRENT_MEMBERSHIP_CONTAINER", "LANTERN_CURRENT_FIXTURE_HOSTS", "LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE", "LANTERN_CURRENT_DATA_HA"} {
 		if value := getenv(key); value != "" && value != "0" {
 			return nil, errors.New("native serving cannot combine fixture campaigns")
 		}
 	}
-	o := &nativeFixtureServingOptions{Origin: getenv("LANTERN_NATIVE_FIXTURE_ORIGIN"), Prefix: getenv("LANTERN_NATIVE_FIXTURE_PREFIX"), ExportDir: getenv("LANTERN_NATIVE_FIXTURE_EXPORT_DIR")}
+	o := &nativeFixtureServingOptions{Origin: getenv("LANTERN_NATIVE_FIXTURE_ORIGIN"), Prefix: getenv("LANTERN_NATIVE_FIXTURE_PREFIX"), ExportDir: getenv("LANTERN_NATIVE_FIXTURE_EXPORT_DIR"), TimeSource: timeSource}
 	o.Profile = getenv("LANTERN_NATIVE_FIXTURE_PROFILE")
 	if o.Profile == "" {
 		o.Profile = "native"
@@ -144,13 +158,38 @@ type nativeFixtureAccountExport struct {
 }
 
 type nativeFixtureServingExport struct {
+	nativeFixtureTimeProvenance
 	Schema       int                                   `json:"schema"`
 	Kind         string                                `json:"kind"`
 	Endpoint     string                                `json:"endpoint"`
 	Prefix       string                                `json:"prefix"`
 	CAFile       string                                `json:"ca_file"`
 	ServingUntil time.Time                             `json:"serving_until"`
+	ServingFrom  *time.Time                            `json:"serving_from,omitempty"`
 	Accounts     map[string]nativeFixtureAccountExport `json:"accounts"`
+}
+
+// Only controlled exports carry these fields. Keeping schema 1 unchanged makes
+// the existing normal-only consumers refuse a controlled descriptor by default.
+type nativeFixtureTimeProvenance struct {
+	SourceKind   string   `json:"source_kind,omitempty"`
+	BuildKind    string   `json:"build_kind,omitempty"`
+	BuildTags    []string `json:"build_tags,omitempty"`
+	SyntheticUTC bool     `json:"synthetic_utc,omitempty"`
+}
+
+func (o *nativeFixtureServingOptions) schema() int {
+	if o.TimeSource == "controlled-source" {
+		return 2
+	}
+	return 1
+}
+
+func (o *nativeFixtureServingOptions) provenance() nativeFixtureTimeProvenance {
+	if o.TimeSource != "controlled-source" {
+		return nativeFixtureTimeProvenance{}
+	}
+	return nativeFixtureTimeProvenance{"controlled-source", "test-only", []string{"lantern_test_time"}, true}
 }
 
 func writeNativeFixtureServingExport(options *nativeFixtureServingOptions, issued [2]*pb.CompleteNativeLoginResponse, verified [2]*pb.GetNativeSessionResponse) error {
@@ -160,6 +199,10 @@ func writeNativeFixtureServingExport(options *nativeFixtureServingOptions, issue
 		return errors.New("signed native fixture membership has insufficient remaining serving lifetime")
 	}
 	export := nativeFixtureServingExport{Schema: 1, Kind: "synthetic-native-serving", Endpoint: options.Origin, Prefix: options.Prefix, CAFile: "ca.pem", ServingUntil: until, Accounts: map[string]nativeFixtureAccountExport{}}
+	if options.TimeSource == "controlled-source" {
+		export.Schema, export.Kind, export.nativeFixtureTimeProvenance = 2, "controlled-native-serving", options.provenance()
+		export.ServingFrom = &now
+	}
 	for i, name := range []string{"a", "b"} {
 		session := verified[i].GetSession()
 		original := issued[i].GetSession()
@@ -184,7 +227,7 @@ func writeNativeFixtureServingExport(options *nativeFixtureServingOptions, issue
 	if err := createPrivateTestFile(filepath.Join(options.ExportDir, "fixture.json"), append(raw, '\n')); err != nil {
 		return err
 	}
-	return createPrivateTestFile(filepath.Join(options.ExportDir, "ready"), []byte("synthetic native fixture schema 1\n"))
+	return createPrivateTestFile(filepath.Join(options.ExportDir, "ready"), []byte(fmt.Sprintf("synthetic native fixture schema %d\n", options.schema())))
 }
 
 func waitNativeFixtureServing(ctx context.Context, release string, lifetime time.Duration, check func() error) (string, error) {
@@ -227,13 +270,23 @@ func TestNativeFixtureServing(t *testing.T) {
 		if got, err := nativeFixtureServingFromEnv(func(string) string { return "" }); err != nil || got != nil {
 			t.Fatal("ordinary fixture changed", err)
 		}
-		if strings.HasPrefix(currentSourceMarker, "test-build") {
+		controlledBuild := strings.HasPrefix(currentSourceMarker, "test-build controlled source:")
+		if controlledBuild {
 			if _, err := nativeFixtureServingFromEnv(func(k string) string { return base[k] }); err == nil {
-				t.Fatal("controlled-source build admitted serving")
+				t.Fatal("controlled-source build admitted normal serving")
 			}
-			return
+			base["LANTERN_NATIVE_FIXTURE_TIME_SOURCE"] = "controlled-source"
+		} else {
+			if _, err := nativeFixtureServingFromEnv(func(k string) string {
+				if k == "LANTERN_NATIVE_FIXTURE_TIME_SOURCE" {
+					return "controlled-source"
+				}
+				return base[k]
+			}); err == nil {
+				t.Fatal("normal build admitted controlled serving")
+			}
 		}
-		if got, err := nativeFixtureServingFromEnv(func(k string) string { return base[k] }); err != nil || got.Lifetime != 540*time.Second {
+		if got, err := nativeFixtureServingFromEnv(func(k string) string { return base[k] }); err != nil || got.Lifetime != 540*time.Second || (got.TimeSource == "controlled-source") != controlledBuild {
 			t.Fatal("valid serving configuration refused", err)
 		}
 		if got, err := nativeFixtureServingFromEnv(func(k string) string {
@@ -248,7 +301,7 @@ func TestNativeFixtureServing(t *testing.T) {
 		}); err != nil || got.Profile != "physical" {
 			t.Fatal("fixed-scope physical serving profile refused", err)
 		}
-		for key, value := range map[string]string{"LANTERN_NATIVE_FIXTURE_SERVE": "", "LANTERN_NATIVE_LOGIN_GATE": "", "LANTERN_NATIVE_FIXTURE_PROFILE": "unknown", "LANTERN_NATIVE_FIXTURE_ORIGIN": "https://installed.example/", "LANTERN_NATIVE_FIXTURE_PREFIX": "other:", "LANTERN_NATIVE_FIXTURE_LISTEN_PORT": "443", "LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS": "541", "LANTERN_CURRENT_PUBLIC_SDK4": "1", "LANTERN_CURRENT_MEMBERSHIP_GATE": "1"} {
+		for key, value := range map[string]string{"LANTERN_NATIVE_FIXTURE_SERVE": "", "LANTERN_NATIVE_LOGIN_GATE": "", "LANTERN_NATIVE_FIXTURE_PROFILE": "unknown", "LANTERN_NATIVE_FIXTURE_TIME_SOURCE": "unknown", "LANTERN_NATIVE_FIXTURE_ORIGIN": "https://installed.example/", "LANTERN_NATIVE_FIXTURE_PREFIX": "other:", "LANTERN_NATIVE_FIXTURE_LISTEN_PORT": "443", "LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS": "541", "LANTERN_CURRENT_PUBLIC_SDK4": "1", "LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION": "1", "LANTERN_CURRENT_MEMBERSHIP_GATE": "1"} {
 			t.Run(key, func(t *testing.T) {
 				_, err := nativeFixtureServingFromEnv(func(k string) string {
 					if k == key {
@@ -338,6 +391,19 @@ func TestNativeFixtureServing(t *testing.T) {
 		}
 		if err := writeNativeFixtureServingExport(o, issued, verified); err == nil {
 			t.Fatal("private native export was replaced")
+		}
+		// The controlled route has a different schema/kind and complete explicit
+		// provenance. Its native credentials and expiry checks are unchanged.
+		o.ExportDir, o.TimeSource = t.TempDir(), "controlled-source"
+		if err := writeNativeFixtureServingExport(o, issued, verified); err != nil {
+			t.Fatal(err)
+		}
+		raw, err = os.ReadFile(filepath.Join(o.ExportDir, "fixture.json"))
+		var controlled nativeFixtureServingExport
+		if err != nil || json.Unmarshal(raw, &controlled) != nil || controlled.Schema != 2 || controlled.Kind != "controlled-native-serving" ||
+			controlled.SourceKind != "controlled-source" || controlled.BuildKind != "test-only" || len(controlled.BuildTags) != 1 || controlled.BuildTags[0] != "lantern_test_time" || !controlled.SyntheticUTC || controlled.ServingFrom == nil ||
+			!controlled.ServingFrom.Before(controlled.ServingUntil) || controlled.Accounts["a"].AccessToken != issued[0].Credential {
+			t.Fatal("controlled native export lost its provenance or original credential", err)
 		}
 	})
 	t.Run("finite wait and explicit release", func(t *testing.T) {

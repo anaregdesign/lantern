@@ -4,12 +4,14 @@
 import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
 import re
 import select
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -54,6 +56,61 @@ RECORD_FIELDS = {
 }
 RESTART_MARKER_FIELDS = MARKER_FIELDS | {"restart"}
 RECEIPT_RECORD_FIELDS = RECORD_FIELDS | {"network"}
+
+
+def fixture_provenance_tools():
+    """Load repository-only controlled proof code without breaking legacy archives."""
+    parents = Path(__file__).resolve().parents
+    scripts = parents[4] / ".github/scripts" if len(parents) > 4 else None
+    if scripts is None or not (scripts / "physical_fixture_provenance.py").is_file():
+        raise ValueError("controlled fixture validation requires the repository verifier")
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    return importlib.import_module("physical_fixture_provenance")
+
+
+def fixture_record_fields(record, legacy_fields):
+    """Keep historical normal records unchanged; controlled records add one field."""
+    return legacy_fields | ({"fixture"} if type(record.get("schema")) is int
+                            and record["schema"] == 2 else set())
+
+
+def validate_record_fixture(record, tested_commit, profile, *, marker_path=None,
+                            started_at=None, finished_at=None,
+                            fixture_provenance=None, capture=False):
+    """Bind controlled host evidence without changing the phone marker contract."""
+    schema = record.get("schema")
+    if type(schema) is not int or schema not in (1, 2):
+        raise ValueError("physical host record schema is invalid")
+    if schema == 1:
+        if "fixture" in record or fixture_provenance is not None:
+            raise ValueError("legacy record cannot claim controlled fixture provenance")
+        return
+    if not isinstance(tested_commit, str) or not HEX40.fullmatch(tested_commit):
+        raise ValueError("controlled fixture requires the tested source commit")
+    fixture_tools = fixture_provenance_tools()
+    summary = record.get("fixture")
+    payload = {key: value for key, value in record.items() if key != "fixture"}
+    payload_hash = fixture_tools.digest(fixture_tools.encoded(payload))
+    marker_hash = (hashlib.sha256(_read_bytes_limited(Path(marker_path),
+                   "on-device receipt marker")).hexdigest() if marker_path is not None else None)
+    fixture_tools.validate_summary(
+        summary, tested_commit, profile, device_started_at=started_at,
+        device_finished_at=finished_at, phone_marker_sha256=marker_hash,
+        record_payload_sha256=payload_hash,
+    )
+    if (summary["sourceKind"] != "controlled-source" or summary["buildKind"] != "test-only"
+            or summary["buildTags"] != ["lantern_test_time"] or summary["syntheticUtc"] is not True):
+        raise ValueError("schema-2 host record requires controlled test-only provenance")
+    if capture:
+        if fixture_provenance is None:
+            raise ValueError("controlled capture requires --fixture-provenance")
+        verified = fixture_tools.public_summary(
+            fixture_provenance, tested_commit, profile, started_at, finished_at,
+            marker_hash, payload_hash,
+        )
+        if summary != verified:
+            raise ValueError("fixture summary differs from verified final provenance")
 
 
 def _unique_json_fields(pairs):
@@ -284,6 +341,8 @@ def validate_archived_receipt_evidence(
     run_started_at=None,
     now=None,
     target=RECEIPT_TARGET,
+    fixture_provenance=None,
+    capture=False,
 ):
     """Check a content-free phased marker/record pair in an evidence-only tag.
 
@@ -308,7 +367,7 @@ def validate_archived_receipt_evidence(
         raise ValueError("receipt validation time must be UTC")
     marker = _read_object(Path(marker_path), "on-device receipt marker")
     record = _read_object(Path(record_path), "receipt evidence record")
-    if set(marker) != RESTART_MARKER_FIELDS or set(record) != RECEIPT_RECORD_FIELDS:
+    if set(marker) != RESTART_MARKER_FIELDS or set(record) != fixture_record_fields(record, RECEIPT_RECORD_FIELDS):
         raise ValueError("phased receipt marker or record has invalid fields")
     if (
         type(marker["schema"]) is not int
@@ -318,7 +377,7 @@ def validate_archived_receipt_evidence(
         or marker["status"] != "passed"
         or marker["phase"] != "complete"
         or type(record["schema"]) is not int
-        or record["schema"] != 1
+        or record["schema"] not in (1, 2)
         or record["kind"] != (RECORD_KIND if target == RECEIPT_TARGET else "physical_edge_contribution_delete_evidence")
         or record["repository"] != REPOSITORY
         or record["contentFree"] is not True
@@ -398,6 +457,11 @@ def validate_archived_receipt_evidence(
         or max(started, prepared, resumed, finished, recorded) > checked_at + CLOCK_SKEW
     ):
         raise ValueError("physical receipt restart or capture timing is invalid")
+    validate_record_fixture(
+        record, tested_commit, "physical", marker_path=marker_path,
+        started_at=marker["startedAt"], finished_at=marker["finishedAt"],
+        fixture_provenance=fixture_provenance, capture=capture,
+    )
     return digest
 
 
@@ -413,6 +477,7 @@ def validate_receipt_attestation(
     run_id,
     run_started_at,
     now=None,
+    fixture_provenance=None,
 ):
     """Require executed, fresh on-device results bound to host-built target bytes.
 
@@ -455,6 +520,7 @@ def validate_receipt_attestation(
             marker_path, record_path, tested_commit=tested_commit,
             platform=platform, required_scenarios=required_scenarios,
             run_id=run_id, run_started_at=run_started_at, now=checked_at, target=target,
+            fixture_provenance=fixture_provenance, capture=True,
         )
         if archived_digest != built_digest:
             raise ValueError("receipt installed and host-built binary hashes differ")
@@ -465,7 +531,7 @@ def validate_receipt_attestation(
 
     marker = _read_object(Path(marker_path), "on-device receipt marker")
     record = _read_object(Path(record_path), "receipt evidence record")
-    if set(marker) != MARKER_FIELDS or set(record) != RECORD_FIELDS:
+    if set(marker) != MARKER_FIELDS or set(record) != fixture_record_fields(record, RECORD_FIELDS):
         raise ValueError("receipt marker or record has missing or unexpected fields")
     if (
         type(marker["schema"]) is not int
@@ -478,7 +544,7 @@ def validate_receipt_attestation(
         raise ValueError("on-device receipt marker did not pass after cleanup")
     if (
         type(record["schema"]) is not int
-        or record["schema"] != 1
+        or record["schema"] not in (1, 2)
         or record["kind"] != RECORD_KIND
         or record["repository"] != REPOSITORY
         or record["contentFree"] is not True
@@ -531,6 +597,12 @@ def validate_receipt_attestation(
         raise ValueError("receipt marker or record has impossible UTC timing")
     if recorded < checked_at - CAPTURE_LIMIT:
         raise ValueError("receipt record is stale for capture-time validation")
+    validate_record_fixture(
+        record, tested_commit,
+        "native" if target == "integration_test/physical_installed_factory_test.dart" else "physical",
+        marker_path=marker_path, started_at=marker["startedAt"], finished_at=marker["finishedAt"],
+        fixture_provenance=fixture_provenance, capture=True,
+    )
     return built_digest
 
 
@@ -546,6 +618,8 @@ def main():
     parser.add_argument("--scenario", required=True, action="append")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-started-at", required=True)
+    parser.add_argument("--fixture-provenance", type=Path,
+                        help="verified final private sidecar; required for controlled schema-2 host records")
     args = parser.parse_args()
     if len(args.scenario) != len(set(args.scenario)):
         parser.error("receipt scenario IDs must be unique")
@@ -565,6 +639,7 @@ def main():
             required_scenarios=set(args.scenario),
             run_id=args.run_id,
             run_started_at=args.run_started_at,
+            fixture_provenance=args.fixture_provenance,
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))
