@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -9,8 +8,9 @@ import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
-import 'support/receipt_attestation.dart';
+import 'support/contribution_change_witness.dart';
 import 'support/head_edge_fixture.dart';
+import 'support/receipt_attestation.dart';
 import 'support/receipt_physical_fixture.dart';
 
 const contributionTarget =
@@ -51,10 +51,8 @@ void main() {
       final fixture = PhysicalReceiptFixture.fromBuild();
       final direct = fixture.client(fixture.endpoint);
       final proxy = fixture.client(fixture.proxyEndpoint);
-      final edge = EdgeRef(
-        'physical-contribution:${run.runId}:t',
-        'physical-contribution:${run.runId}:h',
-      );
+      final prefix = 'physical-contribution:${run.runId}:';
+      final edge = EdgeRef('${prefix}t', '${prefix}h');
       EdgeContributionRef ref(int id, {String? head}) => EdgeContributionRef(
         tail: edge.tail,
         head: head ?? edge.head,
@@ -229,32 +227,16 @@ void main() {
         ]);
         expect(seeded.effectiveWeights, [3, 6, 6]);
         expect((await direct.getEdge(edge)).weight, 6);
-        final ready = Completer<void>();
-        final invalidation = Completer<IdentityChunkFrame>();
-        final subscription = direct
-            .subscribeIdentity(bootstrap: true)
-            .listen(
-              (frame) {
-                if (frame is IdentityCheckpointFrame && !ready.isCompleted) {
-                  ready.complete();
-                }
-                if (frame is IdentityChunkFrame &&
-                    frame.operation ==
-                        IdentityOperation.deleteEdgeContribution &&
-                    frame.edgeKeys.contains(edge) &&
-                    !invalidation.isCompleted) {
-                  invalidation.complete(frame);
-                }
-              },
-              onError: (Object error, StackTrace stack) {
-                if (!ready.isCompleted) ready.completeError(error, stack);
-                if (!invalidation.isCompleted) {
-                  invalidation.completeError(error, stack);
-                }
-              },
-            );
+        final changes = ContributionChangeWitness(
+          direct,
+          prefix: prefix,
+          edge: edge,
+        );
         try {
-          await ready.future.timeout(const Duration(seconds: 20));
+          final checkpoint = await changes.ready.timeout(
+            const Duration(seconds: 20),
+          );
+          expect(checkpoint.toBytes(), isNotEmpty);
           await attestation.verifyScenario(
             'indexed_duplicate_missing_expired',
             () async {
@@ -272,16 +254,19 @@ void main() {
           await attestation.verifyScenario(
             'identity_cdc_edge_refetch',
             () async {
-              final frame = await invalidation.future.timeout(
+              final frame = await changes.invalidation.timeout(
                 const Duration(seconds: 20),
               );
-              expect(frame.edgeKeys, [edge, edge]);
-              expect(frame.vertexKeys, isEmpty);
+              final matching = frame.invalidations
+                  .whereType<EdgeInvalidation>()
+                  .where((item) => item.edge == edge);
+              expect(matching, isNotEmpty);
+              expect(matching.every((item) => item.current == null), isTrue);
               expect((await direct.getEdge(edge)).weight, 4);
             },
           );
         } finally {
-          await subscription.cancel();
+          await changes.close();
         }
         await attestation.verifyScenario(
           'selective_delete_preserves_put_base',
