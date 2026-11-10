@@ -1,28 +1,23 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "physical_edge_contribution_delete_evidence",
   "repository": "anaregdesign/lantern",
   "contentFree": true,
   "physicalDevice": true,
-  "testedCommit": "2dea11e90331fcd05ff58335bf47e0d381276b98",
-  "runId": "6e35d7fd2952ab82cd6cdb1099306123",
-  "runStartedAt": "2026-10-01T02:20:39Z",
-  "recordedAt": "2026-10-01T02:20:53Z",
+  "testedCommit": "911223945aa3e2f5174d17f41aaad6ef892a6357",
+  "runId": "cbc6614feda2b822369b5b014743a5df",
+  "runStartedAt": "2026-11-10T09:16:34.522153Z",
+  "recordedAt": "2026-11-10T09:17:31.735139Z",
   "platform": {
     "kind": "physical-android"
   },
   "application": {
     "packageId": "com.anaregdesign.lantern_example",
     "target": "integration_test/physical_contribution_delete_test.dart",
-    "binarySha256": "8198fed4662241c5e761ae0147d333cfe8377d7f0ed08bb8259e3794bde8dc88"
-  },
-  "network": {
-    "transport": "Connect/HTTPS",
-    "authenticated": true,
-    "platformTrustedTls": true,
-    "fault": "committed-response-socket-drop"
+    "binarySha256": "4224198f155573262f607b329861e93f2a4645a020fe805ec62fe51f307c9c0a"
   },
   "scenarios": [
+    "advertised_contribution_delete_capability",
     "authenticated_https",
     "committed_response_loss",
     "dispatch_marker_before_send",
@@ -32,8 +27,36 @@
     "no_mutation_resend_after_restart",
     "original_true_false_replay",
     "physical_sigkill_status_first",
-    "selective_delete_preserves_put_base",
-    "unsupported_offline_family"
+    "selective_delete_preserves_put_base"
   ],
-  "result": "passed"
+  "result": "passed",
+  "network": {
+    "transport": "Connect/HTTPS",
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "fault": "committed-response-socket-drop"
+  },
+  "fixture": {
+    "schema": 1,
+    "profile": "physical",
+    "sourceCommit": "911223945aa3e2f5174d17f41aaad6ef892a6357",
+    "sourceKind": "controlled-source",
+    "buildKind": "test-only",
+    "buildTags": [
+      "lantern_test_time"
+    ],
+    "syntheticUtc": true,
+    "imageSha256": "be43cf866bb5e483f8420b8b80c0f581b7d5845bfbcd53880f45fdaaf6be8ab7",
+    "descriptorSha256": "d2838fe71cb57638b4b2bfa8ba0454b7317f2b5a441d3cf2a3ca76ad142bff58",
+    "receiptSha256": "c064397e5374a4d1d4a4b854d2c16cb3bb3a6402e1a2bfc3f460f64676412fa4",
+    "sidecarSha256": "bbbfc3357acbec0783468f58c4c4706bfa2335b0bd00de0a228cdf8f744d07b6",
+    "preparedAt": "2026-11-10T09:16:24.753324Z",
+    "servingUntil": "2026-11-10T09:25:24.733663797Z",
+    "lifecycleFinishedAt": "2026-11-10T09:16:45.428585Z",
+    "servingStoppedAt": "2026-11-10T09:16:44.041299292Z",
+    "deviceStartedAt": "2026-11-10T09:16:35.201234Z",
+    "deviceFinishedAt": "2026-11-10T09:16:41.398961Z",
+    "phoneMarkerSha256": "e93ca7d94a1b6c7e18c1d895ad568ab1af990e34d006872b5db6c8df5b4d1d2e",
+    "recordPayloadSha256": "f7d40456aa42a320c5eeace59ad1b169337472b5655ffc9528bf4461d39a657b"
+  }
 }

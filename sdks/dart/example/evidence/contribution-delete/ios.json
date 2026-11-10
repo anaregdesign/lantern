@@ -1,28 +1,23 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "physical_edge_contribution_delete_evidence",
   "repository": "anaregdesign/lantern",
   "contentFree": true,
   "physicalDevice": true,
-  "testedCommit": "2dea11e90331fcd05ff58335bf47e0d381276b98",
-  "runId": "989e6b0d4d23d5ef90e40ed3d5a7f6dc",
-  "runStartedAt": "2026-10-01T02:23:48Z",
-  "recordedAt": "2026-10-01T02:24:04Z",
+  "testedCommit": "911223945aa3e2f5174d17f41aaad6ef892a6357",
+  "runId": "b6026ee2fb01f9db9a5f4c5d7f731b69",
+  "runStartedAt": "2026-11-10T09:18:14.076870Z",
+  "recordedAt": "2026-11-10T09:19:48.608384Z",
   "platform": {
     "kind": "physical-ios"
   },
   "application": {
     "packageId": "com.anaregdesign.lanternExample",
     "target": "integration_test/physical_contribution_delete_test.dart",
-    "binarySha256": "04ff522afaa942338285be9746b945db70bfa3338ded3351d894773662fa6cfe"
-  },
-  "network": {
-    "transport": "Connect/HTTPS",
-    "authenticated": true,
-    "platformTrustedTls": true,
-    "fault": "committed-response-socket-drop"
+    "binarySha256": "20ba269161fbdc485b42163506ac0b7e61e47d32d6519415423c61f5152b92d6"
   },
   "scenarios": [
+    "advertised_contribution_delete_capability",
     "authenticated_https",
     "committed_response_loss",
     "dispatch_marker_before_send",
@@ -32,8 +27,36 @@
     "no_mutation_resend_after_restart",
     "original_true_false_replay",
     "physical_sigkill_status_first",
-    "selective_delete_preserves_put_base",
-    "unsupported_offline_family"
+    "selective_delete_preserves_put_base"
   ],
-  "result": "passed"
+  "result": "passed",
+  "network": {
+    "transport": "Connect/HTTPS",
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "fault": "committed-response-socket-drop"
+  },
+  "fixture": {
+    "schema": 1,
+    "profile": "physical",
+    "sourceCommit": "911223945aa3e2f5174d17f41aaad6ef892a6357",
+    "sourceKind": "controlled-source",
+    "buildKind": "test-only",
+    "buildTags": [
+      "lantern_test_time"
+    ],
+    "syntheticUtc": true,
+    "imageSha256": "be43cf866bb5e483f8420b8b80c0f581b7d5845bfbcd53880f45fdaaf6be8ab7",
+    "descriptorSha256": "272ba7bb1d62ecfc0fe315e144a14c934ec68c5c1bc6cafef7c9e8e3266c8ec0",
+    "receiptSha256": "2f5932bf55a6b7f6ed4c7c2dedfee6bed3cc96a20583dc74a361385e5f67c644",
+    "sidecarSha256": "273c06704cd8b45c8e28d8dc198f38611ecbaf72fbe98d61ffe93b66b7853891",
+    "preparedAt": "2026-11-10T09:18:07.377402Z",
+    "servingUntil": "2026-11-10T09:27:07.297627928Z",
+    "lifecycleFinishedAt": "2026-11-10T09:18:22.975408Z",
+    "servingStoppedAt": "2026-11-10T09:18:21.604376879Z",
+    "deviceStartedAt": "2026-11-10T09:18:14.866098Z",
+    "deviceFinishedAt": "2026-11-10T09:18:20.099445Z",
+    "phoneMarkerSha256": "96af9a0169a97331fe75f7e2eac424bb8c5046a1b8184dea5c3cfc07f9e3524f",
+    "recordPayloadSha256": "dcebacc6edcb3d851021def916d3213fc01b9ac4ca7d5c76bd00253ef4e71b51"
+  }
 }
