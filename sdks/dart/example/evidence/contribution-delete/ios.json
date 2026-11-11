@@ -4,17 +4,17 @@
   "repository": "anaregdesign/lantern",
   "contentFree": true,
   "physicalDevice": true,
-  "testedCommit": "911223945aa3e2f5174d17f41aaad6ef892a6357",
-  "runId": "b6026ee2fb01f9db9a5f4c5d7f731b69",
-  "runStartedAt": "2026-11-10T09:18:14.076870Z",
-  "recordedAt": "2026-11-10T09:19:48.608384Z",
+  "testedCommit": "ffc20f6ed6160021885372160047c85bdb7c5a83",
+  "runId": "71d2827ce50e4b1d88cf4014badc9b48",
+  "runStartedAt": "2026-11-11T21:29:17.033635Z",
+  "recordedAt": "2026-11-11T21:29:46.640390Z",
   "platform": {
     "kind": "physical-ios"
   },
   "application": {
     "packageId": "com.anaregdesign.lanternExample",
     "target": "integration_test/physical_contribution_delete_test.dart",
-    "binarySha256": "20ba269161fbdc485b42163506ac0b7e61e47d32d6519415423c61f5152b92d6"
+    "binarySha256": "8c4bb8a11d77f20d120dfefacf7947d8d6fd90c28e5e6e04d8e904592b0e67d6"
   },
   "scenarios": [
     "advertised_contribution_delete_capability",
@@ -39,24 +39,24 @@
   "fixture": {
     "schema": 1,
     "profile": "physical",
-    "sourceCommit": "911223945aa3e2f5174d17f41aaad6ef892a6357",
+    "sourceCommit": "ffc20f6ed6160021885372160047c85bdb7c5a83",
     "sourceKind": "controlled-source",
     "buildKind": "test-only",
     "buildTags": [
       "lantern_test_time"
     ],
     "syntheticUtc": true,
-    "imageSha256": "be43cf866bb5e483f8420b8b80c0f581b7d5845bfbcd53880f45fdaaf6be8ab7",
-    "descriptorSha256": "272ba7bb1d62ecfc0fe315e144a14c934ec68c5c1bc6cafef7c9e8e3266c8ec0",
-    "receiptSha256": "2f5932bf55a6b7f6ed4c7c2dedfee6bed3cc96a20583dc74a361385e5f67c644",
-    "sidecarSha256": "273c06704cd8b45c8e28d8dc198f38611ecbaf72fbe98d61ffe93b66b7853891",
-    "preparedAt": "2026-11-10T09:18:07.377402Z",
-    "servingUntil": "2026-11-10T09:27:07.297627928Z",
-    "lifecycleFinishedAt": "2026-11-10T09:18:22.975408Z",
-    "servingStoppedAt": "2026-11-10T09:18:21.604376879Z",
-    "deviceStartedAt": "2026-11-10T09:18:14.866098Z",
-    "deviceFinishedAt": "2026-11-10T09:18:20.099445Z",
-    "phoneMarkerSha256": "96af9a0169a97331fe75f7e2eac424bb8c5046a1b8184dea5c3cfc07f9e3524f",
-    "recordPayloadSha256": "dcebacc6edcb3d851021def916d3213fc01b9ac4ca7d5c76bd00253ef4e71b51"
+    "imageSha256": "c695929bad31a4274d50ded23e62d2407ebd664f18b62a2e342ef031c3335658",
+    "descriptorSha256": "505c525dd993ad5197225fdd94d354cbcf99b2296fe8c667ad45e6624abd13de",
+    "receiptSha256": "7245e2c3d85292788b68a0441753401d871f37feb2815d431677c3e855655229",
+    "sidecarSha256": "569a72a354438c45270eb5be946a003a5f81dc3fd3a2c4ce7041f008f0b99e3a",
+    "preparedAt": "2026-11-11T21:29:11.104438Z",
+    "servingUntil": "2026-11-11T21:38:10.981057672Z",
+    "lifecycleFinishedAt": "2026-11-11T21:29:26.072148Z",
+    "servingStoppedAt": "2026-11-11T21:29:24.786665512Z",
+    "deviceStartedAt": "2026-11-11T21:29:17.500428Z",
+    "deviceFinishedAt": "2026-11-11T21:29:22.273146Z",
+    "phoneMarkerSha256": "64bd38d3aa63cb9311be71bdeec6872f47433931c00e767e5510fa24402bf4e7",
+    "recordPayloadSha256": "8286cdb63b188f97f851b0c393ffbd40c44953330f504babb96d63ae92bc40aa"
   }
 }
