@@ -11,11 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +82,67 @@ type authorityWirePublisherStream struct {
 	Kind, KeyFile, RootsFile string
 	Initial                  []byte
 	Targets, Certificates    []string
+}
+
+// Reserve public sockets before the independently exported CONTROL topology.
+// The callback may export that topology or release an old CONTROL owner; it
+// cannot run until every selected public server already owns its exact socket.
+// No private-listener adoption or outgoing ephemeral-port exclusion is claimed.
+func prepareCurrentGatePublicServers(count int, allocate func(int) (*httptest.Server, error), beforeControl func() error) (_ []*httptest.Server, release func(), err error) {
+	var owned []*httptest.Server
+	release = sync.OnceFunc(func() {
+		for _, server := range owned {
+			if server.Config != nil {
+				server.Close()
+			} else if server.Listener != nil {
+				_ = server.Listener.Close()
+			}
+		}
+	})
+	complete := false
+	defer func() {
+		if !complete {
+			release()
+		}
+	}()
+	if count < 1 || allocate == nil || beforeControl == nil {
+		return nil, release, errors.New("invalid current public reservation")
+	}
+	for id := 1; id <= count; id++ {
+		server, allocateErr := allocate(id)
+		if server != nil {
+			owned = append(owned, server)
+		}
+		if allocateErr != nil {
+			return nil, release, fmt.Errorf("reserve current public server %d: %w", id, allocateErr)
+		}
+		if server == nil || server.Listener == nil || server.Config == nil {
+			return nil, release, fmt.Errorf("missing current public server %d", id)
+		}
+	}
+	if err := beforeControl(); err != nil {
+		return nil, release, err
+	}
+	complete = true
+	return append([]*httptest.Server(nil), owned...), release, nil
+}
+
+func newCurrentGatePublicServer(id int, serving *nativeFixtureServingOptions, listen func(string, string) (net.Listener, error)) (*httptest.Server, error) {
+	server := httptest.NewUnstartedServer(nil)
+	if serving == nil || id != 1 {
+		return server, nil
+	}
+	// This fixed physical/native public socket, including its replacement of
+	// httptest's unused socket, is owned before CONTROL export as well.
+	if err := server.Listener.Close(); err != nil {
+		return server, err
+	}
+	listener, err := listen("tcp4", fmt.Sprintf("0.0.0.0:%d", serving.ListenPort))
+	if err != nil {
+		return server, fmt.Errorf("selected native TLS listener unavailable: %w", err)
+	}
+	server.Listener = listener
+	return server, nil
 }
 
 func reserveSecurityWireOrigins(count int, listen func(string, string) (net.Listener, error)) ([]string, func() error, error) {
@@ -561,4 +625,204 @@ func TestAuthorityWireMaterialDiagnostic(t *testing.T) {
 	if got != want {
 		t.Fatalf("diagnostic = %q, want %q", got, want)
 	}
+}
+
+func TestPrepareCurrentGatePublicServers(t *testing.T) {
+	t.Run("ReservedAcrossExportAndExactReuse", func(t *testing.T) {
+		var allocated []*httptest.Server
+		var listeners []net.Listener
+		exported := false
+		servers, release, err := prepareCurrentGatePublicServers(4, func(id int) (*httptest.Server, error) {
+			if exported || id != len(allocated)+1 {
+				t.Fatal("public allocation occurred after export or out of order")
+			}
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			allocated = append(allocated, server)
+			listeners = append(listeners, server.Listener)
+			return server, nil
+		}, func() error {
+			if len(allocated) != 4 {
+				t.Fatal("CONTROL export ran before all public and restart sockets were owned")
+			}
+			for _, listener := range listeners {
+				contender, err := net.Listen("tcp", listener.Addr().String())
+				if err == nil {
+					_ = contender.Close()
+					t.Fatal("export boundary lost an owned public socket")
+				}
+			}
+			exported = true
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(release)
+		for i, server := range servers {
+			if server != allocated[i] || server.Listener != listeners[i] {
+				t.Fatal("reservation was replaced before adoption")
+			}
+			address := server.Listener.Addr().String()
+			server.Start()
+			if server.Listener.Addr().String() != address || len(allocated) != 4 {
+				t.Fatal("start reallocated the preowned public listener")
+			}
+			response, err := server.Client().Get(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				t.Fatal("adopted public server did not serve its selected handler")
+			}
+		}
+		release()
+		release()
+	})
+	t.Run("ReplacementReservedBeforeControlShutdown", func(t *testing.T) {
+		control, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = control.Close() })
+		var replacement *httptest.Server
+		controlStopped := false
+		servers, release, err := prepareCurrentGatePublicServers(1, func(int) (*httptest.Server, error) {
+			if controlStopped {
+				t.Fatal("replacement allocated after CONTROL shutdown")
+			}
+			replacement = httptest.NewUnstartedServer(nil)
+			return replacement, nil
+		}, func() error {
+			contender, err := net.Listen("tcp", replacement.Listener.Addr().String())
+			if err == nil {
+				_ = contender.Close()
+				t.Fatal("replacement was not reserved before CONTROL shutdown")
+			}
+			controlStopped = true
+			return control.Close()
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(release)
+		if !controlStopped || len(servers) != 1 || servers[0] != replacement {
+			t.Fatal("same replacement was not retained across CONTROL shutdown")
+		}
+	})
+	for _, returnedServerOnFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("PartialFailureCleanup/server=%t", returnedServerOnFailure), func(t *testing.T) {
+			allocator := new(securityWirePortAllocator)
+			failure := errors.New("fixture allocation failed")
+			boundaryCalled := false
+			servers, release, err := prepareCurrentGatePublicServers(4, func(id int) (*httptest.Server, error) {
+				if id == 3 && !returnedServerOnFailure {
+					return nil, failure
+				}
+				listener, err := allocator.listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := &httptest.Server{Listener: listener, Config: &http.Server{}}
+				if id == 3 {
+					return server, failure
+				}
+				return server, nil
+			}, func() error { boundaryCalled = true; return nil })
+			if !errors.Is(err, failure) || servers != nil || boundaryCalled || len(allocator.active) != 0 {
+				t.Fatal("partial reservation failure advanced CONTROL or leaked a socket", err)
+			}
+			release()
+			release()
+			for _, listener := range allocator.listeners {
+				if listener.closeCalls != 1 {
+					t.Fatal("owned failure cleanup was not idempotent", listener.closeCalls)
+				}
+			}
+		})
+	}
+	t.Run("ExportFailureAndPanicCleanup", func(t *testing.T) {
+		for _, panics := range []bool{false, true} {
+			allocator := new(securityWirePortAllocator)
+			failure := errors.New("independent export failed")
+			func() {
+				defer func() {
+					value := recover()
+					if panics && value != failure || !panics && value != nil {
+						t.Fatal("export panic changed", value)
+					}
+				}()
+				servers, release, err := prepareCurrentGatePublicServers(4, func(int) (*httptest.Server, error) {
+					listener, err := allocator.listen("tcp", "127.0.0.1:0")
+					return &httptest.Server{Listener: listener, Config: &http.Server{}}, err
+				}, func() error {
+					if panics {
+						panic(failure)
+					}
+					return failure
+				})
+				if servers != nil || !errors.Is(err, failure) {
+					t.Fatal("independent export failure was suppressed", err)
+				}
+				release()
+				release()
+			}()
+			if len(allocator.active) != 0 || len(allocator.listeners) != 4 {
+				t.Fatal("export failure or panic leaked public reservations")
+			}
+			for _, listener := range allocator.listeners {
+				if listener.closeCalls != 1 {
+					t.Fatal("export failure cleanup repeated a close", listener.closeCalls)
+				}
+			}
+		}
+	})
+}
+
+func TestNewCurrentGatePublicServer(t *testing.T) {
+	t.Run("PhysicalFixedSocketOwnedBeforeControlExport", func(t *testing.T) {
+		allocator := new(securityWirePortAllocator)
+		var fixed net.Listener
+		servers, release, err := prepareCurrentGatePublicServers(1, func(id int) (*httptest.Server, error) {
+			return newCurrentGatePublicServer(id, &nativeFixtureServingOptions{ListenPort: 18443}, func(network, address string) (net.Listener, error) {
+				if network != "tcp4" || address != "0.0.0.0:18443" {
+					t.Fatal("physical fixed public endpoint changed", network, address)
+				}
+				var err error
+				fixed, err = allocator.listen("tcp", "127.0.0.1:0")
+				return fixed, err
+			})
+		}, func() error {
+			if fixed == nil || len(allocator.active) != 1 {
+				t.Fatal("CONTROL export preceded fixed physical socket reservation")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(release)
+		if servers[0].Listener != fixed {
+			t.Fatal("physical fixed listener was not adopted exactly")
+		}
+		release()
+		release()
+		if len(allocator.active) != 0 || allocator.listeners[0].closeCalls != 1 {
+			t.Fatal("fixed physical listener cleanup lost ownership")
+		}
+	})
+	t.Run("OrdinaryAndSpareDoNotSelectPhysicalPort", func(t *testing.T) {
+		for _, id := range []int{2, 3, 4} {
+			server, err := newCurrentGatePublicServer(id, &nativeFixtureServingOptions{ListenPort: 18443}, func(string, string) (net.Listener, error) {
+				t.Fatal("ordinary/spare public listener selected physical port")
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server.Close()
+		}
+	})
 }
