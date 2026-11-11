@@ -222,10 +222,12 @@ The published `0.5.0` contribution Delete release uses hosted
 `lantern_client ^0.4.1`; its exact-source, device and publication evidence is in
 [#1586](https://github.com/anaregdesign/lantern/issues/1586).
 The in-flight `0.6.0` Head-managed acceptance candidate requires the parent
-`lantern_client ^0.5.0` API. Paired-source development checks use an explicit
-test-only path override. Parent 0.5.0 is published and the committed hosted
-lock is generated against its actual registry archive. Independent hosted
-archive qualification remains a separate release gate; no override qualifies it.
+`lantern_client ^0.5.1` API. Paired-source development checks use an explicit
+test-only path override. Parent 0.5.0 retains its verified published archive;
+the `0.5.1` patch is pending (#2142). The committed hosted lock still selects
+`0.5.0` and must be regenerated after `0.5.1` publication and archive equality.
+Independent hosted archive qualification remains a separate release gate; no
+override qualifies it.
 The maintained
 Flutter example and unpublished SQLite adapter use local path overrides for
 development. The private offline OIDC binding requires package-admin
@@ -615,7 +617,7 @@ The `0.3.0` CDC bridge requires hosted `lantern_client 0.3.0` with
 `subscribeIdentity`; the published `0.4.0` receipt release requires hosted
 `lantern_client ^0.3.3` for receipt APIs and single-attempt receipt-less
 Add. Published `0.5.0` requires hosted `lantern_client ^0.4.1` for targeted
-contribution Delete. The `0.6.0` candidate requires parent `^0.5.0` for typed
+contribution Delete. The `0.6.0` candidate requires parent `^0.5.1` for typed
 acceptance/status and opaque public CDC composition. A separately published
 parent API is required; local path testing is not proof of hosted availability. Earlier published versions
 retain their original parent constraints.

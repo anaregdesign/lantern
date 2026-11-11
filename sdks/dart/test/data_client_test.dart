@@ -789,15 +789,26 @@ void main() {
     'shared watch owns one fresh read, last cancellation releases timer',
     () async {
       var calls = 0;
+      var remainingOnly = false;
+      final initialRequestSeen = Completer<void>(),
+          initialPresent = Completer<void>(),
+          nextRead = Completer<void>();
+      final initialReply = Completer<graph.GetVerticesResponse>();
+      graph.GetVerticesResponse response() => graph.GetVerticesResponse(
+        vertices: [graph.Vertex(key: 'a', string: 'same')],
+      );
       final client = direct(
         FakeTransportBuilder()
             .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
               LanternService.getVertices,
               (r, _) {
                 calls++;
-                return graph.GetVerticesResponse(
-                  vertices: [graph.Vertex(key: 'a', string: 'same')],
-                );
+                if (calls == 1) {
+                  initialRequestSeen.complete();
+                  return initialReply.future;
+                }
+                if (remainingOnly && !nextRead.isCompleted) nextRead.complete();
+                return response();
               },
             )
             .build(),
@@ -809,33 +820,81 @@ void main() {
         'a',
         options: const WatchOptions(pollInterval: Duration(milliseconds: 50)),
       );
-      final a = watch.listen(first.add), b = watch.listen(second.add);
-      await settle();
-      expect(calls, 1);
-      expect(first.first.confirmed.state, ConfirmedState.unknown);
-      expect(second.last.confirmed.state, ConfirmedState.present);
-      await a.cancel();
-      await Future<void>.delayed(const Duration(milliseconds: 60));
-      expect(calls, greaterThan(1));
-      await b.cancel();
-      final atStop = calls;
-      await Future<void>.delayed(const Duration(milliseconds: 75));
-      expect(calls, atStop);
+      final a = watch.listen(first.add),
+          b = watch.listen((snapshot) {
+            second.add(snapshot);
+            if (snapshot.confirmed.state == ConfirmedState.present &&
+                !initialPresent.isCompleted) {
+              initialPresent.complete();
+            }
+          });
+      Future<void>? canceledA, canceledB;
+      Future<void> cancelA() => canceledA ??= a.cancel();
+      Future<void> cancelB() => canceledB ??= b.cancel();
+      Future<void> cancelSubscriptions() async {
+        if (!initialReply.isCompleted) initialReply.complete(response());
+        try {
+          await cancelA();
+        } finally {
+          await cancelB();
+        }
+      }
+
+      addTearDown(cancelSubscriptions);
+      try {
+        await initialRequestSeen.future;
+        // Let both subscriptions run while the first load is still in flight.
+        await Future<void>.delayed(Duration.zero);
+        expect(calls, 1);
+        initialReply.complete(response());
+        await initialPresent.future;
+        expect(calls, 1);
+        expect(first.first.confirmed.state, ConfirmedState.unknown);
+        expect(second.last.confirmed.state, ConfirmedState.present);
+        await cancelA();
+        remainingOnly = true;
+        await nextRead.future;
+        expect(calls, greaterThan(1));
+        await cancelB();
+        final atStop = calls;
+        await Future<void>.delayed(const Duration(milliseconds: 75));
+        expect(calls, atStop);
+      } finally {
+        await cancelSubscriptions();
+      }
     },
   );
   test(
     'paused watch overflow emits observationLost and fresh bounded revalidation',
     () async {
       var calls = 0;
+      int? boundaryAt, resumedAt;
+      final initialPresent = Completer<void>(),
+          overflowReady = Completer<void>(),
+          lost = Completer<void>(),
+          freshRead = Completer<void>(),
+          freshPresent = Completer<void>();
+      final boundaryReply = Completer<graph.GetVerticesResponse>();
+      graph.GetVerticesResponse response({String value = 'same'}) =>
+          graph.GetVerticesResponse(
+            vertices: [graph.Vertex(key: 'a', string: value)],
+          );
       final client = direct(
         FakeTransportBuilder()
             .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
               LanternService.getVertices,
               (r, _) {
                 calls++;
-                return graph.GetVerticesResponse(
-                  vertices: [graph.Vertex(key: 'a', string: 'same')],
-                );
+                if (calls == boundaryAt) {
+                  overflowReady.complete();
+                  return boundaryReply.future;
+                }
+                final afterResume = resumedAt;
+                if (afterResume != null && calls > afterResume) {
+                  if (!freshRead.isCompleted) freshRead.complete();
+                  return response(value: 'fresh');
+                }
+                return response();
               },
             )
             .build(),
@@ -849,18 +908,58 @@ void main() {
               pollInterval: Duration(milliseconds: 2),
             ),
           )
-          .listen(events.add);
-      await settle();
-      subscription.pause();
-      final delivered = events.length;
-      await Future<void>.delayed(const Duration(milliseconds: 55));
-      expect(events, hasLength(delivered));
-      subscription.resume();
-      await settle();
-      expect(events.skip(delivered).any((e) => e.observationLost), isTrue);
-      expect(events.last.confirmed.state, ConfirmedState.present);
-      expect(calls, greaterThan(8));
-      await subscription.cancel();
+          .listen((snapshot) {
+            events.add(snapshot);
+            if (snapshot.confirmed.state == ConfirmedState.present &&
+                !initialPresent.isCompleted) {
+              initialPresent.complete();
+            }
+            if (snapshot.observationLost && !lost.isCompleted) {
+              lost.complete();
+            }
+            final value = snapshot.view?.value;
+            if (freshRead.isCompleted &&
+                lost.isCompleted &&
+                snapshot.confirmed.state == ConfirmedState.present &&
+                value is StringValue &&
+                value.value == 'fresh' &&
+                !freshPresent.isCompleted) {
+              freshPresent.complete();
+            }
+          });
+      Future<void>? canceled;
+      Future<void> cancelSubscription() {
+        if (!boundaryReply.isCompleted) boundaryReply.complete(response());
+        return canceled ??= subscription.cancel();
+      }
+
+      addTearDown(cancelSubscription);
+      try {
+        await initialPresent.future;
+        subscription.pause();
+        final delivered = events.length;
+        // A poll starts only after the preceding load publishes. The tenth
+        // paused request proves nine offers overflowed the eight-slot mailbox.
+        boundaryAt = calls + 10;
+        await overflowReady.future;
+        expect(events, hasLength(delivered));
+        final resumeBaseline = calls;
+        resumedAt = resumeBaseline;
+        subscription.resume();
+        await lost.future;
+        boundaryReply.complete(response());
+        await freshRead.future;
+        await freshPresent.future;
+        expect(events.skip(delivered).any((e) => e.observationLost), isTrue);
+        expect(events.last.confirmed.state, ConfirmedState.present);
+        final value = events.last.view?.value;
+        expect(value, isA<StringValue>());
+        expect((value as StringValue).value, 'fresh');
+        expect(calls, greaterThan(8));
+        expect(calls, greaterThan(resumeBaseline));
+      } finally {
+        await cancelSubscription();
+      }
     },
   );
   test(

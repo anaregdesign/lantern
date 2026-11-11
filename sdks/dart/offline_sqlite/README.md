@@ -134,7 +134,7 @@ execute again. Wipe is not automatic retry, storage-error recovery or cache clea
   does not require another database schema migration. Legacy Add stays
   quarantined. Reopening preserves absolute expiration and retry deadlines;
   replay never extends TTL.
-- The offline 0.6.0 / parent 0.5.0 source candidates persist terminal
+- The offline 0.6.0 / parent 0.5.1 source candidates persist terminal
   `acceptedUndisclosed` operation metadata through operation codec v4 (historical v3 is migrated). The owned outbox and
   overlay are retired atomically with cache invalidation, without an invented
   result or mutation resend after reopen. This requires no SQLite table-schema
