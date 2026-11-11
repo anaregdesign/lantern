@@ -272,7 +272,7 @@ Android/iOS-first SDK with immutable values, TTL-preserving Graph results,
 CRUD, scans, search, typed traversal, degree ranking, and explicit status.
 Its transport owns secure endpoints, token providers, deadlines, cancellation,
 bounded retry, typed failures, and auth-exempt Health probing. Published
-**0.4.1** includes opt-in receipts and targeted contribution Delete. Start with
+**0.5.0** includes opt-in receipts and targeted contribution Delete. Start with
 the [SDK guide and maintained Flutter example](sdks/dart/README.md).
 
 [`lantern_client_offline`](https://pub.dev/packages/lantern_client_offline) is

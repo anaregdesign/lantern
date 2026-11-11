@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Build from the repository root. This helper has standard-library dependencies only.
-FROM golang:1.27.3-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 WORKDIR /src
 COPY deploy/compose/oidc-ha/metrics-relay.go ./
 ARG TARGETOS

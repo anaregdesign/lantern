@@ -370,9 +370,9 @@ manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
 record required before an offline release. Published offline 0.4.0 uses hosted `lantern_client: ^0.3.3` and passed
-its independent receipt release gates in #1399. The 0.5.0 contribution
-Delete candidate uses hosted `lantern_client: ^0.4.1` and has a fresh
-independent archive and physical gate in #1586; the parent `lantern_client` publish
+its independent receipt release gates in #1399. The published 0.5.0 contribution
+Delete release uses hosted `lantern_client: ^0.4.1` and completed its
+independent archive and physical gates in #1586; the parent `lantern_client` publish
 archive continues to exclude `offline/` and `offline_sqlite/`. The maintained
 Flutter app under `sdks/dart/example/` is a repository integration fixture
 with local development overrides, so only its standalone online example is
@@ -1240,7 +1240,7 @@ bootstrap is complete, not a procedure for later receipt-bearing candidates. Nev
 repeat manual publication for a later version, reuse a published tag, or put
 a pub token in GitHub Secrets, CI, or the repository.
 
-**Dart publishing status.** The parent `lantern_client` 0.4.1 is published and
+**Dart publishing status.** The parent `lantern_client` 0.5.0 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
@@ -1252,12 +1252,12 @@ already exist. Never force-move a published Dart tag/version—bump patch.
 uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
 targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
 its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
-typed undisclosed acceptance to parent 0.5.0 source and future hosted `^0.5.0`.
-The committed offline hosted lock still records parent 0.4.1, which does not satisfy
-`^0.5.0`; it is pending release preparation, not hosted 0.6.0 acceptance.
-Publish and verify parent 0.5.0 first when separately authorized, then generate
-and review the offline hosted lock in a follow-up preparation change before
-freezing the offline device candidate. The bounded commands are in the
+typed undisclosed acceptance to the published parent 0.5.0 and hosted `^0.5.0`.
+The committed offline hosted lock is generated against that actual published
+parent and its registry archive checksum. A generated lock alone does not
+qualify the independent 0.6.0 archive, physical or publication exits. Review
+hosted-lock preparation through the ordinary PR/main gates and require the
+separate hosted archive qualification before freezing the offline device candidate. The bounded commands are in the
 [lock-refresh procedure](sdks/dart/example/offline-release-resume.md#parent-publication-and-hosted-lock-refresh).
 `paired_source_gate.py --refresh-lock` updates only the paired-source lock; it
 cannot refresh or qualify the hosted lock. Its source, hosted archive, final-source,

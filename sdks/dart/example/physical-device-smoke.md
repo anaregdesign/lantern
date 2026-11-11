@@ -550,7 +550,8 @@ each platform: `integration_test/physical_receipt_matrix_test.dart`. Its
 The signed binary and two-process marker have their own run ID/hash and cannot
 be inferred from the smoke or CDC runs. Follow the
 [receipt attestation runbook](receipt-attestation.md) for the exact per-platform
-14-scenario matrix for offline 0.5.0, trusted HTTPS response-drop fixture, actual SIGKILL/relaunch
+unchanged 14-scenario matrix for the Offline 0.6.0 candidate, trusted HTTPS
+response-drop fixture, actual SIGKILL/relaunch
 protocol, capture-time installed-byte check, and private signed-original
 custody through release verification. Those operations have **not** been
 performed by the source change.

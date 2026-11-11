@@ -1,10 +1,12 @@
-# Receipt physical matrix for offline 0.5.0
+# Offline receipt physical matrix
 
 The dedicated `integration_test/physical_receipt_matrix_test.dart` target,
 the fixed 14-ID per-platform matrix in `support/receipt_scenarios.dart`,
-and the paired-marker release check implement #1586. Offline 0.4.0 completed
-its earlier 12-ID matrix and publication in #1399; those records cannot
-qualify this contribution Delete release. The new targets qualify Android
+and the paired-marker release check implement #1586, completed by published
+Offline 0.5.0. The current 0.6.0 candidate must execute this unchanged matrix
+on its own final source. Offline 0.4.0 completed its earlier 12-ID matrix
+and publication in #1399; earlier-release records cannot
+qualify the current Offline 0.6.0 candidate. The targets qualify Android
 and iPhone only after the exact frozen commit is
 run on both physical devices and its signed originals are retained in the
 private local capture described below. The existing smoke/CDC results and the

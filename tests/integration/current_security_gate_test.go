@@ -108,9 +108,39 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		command.Dir = filepath.Join("..", "..")
 	}
 	command.Env = append(os.Environ(), "LANTERN_CURRENT_FIXTURE_DIR="+dir, "LANTERN_CURRENT_FIXTURE_ISSUER="+f.provider.URL)
-	out, err := command.CombinedOutput()
+	var out []byte
+	publicSlots := make(map[*httptest.Server]int)
+	// Three initial servers and one ordinary member-2 restart spare stay
+	// continuously owned across independent CONTROL export and native startup.
+	// Renewal and the SDK4/operational restart are mutually exclusive campaigns.
+	publicServers, releasePublic, err := prepareCurrentGatePublicServers(4, func(id int) (*httptest.Server, error) {
+		server, err := newCurrentGatePublicServer(id, serving, net.Listen)
+		if err == nil {
+			publicSlots[server] = id
+			role := "initial"
+			if id == 4 {
+				role = "member-2-restart-spare"
+			}
+			t.Logf("current_public_reservation slot=%d role=%s address=%s", id, role, server.Listener.Addr())
+		}
+		return server, err
+	}, func() error {
+		var exportErr error
+		out, exportErr = command.CombinedOutput()
+		return exportErr
+	})
 	if err != nil {
-		t.Fatalf("independent provisioning export: %v\n%s", err, out)
+		t.Fatalf("reserve current public listeners and independent provisioning export: %v\n%s", err, out)
+	}
+	t.Cleanup(releasePublic)
+	restartPublicUsed := false
+	restartPublic := func(id int) *httptest.Server {
+		t.Helper()
+		if id != 2 || restartPublicUsed {
+			t.Fatal("only one preowned member-2 public restart is declared")
+		}
+		restartPublicUsed = true
+		return publicServers[3]
 	}
 	prepareAuthorityWireSecurityMaterial(t, dir)
 	if serving != nil {
@@ -154,7 +184,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var exportBoundary atomic.Pointer[currentExportBoundary]
 	transport := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
 	futureIssuer := f.provider.URL + "/unregistered-after-initialization"
-	startNode := func(id int, mode string) {
+	consumedPublicSlots := make(map[int]bool)
+	startNode := func(id int, mode string, s *httptest.Server) {
+		slot, reserved := publicSlots[s]
+		if !reserved || consumedPublicSlots[slot] {
+			t.Fatal("current constructor requires one unused preowned public server")
+		}
+		consumedPublicSlots[slot] = true
+		t.Logf("current_public_adoption node=%d mode=%s slot=%d address=%s", id, mode, slot, s.Listener.Addr())
 		startup, err := provider.NewConfig()
 		if err != nil {
 			t.Fatal("captured operational startup values", id, err)
@@ -415,16 +452,6 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		operationalNodes = append(operationalNodes, operational)
 		workerStops = append(workerStops, operational.stop)
 		t.Cleanup(operational.stop)
-		s := httptest.NewUnstartedServer(nil)
-		if serving != nil && id == 1 {
-			if err := s.Listener.Close(); err != nil {
-				t.Fatal(err)
-			}
-			s.Listener, err = net.Listen("tcp4", fmt.Sprintf("0.0.0.0:%d", serving.ListenPort))
-			if err != nil {
-				t.Fatal("selected native TLS listener unavailable", err)
-			}
-		}
 		rateOwners = append(rateOwners, rateOwner)
 		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, validator, rateOwner, nil, nil, slowOwner, provider.NewHealthChecker(), logger, public, rateRecovery)
 		if err != nil {
@@ -473,6 +500,8 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		} else {
 			s.Start()
 		}
+		// Keep the existing adopted-server cleanup order. The inventory also
+		// closes unused/partial reservations; httptest.Server.Close is idempotent.
 		t.Cleanup(s.Close)
 		if expandedOperationalProof {
 			operational.start()
@@ -515,7 +544,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	}
 	for id := 1; id <= 3; id++ {
-		startNode(id, "resume")
+		startNode(id, "resume", publicServers[id-1])
 	}
 	timeout := 180 * time.Second
 	if serving != nil {
@@ -589,7 +618,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	}
 	if renewal {
 		runCurrentMembershipGate(t, f, dir, servers, runtimes, workerStops, func(id int) (*httptest.Server, *provider.SecurityRuntime, func()) {
-			startNode(id, "resume")
+			startNode(id, "resume", restartPublic(id))
 			last := len(runtimes) - 1
 			return servers[last], runtimes[last], workerStops[last]
 		})
@@ -1512,7 +1541,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("conflicting startup rate environment was not loaded", err)
 			}
 		}
-		startNode(2, "resume")
+		startNode(2, "resume", restartPublic(2))
 		last := len(runtimes) - 1
 		runtimes[1], stops[1], servers[1], controls[1] = runtimes[last], stops[last], servers[last], controls[last]
 		servingLoggers[1] = servingLoggers[last]
