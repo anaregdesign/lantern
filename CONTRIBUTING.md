@@ -1248,7 +1248,11 @@ repeat manual publication for a later version, reuse a published tag, or put
 a pub token in GitHub Secrets, CI, or the repository.
 
 **Dart publishing status.** The parent `lantern_client` 0.5.0 is published and
-its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
+its exact-tag archive has been verified. Parent `0.5.1` is the pending patch
+candidate for the paused-watch test repair (#2142); it still requires fresh
+same-source Android/iPhone contribution evidence, its four-file child, protected
+publication and archive verification. The published `0.5.0` tag/archive remains
+immutable. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
 manual `dart pub publish`. Immediately before tagging, check
@@ -1259,9 +1263,10 @@ already exist. Never force-move a published Dart tag/version—bump patch.
 uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
 targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
 its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
-typed undisclosed acceptance to the published parent 0.5.0 and hosted `^0.5.0`.
-The committed offline hosted lock is generated against that actual published
-parent and its registry archive checksum. A generated lock alone does not
+typed undisclosed acceptance to parent `^0.5.1`. That parent patch is not yet
+published, and the committed offline hosted lock still selects published
+`0.5.0`. After `0.5.1` publication and archive equality, regenerate the hosted
+lock against its actual registry archive checksum. A generated lock alone does not
 qualify the independent 0.6.0 archive, physical or publication exits. Review
 hosted-lock preparation through the ordinary PR/main gates and require the
 separate hosted archive qualification before freezing the offline device candidate. The bounded commands are in the

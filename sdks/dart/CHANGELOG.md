@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+- Make the watch overflow/revalidation and sharing/cancellation regressions wait
+  for observed poll and delivery events while retaining their poll intervals and
+  mailbox capacity (#2142, #2143).
+- Cancel the test subscription before client teardown, including failed
+  assertions.
+
 ## 0.5.0
 
 - Add common CRUD/traversal, read-source, mutation-result and observation

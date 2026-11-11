@@ -14,7 +14,8 @@
   disabled. SQLite and native installation policy remain outside this
   storage-neutral package.
 
-- Require the typed acceptance API in parent `lantern_client ^0.5.0`.
+- Require parent `lantern_client ^0.5.1`; its typed acceptance API was introduced
+  in `0.5.0`.
 - Persist terminal `acceptedUndisclosed` acknowledgements in operation schema
   v3, retaining strict v1/v2 decoding. Retire the owned outbox and overlay,
   invalidate confirmed cache, preserve no effect/result, and never resend.
