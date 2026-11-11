@@ -1,6 +1,7 @@
 .dart_tool/
 build/
 doc/api/
+docs/
 test/
 tool/
 pubspec.lock

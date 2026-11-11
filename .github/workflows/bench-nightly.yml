@@ -81,7 +81,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           check-latest: true
       - name: Test early harness contracts
         run: python3 -B .github/scripts/harness_contracts.py --group bench-time --group release-binaries --evidence "$RUNNER_TEMP/harness-contracts"

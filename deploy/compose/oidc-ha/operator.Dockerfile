@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Build this external operator from the SAME checkout as the serving image.
-FROM golang:1.27.3-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum go.work go.work.sum* ./
 COPY core/go.mod core/go.sum ./core/
