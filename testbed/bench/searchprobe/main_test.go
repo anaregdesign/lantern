@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -223,32 +225,66 @@ func (b *blockingSearchClient) SearchVerticesPage(context.Context, string, ...cl
 func (b *blockingSearchClient) Close() error { return nil }
 
 func TestVerifyReplicasRunsConcurrentlyAndReportsCheckCategory(t *testing.T) {
-	started := make(chan struct{}, 3)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	report := verifyReplicas(ctx, "pre", []string{"a", "b", "c"}, func(string) (searchClient, error) {
-		return &blockingSearchClient{started: started}, nil
-	})
-	if len(started) != 3 {
-		t.Fatalf("started replicas = %d, want 3", len(started))
-	}
-	if report.Verdict != "fail" || len(report.Replicas) != 3 {
-		t.Fatalf("report = %+v", report)
-	}
-	for _, replica := range report.Replicas {
-		if replica.Verdict != "fail" || replica.Failure != "live_sentinel" {
-			t.Errorf("replica = %+v", replica)
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{}, 3)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		report := verifyReplicas(ctx, "pre", []string{"a", "b", "c"}, func(string) (searchClient, error) {
+			return &blockingSearchClient{started: started}, nil
+		})
+		if len(started) != 3 {
+			t.Fatalf("started replicas = %d, want 3", len(started))
 		}
-	}
+		if report.Verdict != "fail" || len(report.Replicas) != 3 {
+			t.Fatalf("report = %+v", report)
+		}
+		for _, replica := range report.Replicas {
+			if replica.Verdict != "fail" || replica.Failure != "live_sentinel" {
+				t.Errorf("replica = %+v", replica)
+			}
+		}
+	})
 }
 
 func TestWaitForChecksPreservesSemanticFailureAtDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	err := waitForChecks(ctx, &fakeSearcher{})
-	if err == nil || !strings.Contains(err.Error(), "live_sentinel") {
-		t.Fatalf("error = %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		searcher := &fakeSearcher{responses: [][]client.SearchHit{nil}}
+		err := waitForChecks(ctx, searcher)
+		if searcher.call != 1 {
+			t.Fatalf("search calls = %d, want 1", searcher.call)
+		}
+		if err == nil || !strings.Contains(err.Error(), "live_sentinel") {
+			t.Fatalf("error = %v", err)
+		}
+		var failure *semanticFailure
+		if !errors.As(err, &failure) || failure.name != "live_sentinel" {
+			t.Fatalf("semantic failure = %v, want live_sentinel", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want context deadline exceeded", err)
+		}
+	})
+}
+
+func TestWaitForChecksAlreadyExpiredSkipsSearch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 0)
+		defer cancel()
+		searcher := &fakeSearcher{responses: [][]client.SearchHit{nil}}
+		err := waitForChecks(ctx, searcher)
+		if searcher.call != 0 || searcher.pageCall != 0 {
+			t.Fatalf("search calls = %d, page calls = %d, want none", searcher.call, searcher.pageCall)
+		}
+		var failure *semanticFailure
+		if !errors.As(err, &failure) || failure.name != "unknown" {
+			t.Fatalf("semantic failure = %v, want unknown", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want context deadline exceeded", err)
+		}
+	})
 }
 
 func TestFailureReportIsBounded(t *testing.T) {
