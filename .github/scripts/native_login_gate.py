@@ -107,9 +107,10 @@ def write_private(path, value):
         output.write(value)
 
 
-def source_identity(root):
+def source_identity(root, *, timeout=None):
     """Hash actual tracked/untracked nonignored bytes, including dirty edits."""
-    names = subprocess.check_output(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=root).split(b"\0")
+    budget = {"timeout": timeout} if timeout is not None else {}
+    names = subprocess.check_output(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=root, **budget).split(b"\0")
     digest = hashlib.sha256()
     for name in sorted(set(names) - {b""}):
         path = root / os.fsdecode(name)
