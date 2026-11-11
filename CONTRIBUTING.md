@@ -630,6 +630,13 @@ The current local79 remains controlled; mandatory selected PR/main and exact
 release/selected-environment normal qualification remain blocking. No repeated
 normal physical bootstrap, ad hoc external NTP diagnostic or retry loop is added.
 
+The separate [controlled-time real Google component profile](docs/controlled-google-native.md)
+(#2138) composes the real App and public-root production Fetcher with the tagged
+loopback time source. Its distinct descriptor exports no credentials and cannot
+qualify real UTC, normal source integration, full provider cases or registration.
+It requires a new cohort and verified seed/source/build/owner admission; the
+existing synthetic fixture and normal serving contracts remain unchanged.
+
 `configured-source-integration` prebuilds SDK dependencies, then uses the fixed time
 source and normal constructor. Each owner must acquire its own fresh anchor. Complete
 process-owned counters record attempts, actual UDP writes and installations separately

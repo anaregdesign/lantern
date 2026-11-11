@@ -153,6 +153,17 @@ jobs:
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
         run: python3 -B .github/scripts/verify_bench_heap.py
 
+      - name: Controlled Google profile input and lifecycle contracts
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        working-directory: server
+        env:
+          CONTROLLED_GOOGLE_EXPECTED_REVISION: ${{ github.sha }}
+        # Pure cases only: no opt-in child, provider, native time or listener.
+        # Keep the independent 79-step local plan and normal qualification intact.
+        run: |
+          test -n "$CONTROLLED_GOOGLE_EXPECTED_REVISION"
+          go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledGoogleRevision=$CONTROLLED_GOOGLE_EXPECTED_REVISION" -run '^TestControlledGoogle(BuildRevision|Counters|ExactDefaultGenesis|CaptureFailureFinalizes|InputFailsBeforeComposition)$' -count=1 ./cmd
+
       - name: Native provider session wire fixture
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
         run: python3 -B .github/scripts/native_login_gate.py --evidence "$RUNNER_TEMP/native-login"
