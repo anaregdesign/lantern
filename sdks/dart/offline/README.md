@@ -223,8 +223,9 @@ The published `0.5.0` contribution Delete release uses hosted
 [#1586](https://github.com/anaregdesign/lantern/issues/1586).
 The in-flight `0.6.0` Head-managed acceptance candidate requires the parent
 `lantern_client ^0.5.0` API. Paired-source development checks use an explicit
-test-only path override. Standalone hosted-parent lock/archive qualification
-remains pending parent publication; no override qualifies that release exit.
+test-only path override. Parent 0.5.0 is published and the committed hosted
+lock is generated against its actual registry archive. Independent hosted
+archive qualification remains a separate release gate; no override qualifies it.
 The maintained
 Flutter example and unpublished SQLite adapter use local path overrides for
 development. The private offline OIDC binding requires package-admin
@@ -573,7 +574,8 @@ time; the Server validates policy-bound, encrypted cursors. No status/peer RPC,
 fake origin vector, dynamic API probe or offline runtime path dependency is
 used. This composition needs a parent SDK release containing WatchChanges;
 hosted archive resolution is a separate release gate. The `0.6.0` source
-candidate is validated against its paired parent until that version is hosted.
+candidate retains paired-source checks independently of its hosted parent
+archive qualification.
 
 ```dart
 // Application composition; online/offline release versions must expose these APIs.

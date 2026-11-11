@@ -7,8 +7,9 @@ published `0.3.0` identity CDC release added a dedicated CDC test and
 evidence record on each physical platform; it remains legacy Put-only. The
 receipt-bearing `0.4.0` release completed the distinct two-launch receipt
 target and paired on-device markers in #1399 and is hosted on pub.dev. The
-`0.5.0` contribution Delete candidate (#1586) requires fresh smoke, CDC,
-and receipt records on its own final source; 0.4.0 evidence cannot qualify it.
+`0.5.0` contribution Delete release completed #1586. The current `0.6.0`
+candidate requires fresh smoke, CDC and receipt records on its own final
+source; earlier-release evidence cannot qualify it.
 
 The existing [physical-device smoke guide](physical-device-smoke.md) defines the
 evidence schema and historical observations. Earlier h2c or simulator results
@@ -17,10 +18,12 @@ both physical platforms pass this matrix on one exact clean code commit.
 
 ## Parent publication and hosted lock refresh
 
-The 0.6.0 offline candidate requires parent `lantern_client ^0.5.0`. Its
-committed hosted lock still records 0.4.1; that is pending, not a valid hosted
-qualification. Source CI uses the separately generated paired-source lock and
-restores the hosted lock afterwards. A path override never qualifies publication.
+The 0.6.0 offline candidate requires parent `lantern_client ^0.5.0`. Parent
+0.5.0 is published with verified archive equality, and the committed hosted
+lock is generated against its actual registry archive. Source CI still uses
+the separately generated paired-source lock and restores the hosted lock
+afterwards. Neither a generated lock nor a path override qualifies the
+independent offline archive or publication exit.
 
 When a parent release is separately authorized, pass paired-source offline,
 isolated parent archive, package and native gates first. Publish the parent
@@ -245,10 +248,11 @@ Commit **only** those eight content-free records/markers (and an optional
 adjacent README) as the immediate child of the exact tested code commit.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
-manifests, and absence of changed code. The parent `lantern_client 0.4.1`
-is hosted on pub.dev. Offline `0.4.0` is already published and cannot be
-reused for this contribution Delete release. The example's offline `^0.5.0`
-dependency and lock describe the new candidate. Each platform must pass
+manifests, and absence of changed code. Parent `lantern_client 0.5.0` is
+hosted on pub.dev with verified archive equality. Published Offline `0.5.0`
+evidence retains its original source and cannot qualify this `0.6.0`
+candidate. The example's offline `^0.6.0` dependency and local path lock
+describe that source candidate. Each platform must pass
 15 smoke, 11 CDC, and 14 receipt scenarios. Do not tag or publish until both
 actual physical receipt runs,
 verified local copies held through tag CI and hosted archive equality, and

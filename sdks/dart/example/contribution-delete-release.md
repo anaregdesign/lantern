@@ -79,6 +79,11 @@ verification; discard and rerun evidence older than 30 days.
 
 ## Tag and publication
 
+Parent 0.5.0 publication and hosted-archive equality are complete. Its tag
+remains immutable. The 0.5.0-specific commands below record that release's
+historical procedure; future parent releases use their own unused version
+with the same unchanged gates.
+
 After both captures pass, commit only `android.json`, `android-marker.json`,
 `ios.json` and `ios-marker.json` under `example/evidence/contribution-delete/`
 as the immediate evidence-only child of the tested source. Before pushing
