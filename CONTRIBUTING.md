@@ -1249,8 +1249,8 @@ a pub token in GitHub Secrets, CI, or the repository.
 
 **Dart publishing status.** The parent `lantern_client` 0.5.1 is published and
 its exact-tag archive has been verified ([Release](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/v0.5.1); #2142).
-The published `0.5.0` tag/archive remains immutable. The one-time manual first
-publish completed with `0.1.0`,
+The published `0.5.0` tag/archive remains immutable.
+The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
 manual `dart pub publish`. Immediately before tagging, check
