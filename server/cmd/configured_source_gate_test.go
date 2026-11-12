@@ -93,11 +93,8 @@ func TestOFFConfiguredSourceChild(t *testing.T) {
 	if err != nil || !configuration.Configuration(nonce) {
 		t.Fatal("invalid source configuration")
 	}
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(strings.ToUpper(key), "LANTERN_") {
-			_ = os.Unsetenv(key)
-		}
+	if _, err := neutralizeInheritedProfileControls(); err != nil {
+		t.Fatal("source inherited profile controls unavailable")
 	}
 	for _, entry := range configuration.Environment {
 		key, value, _ := strings.Cut(entry, "=")

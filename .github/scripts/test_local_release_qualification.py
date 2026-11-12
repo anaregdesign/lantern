@@ -406,6 +406,8 @@ class EnvironmentAndEvidenceTest(unittest.TestCase):
                     "GOWORK": "/foreign", "GOENV": "/foreign-env", "BASH_ENV": "/inject",
                     "GIT_CONFIG_KEY_0": "remote.origin.url", "GOPROXY": "https://secret@example.invalid",
                     "HTTPS_PROXY": "secret-proxy", "GOTOOLCHAIN": "auto"}
+        original.update(CONTROLLED_GOOGLE_CHILD_INPUT="/untrusted/google.json", CONTROLLED_NATIVE_PROVIDER_DESCRIBE="1",
+                        CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT="/untrusted/native.json")
         env, removed = qualification.clean_environment(original, Path("/frozen"), "manual-test", "0-3")
         self.assertEqual(env["GOWORK"], "/frozen/go.work")
         self.assertEqual(env["GOFLAGS"], "")
@@ -413,6 +415,7 @@ class EnvironmentAndEvidenceTest(unittest.TestCase):
         self.assertEqual(env["SNAPSHOT_ROUNDS"], "3")
         self.assertEqual(env["RELEASE_BENCH_BUDGET_SECONDS"], "0")
         self.assertNotIn("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER", env)
+        self.assertFalse(any(key.startswith(("CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_")) for key in env))
         self.assertEqual(env["HTTPS_PROXY"], "secret-proxy")
         self.assertEqual(env["GOPROXY"], original["GOPROXY"])
         self.assertNotIn("secret", json.dumps(removed))

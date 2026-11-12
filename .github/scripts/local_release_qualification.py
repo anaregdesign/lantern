@@ -155,7 +155,7 @@ def clean_environment(original, source, campaign, cpuset):
                   "PYTHONOPTIMIZE", "PYTHONPYCACHEPREFIX", "PYTHONWARNINGS", "RUN_BENCH_LOCAL_TIME_GATE"})
     for key in list(env):
         if key in exact or key.startswith(("LANTERN_", "EXPECTED_LANTERN_", "GIT_CONFIG_KEY_",
-                                          "GIT_CONFIG_VALUE_", "BASH_FUNC_")):
+                                          "GIT_CONFIG_VALUE_", "BASH_FUNC_", "CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_")):
             removed.append(key)
             del env[key]
     env.update(GOFLAGS="", GOWORK=str(source / "go.work"), GOENV="off", PYTHONNOUSERSITE="1",

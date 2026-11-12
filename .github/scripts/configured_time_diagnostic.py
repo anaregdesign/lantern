@@ -128,7 +128,7 @@ def main():
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         print('{"verdict":"environment_refused"}')
         return 1
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("LANTERN_")}
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith(("LANTERN_", "CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_"))}
     environment.update(GOFLAGS="", GOWORK=str(ROOT / "go.work"), GOOS="darwin", GOARCH="arm64", LANTERN_CI_DISPOSABLE_SOURCE_INPUT="github-hosted", LANTERN_TEST_CONFIGURED_TIME_UPSTREAM="1")
     directory = Path(tempfile.mkdtemp(prefix="lantern-native-time-private-", dir=temporary))
     directory.chmod(0o700)

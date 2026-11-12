@@ -405,9 +405,9 @@ an already dispatched intent to repair a fixture failure. OFF-mode implicit
 endpoint creation remains covered separately by maintained SDK wire tests.
 
 `integration_test/physical_identity_cdc_test.dart` is an opt-in native Android/iOS
-test of the production `LanternClientIdentitySource` and platform SQLite. Run it
-from a clean checkout with an authenticated endpoint that routes Subscribe,
-GetReplicationStatus, GetVertices, and GetEdges to one real responder. The
+test of the production `LanternScopedChangeSource`, `consumeScopedChanges` and
+platform SQLite. Run it from a clean checkout with an authenticated endpoint
+that routes public WatchChanges, GetVertices, and GetEdges to one real responder. The
 operator must establish that route; the stream frame cannot prove it. Use a
 platform-trusted HTTPS endpoint and a runtime token BFF that issues a distinct
 valid token on the test's post-checkpoint refresh. The responder must accept

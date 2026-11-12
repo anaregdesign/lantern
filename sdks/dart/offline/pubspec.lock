@@ -157,10 +157,10 @@ packages:
     dependency: "direct main"
     description:
       name: lantern_client
-      sha256: e5ffe827ae5923bb56058d53d550bb9fa03cf4a39d5804a43a5407ce42bafcd0
+      sha256: "6b7df2ff0df2d6af1792f3e9907e0e89909ed75b6e5c5245637c9c952e9d6186"
       url: "https://pub.dev"
     source: hosted
-    version: "0.5.0"
+    version: "0.5.1"
   lints:
     dependency: "direct dev"
     description:

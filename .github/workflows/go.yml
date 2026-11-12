@@ -162,7 +162,18 @@ jobs:
         # Keep the independent 79-step local plan and normal qualification intact.
         run: |
           test -n "$CONTROLLED_GOOGLE_EXPECTED_REVISION"
-          go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledGoogleRevision=$CONTROLLED_GOOGLE_EXPECTED_REVISION" -run '^TestControlledGoogle(BuildRevision|Counters|ExactDefaultGenesis|CaptureFailureFinalizes|InputFailsBeforeComposition)$' -count=1 ./cmd
+          go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledGoogleRevision=$CONTROLLED_GOOGLE_EXPECTED_REVISION" -run '^TestControlledGoogle(BuildRevision|Counters|ExactDefaultGenesis|CaptureFailureFinalizes|InputFailsBeforeComposition|ReadinessContracts)$' -count=1 ./cmd
+
+      - name: Controlled real-native provider input and lifecycle contracts
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        working-directory: server
+        env:
+          CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION: ${{ github.sha }}
+        # Pure cases only. Child and passive description require a separate
+        # reviewed build/runtime ceremony and are excluded from this selector.
+        run: |
+          test -n "$CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION"
+          go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledNativeProviderRevision=$CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION" -run '^(TestControlledNativeProvider(BuildRevision|Contracts|InputBoundaries|CohortContracts|CaptureFailureFinalizes|WindowContracts)|TestInheritedProfileControlsNeutralized)$' -count=1 ./cmd
 
       - name: Native provider session wire fixture
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}

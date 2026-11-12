@@ -20,7 +20,7 @@ class Child:
         self.queue = queue.Queue(16)
         self.stdout_path = Path(directory) / f"child-{slot}.stdout"
         self.stderr_path = Path(directory) / f"child-{slot}.stderr"
-        env = {k: v for k, v in os.environ.items() if not k.upper().startswith("LANTERN_")}
+        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("LANTERN_", "CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_"))}
         env["OFF_SOURCE_CHILD_NONCE"] = nonce
         env.pop("OFF_SOURCE_CHILD_IDENTITY", None)
         self.stderr = self.stderr_path.open("xb")

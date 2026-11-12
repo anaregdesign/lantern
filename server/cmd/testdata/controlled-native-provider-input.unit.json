@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "profile": "controlled-real-native-providers",
+  "mode": "initialize",
+  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "nonce": "1111111111111111111111111111111111111111111111111111111111111111",
+  "config_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "seed_identity_sha256": "73f8552208125032a26781e616fb378154281b82c4262ac78351977b2899e50e",
+  "roles_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "service_origin": "https://unit.invalid:24443",
+  "android_package": "invalid.unit.android",
+  "profile_ids": [
+    "google_android",
+    "google_ios",
+    "apple_android",
+    "apple_ios"
+  ],
+  "lifetime_seconds": 60,
+  "planned_stop_at": "2026-11-12T00:01:00Z",
+  "cleanup_by": "2026-11-12T00:01:20Z",
+  "secret_value_sha256": {
+    "unit_browser": "1a30ada9d122137507a7cf50d8743e7982b23c077cbc29e4aaa824c8e5a22b6d",
+    "unit_apple_android": "7fc5411aa0fb047b139dd49d5237a5cf0a3c5bb6bf447703794c7c840093de90",
+    "unit_apple_ios": "1cd0d235879be11ff584ff343c3325ece476536ab3c36b405d1debe9a00dd3bf"
+  },
+  "browser_client_id": "987654321000-unitgooglebrowser.apps.googleusercontent.com",
+  "native_client_id": "123456789000-unitgooglenative.apps.googleusercontent.com",
+  "android_client_id": "123456789000-unitgoogleandroid.apps.googleusercontent.com",
+  "ios_client_id": "123456789000-unitgoogleios.apps.googleusercontent.com",
+  "apple_android_client_id": "invalid.unit.service",
+  "apple_ios_client_id": "invalid.unit.bundle",
+  "browser_secret_ref": "unit_browser",
+  "apple_android_secret_ref": "unit_apple_android",
+  "apple_ios_secret_ref": "unit_apple_ios"
+}
