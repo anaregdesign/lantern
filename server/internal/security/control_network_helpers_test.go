@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,17 +27,18 @@ import (
 // Shared by source-paired tests and the M/P/B/TLS/process integration gates.
 // The original H issuer remains the inherited test-only S2-C fixture.
 type s3aTestNetwork struct {
-	t         *testing.T
-	f         *s2cTestFixture
-	dir       string
-	clock     atomic.Int64
-	operator  ed25519.PrivateKey
-	ca        *x509.Certificate
-	caKey     ed25519.PrivateKey
-	manifest  peerauth.ControlManifest
-	configs   map[uint32]s3aConfig
-	nodes     map[uint32]*s3aOwner
-	listeners map[uint32]net.Listener
+	t           *testing.T
+	f           *s2cTestFixture
+	dir         string
+	clock       atomic.Int64
+	operator    ed25519.PrivateKey
+	ca          *x509.Certificate
+	caKey       ed25519.PrivateKey
+	manifest    peerauth.ControlManifest
+	configs     map[uint32]s3aConfig
+	nodes       map[uint32]*s3aOwner
+	listeners   map[uint32]net.Listener
+	dialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 func s3aTestCluster(t *testing.T, change func(uint32, *s3aConfig)) *s3aTestNetwork {
@@ -46,7 +48,22 @@ func s3aTestCluster(t *testing.T, change func(uint32, *s3aConfig)) *s3aTestNetwo
 
 func s3aTestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConfig)) *s3aTestNetwork {
 	t.Helper()
+	return newS3ATestClusterMembers(t, count, change, false)
+}
+
+// The pipe profile changes raw I/O only. Owners still start their real TLS
+// listener and every client retains ordinary authenticated peer admission.
+func s3aTestPipeCluster(t *testing.T, change func(uint32, *s3aConfig)) *s3aTestNetwork {
+	t.Helper()
+	return newS3ATestClusterMembers(t, 3, change, true)
+}
+
+func newS3ATestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConfig), usePipe bool) *s3aTestNetwork {
+	t.Helper()
 	n := &s3aTestNetwork{t: t, f: s2cTestCluster(t, count), dir: t.TempDir(), configs: map[uint32]s3aConfig{}, nodes: map[uint32]*s3aOwner{}, listeners: map[uint32]net.Listener{}}
+	if usePipe {
+		n.dialContext = n.dialPipe
+	}
 	now := time.Now().UTC()
 	n.clock.Store(now.UnixNano())
 	caPub, caKey, err := ed25519.GenerateKey(rand.Reader)
@@ -77,9 +94,17 @@ func s3aTestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConf
 		// Reserve one maximum representable broadcast for the original set.
 		maxFrame := min(c.Trust.bounds.PayloadBytes, uint64(s2cMessageOverhead)+c.Trust.bounds.ProofBytes+c.Trust.bounds.HistoricalBytes)
 		c.OutboxBytes = max(c.OutboxBytes, uint64(count)*maxFrame)
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
+		var listener net.Listener
+		if usePipe {
+			listener = &s3aTestPipeListener{
+				address:  &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 48000 + int(id)},
+				incoming: make(chan net.Conn), closed: make(chan struct{}),
+			}
+		} else {
+			listener, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 		n.listeners[id] = listener
 		pub, key, err := ed25519.GenerateKey(rand.Reader)
@@ -125,6 +150,14 @@ func s3aTestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConf
 		n.configs[id] = c
 	}
 	t.Cleanup(func() {
+		if usePipe {
+			// HTTP may already have unregistered a TLS connection whose close
+			// notification is still blocked. Close every owned raw endpoint
+			// before joining owners; no peer TLS write may escape the bubble.
+			for _, listener := range n.listeners {
+				_ = listener.Close()
+			}
+		}
 		for _, o := range n.nodes {
 			if o != nil {
 				_ = o.Close()
@@ -153,6 +186,9 @@ func (n *s3aTestNetwork) start(id uint32) *s3aOwner {
 		n.t.Fatal("create", id, err)
 	}
 	n.nodes[id] = o
+	if n.dialContext != nil {
+		o.client = o.membership.NewHTTPClientWithDialContext(o.identity.certificate, o.identity.roots, n.dialContext)
+	}
 	if err := o.Start(n.listeners[id]); err != nil {
 		n.t.Fatal("start", id, err)
 	}
@@ -225,4 +261,95 @@ func (n *s3aTestNetwork) certificate(identity string) tls.Certificate {
 		n.t.Fatal(err)
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// Channels and pipe deadlines belong to the caller's synctest bubble. No
+// connection fallback, TLS substitution or deadline suppression is permitted.
+type s3aTestPipeListener struct {
+	address     net.Addr
+	incoming    chan net.Conn
+	closed      chan struct{}
+	once        sync.Once
+	mu          sync.Mutex
+	connections []net.Conn
+}
+
+func (l *s3aTestPipeListener) Accept() (net.Conn, error) {
+	select {
+	case connection := <-l.incoming:
+		select {
+		case <-l.closed:
+			_ = connection.Close()
+			return nil, net.ErrClosed
+		default:
+			return connection, nil
+		}
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *s3aTestPipeListener) Close() error {
+	l.once.Do(func() {
+		l.mu.Lock()
+		close(l.closed)
+		connections := l.connections
+		l.connections = nil
+		l.mu.Unlock()
+		// These are raw pipe endpoints, not tls.Conn: closing them releases
+		// either side's pending close_notify without another TLS write.
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+	})
+	return nil
+}
+
+func (l *s3aTestPipeListener) Addr() net.Addr { return l.address }
+
+func (l *s3aTestPipeListener) dial(ctx context.Context) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	client, server := net.Pipe()
+	l.mu.Lock()
+	select {
+	case <-l.closed:
+		l.mu.Unlock()
+		_ = client.Close()
+		_ = server.Close()
+		return nil, net.ErrClosed
+	default:
+		// Registration and terminal ownership are serialized before handoff.
+		l.connections = append(l.connections, client, server)
+		l.mu.Unlock()
+	}
+	select {
+	case l.incoming <- server:
+		return client, nil
+	case <-ctx.Done():
+		_ = client.Close()
+		_ = server.Close()
+		return nil, ctx.Err()
+	case <-l.closed:
+		_ = client.Close()
+		_ = server.Close()
+		return nil, net.ErrClosed
+	}
+}
+
+func (n *s3aTestNetwork) dialPipe(ctx context.Context, network, address string) (net.Conn, error) {
+	if network != "tcp" {
+		return nil, fmt.Errorf("test pipe refuses network %q", network)
+	}
+	for _, listener := range n.listeners {
+		if listener.Addr().String() == address {
+			pipe, ok := listener.(*s3aTestPipeListener)
+			if !ok {
+				return nil, fmt.Errorf("test pipe refuses non-pipe listener")
+			}
+			return pipe.dial(ctx)
+		}
+	}
+	return nil, fmt.Errorf("test pipe refuses undeclared destination %q", address)
 }

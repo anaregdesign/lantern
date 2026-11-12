@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -278,4 +280,81 @@ func transportDeadlineFixture(t *testing.T, expiry time.Duration, handler http.H
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
 	return store, clock, NewHTTPClient(store, tls.Certificate{}, roots), server.URL
+}
+
+func TestWorkloadTransportInjectedDialPreservesTLSAndAdmission(t *testing.T) {
+	store, _, ordinary, origin := transportDeadlineFixture(t, time.Minute, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "admitted")
+	}))
+	baseline := ordinary.Transport.(*workloadTransport)
+	var dials atomic.Int32
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dials.Add(1)
+		if network != "tcp" || address != origin[len("https://"):] {
+			return nil, errors.New("unexpected raw dial destination")
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	injected := NewHTTPClientWithDialContext(store, baseline.certificate, baseline.roots, dial)
+	// Reassigning the caller's variable cannot change this client's dependency.
+	replacementError := errors.New("replacement dial must not be used by the original client")
+	dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, replacementError
+	}
+	replacement := NewHTTPClientWithDialContext(store, baseline.certificate, baseline.roots, dial)
+	replacementRequest, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, origin+"/replacement", nil)
+	if _, err := replacement.Do(replacementRequest); !errors.Is(err, replacementError) {
+		t.Fatal("new client did not retain its own replacement dependency", err)
+	}
+	request, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, origin+"/ordinary", nil)
+	response, err := ordinary.Do(request)
+	if err != nil {
+		t.Fatal("ordinary default client", err)
+	}
+	_ = response.Body.Close()
+	if dials.Load() != 0 {
+		t.Fatal("injected dependency leaked into ordinary client")
+	}
+	for _, publicCredential := range []bool{false, true} {
+		url := "https://127.0.0.1:1/refused"
+		if publicCredential {
+			url = origin + "/refused"
+		}
+		request, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+		if publicCredential {
+			request.Header.Set("Authorization", "public credential")
+		}
+		if _, err := injected.Do(request); err == nil || dials.Load() != 0 {
+			t.Fatal("unapproved request reached injected dial", publicCredential, dials.Load(), err)
+		}
+	}
+	request, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, origin+"/injected", nil)
+	response, err = injected.Do(request)
+	if err != nil {
+		t.Fatal("approved injected raw dial", err)
+	}
+	defer func(body io.ReadCloser) { _ = body.Close() }(response.Body)
+	admission, ok := ResponseAdmission(response)
+	if !ok || admission.Check(t.Context()) != nil || response.TLS == nil || !response.TLS.HandshakeComplete || response.TLS.Version != tls.VersionTLS13 || len(response.TLS.VerifiedChains) == 0 {
+		t.Fatal("raw dial bypassed genuine TLS or response admission")
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "admitted" || dials.Load() != 1 {
+		t.Fatal("injected request body or single dial", string(body), dials.Load(), err)
+	}
+	var untrustedHTTP atomic.Int32
+	untrusted := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { untrustedHTTP.Add(1) }))
+	defer untrusted.Close()
+	wrongTLS := NewHTTPClientWithDialContext(store, baseline.certificate, baseline.roots, func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, untrusted.Listener.Addr().String())
+	})
+	request, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, origin+"/wrong-tls", nil)
+	response, err = wrongTLS.Do(request)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	if !errors.As(err, &unknownAuthority) || untrustedHTTP.Load() != 0 {
+		t.Fatal("injected raw connection bypassed certificate trust", untrustedHTTP.Load(), err)
+	}
 }

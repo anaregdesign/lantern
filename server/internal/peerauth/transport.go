@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -16,7 +17,15 @@ import (
 // may last up to MaxRPCLifetime; no data RPC uses this client. Avoiding pooled
 // peer connections keeps certificate/identity changes from surviving a request.
 func NewHTTPClient(store *Store, certificate tls.Certificate, roots *x509.CertPool) *http.Client {
-	return &http.Client{Transport: &workloadTransport{store: store, certificate: certificate, roots: roots},
+	return NewHTTPClientWithDialContext(store, certificate, roots, nil)
+}
+
+// NewHTTPClientWithDialContext fixes one raw-connection dependency for this
+// client. A nil dial uses the ordinary network dialer. Every request still uses
+// fresh TLS and the same certificate, origin, membership and response admission
+// checks; a raw net.Conn cannot supply or replace an Admission.
+func NewHTTPClientWithDialContext(store *Store, certificate tls.Certificate, roots *x509.CertPool, dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
+	return &http.Client{Transport: &workloadTransport{store: store, certificate: certificate, roots: roots, dialContext: dial},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return ErrMembership }}
 }
 
@@ -24,6 +33,7 @@ type workloadTransport struct {
 	store       *Store
 	certificate tls.Certificate
 	roots       *x509.CertPool
+	dialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -122,7 +132,7 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 			}
 		}
 	}()
-	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true,
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: t.dialContext,
 		TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second,
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: t.roots.Clone(),
 			Certificates: []tls.Certificate{t.certificate}, NextProtos: []string{"http/1.1"},
