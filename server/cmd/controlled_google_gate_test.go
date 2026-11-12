@@ -19,6 +19,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/signal"
@@ -29,6 +30,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"connectrpc.com/grpchealth"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
@@ -330,6 +333,35 @@ func controlledGoogleRunApp(run func() error) (result error) {
 
 // Only this node's ordinary auth-exempt Health route is observed here. The
 // local backend dial never replaces the production provider Fetcher/DNS/TLS.
+func controlledGoogleReadyClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{Transport: transport, Timeout: 2 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("backend redirect refused") }}
+}
+
+func controlledGoogleHealthServing(ctx context.Context, client *http.Client, origin string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+"/grpc.health.v1.Health/Check", strings.NewReader("{}"))
+	if err != nil {
+		return errors.New("controlled backend Health request refused")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Connect-Protocol-Version", "1")
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("controlled backend Health unavailable")
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(response.Body, 1025))
+	closeErr := response.Body.Close()
+	var health map[string]string
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if response.StatusCode != http.StatusOK || readErr != nil || closeErr != nil || len(raw) > 1024 || oidc.ValidateJSON(raw) != nil ||
+		decoder.Decode(&health) != nil || decoder.Decode(new(any)) != io.EOF || len(health) != 1 ||
+		(health["status"] != "SERVING" && health["status"] != "SERVING_STATUS_SERVING") {
+		return errors.New("controlled backend Health not serving")
+	}
+	return nil
+}
+
 func controlledGoogleAwaitReady(ctx context.Context, input controlledGoogleChildInput, port int) error {
 	origin, err := url.Parse(input.ServiceOrigin)
 	if err != nil || origin.Hostname() == "" {
@@ -346,20 +378,10 @@ func controlledGoogleAwaitReady(ctx context.Context, input controlledGoogleChild
 			return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 		}}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 2 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("backend redirect refused") }}
+	client := controlledGoogleReadyClient(transport)
 	for ctx.Err() == nil {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.ServiceOrigin+"/readyz", nil)
-		if err != nil {
-			return errors.New("controlled Google backend request refused")
-		}
-		response, err := client.Do(request)
-		if err == nil {
-			_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
-			closeErr := response.Body.Close()
-			if response.StatusCode == http.StatusOK && readErr == nil && closeErr == nil {
-				return nil
-			}
+		if controlledGoogleHealthServing(ctx, client, input.ServiceOrigin) == nil {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -609,4 +631,73 @@ func TestControlledGoogleInputFailsBeforeComposition(t *testing.T) {
 			t.Fatal("unbound profile input or private diagnostic leak accepted")
 		}
 	}
+}
+
+type controlledHealthRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f controlledHealthRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestControlledGoogleReadinessContracts(t *testing.T) {
+	t.Run("current dependency actually serializes a serving Health reply", func(t *testing.T) {
+		checker := grpchealth.NewStaticChecker()
+		_, handler := grpchealth.NewHandler(checker)
+		calls := 0
+		client := controlledGoogleReadyClient(controlledHealthRoundTripper(func(request *http.Request) (*http.Response, error) {
+			calls++
+			body, _ := io.ReadAll(request.Body)
+			if request.Method != http.MethodPost || request.URL.Path != "/grpc.health.v1.Health/Check" || string(body) != "{}" ||
+				request.Header.Get("Content-Type") != "application/json" || request.Header.Get("Connect-Protocol-Version") != "1" {
+				t.Fatal("UNIT readiness did not use the actual Connect Health request")
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			recorder := httptest.NewRecorder() // No listener or network is opened.
+			handler.ServeHTTP(recorder, request)
+			return recorder.Result(), nil
+		}))
+		if err := controlledGoogleHealthServing(t.Context(), client, "https://unit.invalid"); err != nil {
+			t.Fatal("UNIT actual serving serialization refused", err)
+		}
+		checker.SetStatus("", grpchealth.StatusNotServing)
+		if controlledGoogleHealthServing(t.Context(), client, "https://unit.invalid") == nil || calls != 2 {
+			t.Fatal("UNIT actual nonserving dependency response accepted")
+		}
+	})
+	for _, tc := range []struct {
+		name, body string
+		code       int
+		accept     bool
+	}{
+		{"standard serving", `{"status":"SERVING"}`, 200, true},
+		{"current prefixed serving", `{"status":"SERVING_STATUS_SERVING"}`, 200, true},
+		{"standard nonserving", `{"status":"NOT_SERVING"}`, 200, false},
+		{"prefixed nonserving", `{"status":"SERVING_STATUS_NOT_SERVING"}`, 200, false},
+		{"unknown status", `{"status":"UNKNOWN"}`, 200, false},
+		{"wrong HTTP status", `{"status":"SERVING"}`, 503, false},
+		{"empty JSON", `{}`, 200, false},
+		{"extra field", `{"status":"SERVING","extra":true}`, 200, false},
+		{"duplicate field", `{"status":"NOT_SERVING","status":"SERVING"}`, 200, false},
+		{"multiple JSON", `{"status":"SERVING"}{}`, 200, false},
+		{"oversized body", `{"status":"SERVING"}` + strings.Repeat(" ", 1025), 200, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := controlledGoogleReadyClient(controlledHealthRoundTripper(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: tc.code, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+			}))
+			if (controlledGoogleHealthServing(t.Context(), client, "https://unit.invalid") == nil) != tc.accept {
+				t.Fatal("UNIT Health response acceptance mismatch")
+			}
+		})
+	}
+	t.Run("redirect never reaches another destination", func(t *testing.T) {
+		calls := 0
+		client := controlledGoogleReadyClient(controlledHealthRoundTripper(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: 302, Header: http.Header{"Location": {"https://other.invalid/"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}))
+		if controlledGoogleHealthServing(t.Context(), client, "https://unit.invalid") == nil || calls != 1 {
+			t.Fatal("UNIT readiness followed redirect")
+		}
+	})
 }

@@ -57,7 +57,8 @@ BUILD_OUTPUT_DIRS = (".github/scripts/__pycache__/", "sdks/node/node_modules/", 
 QUALIFICATION_ENV_PREFIXES = ("LANTERN_CURRENT_", "LANTERN_NATIVE_FIXTURE_",
                               "LANTERN_TEST_CURRENT_", "LANTERN_TEST_NATIVE_",
                               "LANTERN_TIME_CHILD_", "LANTERN_PROTECTED_QUERY_",
-                              "LANTERN_CONTAINER_", "OFF_SOURCE_CHILD_")
+                              "LANTERN_CONTAINER_", "OFF_SOURCE_CHILD_",
+                              "CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_")
 QUALIFICATION_ENV_KEYS = frozenset({"LANTERN_TEST_CONFIGURED_TIME_UPSTREAM", "LANTERN_NATIVE_LOGIN_GATE",
                                    "LANTERN_AUTH_FIXTURE_COMPOSE", "LANTERN_MEMBERSHIP_PUBLISHER",
                                    "LANTERN_TEST_LAUNCH_SERVER", "LANTERN_RUST_TEST_SERVER",

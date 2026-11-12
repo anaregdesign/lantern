@@ -94,6 +94,11 @@ class SessionTest(unittest.TestCase):
             "RUN_BENCH_LOCAL_TIME_GATE": "1",
             "LANTERN_BENCH_LOCAL_TIME_MECHANISM": "1",
             "LANTERN_BENCH_LOCAL_TIME_RESULT": "/untrusted/extra-mechanism.json",
+            "CONTROLLED_GOOGLE_CHILD_INPUT": "/untrusted/google.json",
+            "CONTROLLED_GOOGLE_DESCRIBE": "1",
+            "CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT": "/untrusted/native-provider.json",
+            "CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT_SHA256": "f" * 64,
+            "CONTROLLED_NATIVE_PROVIDER_DESCRIBE": "1",
         }
         retained = {"GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org",
                     "GOCACHE": "/fixture/cache", "LANTERN_DEFAULT_TTL_SECONDS": "42",
@@ -134,6 +139,8 @@ class SessionTest(unittest.TestCase):
             "server/internal/security/control_container_gate_test.go",
             "server/internal/security/control_container_gate_helpers_test.go",
             "server/cmd/configured_source_gate_test.go",
+            "server/cmd/controlled_google_gate_test.go",
+            "server/cmd/controlled_native_provider_gate_test.go",
             "server/cmd/bench_heap_test.go",
             "server/cmd/authfixture/helpers_test.go",
             "server/cmd/authfixture/main_test.go",
@@ -150,7 +157,7 @@ class SessionTest(unittest.TestCase):
         )
         names = set()
         for path in hooks:
-            names.update(re.findall(r'\b(?:Getenv|getenv|var_os)\("((?:LANTERN_|OFF_SOURCE_)[A-Z0-9_]+)"',
+            names.update(re.findall(r'\b(?:Getenv|getenv|var_os)\("((?:LANTERN_|OFF_SOURCE_|CONTROLLED_GOOGLE_|CONTROLLED_NATIVE_PROVIDER_)[A-Z0-9_]+)"',
                                     (root / path).read_text()))
         self.assertTrue({"LANTERN_TEST_CURRENT_NATIVE", "LANTERN_CURRENT_PUBLIC_GATE",
                          "LANTERN_CURRENT_MEMBERSHIP_GATE", "LANTERN_NATIVE_FIXTURE_SERVE",
@@ -159,10 +166,10 @@ class SessionTest(unittest.TestCase):
                          "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD", "LANTERN_FIXTURE_STOP_CHILD",
                          "LANTERN_CONTAINER_DIR", "LANTERN_CONTAINER_PHASE", "LANTERN_CONTAINER_MODE",
                          "LANTERN_QUERY_CLI_TEST", "LANTERN_QUERY_CLI_ARGS"} <= names)
-        # AUTH_MODE is ordinary runtime configuration. The mixed request path
+        # AUTH_MODE/SECURITY_CONFIG_JSON are ordinary runtime configuration. The mixed request path
         # is an optional mutation-refusal payload for an existing local TLS
         # probe behind CURRENT_CUSTODY_GATE; it opens no authority/time owner.
-        retained = {"LANTERN_AUTH_MODE", "LANTERN_MIXED_HA_ISOLATED_REQUEST"}
+        retained = {"LANTERN_AUTH_MODE", "LANTERN_SECURITY_CONFIG_JSON", "LANTERN_MIXED_HA_ISOLATED_REQUEST"}
         names.difference_update(retained)
         self.assertEqual(gate.ordinary_environment(dict.fromkeys(retained, "retained")),
                          dict.fromkeys(retained, "retained"))

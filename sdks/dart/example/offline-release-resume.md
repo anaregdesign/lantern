@@ -19,12 +19,13 @@ both physical platforms pass this matrix on one exact clean code commit.
 ## Parent publication and hosted lock refresh
 
 The 0.6.0 offline candidate requires parent `lantern_client ^0.5.1`. Parent
-0.5.0 retains its verified published archive. The `0.5.1` patch is pending
-(#2142), and the committed hosted lock still selects `0.5.0`. Regenerate it only
-after `0.5.1` publication and archive equality. Source CI still uses
-the separately generated paired-source lock and restores the hosted lock
-afterwards. Neither a generated lock nor a path override qualifies the
-independent offline archive or publication exit.
+`0.5.1` is published with verified archive equality ([Release](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/v0.5.1); #2142);
+the published `0.5.0` tag/archive remains immutable. The source candidate's generated
+hosted lock selects `0.5.1`. Source CI still uses the separately generated
+paired-source lock and restores the hosted lock afterwards. Neither a generated
+lock nor a path override qualifies the independent offline archive or publication
+exit. Final-main FULL+MOBILE hosted qualification and final-source, device/provider
+and Offline publication exits remain pending (#2133).
 
 When a parent release is separately authorized, pass paired-source offline,
 isolated parent archive, package and native gates first. Publish the parent
@@ -249,9 +250,10 @@ Commit **only** those eight content-free records/markers (and an optional
 adjacent README) as the immediate child of the exact tested code commit.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
-manifests, and absence of changed code. Parent `lantern_client 0.5.0` retains its
-verified published archive; this candidate requires the pending `0.5.1`
-publication, archive equality and hosted-lock refresh. Published Offline `0.5.0`
+manifests, and absence of changed code. Parent `lantern_client 0.5.1` has its
+verified published archive and the source candidate's generated hosted lock selects
+that version; independent hosted/final-source/device/provider/publication gates
+remain pending (#2133). Published Offline `0.5.0`
 evidence retains its original source and cannot qualify this `0.6.0`
 candidate. The example's offline `^0.6.0` dependency and local path lock
 describe that source candidate. Each platform must pass

@@ -223,11 +223,12 @@ The published `0.5.0` contribution Delete release uses hosted
 [#1586](https://github.com/anaregdesign/lantern/issues/1586).
 The in-flight `0.6.0` Head-managed acceptance candidate requires the parent
 `lantern_client ^0.5.1` API. Paired-source development checks use an explicit
-test-only path override. Parent 0.5.0 retains its verified published archive;
-the `0.5.1` patch is pending (#2142). The committed hosted lock still selects
-`0.5.0` and must be regenerated after `0.5.1` publication and archive equality.
-Independent hosted archive qualification remains a separate release gate; no
-override qualifies it.
+test-only path override. Parent `0.5.1` is published with verified archive equality
+([Release](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/v0.5.1); #2142), and the source candidate's generated
+hosted lock selects `0.5.1`. The published parent `0.5.0` tag/archive remains
+immutable. Independent final-main FULL+MOBILE hosted qualification, final-source,
+device/provider and Offline publication exits remain pending (#2133); no path
+override qualifies the hosted archive.
 The maintained
 Flutter example and unpublished SQLite adapter use local path overrides for
 development. The private offline OIDC binding requires package-admin

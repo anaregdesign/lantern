@@ -280,7 +280,7 @@ def run(root, directory, output, prepared):
         peers = ",".join(r["peer"].rsplit(":", 1)[1] for r in reservations)
         material = output / "material"
         with (output / "provision.log").open("xb") as log, (output / "provision.stderr").open("xb") as errors:
-            subprocess.run([str(directory / "authfixture"), "-directory", str(material), "-mode", "off", "-public-ports", public, "-peer-ports", peers], env={k: v for k, v in os.environ.items() if not k.upper().startswith("LANTERN_")}, stdout=log, stderr=errors, check=True, timeout=min(10, work.check()))
+            subprocess.run([str(directory / "authfixture"), "-directory", str(material), "-mode", "off", "-public-ports", public, "-peer-ports", peers], env={k: v for k, v in os.environ.items() if not k.upper().startswith(("LANTERN_", "CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_"))}, stdout=log, stderr=errors, check=True, timeout=min(10, work.check()))
         work.check()
         fixture = strict_json((output / "provision.log").read_bytes())
         if len(fixture["nodes"]) != 3:

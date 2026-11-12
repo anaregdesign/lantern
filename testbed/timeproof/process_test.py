@@ -39,6 +39,7 @@ class ChildTest(unittest.TestCase):
 
     def test_owned_pipe_nonce_and_stop_are_bound_and_reaped(self):
         child = self.start('''import json,os,sys
+assert not any(k.startswith(("CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_")) for k in os.environ)
 for line in sys.stdin:
     request=json.loads(line)
     phase=request["phase"]
@@ -56,6 +57,16 @@ for line in sys.stdin:
         self.assertFalse(row["killed"])
         self.assertEqual(len(row["records"]), 2)
         self.assertIsNotNone(row["stop_ns"])
+
+    def test_controlled_provider_controls_cannot_activate_normal_child(self):
+        with patch.dict(process.os.environ, {"CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT": "/UNIT_NOT_ACTUAL/native.json",
+                                             "CONTROLLED_NATIVE_PROVIDER_DESCRIBE": "1", "CONTROLLED_GOOGLE_DESCRIBE": "1"}):
+            child = self.start('''import json,os
+assert not any(k.startswith(("CONTROLLED_GOOGLE_", "CONTROLLED_NATIVE_PROVIDER_")) for k in os.environ)
+print("off_source "+json.dumps(dict(event="unit_only",pid=os.getpid(),nonce=os.environ["OFF_SOURCE_CHILD_NONCE"],elapsed_ns=1)),flush=True)
+''')
+        self.assertEqual(child.receive("unit_only", limit(3))["event"], "unit_only")
+        self.assertEqual(child.process.wait(timeout=2), 0)
 
     def test_foreign_nonce_output_refuses(self):
         child = self.start('''import json,os

@@ -104,13 +104,11 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 	if !security.NativeWorkloadTimeTarget() {
 		t.Skip("controlled owned OFF time requires an eligible native target")
 	}
-	for _, entry := range os.Environ() {
-		key, value, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(strings.ToUpper(key), "LANTERN_") {
-			t.Cleanup(func() { _ = os.Setenv(key, value) })
-			_ = os.Unsetenv(key)
-		}
+	restore, err := neutralizeInheritedProfileControls()
+	if err != nil {
+		t.Fatal("functional inherited profile controls unavailable")
 	}
+	t.Cleanup(restore)
 	launch, err := listenerlaunch.Reserve(t.Context(), true)
 	if err != nil {
 		t.Fatal(err)
