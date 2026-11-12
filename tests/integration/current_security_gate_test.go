@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -44,6 +45,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Installed outside the real current-output handler, so the callback sees only
@@ -69,6 +71,14 @@ func (w currentExportBoundaryWriter) Write(payload []byte) (int, error) {
 }
 
 func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func currentFixtureTombstoneTTL(physicalServing bool) time.Duration {
+	if physicalServing {
+		// Physical Head and receipt scenarios seed independent eight-hour endpoints.
+		return 24 * time.Hour
+	}
+	return time.Hour
+}
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	configuredSourceIntegration := os.Getenv("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION") == "1"
@@ -301,7 +311,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		svc.WithSearchLimits(capturedOperationalSearchLimits(t, startup.Search, svc.SearchPolicyBaseline()))
 		if id == 1 {
-			svc.WithTombstoneTTL(time.Hour)
+			svc.WithTombstoneTTL(currentFixtureTombstoneTTL(physicalServing))
 		}
 		peer, err := data.NewReplication(svc)
 		if err != nil {
@@ -2619,4 +2629,112 @@ func awaitCurrentPublicOriginal(t *testing.T, ctx context.Context, control graph
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// Freeze the fixture clock while exercising the public Connect adapters. The
+// physical profile must admit the maintained eight-hour phone data without
+// disabling the finite expiration clamp used by ordinary fixtures.
+func TestCurrentPhysicalFixtureExpirationBounds(t *testing.T) {
+	cases := []struct {
+		name     string
+		physical bool
+		ttl      time.Duration
+		accepted bool
+	}{
+		{"ordinary within one hour", false, 30 * time.Minute, true},
+		{"ordinary rejects eight hours", false, 8 * time.Hour, false},
+		{"physical accepts eight hours", true, 8 * time.Hour, true},
+		{"physical rejects twenty-five hours", true, 25 * time.Hour, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				executor := service.NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).
+					WithTombstoneTTL(currentFixtureTombstoneTTL(tc.physical))
+				server := newConnectTestServer(t, executor, nil)
+				httpClient := h2cClient()
+				t.Cleanup(httpClient.CloseIdleConnections)
+				raw := graphv1connect.NewLanternServiceClient(httpClient, server.url)
+				ctx := t.Context()
+				expiration := time.Now().Add(tc.ttl)
+				_, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+					Key: "bounded", Value: &pb.Vertex_String_{String_: "value"}, Expiration: timestamppb.New(expiration),
+				}}))
+				if tc.accepted {
+					if err != nil {
+						t.Fatalf("PutVertex: %v", err)
+					}
+					got, err := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "bounded"}))
+					if err != nil || !got.Msg.GetVertex().GetExpiration().AsTime().Equal(expiration) {
+						t.Fatalf("GetVertex must preserve exact expiration %v: %v, %v", expiration, got, err)
+					}
+				} else {
+					if connect.CodeOf(err) != connect.CodeInvalidArgument {
+						t.Fatalf("PutVertex = %v, want InvalidArgument", err)
+					}
+					if _, err := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "bounded"})); connect.CodeOf(err) != connect.CodeNotFound {
+						t.Fatalf("rejected vertex must not be stored: %v", err)
+					}
+				}
+				for _, key := range []string{"tail", "head"} {
+					if _, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+						Key: key, Value: &pb.Vertex_String_{String_: "endpoint"}, Expiration: timestamppb.New(time.Now().Add(30 * time.Minute)),
+					}})); err != nil {
+						t.Fatalf("PutVertex endpoint %q: %v", key, err)
+					}
+				}
+				_, err = raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{Edge: &pb.Edge{
+					Tail: "tail", Head: "head", Weight: 1, Expiration: timestamppb.New(expiration),
+				}}))
+				if tc.accepted {
+					if err != nil {
+						t.Fatalf("AddEdge: %v", err)
+					}
+					got, err := raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"}))
+					if err != nil || !got.Msg.GetEdge().GetExpiration().AsTime().Equal(expiration) {
+						t.Fatalf("GetEdge must preserve exact expiration %v: %v, %v", expiration, got, err)
+					}
+				} else {
+					if connect.CodeOf(err) != connect.CodeInvalidArgument {
+						t.Fatalf("AddEdge = %v, want InvalidArgument", err)
+					}
+					if _, err := raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"})); connect.CodeOf(err) != connect.CodeNotFound {
+						t.Fatalf("rejected edge must not be stored: %v", err)
+					}
+				}
+			})
+		})
+	}
+
+	t.Run("physical eight-hour receipt write with six-hour retention", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x55})
+			config.Receipt.Retention = 6 * time.Hour
+			runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtime.Close() })
+			wire := mountReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, currentFixtureTombstoneTTL(true), provider.ReceiptWALModeFresh)
+			capability := receiptProtocolCapability(t, wire)
+			receiptContext := receiptProtocolContext(t, capability, 0x55, 1, time.UnixMilli(int64(capability.GetServerNowUnixMs())))
+			expiration := time.Now().Add(8 * time.Hour)
+			put, err := wire.raw.PutVertex(t.Context(), connect.NewRequest(&pb.PutVertexRequest{
+				Vertex:         &pb.Vertex{Key: "receipt-eight-hours", Value: &pb.Vertex_String_{String_: "value"}, Expiration: timestamppb.New(expiration)},
+				ReceiptContext: receiptContext,
+			}))
+			if err != nil || put.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+				t.Fatalf("receipt PutVertex = %v, %v", put, err)
+			}
+			got, err := wire.raw.GetVertex(t.Context(), connect.NewRequest(&pb.GetVertexRequest{Key: "receipt-eight-hours"}))
+			if err != nil || !got.Msg.GetVertex().GetExpiration().AsTime().Equal(expiration) {
+				t.Fatalf("receipt vertex must preserve exact expiration %v: %v, %v", expiration, got, err)
+			}
+			status, err := wire.raw.GetReceiptStatus(t.Context(), connect.NewRequest(&pb.GetReceiptStatusRequest{OperationId: receiptContext.OperationIds[0]}))
+			if err != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				status.Msg.GetStatus().GetReceipt().GetOriginalResult().GetPutVertexOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+				t.Fatalf("receipt status must confirm original Put: %v, %v", status, err)
+			}
+		})
+	})
 }
