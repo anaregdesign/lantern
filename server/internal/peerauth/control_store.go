@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -253,6 +254,12 @@ func (c *ControlStore) ProtectHandler(next http.Handler) http.Handler {
 
 func (c *ControlStore) NewHTTPClient(cert tls.Certificate, roots *x509.CertPool) *http.Client {
 	return NewHTTPClient(c.store, cert, roots)
+}
+
+// NewHTTPClientWithDialContext preserves the ordinary private peer transport
+// while fixing a raw-connection dial dependency on this client only.
+func (c *ControlStore) NewHTTPClientWithDialContext(cert tls.Certificate, roots *x509.CertPool, dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
+	return NewHTTPClientWithDialContext(c.store, cert, roots, dial)
 }
 
 func (c *ControlStore) FaultReason() string {
