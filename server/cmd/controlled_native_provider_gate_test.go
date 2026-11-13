@@ -12,6 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
+	"github.com/anaregdesign/lantern/server/internal/oidc"
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
+	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/provider"
 	"io"
 	"net/netip"
 	"net/url"
@@ -24,44 +29,65 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/anaregdesign/lantern/server/decisiontrace"
-	"github.com/anaregdesign/lantern/server/internal/oidc"
-	"github.com/anaregdesign/lantern/server/internal/peerauth"
-	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/provider"
 )
 
 const controlledNativeProviderProfile = "controlled-real-native-providers"
+
+// These bounds belong only to the explicitly linked test profile. In
+// particular, owner-window renewal never changes peerauth's ten-minute lease.
+const controlledNativeOwnerSeconds = 30 * 60
+
+type controlledNativeOwnerWindow struct {
+	Mode           string `json:"mode"`
+	LeaseSeconds   int    `json:"lease_seconds"`
+	RefreshSeconds int    `json:"refresh_seconds"`
+}
+
+type controlledNativeOwnerCapacityRef struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
 
 // Qualified test-package linker value; no serving input can set it.
 var controlledNativeProviderRevision = "unprepared"
 
 type controlledNativeProviderInput struct {
-	Schema                int               `json:"schema"`
-	Profile               string            `json:"profile"`
-	Mode                  string            `json:"mode"`
-	Revision              string            `json:"revision"`
-	Nonce                 string            `json:"nonce"`
-	ConfigSHA256          string            `json:"config_sha256"`
-	SeedSHA256            string            `json:"seed_identity_sha256"`
-	RolesSHA256           string            `json:"roles_sha256"`
-	ServiceOrigin         string            `json:"service_origin"`
-	GoogleBrowserClientID string            `json:"browser_client_id"`
-	GoogleNativeClientID  string            `json:"native_client_id"`
-	GoogleAndroidClientID string            `json:"android_client_id"`
-	GoogleIOSClientID     string            `json:"ios_client_id"`
-	AppleAndroidClientID  string            `json:"apple_android_client_id"`
-	AppleIOSClientID      string            `json:"apple_ios_client_id"`
-	AndroidPackage        string            `json:"android_package"`
-	ProfileIDs            []string          `json:"profile_ids"`
-	BrowserSecretRef      string            `json:"browser_secret_ref"`
-	AppleAndroidSecretRef string            `json:"apple_android_secret_ref"`
-	AppleIOSSecretRef     string            `json:"apple_ios_secret_ref"`
-	SecretValueSHA256     map[string]string `json:"secret_value_sha256"`
-	LifetimeSeconds       int               `json:"lifetime_seconds"`
-	PlannedStop           time.Time         `json:"planned_stop_at"`
-	CleanupBy             time.Time         `json:"cleanup_by"`
+	Schema                int                               `json:"schema"`
+	Profile               string                            `json:"profile"`
+	Mode                  string                            `json:"mode"`
+	Revision              string                            `json:"revision"`
+	Nonce                 string                            `json:"nonce"`
+	ConfigSHA256          string                            `json:"config_sha256"`
+	SeedSHA256            string                            `json:"seed_identity_sha256"`
+	RolesSHA256           string                            `json:"roles_sha256"`
+	ServiceOrigin         string                            `json:"service_origin"`
+	GoogleBrowserClientID string                            `json:"browser_client_id"`
+	GoogleNativeClientID  string                            `json:"native_client_id"`
+	GoogleAndroidClientID string                            `json:"android_client_id"`
+	GoogleIOSClientID     string                            `json:"ios_client_id"`
+	AppleAndroidClientID  string                            `json:"apple_android_client_id"`
+	AppleIOSClientID      string                            `json:"apple_ios_client_id"`
+	AndroidPackage        string                            `json:"android_package"`
+	ProfileIDs            []string                          `json:"profile_ids"`
+	BrowserSecretRef      string                            `json:"browser_secret_ref"`
+	AppleAndroidSecretRef string                            `json:"apple_android_secret_ref"`
+	AppleIOSSecretRef     string                            `json:"apple_ios_secret_ref"`
+	SecretValueSHA256     map[string]string                 `json:"secret_value_sha256"`
+	LifetimeSeconds       int                               `json:"lifetime_seconds"`
+	PlannedStop           time.Time                         `json:"planned_stop_at"`
+	CleanupBy             time.Time                         `json:"cleanup_by"`
+	OwnerWindow           *controlledNativeOwnerWindow      `json:"owner_window,omitempty"`
+	OwnerCapacity         *controlledNativeOwnerCapacityRef `json:"owner_capacity,omitempty"`
+}
+
+func controlledNativeProviderWindowShape(input controlledNativeProviderInput) bool {
+	if input.OwnerWindow == nil {
+		return input.OwnerCapacity == nil && input.LifetimeSeconds >= 15 && input.LifetimeSeconds <= 540
+	}
+	window := input.OwnerWindow
+	return window.Mode == "membership-renewal" && window.LeaseSeconds == int(peerauth.MaxMembershipLifetime/time.Second) &&
+		window.RefreshSeconds == 60 && input.LifetimeSeconds == controlledNativeOwnerSeconds && input.OwnerCapacity != nil &&
+		input.OwnerCapacity.Path == "/owner-capacity.json" && controlledGoogleHex(input.OwnerCapacity.SHA256, 32)
 }
 
 func decodeControlledNativeProviderInput(raw []byte) (controlledNativeProviderInput, error) {
@@ -72,7 +98,7 @@ func decodeControlledNativeProviderInput(raw []byte) (controlledNativeProviderIn
 		input.Schema != 1 || input.Profile != controlledNativeProviderProfile || input.Mode != "initialize" && input.Mode != "resume" ||
 		!controlledGoogleHex(input.Revision, 20) || !controlledGoogleHex(input.Nonce, 32) || !controlledGoogleHex(input.ConfigSHA256, 32) ||
 		!controlledGoogleHex(input.SeedSHA256, 32) || !controlledGoogleHex(input.RolesSHA256, 32) ||
-		input.LifetimeSeconds < 15 || input.LifetimeSeconds > 540 || input.PlannedStop.IsZero() || input.CleanupBy.Sub(input.PlannedStop) != 20*time.Second || len(input.ProfileIDs) != 4 {
+		!controlledNativeProviderWindowShape(input) || input.PlannedStop.IsZero() || input.CleanupBy.Sub(input.PlannedStop) != 20*time.Second || len(input.ProfileIDs) != 4 {
 		return input, errors.New("controlled native provider input refused")
 	}
 	identifier := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -274,10 +300,15 @@ func TestControlledNativeProviderProfileDescription(t *testing.T) {
 	if err != nil {
 		t.Fatal("controlled native provider executable identity unavailable")
 	}
-	if json.NewEncoder(os.Stdout).Encode(map[string]any{"schema": 1, "kind": "controlled-real-native-provider-profile-description",
+	description := map[string]any{"schema": 1, "kind": "controlled-real-native-provider-profile-description",
 		"revision": controlledNativeProviderRevision, "build_tags": []string{"lantern_test_time"},
 		"roles_sha256": controlledGoogleDefaultRolesDigest(), "provider_source": "real-google-apple", "profile": controlledNativeProviderProfile, "native_profile_count": 4, "registration_at_genesis": false, "synthetic_utc": true,
-		"binary_sha256": publicDigest(binary, 512<<20), "public_roots_sha256": publicDigest("/etc/ssl/certs/ca-certificates.crt", 2<<20)}) != nil {
+		"binary_sha256": publicDigest(binary, 512<<20), "public_roots_sha256": publicDigest("/etc/ssl/certs/ca-certificates.crt", 2<<20)}
+	if os.Getenv("CONTROLLED_NATIVE_PROVIDER_DESCRIBE_OWNER_WINDOW") == "1" {
+		description["owner_window"] = controlledNativeOwnerWindow{Mode: "membership-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
+		description["owner_window_lifetime_seconds"] = controlledNativeOwnerSeconds
+	}
+	if json.NewEncoder(os.Stdout).Encode(description) != nil {
 		t.Fatal("controlled native provider description output failed")
 	}
 }
@@ -313,8 +344,20 @@ func TestControlledNativeProviderChild(t *testing.T) {
 	if err != nil || validateControlledNativeProviderConfig(input, config) != nil {
 		t.Fatal("controlled native provider production configuration admission refused")
 	}
-	if !controlledNativeProviderCohort(config) || controlledGoogleCapacity(controlledNativeProviderWindow(input), config, time.Now().UTC()) != nil {
+	var leaseAuthority controlledNativeLeaseAuthority
+	var firstLease controlledNativeLeaseCut
+	if !controlledNativeProviderCohort(config) {
 		t.Fatal("controlled native provider signed whole-window capacity refused")
+	}
+	if input.OwnerWindow == nil {
+		if controlledGoogleCapacity(controlledNativeProviderWindow(input), config, time.Now().UTC()) != nil {
+			t.Fatal("controlled native provider signed whole-window capacity refused")
+		}
+	} else {
+		leaseAuthority, firstLease, err = controlledNativeRenewalAdmission(input, config, time.Now().UTC())
+		if err != nil {
+			t.Fatal("controlled native provider whole renewal interval refused")
+		}
 	}
 	emit := func(event string, fields map[string]any) error {
 		fields["event"], fields["profile"], fields["nonce"], fields["pid"] = event, controlledNativeProviderProfile, input.Nonce, os.Getpid()
@@ -335,16 +378,33 @@ func TestControlledNativeProviderChild(t *testing.T) {
 		}
 		ctx, cancel := context.WithDeadline(ctx, deadline)
 		defer cancel()
+		var monitor *controlledNativeLeaseMonitor
+		if input.OwnerWindow != nil {
+			monitor, err = controlledNativeMonitorLeases(ctx, cancel, input, leaseAuthority, firstLease, nil)
+			if err != nil {
+				t.Fatal("controlled native provider initialization lease monitor refused")
+			}
+			defer monitor.close()
+		}
 		before := time.Now().UTC()
 		counts, err := provider.InitializeSecurity(ctx, config)
-		emitErr := emit("initialized", map[string]any{"ok": err == nil && controlledGoogleTerminal(counts),
-			"host_seed_interval_from": before, "host_seed_interval_until": time.Now().UTC(), "counters": controlledGoogleCounterFields(counts)})
+		fields := map[string]any{"ok": err == nil && controlledGoogleTerminal(counts),
+			"host_seed_interval_from": before, "host_seed_interval_until": time.Now().UTC(), "counters": controlledGoogleCounterFields(counts)}
+		if monitor != nil {
+			leaseFields, leaseErr := monitor.fields(input)
+			err = errors.Join(err, leaseErr)
+			for key, value := range leaseFields {
+				fields[key] = value
+			}
+			fields["ok"] = err == nil && controlledGoogleTerminal(counts)
+		}
+		emitErr := emit("initialized", fields)
 		if err != nil || emitErr != nil || !controlledGoogleTerminal(counts) {
 			t.Fatal("controlled native provider original initialization failed")
 		}
 		return
 	}
-	// The parent owns the actual 15..540-second ready window and normal stop.
+	// The parent owns the fixed static or explicit owner ready window and stop.
 	// This independent constructor+serving watchdog cannot extend that window.
 	ctx, cancel := context.WithDeadline(ctx, input.CleanupBy)
 	defer cancel()
@@ -352,6 +412,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 	// inside this ownership cut return normally so its terminal Drain runs even
 	// when construction or serving fails; never t.Fatal/Goexit in this callback.
 	err = controlledNativeProviderCaptured(func() error {
+		var monitor *controlledNativeLeaseMonitor
 		beforeUTC := time.Now().UTC()
 		app, cleanup, err := initializeAppWithListeners(ctx, nil)
 		if err != nil {
@@ -361,6 +422,24 @@ func TestControlledNativeProviderChild(t *testing.T) {
 		runtime, ok := app.security.(*provider.SecurityRuntime)
 		if !ok || runtime.Mode() != "oidc" {
 			return errors.New("controlled native provider owned App required")
+		}
+		if input.OwnerWindow != nil {
+			// Parent cancellation starts ordinary App drain; the borrowed clock
+			// remains available until the wrapper's final pre-Shutdown witness.
+			// This context is bounded by the ORIGINAL cleanup deadline, never a
+			// new timeout, clock owner or authority beyond the serving lifecycle.
+			nativeCtx, nativeCancel := context.WithDeadline(context.Background(), input.CleanupBy)
+			defer nativeCancel()
+			monitor, err = controlledNativeMonitorLeases(ctx, cancel, input, leaseAuthority, firstLease, func() (time.Time, time.Time, error) {
+				return controlledNativeCertifiedBounds(config, func() (time.Time, time.Time, error) { return runtime.ControlledNativeWindowTimeBounds(nativeCtx) })
+			})
+			if err != nil {
+				return err
+			}
+			defer monitor.close()
+			app.security = controlledNativeObservedLifecycle{securityLifecycle: runtime, monitor: monitor, stop: func() (string, error) {
+				return controlledNativeOwnerStopAcknowledgement(controlledNativeOwnerControl, input.Revision, input.Nonce, input.PlannedStop, input.CleanupBy)
+			}}
 		}
 		before := runtime.TimeAcquisitionCounts()
 		if err := emit("constructed", map[string]any{"host_seed_interval_from": beforeUTC, "host_seed_interval_until": time.Now().UTC(),
@@ -385,10 +464,20 @@ func TestControlledNativeProviderChild(t *testing.T) {
 		}
 		err = <-done // App joins workers and closes native authority before return.
 		cleanup()
+		leaseFields := map[string]any{}
+		if monitor != nil {
+			var leaseErr error
+			leaseFields, leaseErr = monitor.fields(input)
+			err = errors.Join(err, leaseErr)
+		}
 		after, repeat := runtime.TimeAcquisitionCounts(), runtime.TimeAcquisitionCounts()
 		accepted := err == nil && readyErr == nil && controlledGoogleJoined(before, after, repeat)
-		emitErr := emit("joined", map[string]any{"ok": accepted, "stopped_at": time.Now().UTC(),
-			"counters": controlledGoogleCounterFields(after), "repeat": controlledGoogleCounterFields(repeat)})
+		fields := map[string]any{"ok": accepted, "stopped_at": time.Now().UTC(),
+			"counters": controlledGoogleCounterFields(after), "repeat": controlledGoogleCounterFields(repeat)}
+		for key, value := range leaseFields {
+			fields[key] = value
+		}
+		emitErr := emit("joined", fields)
 		if !accepted {
 			return errors.Join(errors.New("controlled native provider owned App did not join normally"), emitErr)
 		}

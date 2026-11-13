@@ -6,6 +6,7 @@ The older Google-only controller and normal native fixture remain independent.
 """
 
 import argparse
+import base64
 import copy
 import fcntl
 import ipaddress
@@ -21,7 +22,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from controlled_google_fixture import (CLIENT, HEX40, HEX64, ROOT, SOURCE_FIELDS, Commands, Window,
+from controlled_google_fixture import (CLIENT, HEX40, HEX64, ROOT, SOURCE_FIELDS, Commands, Window as StaticWindow,
                                        counters, instant, material_snapshot, new_file, reference,
                                        source_snapshot)
 from physical_fixture_provenance import canonical, decode, digest, encoded, read, require, utc
@@ -30,6 +31,8 @@ from physical_fixture_provenance import canonical, decode, digest, encoded, read
 PROFILE = "controlled-real-native-providers"
 KIND = PROFILE + "-serving"
 CHILD = "TestControlledNativeProviderChild"
+PUBLISHER_CHILD = "TestControlledNativeProviderPublisherChild"
+OWNER_WINDOW = {"mode": "membership-renewal", "lease_seconds": 600, "refresh_seconds": 60}
 GOOGLE, APPLE = "https://accounts.google.com", "https://appleid.apple.com"
 PROFILES = ("google_android", "google_ios", "apple_android", "apple_ios")
 CLIENTS = ("google_browser", "google_native", "google_android", "google_ios", "apple_android", "apple_ios")
@@ -37,6 +40,40 @@ SECRETS = ("browser", "apple_android", "apple_ios")
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 APP_ID = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\Z")
 DOCKER = ["docker", "--context", "desktop-linux"]
+
+
+def renewing_membership(plan):
+    if "owner_window" not in plan:
+        return False
+    require(type(plan["owner_window"]) is dict and plan["owner_window"] == OWNER_WINDOW
+            and all(type(plan["owner_window"][key]) is int for key in ("lease_seconds", "refresh_seconds"))
+            and type(plan.get("lifetime_seconds")) is int and plan["lifetime_seconds"] == 1800,
+            "explicit owner30m renewal contract required")
+    return True
+
+
+class Window(StaticWindow):
+    """The opt-in owner interval keeps the original absolute stop/cleanup."""
+    def __init__(self, plan, wall=None, monotonic=None):
+        self.monitoring = False
+        self.renewing = renewing_membership(plan)
+        if not self.renewing:
+            super().__init__(plan, wall, monotonic)
+            return
+        self.wall, self.monotonic = wall or time.time, monotonic or time.monotonic
+        self.started_wall, self.started_mono = self.wall(), self.monotonic()
+        remaining = utc(plan["planned_stop_at"]) - self.started_wall
+        require(15 <= remaining <= 1800 and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == 20,
+                "fixed owner30m interval unavailable")
+        self.stop = self.started_mono + remaining
+        self.cleanup = self.started_mono + utc(plan["cleanup_by"]) - self.started_wall
+
+    def command_timeout(self, requested, cleanup=False):
+        if self.renewing and self.monitoring and not cleanup:
+            remaining = self.left()
+            require(remaining > 0, "original owner stop reached")
+            return min(requested, remaining)
+        return super().command_timeout(requested, cleanup)
 
 
 def references(plan):
@@ -53,10 +90,12 @@ def resolved(plan):
     source = plan.get("source", {})
     require(HEX40.fullmatch(source.get("head", "")) and HEX40.fullmatch(source.get("tree", ""))
             and HEX64.fullmatch(source.get("source_sha256", "")), "final source pins pending")
+    renewing = renewing_membership(plan)
     require(set(plan) == {"schema", "kind", "source", "build", "seed", "issuer_intent", "clients", "profile_ids", "secrets",
-                         "android_package", "public", "network", "admin", "edge", "output", "cohort", "lifetime_seconds", "planned_stop_at", "cleanup_by"}, "unknown profile input refused")
+                         "android_package", "public", "network", "admin", "edge", "output", "cohort", "lifetime_seconds", "planned_stop_at", "cleanup_by"}
+            | ({"owner_window"} if renewing else set()), "unknown profile input refused")
     require(set(source) == {"head", "tree", "source_sha256", "proof", "review"}, "exact main source admission required")
-    require(type(plan["lifetime_seconds"]) is int and 15 <= plan["lifetime_seconds"] <= 540
+    require(type(plan["lifetime_seconds"]) is int and (plan["lifetime_seconds"] == 1800 if renewing else 15 <= plan["lifetime_seconds"] <= 540)
             and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == 20 and HEX64.fullmatch(plan["cohort"]), "fixed finite window required")
     clients = plan["clients"]
     require(set(clients) == set(CLIENTS) and all(CLIENT.fullmatch(clients[k]) for k in CLIENTS[:4])
@@ -151,6 +190,9 @@ def admitted_inputs(plan):
             and description.get("registration_at_genesis") is False and description.get("synthetic_utc") is True
             and description.get("build_tags") == ["lantern_test_time"] and HEX64.fullmatch(description.get("roles_sha256", ""))
             and build.get("roles_sha256") == description["roles_sha256"], "actual native4 same-binary description required")
+    if renewing_membership(plan):
+        require(description.get("owner_window") == OWNER_WINDOW and description.get("owner_window_lifetime_seconds") == 1800,
+                "same-binary owner renewal capability required")
     require(HEX64.fullmatch(build.get("binary_sha256", "")) and description.get("binary_sha256") == build["binary_sha256"], "same binary binding required")
     argv = build.get("compile_argv", [])
     require(len(argv) >= 8 and argv[:4] == ["go", "test", "-c", "-tags=lantern_test_time"] and argv[-1] == "./server/cmd"
@@ -201,7 +243,7 @@ def configurations(plan, admitted):
     return [{**base, "node": f"node-{i}"} for i in (1, 2, 3)]
 
 
-def child_input(plan, config, admitted, mode):
+def child_input(plan, config, admitted, mode, capacity=None):
     result = {"schema": 1, "profile": PROFILE, "mode": mode, "revision": plan["source"]["head"], "nonce": plan["cohort"],
               "config_sha256": digest(json.dumps(config, separators=(",", ":")).encode()),
               "seed_identity_sha256": digest((GOOGLE + "\0" + admitted["seed"]["subject"]).encode()), "roles_sha256": admitted["roles_sha256"],
@@ -212,7 +254,199 @@ def child_input(plan, config, admitted, mode):
     result.update({(key.removeprefix("google_") if key.startswith("google_") else key) + "_client_id": value
                    for key, value in plan["clients"].items()})
     result.update({key + "_secret_ref": plan["secrets"][key]["ref"] for key in SECRETS})
+    if renewing_membership(plan):
+        require(isinstance(capacity, dict) and set(capacity) == {"path", "sha256"}
+                and capacity["path"] == "/owner-capacity.json" and HEX64.fullmatch(capacity["sha256"]), "verified public owner capacity required")
+        result.update(owner_window=dict(OWNER_WINDOW), owner_capacity=capacity)
     return result
+
+
+def publisher_configuration(plan, original):
+    """Rebind only six public destinations and the original absolute budget."""
+    require(renewing_membership(plan) and set(original) == {"Version", "End", "CleanupBy", "Interval", "Lifetime", "Streams"}
+            and original["Version"] == 1 and original["Interval"] == 60_000_000_000 and original["Lifetime"] == 600_000_000_000
+            and isinstance(original["Streams"], list) and len(original["Streams"]) == 2, "exact provisioned publisher required")
+    value = copy.deepcopy(original)
+    value.update(End=instant(utc(plan["cleanup_by"]) + 5), CleanupBy=instant(utc(plan["cleanup_by"]) + 10))
+    for stream, kind in zip(value["Streams"], ("control", "data")):
+        require(set(stream) == {"Kind", "KeyFile", "RootsFile", "Initial", "Targets", "Certificates"} and stream["Kind"] == kind
+                and stream["KeyFile"] == f"/operator/custody/{kind}-signing-key.pem" and stream["RootsFile"] == "/operator/custody/roots.pem"
+                and isinstance(stream["Initial"], str) and stream["Initial"]
+                and stream["Targets"] == [f"/material/identity/nodes/node-{i}/membership/{kind}.json" for i in (1, 2, 3)]
+                and stream["Certificates"] == [f"/operator/custody/certificates/node-{i}.pem" for i in (1, 2, 3)], "exact provisioned publisher stream required")
+        stream["Targets"] = [f"/targets/node-{i}/{kind}.json" for i in (1, 2, 3)]
+    return value
+
+
+def publisher_mounts(output):
+    custody = output / "operator" / "custody"
+    return [(custody / name, "/operator/custody/" + name, False)
+            for name in ("control-signing-key.pem", "data-signing-key.pem", "roots.pem", "certificates")] + [
+        (output / "inputs" / "publisher-config.json", "/publisher-config.json", False),
+        (output / "inputs" / "publisher-input.json", "/publisher-input.json", False),
+        (output / "owner-control", "/owner-control", False),
+        (output / "publisher-journal", "/publisher-journal", True), (output / "publisher-public", "/publisher-public", True)] + [
+        (output / "views" / str(i-1) / "identity" / "nodes" / f"node-{i}" / "membership", f"/targets/node-{i}", True) for i in (1, 2, 3)]
+
+
+def renewal_capacity(raw, plan):
+    value = decode(raw)
+    require(set(value) == {"schema", "kind", "revision", "nonce", "planned_stop_at", "cleanup_by", "publisher_end", "publisher_cleanup_by",
+                          "tls_capacity_end", "lease_seconds", "refresh_seconds", "target_count", "control_profile_sha256", "data_domain_sha256",
+                          "control_operator_sha256", "data_operator_sha256"} and type(value["schema"]) is int and value["schema"] == 1
+            and value["kind"] == "controlled-native-provider-renewal-capacity" and value["revision"] == plan["source"]["head"]
+            and value["nonce"] == plan["cohort"] and utc(value["planned_stop_at"]) == utc(plan["planned_stop_at"])
+            and utc(value["cleanup_by"]) == utc(plan["cleanup_by"])
+            and utc(value["publisher_end"]) == utc(plan["cleanup_by"]) + 5 and utc(value["publisher_cleanup_by"]) == utc(plan["cleanup_by"]) + 10
+            and utc(value["tls_capacity_end"]) > utc(value["publisher_cleanup_by"]) + 2
+            and all(type(value[k]) is int and value[k] == n for k, n in (("lease_seconds", 600), ("refresh_seconds", 60), ("target_count", 3)))
+            and all(HEX64.fullmatch(value[k]) for k in ("control_profile_sha256", "data_domain_sha256", "control_operator_sha256", "data_operator_sha256")),
+            "verified complete owner capacity required")
+    return value
+
+
+def publisher_records(raw, plan, capacity_sha256, *, joined=False, stop_sha256=None):
+    records = [decode(line) for line in raw.splitlines() if line.startswith(b"{")]
+    require(0 < len(records) <= 128 and all(type(v.get("schema")) is int and v["schema"] == 1 and v.get("profile") == PROFILE and v.get("revision") == plan["source"]["head"]
+            and v.get("nonce") == plan["cohort"] and type(v.get("pid")) is int and v["pid"] > 0 for v in records)
+            and len({v["pid"] for v in records}) == 1 and records[0].get("event") == "publisher_ready"
+            and records[0].get("capacity_sha256") == capacity_sha256, "actual owned publisher ready required")
+    events = [v.get("event") for v in records]
+    require(all(event == "publisher_status" for event in (events[1:-1] if joined else events[1:])), "unexpected publisher lifecycle")
+    if joined:
+        require(events[-1] == "publisher_joined" and len(records) >= 2 and records[-1].get("ok") is True
+                and isinstance(stop_sha256, str) and HEX64.fullmatch(stop_sha256) and records[-1].get("owner_stop_sha256") == stop_sha256
+                and utc(records[-1]["stopped_at"]) <= utc(plan["cleanup_by"]), "normal publisher join with actual owned stop acknowledgement required")
+    for value in records:
+        status = value.get("status", {})
+        require(status.get("failure") in (("none", "stopped") if joined and value is records[-1] else ("none",))
+                and utc(status["end"]) == utc(plan["cleanup_by"]) + 5 and utc(status["cleanup_by"]) == utc(plan["cleanup_by"]) + 10
+                and len(status.get("streams", [])) == 2 and {s.get("kind") for s in status["streams"]} == {"control", "data"}, "publisher failure or budget drift")
+        for stream in status["streams"]:
+            require(type(stream.get("journal_version")) is int and stream["journal_version"] > 0 and stream.get("pending") is False
+                    and len(stream.get("targets", [])) == 3 and {t.get("ordinal") for t in stream["targets"]} == {1, 2, 3}
+                    and all(t.get("failure") in ("", "none") and t.get("candidate_matches") is True
+                            and t.get("observed_version") == stream["journal_version"] for t in stream["targets"]), "incomplete membership publication")
+    return records
+
+
+def owner_stop_record(plan):
+    return {"schema": 1, "kind": "controlled-native-provider-owner-stop", "revision": plan["source"]["head"], "nonce": plan["cohort"],
+            "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]}
+
+
+def go_json(value):
+    # These are decoded Go struct projections, retaining their declaration order.
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    for before, after in (("&", "\\u0026"), ("<", "\\u003c"), (">", "\\u003e"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        raw = raw.replace(before, after)
+    return raw.encode()
+
+
+def lease_transcript(raw, plan, records, capacity_sha256, public_capacity):
+    """Replay real envelope bytes/intervals; the native child verifies signatures."""
+    terminal, first = records[-1], records[0]
+    require(0 < len(raw) <= 4 << 20, "bounded native lease transcript required")
+    rows = [decode(line) for line in raw.splitlines()]
+    require(1 <= len(rows) <= 128
+            and terminal.get("owner_window") == OWNER_WINDOW and terminal.get("owner_capacity_sha256") == capacity_sha256
+            and terminal.get("owner_lease_transcript_sha256") == digest(raw)
+            and type(terminal.get("owner_lease_observations")) is int and terminal["owner_lease_observations"] == len(rows), "actual native lease transcript required")
+    keys = {"observed_at", "control_profile_sha256", "data_domain_sha256", "control_manifest", "data_manifest"} | {
+        kind + suffix for kind in ("control", "data") for suffix in ("_version", "_issued_at", "_expires_at", "_sha256")}
+    previous = None
+    stable = None
+    for row in rows:
+        has_native = "native_low" in row or "native_high" in row
+        require(set(row) == keys | ({"native_low", "native_high"} if has_native else set()), "exact lease observation required")
+        observed = utc(row["observed_at"])
+        require(previous is None or observed >= utc(previous["observed_at"]), "lease observation time rollback")
+        low, high = (utc(row["native_low"]), utc(row["native_high"])) if has_native else (observed, observed)
+        if has_native:
+            require(low <= high, "ordered owned native bounds required")
+        for kind in ("control", "data"):
+            version, issued, expires, sha = (row[kind + suffix] for suffix in ("_version", "_issued_at", "_expires_at", "_sha256"))
+            require(type(version) is int and version > 0 and HEX64.fullmatch(sha)
+                    and 0 < utc(expires) - utc(issued) <= 600 and utc(issued) - 2 <= low <= high < utc(expires) - 2,
+                    "current genuine ten-minute lease cut required")
+            envelope = base64.b64decode(row[kind + "_manifest"], validate=True)
+            require(0 < len(envelope) <= 64 << 10 and base64.b64encode(envelope).decode() == row[kind + "_manifest"]
+                    and digest(envelope) == sha, "actual signed envelope digest required")
+            signed = decode(envelope)
+            require(set(signed) == {"payload", "signature"} and len(base64.b64decode(signed["signature"], validate=True)) == 64,
+                    "actual signed envelope shape required")
+            require(go_json(signed) == envelope, "canonical native signed envelope required")
+            payload = signed["payload"]
+            require(set(payload) == ({"version", "profile", "issued_at", "expires_at"} if kind == "control" else {"version", "domain", "issued_at", "expires_at", "members"})
+                    and payload["version"] == version and utc(payload["issued_at"]) == utc(issued) and utc(payload["expires_at"]) == utc(expires), "lease payload/observation mismatch")
+            name, prefix = ("profile", b"lantern.peer.control.profile.v1\0") if kind == "control" else ("domain", b"lantern.peer.domain.v1\0")
+            field = "control_profile_sha256" if kind == "control" else "data_domain_sha256"
+            require(digest(prefix + go_json(payload[name])) == row[field] == public_capacity[field], "stable signed profile/domain required")
+            projection = (payload["profile"] if kind == "control" else (payload["domain"], payload["members"]))
+            if stable is None:
+                stable = {}
+            require(kind not in stable or projection == stable[kind], "signed cohort/generation/member drift")
+            stable[kind] = projection
+            if kind == "data":
+                require(payload["domain"].get("current_profile") == first["authority_profile"], "actual native authority profile drift")
+            if previous is not None:
+                require(version >= previous[kind + "_version"] and utc(issued) >= utc(previous[kind + "_issued_at"])
+                        and utc(issued) - 2 < utc(previous[kind + "_expires_at"]) - 2, "signed renewal gap or rollback")
+                if version == previous[kind + "_version"]:
+                    require(all(row[kind + suffix] == previous[kind + suffix] for suffix in ("_issued_at", "_expires_at", "_sha256")), "same-version lease replacement")
+        previous = row
+    begin = utc(first["host_seed_interval_from"])
+    end = utc(terminal["stopped_at"] if terminal.get("event") == "joined" else terminal["host_seed_interval_until"])
+    through = min(utc(rows[-1][kind + "_expires_at"]) for kind in ("control", "data")) - 2
+    require(utc(rows[0]["observed_at"]) <= begin <= end and utc(rows[-1]["observed_at"]) <= utc(plan["cleanup_by"])
+            and (terminal.get("event") != "joined" or utc(rows[-1]["observed_at"]) <= end)
+            and all(utc(rows[0][kind + "_issued_at"]) - 2 <= begin < utc(rows[0][kind + "_expires_at"]) - 2 for kind in ("control", "data"))
+            and utc(terminal["owner_lease_through"]) == through and end < through and end <= utc(plan["cleanup_by"]), "actual initialized/serving interval not covered")
+    native_indices = [i for i, row in enumerate(rows) if "native_low" in row]
+    if terminal.get("event") == "joined":
+        require(len(native_indices) >= 2 and native_indices == list(range(native_indices[0], native_indices[-1]+1))
+                and terminal.get("owner_lease_time_scope") == "native-serving-with-host-cleanup"
+                and type(terminal.get("owner_native_lease_observations")) is int and terminal["owner_native_lease_observations"] == len(native_indices)
+                and utc(terminal["owner_native_lease_from"]) == utc(rows[native_indices[0]]["observed_at"])
+                and utc(terminal["owner_native_lease_until"]) == utc(rows[native_indices[-1]]["observed_at"])
+                and begin <= utc(terminal["owner_native_lease_from"]) <= utc(records[1]["ready_at"])
+                and utc(terminal["owner_native_lease_from"]) <= utc(terminal["owner_native_lease_until"]) <= end, "actual owned native serving witness block required")
+    else:
+        require(not native_indices and terminal.get("owner_lease_time_scope") == "host-auxiliary"
+                and type(terminal.get("owner_native_lease_observations")) is int and terminal["owner_native_lease_observations"] == 0
+                and "owner_native_lease_from" not in terminal and "owner_native_lease_until" not in terminal
+                and "owner_stop_sha256" not in terminal, "initializer must not claim native serving time/stop acknowledgement")
+    return {"sha256": digest(raw), "observations": len(rows), "through": terminal["owner_lease_through"],
+            "time_scope": terminal["owner_lease_time_scope"], "native_observations": len(native_indices)}
+
+
+def cohort_material_snapshot(output, renewing, owner_stop=None):
+    value = material_snapshot(output)
+    if renewing:
+        for i in (1, 2, 3):
+            for kind in ("control", "data"):
+                name = f"views/{i-1}/identity/nodes/node-{i}/membership/{kind}.json"
+                require(name in value and "sha256" in value[name], "exact public membership target missing")
+                del value[name]  # ONLY these six files may be atomically renewed.
+        public = output / "publisher-public"
+        require({p.name for p in public.iterdir()} == {"capacity.json"}, "unexpected public capacity material")
+        info = public.stat()
+        require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.getuid(), "owned public capacity directory required")
+        capacity = public / "capacity.json"
+        info = capacity.lstat()
+        require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == os.getuid() and info.st_nlink == 1,
+                "immutable unique public capacity required")
+        value["publisher-public/capacity.json"] = {"sha256": digest(read(capacity)), "mode": 0o600}
+        control = canonical(output / "owner-control")
+        info = control.stat()
+        require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.getuid(), "owned stop control directory required")
+        require({p.name for p in control.iterdir()} == ({"stop.json"} if owner_stop else set()), "unexpected owner control material")
+        if owner_stop:
+            info = (control / "stop.json").lstat()
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and owner_stop["path"] == str(control / "stop.json")
+                    and digest(read(control / "stop.json", maximum=4096)) == owner_stop["sha256"], "exact create-only owner stop record required")
+        value["owner-control"] = {"directory": True, "mode": 0o700}
+    return value
 
 
 def child_records(raw, plan, mode, node, config_sha256, *, joined=False):
@@ -280,10 +514,11 @@ def container_argv(plan, role, name, mounts, env_file=None, *, alias=None, netwo
     return args + [plan[role if role in ("admin", "edge") else "build"]["image"]]
 
 
-def descriptor(plan, plan_sha256, started, ready, authority):
+def descriptor(plan, plan_sha256, started, ready, authority, capacity=None):
     require(re.fullmatch(r"current-v2:[0-9a-f]{64}", authority), "original signed cohort required")
-    require(15 <= utc(plan["planned_stop_at"]) - ready <= plan["lifetime_seconds"] <= 540, "finite actual serving interval required")
-    return {"schema": 1, "kind": KIND, "profile": PROFILE, "provider_source": "real-google-apple", "time_source": "controlled-source",
+    renewing = renewing_membership(plan)
+    require(15 <= utc(plan["planned_stop_at"]) - ready <= plan["lifetime_seconds"] <= (1800 if renewing else 540), "finite actual serving interval required")
+    value = {"schema": 1, "kind": KIND, "profile": PROFILE, "provider_source": "real-google-apple", "time_source": "controlled-source",
             "synthetic_utc": True, "build_kind": "test-only", "build_tags": ["lantern_test_time"], **{k: plan["source"][k] for k in SOURCE_FIELDS},
             "plan_sha256": plan_sha256, "cohort": plan["cohort"], "authority_profile": authority, "image": plan["build"]["image"],
             "admin_image": plan["admin"]["image"], "edge_image": plan["edge"]["image"], "public_origin": plan["public"]["origin"],
@@ -293,10 +528,14 @@ def descriptor(plan, plan_sha256, started, ready, authority):
             "normal_qualification_claim": False, "admin_strong_reauthentication_claim": False,
             "route_classes": ["compiled-loopback-udp-time", "production-public-https-provider", "same-origin-admin-bff-new-node1"],
             "input_refs": references(plan)}
+    if renewing:
+        require(isinstance(capacity, dict) and set(capacity) == {"path", "sha256"} and HEX64.fullmatch(capacity["sha256"]), "owner capacity descriptor required")
+        value.update(owner_window=dict(OWNER_WINDOW), owner_capacity=capacity, owned_container_count=11)
+    return value
 
 
-def validate_descriptor(value, plan, plan_sha256, authority):
-    require(encoded(value) == encoded(descriptor(plan, plan_sha256, utc(value["setup_from"]), utc(value["serving_from"]), authority)),
+def validate_descriptor(value, plan, plan_sha256, authority, capacity=None):
+    require(encoded(value) == encoded(descriptor(plan, plan_sha256, utc(value["setup_from"]), utc(value["serving_from"]), authority, capacity)),
             "native provider descriptor drift/extra credential refused")
     return value
 
@@ -370,12 +609,14 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
     resolved(plan)
     approved_dispatch(plan, plan_sha256, approval)
     admitted, window = admitted_inputs(plan), Window(plan)
+    renewing = renewing_membership(plan)
     source_before, inputs_before = source_snapshot(plan, window), input_snapshot(plan, dispatch_refs)
     output = canonical(plan["output"])
     output.mkdir(mode=0o700)
     commands = Commands(output, window)
     names, identities, serving = [], [], []
     configs, authority, immutable = configurations(plan, admitted), None, None
+    publisher, capacity, capacity_ref, capacity_data, owner_stop = None, None, None, None, None
     started, ready_at, interrupted = time.time(), None, set()
     previous = {n: signal.getsignal(n) for n in (signal.SIGINT, signal.SIGTERM)}
     for number in previous:
@@ -395,21 +636,34 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         return identity
 
     def environment(index, mode, label=None):
-        child = child_input(plan, configs[index], admitted, mode)
-        path = output / "inputs" / f"{index}-{label or mode}.json"
-        new_file(path, child)
         values = {"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_CONFIG_JSON": json.dumps(configs[index], separators=(",", ":")),
                   "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_BACKUP_ENABLED": "false",
-                  "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "0", "LANTERN_LOG_LEVEL": "warn",
-                  "CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT": "/inputs/" + path.name, "CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT_SHA256": digest(path.read_bytes())}
+                  "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "0", "LANTERN_LOG_LEVEL": "warn"}
+        if not renewing or label != "provision":
+            child = child_input(plan, configs[index], admitted, mode, capacity)
+            path = output / "inputs" / f"{index}-{label or mode}.json"
+            new_file(path, child)
+            values.update(CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT="/inputs/" + path.name,
+                          CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT_SHA256=digest(path.read_bytes()))
         env = output / "inputs" / f"{index}-{label or mode}.env"
         new_file(env, ("\n".join(k + "=" + v for k, v in values.items()) + "\n").encode())
         return env
+
+    def publisher_running(*, include_apps=False, with_records=True):
+        selected = [publisher] + (serving[:3] if include_apps else [])
+        states = [decode(line) for line in commands.run(DOCKER + ["inspect", "--format", "{{json .State}}", *selected])[0].splitlines()]
+        require(len(states) == len(selected) and all(state.get("Running") is True and state.get("Status") == "running"
+                and type(state.get("Pid")) is int and state["Pid"] > 0 and state.get("OOMKilled") is False and state.get("Error") == "" for state in states),
+                "owned membership publisher/App exited before stop")
+        if with_records:
+            return publisher_records(commands.run(DOCKER + ["logs", publisher])[0], plan, capacity["sha256"])
 
     try:
         new_file(output / "STARTED.json", {"schema": 1, "kind": PROFILE + "-start", "status": "SETUP", "driver_pid": os.getpid(),
                  "source": plan["source"], "cohort": plan["cohort"], "plan_sha256": plan_sha256, "root_dispatch_sha256": approval_sha256,
                  "started_at": instant(started), "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]})
+        if renewing:
+            result["owner_window"] = dict(OWNER_WINDOW)
         for role in ("build", "admin", "edge"):
             require(commands.run(DOCKER + ["image", "inspect", "--format", "{{.Id}}", plan[role]["image"]])[0].decode().strip() == plan[role]["image"], "admitted immutable image missing")
         fields = decode(commands.run(DOCKER + ["image", "inspect", "--format", '{"entrypoint":{{json .Config.Entrypoint}},"cmd":{{json .Config.Cmd}},"env_count":{{len .Config.Env}}}', plan["build"]["image"]])[0])
@@ -422,26 +676,72 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         for name in ("material", "operator", "state", "inputs", "views"):
             (output / name).mkdir(mode=0o700)
         env = output / "inputs" / "description.env"
-        new_file(env, b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE=1\n")
+        new_file(env, b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE=1\n" + (b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE_OWNER_WINDOW=1\n" if renewing else b""))
         identity = create("description", 0, [], env, ["-test.v", "-test.run=^TestControlledNativeProviderProfileDescription$", "-test.timeout=20s"])
         raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=25)[0]
         require([decode(line) for line in raw.splitlines() if line.startswith(b"{")] == [decode(reference(plan["build"]["description"]))], "actual same-image description missing")
         identity = create("provision", 0, [(output / "material", "/material", True), (output / "operator", "/operator", True)],
                           environment(0, "initialize", "provision"), ["provision-security", "--operator-directory", "/operator/custody", "--valid-for", "1h"])
         commands.run(DOCKER + ["start", "--attach", identity], timeout=60)
+        if renewing:
+            # Finish all views before the publisher takes its six stable leases.
+            for index in range(3):
+                view = output / "views" / str(index)
+                (view / "identity" / "nodes").mkdir(mode=0o700, parents=True)
+                shutil.copytree(output / "material" / "identity" / "nodes" / f"node-{index+1}", view / "identity" / "nodes" / f"node-{index+1}")
+                (output / "state" / str(index)).mkdir(mode=0o700)
+            for name in ("publisher-journal", "publisher-public", "owner-control"):
+                (output / name).mkdir(mode=0o700)
+            config = publisher_configuration(plan, decode(read(output / "operator" / "custody" / "publisher.json")))
+            config_path = output / "inputs" / "publisher-config.json"
+            new_file(config_path, config)
+            publisher_input = {"schema": 1, "profile": PROFILE, "revision": plan["source"]["head"], "nonce": plan["cohort"],
+                               "config_path": "/publisher-config.json", "config_sha256": digest(read(config_path)), "state_path": "/publisher-journal/state.json",
+                               "capacity_path": "/publisher-public/capacity.json", "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]}
+            new_file(output / "inputs" / "publisher-input.json", publisher_input)
+            env = output / "inputs" / "publisher.env"
+            new_file(env, ("CONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT=/publisher-input.json\nCONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT_SHA256="
+                           + digest(read(output / "inputs" / "publisher-input.json")) + "\n").encode())
+            publisher = create("publisher", 0, publisher_mounts(output), env, ["-test.v", "-test.run=^" + PUBLISHER_CHILD + "$", "-test.timeout=32m"])
+            commands.run(DOCKER + ["start", publisher])
+            # O_EXCL makes the path visible before Write/Sync/Close. Only the
+            # producer's subsequent ready event admits a capacity-file read.
+            while True:
+                require(not interrupted and window.left(setup=True) > 0 and window.monotonic()-window.started_mono < 90, "verified publisher capacity unavailable")
+                state = decode(commands.run(DOCKER + ["inspect", "--format", "{{json .State}}", publisher])[0])
+                require(state.get("Running") is True, "publisher failed before capacity")
+                records = [decode(line) for line in commands.run(DOCKER + ["logs", publisher])[0].splitlines() if line.startswith(b"{")]
+                if records:
+                    require(records[0].get("event") == "publisher_ready", "publisher capacity not published")
+                    break
+                time.sleep(0.2)
+            raw = read(output / "publisher-public" / "capacity.json")
+            capacity_data = renewal_capacity(raw, plan)
+            capacity_ref = {"path": str(output / "publisher-public" / "capacity.json"), "sha256": digest(raw)}
+            capacity = {"path": "/owner-capacity.json", "sha256": digest(raw)}
+            publisher_running()
         for index in range(3):
             view, state = output / "views" / str(index), output / "state" / str(index)
-            (view / "identity" / "nodes").mkdir(mode=0o700, parents=True)
-            shutil.copytree(output / "material" / "identity" / "nodes" / f"node-{index+1}", view / "identity" / "nodes" / f"node-{index+1}")
-            state.mkdir(mode=0o700)
+            if not renewing:
+                (view / "identity" / "nodes").mkdir(mode=0o700, parents=True)
+                shutil.copytree(output / "material" / "identity" / "nodes" / f"node-{index+1}", view / "identity" / "nodes" / f"node-{index+1}")
+                state.mkdir(mode=0o700)
             mounts = [(view, "/material", False), (state, "/state", True), (output / "inputs", "/inputs", False)]
+            if renewing:
+                mounts.append((output / "publisher-public" / "capacity.json", "/owner-capacity.json", False))
             identity = create("initialize", index, mounts, environment(index, "initialize"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=80s"])
             raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=75)[0]
-            records = child_records(raw, plan, "initialize", f"node-{index+1}", child_input(plan, configs[index], admitted, "initialize")["config_sha256"])
+            records = child_records(raw, plan, "initialize", f"node-{index+1}", child_input(plan, configs[index], admitted, "initialize", capacity)["config_sha256"])
+            if renewing:
+                result.setdefault("owner_lease_transcripts", {})[f"node-{index+1}/initialize"] = lease_transcript(
+                    read(state / "controlled-native-provider-owner-leases-initialize.jsonl", maximum=4 << 20), plan, records, capacity["sha256"], capacity_data)
+                publisher_running()
             authority = authority or records[0]["authority_profile"]
             require(records[0]["authority_profile"] == authority, "initializer original cohort drift")
             aliases = [f"cnp-{plan['cohort'][:16]}-{index+1}"] + ([urlsplit(plan["public"]["origin"]).hostname] if index == 0 else [])
-            identity = create("resume", index, mounts, environment(index, "resume"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=11m"], aliases=aliases, network=plan["network"]["id"])
+            if renewing:
+                mounts.append((output / "owner-control", "/owner-control", False))
+            identity = create("resume", index, mounts, environment(index, "resume"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=" + ("32m" if renewing else "11m")], aliases=aliases, network=plan["network"]["id"])
             serving.append(identity)
         edge, admin_env = routes(plan)
         new_file(output / "inputs" / "edge.Caddyfile", edge)
@@ -457,7 +757,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                                      (output / "inputs" / "server-key.pem", "/edge-tls/server-key.pem", False)], None,
                           ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"], role="edge", network=plan["network"]["id"])
         serving.append(identity)
-        immutable = material_snapshot(output)
+        immutable = cohort_material_snapshot(output, renewing)
         new_file(output / "immutable-before.json", {"source": source_before, "inputs": inputs_before, "material": immutable})
         for identity in serving:
             commands.run(DOCKER + ["start", identity])
@@ -465,11 +765,13 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         while len(observed) < 3:
             require(not interrupted and window.left(setup=True) > 0 and window.monotonic()-window.started_mono < 90, "all current owners did not become ready")
             for index, identity in enumerate(serving[:3]):
-                records = child_records(commands.run(DOCKER + ["logs", identity])[0], plan, "resume", f"node-{index+1}", child_input(plan, configs[index], admitted, "resume")["config_sha256"])
+                records = child_records(commands.run(DOCKER + ["logs", identity])[0], plan, "resume", f"node-{index+1}", child_input(plan, configs[index], admitted, "resume", capacity)["config_sha256"])
                 require(all(r["authority_profile"] == authority for r in records), "resume original cohort drift")
                 if len(records) == 2:
                     observed.add(index)
             time.sleep(1)
+            if renewing:
+                publisher_running()
         # Record exact owned frontend running states, not a provider or UI result.
         for identity in serving[3:]:
             state = decode(commands.run(DOCKER + ["inspect", "--format", "{{json .State}}", identity])[0])
@@ -480,20 +782,38 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                 and frontend["admin_index_sha256"] == admitted["admin_index_sha256"], "actual public Health/Admin probe binding mismatch")
         new_file(output / "frontend-readiness.json", frontend)
         ready_at = time.time()
-        new_file(output / "fixture.json", descriptor(plan, plan_sha256, started, ready_at, authority))
+        new_file(output / "fixture.json", descriptor(plan, plan_sha256, started, ready_at, authority, capacity_ref))
         new_file(output / "ready", (PROFILE + " schema1\n").encode())
+        next_publisher_status = window.monotonic()
+        window.monitoring = renewing
         while window.left() > 0:
             require(not interrupted, "controlled provider window interrupted")
+            if renewing and window.left() > 2:
+                status_due = window.monotonic() >= next_publisher_status
+                publisher_running(include_apps=True, with_records=status_due)
+                if status_due:
+                    next_publisher_status = window.monotonic() + OWNER_WINDOW["refresh_seconds"]
             if (output / "release").exists():
                 require(read(output / "release", maximum=128) == b"release\n", "exact private normal release required")
                 break
-            time.sleep(0.2)
+            time.sleep(max(0, min(1, window.left())) if renewing else 0.2)
         result["status"] = "PASS"
     except BaseException as error:
         result["failure_class"] = type(error).__name__
     finally:
         commands.cleanup = True
         states = []
+        if renewing:
+            try:
+                path = output / "owner-control" / "stop.json"
+                new_file(path, owner_stop_record(plan))
+                raw = read(path, maximum=4096)
+                require(raw == encoded(owner_stop_record(plan)), "actual bound owner stop record changed")
+                owner_stop = {"path": str(path), "sha256": digest(raw)}
+                result["owner_stop"] = owner_stop
+            except BaseException as error:
+                result.update(status="FAIL", owner_stop_publication_failure_class=type(error).__name__)
+                # Still stop every owned container; no record failure may skip cleanup.
         try:
             if identities:
                 commands.run(DOCKER + ["stop", "--time", "10", *identities], timeout=15, check=False)
@@ -505,20 +825,33 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                 states.append({"id": identity, "stopped": stopped, "normal_exit": normal, "exit": state.get("ExitCode")})
                 if identity in serving[:3] and stopped:
                     records = child_records(commands.run(DOCKER + ["logs", identity])[0], plan, "resume", f"node-{serving.index(identity)+1}",
-                                            child_input(plan, configs[serving.index(identity)], admitted, "resume")["config_sha256"], joined=True)
+                                            child_input(plan, configs[serving.index(identity)], admitted, "resume", capacity)["config_sha256"], joined=True)
                     require(all(r["authority_profile"] == authority for r in records), "final original cohort drift")
+                    if renewing:
+                        require(owner_stop is not None and records[-1].get("owner_stop_sha256") == owner_stop["sha256"], "actual native stop acknowledgement required")
+                        result.setdefault("owner_lease_transcripts", {})[f"node-{serving.index(identity)+1}/resume"] = lease_transcript(
+                            read(output / "state" / str(serving.index(identity)) / "controlled-native-provider-owner-leases-resume.jsonl", maximum=4 << 20),
+                            plan, records, capacity["sha256"], capacity_data)
+                if identity == publisher and stopped:
+                    records = publisher_records(commands.run(DOCKER + ["logs", identity])[0], plan, capacity["sha256"], joined=True,
+                                                stop_sha256=owner_stop["sha256"] if owner_stop else None)
+                    result["publisher_capacity"] = capacity_ref
+                    result["publisher_observations"] = len(records)
             result["cleanup_known"] = len(states) == len(identities) == len(names) and all(s["stopped"] for s in states)
         except BaseException as error:
             result["cleanup_failure_class"] = type(error).__name__
             result["status"] = "FAIL"
         try:
             require(source_snapshot(plan, window, cleanup=True) == source_before and input_snapshot(plan, dispatch_refs) == inputs_before, "immutable input/source drift")
-            require(immutable is None or material_snapshot(output) == immutable, "immutable cohort/custody drift")
+            require(immutable is None or cohort_material_snapshot(output, renewing, owner_stop) == immutable, "immutable cohort/custody drift")
             result["immutable_after_verified"] = True
         except BaseException as error:
             result.update(status="FAIL", immutable_after_verified=False, final_fence_failure_class=type(error).__name__)
         for number, handler in previous.items():
-            signal.signal(number, handler)
+            try:
+                signal.signal(number, handler)
+            except BaseException as error:
+                result.update(status="FAIL", cleanup_known=False, signal_restoration_failure_class=type(error).__name__)
         if interrupted or window.left(cleanup=True) < 0 or not result["cleanup_known"] or any(not s["normal_exit"] for s in states):
             result["status"] = "FAIL"
         result.update(commands=commands.rows, attempted_names=names, containers=states, ready_at=instant(ready_at) if ready_at else None,
@@ -566,7 +899,17 @@ def main(argv=None):
         result = run(plan, args.plan_sha256, approval, args.root_review_sha256, (plan_ref, review_ref))
     finally:
         for number, handler in previous.items():
-            signal.signal(number, handler)
+            try:
+                signal.signal(number, handler)
+            except BaseException as error:
+                had_result = result is not None
+                result = {**(result or {}), "status": "FAIL", "cleanup_known": False, "signal_restoration_failure_class": type(error).__name__}
+                if had_result:
+                    try:
+                        new_file(canonical(plan["output"]) / "NON_ACCEPTING_POST_PUBLICATION.json",
+                                 {"status": "FAIL", "reason": "outer_signal_restoration_failure"})
+                    except BaseException:
+                        pass  # The original FD is still retained below if publication fails.
         retain_or_release(lock, result)
     print(json.dumps({"status": result["status"], "cleanup_known": result["cleanup_known"], "provider_components_passed": 0}))
     return 0 if result["status"] == "PASS" else 1
