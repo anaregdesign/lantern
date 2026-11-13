@@ -1,6 +1,7 @@
 """UNIT-only real-native profile contracts. All processes/providers are mocked."""
 
 import contextlib
+import base64
 import copy
 import io
 import json
@@ -112,6 +113,92 @@ def lines(values):
     return b"".join(profile.encoded(v) for v in values)
 
 
+def owner_plan(output="/UNIT_ONLY_NOT_ACTUAL/output"):
+    return {**plan(output), "owner_window": dict(profile.OWNER_WINDOW), "lifetime_seconds": 1800,
+            "planned_stop_at": "2026-11-12T00:30:00Z", "cleanup_by": "2026-11-12T00:30:20Z"}
+
+
+def publisher_config():
+    return {"Version": 1, "End": "2026-11-12T01:00:00Z", "CleanupBy": "2026-11-12T01:00:20Z", "Interval": 60_000_000_000, "Lifetime": 600_000_000_000,
+            "Streams": [{"Kind": kind, "KeyFile": f"/operator/custody/{kind}-signing-key.pem", "RootsFile": "/operator/custody/roots.pem", "Initial": "VU5JVF9PTkxZ",
+                         "Targets": [f"/material/identity/nodes/node-{i}/membership/{kind}.json" for i in (1, 2, 3)],
+                         "Certificates": [f"/operator/custody/certificates/node-{i}.pem" for i in (1, 2, 3)]} for kind in ("control", "data")]}
+
+
+def capacity(p):
+    return {"schema": 1, "kind": "controlled-native-provider-renewal-capacity", "revision": p["source"]["head"], "nonce": p["cohort"],
+            "planned_stop_at": p["planned_stop_at"], "cleanup_by": p["cleanup_by"], "publisher_end": profile.instant(profile.utc(p["cleanup_by"]) + 5),
+            "publisher_cleanup_by": profile.instant(profile.utc(p["cleanup_by"]) + 10), "tls_capacity_end": "2026-11-12T01:00:00Z",
+            "lease_seconds": 600, "refresh_seconds": 60, "target_count": 3,
+            "control_profile_sha256": profile.digest(b"lantern.peer.control.profile.v1\0" + profile.go_json(unit_control_profile())),
+            "data_domain_sha256": profile.digest(b"lantern.peer.domain.v1\0" + profile.go_json(unit_data_domain())),
+            "control_operator_sha256": "2" * 64, "data_operator_sha256": "3" * 64}
+
+
+def unit_control_profile():
+    return {"profile_version": 1, "lineage": {"deployment": [1] * 16, "instance": [2] * 16}, "namespace_format": "UNIT_NAMESPACE",
+            "protocol_scope": [3] * 32, "trust_digest": [4] * 32, "voters": [{"UNIT": "NOT_SIGNED_AUTHORITY"}]}
+
+
+def unit_data_domain():
+    return {"deployment": [1] * 16, "namespace_format": "UNIT_NAMESPACE", "auth_mode": "oidc", "security_generation": [2] * 16,
+            "writer_public_key": [0] * 32, "trust_digest": [4] * 32, "current_profile": "current-v2:" + "5" * 64}
+
+
+def lease_rows(p, joined):
+    base = profile.utc("2026-11-12T00:00:00Z")
+    samples = range(0, 1801, 60) if joined else (0,)
+    rows = []
+    for second in samples:
+        row = {"observed_at": profile.instant(base + second + (0 if joined and second else .5))}
+        for kind in ("control", "data"):
+            payload = {"version": second // 60 + 1, **({"profile": unit_control_profile()} if kind == "control" else {"domain": unit_data_domain()}),
+                       "issued_at": profile.instant(base + second), "expires_at": profile.instant(min(base + second + 600, profile.utc(p["cleanup_by"]) + 5))}
+            if kind == "data":
+                payload["members"] = [{"UNIT": "NOT_REAL_MEMBERSHIP"}]
+            # Typed public envelope fixture; no actual signature claim in a Python unit.
+            raw = profile.go_json({"payload": payload, "signature": base64.b64encode(b"UNIT" * 16).decode()})
+            row.update({kind + suffix: value for suffix, value in (("_version", payload["version"]), ("_issued_at", payload["issued_at"]),
+                       ("_expires_at", payload["expires_at"]), ("_sha256", profile.digest(raw)), ("_manifest", base64.b64encode(raw).decode()))})
+        row.update(control_profile_sha256=capacity(p)["control_profile_sha256"], data_domain_sha256=capacity(p)["data_domain_sha256"])
+        rows.append(row)
+    if not joined:
+        final = copy.deepcopy(rows[0])
+        final["observed_at"] = "2026-11-12T00:00:01.200000Z"  # Monitor closes after InitializeSecurity's interval-end.
+        rows.append(final)
+    else:
+        first_native = copy.deepcopy(rows[0])
+        first_native["observed_at"] = "2026-11-12T00:00:01.500000Z"
+        rows.insert(1, first_native)
+        for row in rows[1:]:
+            observed = profile.utc(row["observed_at"])
+            row.update(native_low=profile.instant(observed-.25), native_high=profile.instant(observed+.25))
+        final = copy.deepcopy(rows[-1])
+        final.pop("native_low")
+        final.pop("native_high")
+        final["observed_at"] = "2026-11-12T00:30:00.500000Z"
+        rows.append(final)  # Post-close signed-envelope observation is explicitly host-only.
+    return rows
+
+
+def owner_records(p, mode, node, config, joined=False):
+    values, raw = records(p, mode, node, config, joined), lines(lease_rows(p, joined))
+    # Genuine admission reads the first signed cut BEFORE constructor/initializer entry.
+    values[0]["host_seed_interval_from"] = "2026-11-12T00:00:00.600000Z"
+    if mode == "initialize" or joined:
+        terminal = values[2] if joined else values[0]
+        last = lease_rows(p, joined)[-1]
+        terminal.update(owner_window=dict(profile.OWNER_WINDOW), owner_capacity_sha256=profile.digest(profile.encoded(capacity(p))),
+                        owner_lease_transcript_sha256=profile.digest(raw), owner_lease_observations=len(lease_rows(p, joined)),
+                        owner_lease_through=profile.instant(profile.utc(last["control_expires_at"]) - 2),
+                        owner_lease_time_scope="native-serving-with-host-cleanup" if joined else "host-auxiliary", owner_native_lease_observations=0)
+        if joined:
+            native = [row for row in lease_rows(p, True) if "native_low" in row]
+            terminal.update(stopped_at=profile.instant(profile.utc(p["planned_stop_at"]) + 1), owner_native_lease_from=native[0]["observed_at"],
+                            owner_native_lease_until=native[-1]["observed_at"], owner_native_lease_observations=len(native))
+    return values, raw
+
+
 class Clock:
     elapsed = 0
 
@@ -153,12 +240,16 @@ class Commands:
             return identity.encode(), 0
         if verb == "stop":
             self.stopped = True
+            if "owner_window" in self.p:
+                self.clock.elapsed += 1  # Owned native close/auxiliary teardown interval.
             if self.failure == "cleanup_deadline":
                 self.clock.elapsed += 100
             return b"", 0
         if verb == "inspect":
-            return profile.encoded({"Running": not self.stopped, "Pid": 0 if self.stopped else 7, "Restarting": False, "Paused": False,
-                                    "Status": "exited" if self.stopped else "running", "ExitCode": 0, "OOMKilled": False, "Error": ""}), 0
+            selected = argv[6:]
+            return b"".join(profile.encoded({"Running": not self.stopped and not (self.failure == "publisher_exit" and "-publisher-" in self.owned[i]["name"] and self.clock.elapsed > 5),
+                                           "Pid": 0 if self.stopped else 7, "Restarting": False, "Paused": False,
+                                           "Status": "exited" if self.stopped else "running", "ExitCode": 0, "OOMKilled": False, "Error": ""}) for i in selected), 0
         child = self.owned[argv[-1]]
         if "-description-" in child["name"]:
             return profile.encoded({"kind": "UNIT_SAME_IMAGE_DESCRIPTION"}), 0
@@ -167,18 +258,63 @@ class Commands:
                 path = self.output / "material" / "identity" / "nodes" / f"node-{index}"
                 path.mkdir(mode=0o700, parents=True)
                 profile.new_file(path / "unit.json", {"kind": "UNIT_NOT_REAL_MATERIAL"})
+                if "owner_window" in self.p:
+                    (path / "membership").mkdir(mode=0o700)
+                    for kind in ("control", "data"):
+                        profile.new_file(path / "membership" / (kind + ".json"), {"kind": "UNIT_SIGNED_ENVELOPE_STANDIN"})
+            if "owner_window" in self.p:
+                custody = self.output / "operator" / "custody"
+                (custody / "certificates").mkdir(mode=0o700, parents=True)
+                for name in ("control-signing-key.pem", "data-signing-key.pem", "roots.pem", "ca-signing-key.pem"):
+                    profile.new_file(custody / name, b"UNIT_NOT_REAL_KEY_OR_CERTIFICATE")
+                for i in (1, 2, 3):
+                    profile.new_file(custody / "certificates" / f"node-{i}.pem", b"UNIT_CERTIFICATE")
+                profile.new_file(custody / "publisher.json", publisher_config())
             return b"", 0
+        if "-publisher-" in child["name"]:
+            public = self.output / "publisher-public" / "capacity.json"
+            if verb == "start":
+                profile.new_file(public, b"" if self.failure == "capacity_publication_in_progress" else capacity(self.p))
+                self.publisher_reads = 0
+                return b"", 0
+            if self.failure == "capacity_publication_in_progress" and not self.publisher_reads:
+                self.publisher_reads += 1
+                self.capacity_visible_before_ready = public.read_bytes() == b""
+                return b"", 0  # Created path is not yet a synced/public-ready capacity.
+            if self.failure == "capacity_publication_in_progress" and public.read_bytes() == b"":
+                public.write_bytes(profile.encoded(capacity(self.p)))
+            status = {"failure": "none", "end": capacity(self.p)["publisher_end"], "cleanup_by": capacity(self.p)["publisher_cleanup_by"],
+                      "streams": [{"kind": kind, "journal_version": 1, "pending": False,
+                                   "targets": [{"ordinal": i, "failure": "none", "candidate_matches": True, "observed_version": 1} for i in (1, 2, 3)]} for kind in ("control", "data")]}
+            base = {"schema": 1, "profile": profile.PROFILE, "revision": self.p["source"]["head"], "nonce": self.p["cohort"], "pid": 13, "status": status}
+            values = [{**base, "event": "publisher_ready", "capacity_sha256": profile.digest(public.read_bytes())}]
+            if self.stopped:
+                values.append({**base, "event": "publisher_joined", "ok": True, "stopped_at": profile.instant(self.clock.wall()),
+                               "owner_stop_sha256": profile.digest((self.output / "owner-control/stop.json").read_bytes())})
+            return lines(values), 0
         if verb == "start" and "--attach" not in argv:
             return b"", 0
         mode = "initialize" if "-initialize-" in child["name"] else "resume"
         index = int(child["name"].rsplit("-", 1)[1])
         config = dict(line.split("=", 1) for line in Path(child["env"]).read_text().splitlines())["LANTERN_SECURITY_CONFIG_JSON"]
+        if "owner_window" in self.p:
+            values, raw = owner_records(self.p, mode, f"node-{index+1}", profile.digest(config.encode()), self.stopped)
+            if mode == "resume" and self.stopped:
+                values[2]["owner_stop_sha256"] = profile.digest((self.output / "owner-control/stop.json").read_bytes())
+                if self.failure == "owner_ack_missing":
+                    values[2].pop("owner_stop_sha256")
+                if self.failure == "owner_ack_wrong":
+                    values[2]["owner_stop_sha256"] = "0" * 64
+            path = self.output / "state" / str(index) / f"controlled-native-provider-owner-leases-{mode}.jsonl"
+            if mode == "initialize" or self.stopped:
+                profile.new_file(path, raw)
+            return lines(values), 0
         return lines(records(self.p, mode, f"node-{index+1}", profile.digest(config.encode()), self.stopped)), 0
 
 
 @contextlib.contextmanager
-def mocked_window(directory, failure=None):
-    p = plan(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT"))
+def mocked_window(directory, failure=None, owner=False):
+    p = (owner_plan if owner else plan)(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT"))
     clock, made = Clock(), []
     approval = {"kind": profile.PROFILE + "-owner-dispatch", "status": "APPROVE", "owner_present": True, "plan_sha256": "4" * 64,
                 "seed_verification_sha256": p["seed"]["verification"]["sha256"], "secret_and_tls_whole_window_verified": True,
@@ -387,6 +523,252 @@ class ControlledNativeProviderContracts(unittest.TestCase):
             profile.retain_or_release(7, {"cleanup_known": True})
             unlock.assert_called_once_with(7, profile.fcntl.LOCK_UN)
             close.assert_called_once_with(7)
+
+    def test_owner_window_is_explicit_exact_and_keeps_original_monotonic_stop(self):
+        p, clock = owner_plan(), Clock()
+        profile.resolved(p)
+        window = profile.Window(p, clock.wall, clock.monotonic)
+        clock.elapsed = 100
+        self.assertEqual(window.left(), 1700)
+        self.assertEqual(window.left(cleanup=True), 1720)
+        self.assertEqual(window.command_timeout(2000), 1685)  # Initial dispatch still reserves15s.
+        window.monitoring = True
+        self.assertEqual(window.command_timeout(2000), 1700)  # Monitoring consumes only the original remaining interval.
+        for change in (lambda p: p.pop("owner_window"), lambda p: p.update(lifetime_seconds=1799), lambda p: p.update(lifetime_seconds=1801),
+                       lambda p: p.update(lifetime_seconds=True), lambda p: p["owner_window"].update(lease_seconds=601),
+                       lambda p: p["owner_window"].update(refresh_seconds=True), lambda p: p["owner_window"].update(mode="extend-expired"),
+                       lambda p: p["owner_window"].update(extra=True), lambda p: p.update(cleanup_by="2026-11-12T00:30:21Z")):
+            v = copy.deepcopy(p)
+            change(v)
+            with self.assertRaises(ValueError):
+                profile.resolved(v)
+        for stop in ("2026-11-12T00:30:01Z", "2026-11-11T23:59:00Z"):
+            v = {**p, "planned_stop_at": stop, "cleanup_by": profile.instant(profile.utc(stop) + 20)}
+            with self.assertRaises(ValueError):
+                profile.Window(v, Clock().wall, Clock().monotonic)
+
+    def test_owner_requires_new_same_binary_description_and_public_capacity(self):
+        p = owner_plan()
+        rows = admission_records(p)
+        with admission_inputs(rows), self.assertRaises(ValueError):
+            profile.admitted_inputs(p)  # Historical static description cannot admit owner30m.
+        rows["description"].update(owner_window=dict(profile.OWNER_WINDOW), owner_window_lifetime_seconds=1800)
+        with admission_inputs(rows):
+            profile.admitted_inputs(p)
+        config = profile.configurations(p, admitted(p))[0]
+        with self.assertRaises(ValueError):
+            profile.child_input(p, config, admitted(p), "resume")
+        reference = {"path": "/owner-capacity.json", "sha256": "8" * 64}
+        child = profile.child_input(p, config, admitted(p), "resume", reference)
+        self.assertEqual(child["owner_window"], profile.OWNER_WINDOW)
+        self.assertEqual(child["owner_capacity"], reference)
+        self.assertNotIn("owner_window", profile.child_input(plan(), config, admitted(p), "resume"))
+        profile.renewal_capacity(profile.encoded(capacity(p)), p)
+        normalized = copy.deepcopy(p)
+        normalized.update(planned_stop_at="2026-11-12T00:30:00.000000Z", cleanup_by="2026-11-12T00:30:20.000000Z")
+        profile.renewal_capacity(profile.encoded(capacity(p)), normalized)  # Go time.Time omits trailing fractional zeros.
+        for key, wrong in (("nonce", "8" * 64), ("target_count", 6), ("lease_seconds", 1800), ("tls_capacity_end", p["cleanup_by"])):
+            with self.assertRaises(ValueError):
+                profile.renewal_capacity(profile.encoded({**capacity(p), key: wrong}), p)
+
+    def test_publisher_exact_targets_keys_and_separate_mutability(self):
+        p, original = owner_plan(), publisher_config()
+        rewritten = profile.publisher_configuration(p, original)
+        self.assertEqual(original, publisher_config())
+        self.assertEqual(rewritten["End"], "2026-11-12T00:30:25Z")
+        self.assertEqual(rewritten["CleanupBy"], "2026-11-12T00:30:30Z")
+        for i, kind in enumerate(("control", "data")):
+            self.assertEqual(rewritten["Streams"][i]["Targets"], [f"/targets/node-{n}/{kind}.json" for n in (1, 2, 3)])
+        for change in (lambda v: v["Streams"][0].update(Targets=["/state/authority.json"]),
+                       lambda v: v["Streams"][0].update(KeyFile="/operator/custody/ca-signing-key.pem"), lambda v: v.update(Lifetime=1800_000_000_000)):
+            value = publisher_config()
+            change(value)
+            with self.assertRaises(ValueError):
+                profile.publisher_configuration(p, value)
+        mounts = profile.publisher_mounts(Path("/UNIT_ONLY_NOT_ACTUAL"))
+        writable = {target for _, target, rw in mounts if rw}
+        self.assertEqual(writable, {"/publisher-journal", "/publisher-public", "/targets/node-1", "/targets/node-2", "/targets/node-3"})
+        self.assertIn((Path("/UNIT_ONLY_NOT_ACTUAL/owner-control"), "/owner-control", False), mounts)
+        self.assertFalse(any("ca-signing-key" in str(path) or "workload-key" in str(path) or target in ("/operator", "/inputs", "/state") for path, target, _ in mounts))
+
+    def test_native_lease_chain_refuses_gap_rollback_replacement_and_false_coverage(self):
+        p = owner_plan()
+        values, raw = owner_records(p, "resume", "node-1", "3" * 64, True)
+        records = profile.child_records(lines(values), p, "resume", "node-1", "3" * 64, joined=True)
+        sha = profile.digest(profile.encoded(capacity(p)))
+        result = profile.lease_transcript(raw, p, records, sha, capacity(p))
+        self.assertEqual(result["observations"], 33)
+        self.assertEqual(result["native_observations"], 31)
+        for change in (lambda v: v[2].update(control_version=0), lambda v: v[2].update(control_version=v[1]["control_version"]),
+                       lambda v: v[2].update(control_issued_at=v[1]["control_expires_at"]),
+                       lambda v: v[-1].update(data_expires_at=p["planned_stop_at"])):
+            rows, altered = lease_rows(p, True), copy.deepcopy(records)
+            change(rows)
+            bad = lines(rows)
+            altered[-1]["owner_lease_transcript_sha256"] = profile.digest(bad)
+            with self.assertRaises(ValueError):
+                profile.lease_transcript(bad, p, altered, sha, capacity(p))
+        altered = copy.deepcopy(records)
+        altered[-1]["owner_lease_through"] = "2026-11-12T01:00:00Z"
+        with self.assertRaises(ValueError):
+            profile.lease_transcript(raw, p, altered, sha, capacity(p))
+
+    def test_resume_requires_actual_contiguous_native_block_and_bounded_native_time(self):
+        p = owner_plan()
+        values, raw = owner_records(p, "resume", "node-1", "3" * 64, True)
+        records = profile.child_records(lines(values), p, "resume", "node-1", "3" * 64, joined=True)
+        sha = profile.digest(profile.encoded(capacity(p)))
+        # A genuine refreshed interval may narrow its upper endpoint. The
+        # production owner requires overlap, not per-endpoint monotonicity.
+        rows, narrowed_records = lease_rows(p, True), copy.deepcopy(records)
+        refinement = {**rows[1], "observed_at": "2026-11-12T00:00:01.600000Z",
+                      "native_low": "2026-11-12T00:00:01.300000Z", "native_high": "2026-11-12T00:00:01.700000Z"}
+        self.assertLess(profile.utc(refinement["native_high"]), profile.utc(rows[1]["native_high"]))
+        rows.insert(2, refinement)
+        refined = lines(rows)
+        narrowed_records[-1].update(owner_lease_transcript_sha256=profile.digest(refined), owner_lease_observations=len(rows), owner_native_lease_observations=32)
+        self.assertEqual(profile.lease_transcript(refined, p, narrowed_records, sha, capacity(p))["native_observations"], 32)
+        single, single_records = lease_rows(p, True), copy.deepcopy(records)
+        for row in single[2:]:
+            row.pop("native_low", None)
+            row.pop("native_high", None)
+        single_raw = lines(single)
+        single_records[-1].update(owner_lease_transcript_sha256=profile.digest(single_raw), owner_native_lease_observations=1,
+                                  owner_native_lease_until=single[1]["observed_at"])
+        with self.assertRaises(ValueError):
+            profile.lease_transcript(single_raw, p, single_records, sha, capacity(p))
+        for change in (lambda rows: [row.pop(k, None) for row in rows for k in ("native_low", "native_high")],
+                       lambda rows: rows[3].pop("native_low"),
+                       lambda rows: (rows[3].pop("native_low"), rows[3].pop("native_high")),
+                       lambda rows: rows[3].update(native_high=rows[3]["control_expires_at"])):
+            rows, altered = lease_rows(p, True), copy.deepcopy(records)
+            change(rows)
+            bad = lines(rows)
+            altered[-1]["owner_lease_transcript_sha256"] = profile.digest(bad)
+            with self.assertRaises(ValueError):
+                profile.lease_transcript(bad, p, altered, sha, capacity(p))
+        for key, value in (("owner_lease_time_scope", "host-auxiliary"), ("owner_native_lease_observations", 0),
+                           ("owner_native_lease_from", "2026-11-12T00:00:03Z"), ("owner_native_lease_until", p["cleanup_by"])):
+            altered = copy.deepcopy(records)
+            altered[-1][key] = value
+            with self.assertRaises(ValueError):
+                profile.lease_transcript(raw, p, altered, sha, capacity(p))
+
+    def test_owner_mocked_renewal_cleanup_and_only_six_public_files_mutable(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, "capacity_publication_in_progress", owner=True) as (p, approval, _clock, made):
+            result = profile.run(p, "4" * 64, approval, "8" * 64)
+            self.assertEqual(result["status"], "PASS")
+            self.assertTrue(made[0].capacity_visible_before_ready)
+            self.assertTrue(result["cleanup_known"])
+            self.assertEqual(len(result["containers"]), 11)
+            self.assertEqual(len(result["owner_lease_transcripts"]), 6)
+            creates = [r["argv"] for r in made[0].rows if r["argv"][3] == "create"]
+            serving = [row for row in creates if "-resume-" in row[row.index("--name") + 1]]
+            self.assertEqual(len(serving), 3)
+            for row in serving:
+                mounts = [row[i+1] for i, item in enumerate(row) if item == "--mount"]
+                self.assertTrue(any("target=/owner-capacity.json,readonly" in m for m in mounts))
+                self.assertFalse(any("target=/operator" in m or "signing-key.pem" in m for m in mounts))
+            output = Path(p["output"])
+            before = profile.cohort_material_snapshot(output, True, result["owner_stop"])
+            target = output / "views/0/identity/nodes/node-1/membership/control.json"
+            target.write_bytes(b"UNIT_ATOMIC_RENEWAL_STANDIN")
+            self.assertEqual(profile.cohort_material_snapshot(output, True, result["owner_stop"]), before)
+            key = output / "operator/custody/control-signing-key.pem"
+            original_key = key.read_bytes()
+            key.write_bytes(b"UNIT_TAMPER")
+            self.assertNotEqual(profile.cohort_material_snapshot(output, True, result["owner_stop"]), before)
+            key.write_bytes(original_key)
+            self.assertEqual(profile.cohort_material_snapshot(output, True, result["owner_stop"]), before)
+            profile.new_file(target.with_name("unexpected.json"), {"UNIT": True})
+            self.assertNotEqual(profile.cohort_material_snapshot(output, True, result["owner_stop"]), before)
+            profile.new_file(output / "owner-control/unexpected.json", {"UNIT": True})
+            with self.assertRaises(ValueError):
+                profile.cohort_material_snapshot(output, True, result["owner_stop"])
+
+    def test_publisher_live_failure_and_causal_join_ack_required(self):
+        p = owner_plan()
+        status = {"failure": "none", "end": capacity(p)["publisher_end"], "cleanup_by": capacity(p)["publisher_cleanup_by"],
+                  "streams": [{"kind": kind, "journal_version": 1, "pending": False,
+                               "targets": [{"ordinal": i, "failure": "none", "candidate_matches": True, "observed_version": 1} for i in (1, 2, 3)]} for kind in ("control", "data")]}
+        base = {"schema": 1, "profile": profile.PROFILE, "revision": p["source"]["head"], "nonce": p["cohort"], "pid": 13, "status": status}
+        ready = {**base, "event": "publisher_ready", "capacity_sha256": "8" * 64}
+        joined = {**base, "event": "publisher_joined", "ok": True, "stopped_at": p["planned_stop_at"], "owner_stop_sha256": "9" * 64,
+                  "status": {**status, "failure": "stopped"}}
+        profile.publisher_records(lines([ready, joined]), p, "8" * 64, joined=True, stop_sha256="9" * 64)
+        # Causal acknowledgement, not an unqualified Mac-to-VM wall comparison,
+        # proves stop ordering even if the VM's timestamp precedes a Mac sample.
+        offset = {**joined, "stopped_at": profile.instant(profile.utc(p["planned_stop_at"]) - 1)}
+        profile.publisher_records(lines([ready, offset]), p, "8" * 64, joined=True, stop_sha256="9" * 64)
+        with self.assertRaises(ValueError):
+            profile.publisher_records(lines([ready, joined]), p, "8" * 64)
+        for actual in (None, "0" * 64):
+            with self.assertRaises(ValueError):
+                profile.publisher_records(lines([ready, joined]), p, "8" * 64, joined=True, stop_sha256=actual)
+        for failure in ("stopped", "delivery_retry", "journal_uncertain"):
+            altered = {**base, "event": "publisher_status", "status": {**status, "failure": failure}}
+            with self.assertRaises(ValueError):
+                profile.publisher_records(lines([ready, altered]), p, "8" * 64)
+
+    def test_owner_refuses_publisher_exit_or_missing_or_wrong_causal_stop_ack(self):
+        for failure in ("publisher_exit", "owner_ack_missing", "owner_ack_wrong", "owner_stop_write"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory, mocked_window(directory, failure, owner=True) as (p, approval, clock, _made):
+                original_new_file = profile.new_file
+                def publish(path, value):
+                    if failure == "owner_stop_write" and path.name == "stop.json":
+                        raise OSError("UNIT_OWNER_STOP_WRITE_FAILED")
+                    return original_new_file(path, value)
+                with mock.patch.object(profile, "new_file", side_effect=publish):
+                    result = profile.run(p, "4" * 64, approval, "8" * 64)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertEqual(result["cleanup_known"], failure == "publisher_exit")
+                self.assertTrue(_made[0].stopped)  # Stop-record publication failure must still stop all owned children.
+                if failure == "publisher_exit":
+                    self.assertLess(clock.elapsed, 600)  # Last genuine lease could still be current; no continued serving.
+                    self.assertTrue(all(row["normal_exit"] for row in result["containers"]))
+
+    def test_real_finalization_restoration_failure_publishes_nonacceptance_and_retains_original_fd(self):
+        restored = []
+        def restore(number, handler):
+            if handler == "UNIT_OLD_HANDLER":
+                restored.append(number)
+                if len(restored) == 1:
+                    raise ValueError("UNIT_RESTORE_FAILURE")
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory) as (p, approval, _clock, _made), \
+                mock.patch.object(profile.signal, "getsignal", return_value="UNIT_OLD_HANDLER"), mock.patch.object(profile.signal, "signal", side_effect=restore):
+            result = profile.run(p, "4" * 64, approval, "8" * 64)
+            self.assertEqual(restored, [profile.signal.SIGINT, profile.signal.SIGTERM])
+            self.assertEqual(result["status"], "FAIL")
+            self.assertFalse(result["cleanup_known"])
+            self.assertEqual(result["signal_restoration_failure_class"], "ValueError")
+            self.assertTrue(all(v["normal_exit"] for v in result["containers"]))
+            self.assertEqual(profile.decode((Path(p["output"]) / "lifecycle.json").read_bytes())["status"], "FAIL")
+        class Retained(Exception):
+            pass
+        restored.clear()
+        p = plan()
+        approval = {"kind": profile.PROFILE + "-owner-dispatch", "status": "APPROVE", "owner_present": True, "plan_sha256": "4" * 64,
+                    "seed_verification_sha256": p["seed"]["verification"]["sha256"], "secret_and_tls_whole_window_verified": True,
+                    "approved_public_origin": p["public"]["origin"], "admin_and_edge_source_reviewed": True}
+        def hold(lock, value):
+            self.assertEqual(lock, 7)
+            self.assertEqual(value["status"], "FAIL")
+            self.assertFalse(value["cleanup_known"])
+            raise Retained
+        info = SimpleNamespace(st_mode=profile.stat.S_IFREG | 0o600, st_uid=profile.os.getuid(), st_nlink=1)
+        with mock.patch.object(profile, "reference", side_effect=lambda r: profile.encoded(p if r["path"].endswith("plan.json") else approval)), \
+                mock.patch.object(profile.os, "open", return_value=7), mock.patch.object(profile.os, "fstat", return_value=info), \
+                mock.patch.object(profile.os, "close") as close, mock.patch.object(profile.fcntl, "flock") as flock, \
+                mock.patch.object(profile.signal, "getsignal", return_value="UNIT_OLD_HANDLER"), mock.patch.object(profile.signal, "signal", side_effect=restore), \
+                mock.patch.object(profile, "run", return_value={"status": "PASS", "cleanup_known": True}), \
+                mock.patch.object(profile, "new_file") as publish, mock.patch.object(profile, "retain_or_release", side_effect=hold):
+            with self.assertRaises(Retained):
+                profile.main(["--execute-reviewed-owner-window", "--plan", "/UNIT/plan.json", "--plan-sha256", "4" * 64,
+                              "--root-review", "/UNIT/review.json", "--root-review-sha256", "8" * 64])
+            self.assertEqual(restored, [profile.signal.SIGINT, profile.signal.SIGTERM])
+            self.assertEqual(publish.call_args.args[0].name, "NON_ACCEPTING_POST_PUBLICATION.json")
+            self.assertEqual(flock.call_count, 1)  # Original acquisition only; no release or second FD.
+            close.assert_not_called()
 
 
 if __name__ == "__main__":

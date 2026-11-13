@@ -173,7 +173,7 @@ jobs:
         # reviewed build/runtime ceremony and are excluded from this selector.
         run: |
           test -n "$CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION"
-          go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledNativeProviderRevision=$CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION" -run '^(TestControlledNativeProvider(BuildRevision|Contracts|InputBoundaries|CohortContracts|CaptureFailureFinalizes|WindowContracts)|TestInheritedProfileControlsNeutralized)$' -count=1 ./cmd
+          go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledNativeProviderRevision=$CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION" -run '^(TestControlledNativeProvider(BuildRevision|Contracts|InputBoundaries|CohortContracts|CaptureFailureFinalizes|WindowContracts|OwnerWindowContracts|SignedRenewalTranscript|WholeOwnerCapacity|PublisherRenewal|NativeBoundsLeaseVerification|NativeLeaseMonitor|OwnerStopAcknowledgement|MonitorUsesOwnedNativeBounds)|TestControlledNativeWindowBounds(RefusesUnavailableWithoutHostFallback|IndependentOfManagementReadiness)|TestInheritedProfileControlsNeutralized)$' -count=1 ./cmd ./provider
 
       - name: Native provider session wire fixture
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
