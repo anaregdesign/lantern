@@ -17,6 +17,7 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -30,6 +31,10 @@ func controlledNativeOwnerRead(path string, maximum int64) ([]byte, error) {
 		return nil, errors.New("owner private input unavailable")
 	}
 	defer file.Close()
+	return controlledNativeOwnerReadCaptured(file, maximum)
+}
+
+func controlledNativeOwnerReadCaptured(file *os.File, maximum int64) ([]byte, error) {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() <= 0 || info.Size() > maximum {
 		return nil, errors.New("owner bounded private input refused")
@@ -41,6 +46,39 @@ func controlledNativeOwnerRead(path string, maximum int64) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil || int64(len(raw)) != info.Size() {
 		return nil, errors.New("owner private input changed")
+	}
+	return raw, nil
+}
+
+// Only the two renewable signed membership inputs use this reader. An atomic
+// replacement may unlink an already-open old inode; its captured bytes remain
+// subject to signature, profile, native-time and renewal-continuity validation.
+// Immutable operator inputs continue to require exactly one link above.
+func controlledNativeLeaseRead(path string, maximum int64) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, errors.New("owner signed lease input unavailable")
+	}
+	defer file.Close()
+	return controlledNativeLeaseReadCaptured(file, maximum)
+}
+
+func controlledNativeLeaseFileIdentity(identity *syscall.Stat_t) bool {
+	return identity != nil && identity.Uid == uint32(os.Getuid()) && (identity.Nlink == 0 || identity.Nlink == 1)
+}
+
+func controlledNativeLeaseReadCaptured(file *os.File, maximum int64) ([]byte, error) {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() <= 0 || info.Size() > maximum {
+		return nil, errors.New("owner bounded signed lease input refused")
+	}
+	identity, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !controlledNativeLeaseFileIdentity(identity) {
+		return nil, errors.New("owner signed lease input identity refused")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil || int64(len(raw)) != info.Size() {
+		return nil, errors.New("owner signed lease input changed")
 	}
 	return raw, nil
 }
@@ -101,11 +139,11 @@ type controlledNativeLeaseCut struct {
 
 func controlledNativeLeaseCurrent(authority controlledNativeLeaseAuthority, now time.Time) (controlledNativeLeaseCut, error) {
 	var cut controlledNativeLeaseCut
-	controlRaw, err := controlledNativeOwnerRead(authority.ControlPath, peerauth.MaxManifestBytes)
+	controlRaw, err := controlledNativeLeaseRead(authority.ControlPath, peerauth.MaxManifestBytes)
 	if err != nil {
 		return cut, err
 	}
-	dataRaw, err := controlledNativeOwnerRead(authority.DataPath, peerauth.MaxManifestBytes)
+	dataRaw, err := controlledNativeLeaseRead(authority.DataPath, peerauth.MaxManifestBytes)
 	if err != nil {
 		return cut, err
 	}
@@ -273,6 +311,108 @@ func unitControlledNativeLeases(t *testing.T) (controlledNativeLeaseAuthority, f
 func TestControlledNativeProviderSignedRenewalTranscript(t *testing.T) {
 	authority, sign := unitControlledNativeLeases(t)
 	from := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	t.Run("captured atomically replaced signed inputs", func(t *testing.T) {
+		oldControl, oldData := sign(1, from, peerauth.MaxMembershipLifetime)
+		newControl, newData := sign(2, from.Add(time.Minute), peerauth.MaxMembershipLifetime)
+		current := authority
+		current.ControlPath = filepath.Join(t.TempDir(), "control.json")
+		current.DataPath = filepath.Join(t.TempDir(), "data.json")
+		var captured [][]byte
+		for _, input := range []struct {
+			path     string
+			previous []byte
+			renewed  []byte
+		}{{current.ControlPath, oldControl, newControl}, {current.DataPath, oldData, newData}} {
+			if err := os.WriteFile(input.path, input.previous, 0600); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(input.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { file.Close() })
+			if err := os.WriteFile(input.path+".next", input.renewed, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(input.path+".next", input.path); err != nil {
+				t.Fatal(err)
+			}
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Sys().(*syscall.Stat_t).Nlink != 0 {
+				t.Fatal("atomic replacement did not unlink captured old inode")
+			}
+			if _, err := controlledNativeOwnerReadCaptured(file, peerauth.MaxManifestBytes); err == nil {
+				t.Fatal("immutable input accepted an unlinked descriptor")
+			}
+			raw, err := controlledNativeLeaseReadCaptured(file, peerauth.MaxManifestBytes)
+			if err != nil || !bytes.Equal(raw, input.previous) {
+				t.Fatal("captured signed generation lost during replacement", err)
+			}
+			captured = append(captured, raw)
+		}
+		before, err := controlledNativeLeaseVerify(authority, from.Add(time.Minute), captured[0], captured[1])
+		if err != nil || before.ControlVersion != 1 || before.DataVersion != 1 {
+			t.Fatal("captured generation did not retain genuine authority", err)
+		}
+		after, err := controlledNativeLeaseCurrent(current, from.Add(time.Minute))
+		if err != nil || after.ControlVersion != 2 || after.DataVersion != 2 || controlledNativeLeaseAdvance(before, after) != nil {
+			t.Fatal("renewed paths did not verify with exact continuity", err)
+		}
+	})
+	t.Run("unsafe renewable input refused", func(t *testing.T) {
+		control, _ := sign(1, from, peerauth.MaxMembershipLifetime)
+		for _, scenario := range []string{"hardlink", "mode", "symlink", "size", "empty"} {
+			t.Run(scenario, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "control.json")
+				if err := os.WriteFile(path, control, 0600); err != nil {
+					t.Fatal(err)
+				}
+				maximum := int64(peerauth.MaxManifestBytes)
+				switch scenario {
+				case "hardlink":
+					if err := os.Link(path, path+".alias"); err != nil {
+						t.Fatal(err)
+					}
+				case "mode":
+					if err := os.Chmod(path, 0644); err != nil {
+						t.Fatal(err)
+					}
+				case "symlink":
+					if err := os.Symlink(path, path+".alias"); err != nil {
+						t.Fatal(err)
+					}
+					path += ".alias"
+				case "size":
+					maximum = int64(len(control) - 1)
+				case "empty":
+					if err := os.Truncate(path, 0); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := controlledNativeLeaseRead(path, maximum); err == nil {
+					t.Fatal("unsafe renewed membership input accepted")
+				}
+			})
+		}
+		// A different UID requires privilege to create on disk. Exercise the same
+		// descriptor-identity predicate with a copied real Stat_t, without chown.
+		path := filepath.Join(t.TempDir(), "identity.json")
+		if err := os.WriteFile(path, control, 0600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity := *info.Sys().(*syscall.Stat_t)
+		identity.Uid++
+		if controlledNativeLeaseFileIdentity(&identity) || controlledNativeLeaseFileIdentity(nil) {
+			t.Fatal("foreign or unavailable descriptor identity accepted")
+		}
+	})
 	var transcript bytes.Buffer
 	var cuts []controlledNativeLeaseCut
 	for minute := 0; minute <= 30; minute++ {
