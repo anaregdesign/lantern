@@ -313,16 +313,28 @@ class Commands:
 
 
 @contextlib.contextmanager
-def mocked_window(directory, failure=None, owner=False):
+def mocked_window(directory, failure=None, owner=False, bounded_commands=False):
     p = (owner_plan if owner else plan)(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT"))
     clock, made = Clock(), []
     approval = {"kind": profile.PROFILE + "-owner-dispatch", "status": "APPROVE", "owner_present": True, "plan_sha256": "4" * 64,
                 "seed_verification_sha256": p["seed"]["verification"]["sha256"], "secret_and_tls_whole_window_verified": True,
                 "approved_public_origin": p["public"]["origin"], "admin_and_edge_source_reviewed": True}
+    original_commands = profile.Commands
     def command(output, window):
         value = Commands(output, window, p, clock, failure)
         made.append(value)
+        if bounded_commands:
+            value.actual_commands = original_commands(output, window)
+            value.transport_calls = []
+            return value.actual_commands
         return value
+    def transport(argv, **kwargs):
+        value = made[-1]
+        value.cleanup = value.actual_commands.cleanup
+        value.transport_calls.append({"argv": argv, "at": clock.monotonic(), "cleanup": value.cleanup})
+        raw, code = value.run(argv, timeout=kwargs["timeout"], check=False)
+        kwargs["stdout"].write(raw)
+        return SimpleNamespace(returncode=code)
     original_window = profile.Window
     with mock.patch.object(profile, "admitted_inputs", return_value=admitted(p)), \
             mock.patch.object(profile, "source_snapshot", return_value={**p["source"], "clean": ""}), \
@@ -330,7 +342,8 @@ def mocked_window(directory, failure=None, owner=False):
             mock.patch.object(profile, "reference", return_value=profile.encoded({"kind": "UNIT_SAME_IMAGE_DESCRIPTION"})), \
             mock.patch.object(profile, "Window", side_effect=lambda p: original_window(p, clock.wall, clock.monotonic)), \
             mock.patch.object(profile, "Commands", side_effect=command), mock.patch.object(profile.signal, "signal"), \
-            mock.patch.object(profile.time, "time", side_effect=clock.wall), mock.patch.object(profile.time, "sleep", side_effect=clock.sleep):
+            mock.patch.object(profile.time, "time", side_effect=clock.wall), mock.patch.object(profile.time, "sleep", side_effect=clock.sleep), \
+            (mock.patch("controlled_google_fixture.subprocess.run", side_effect=transport) if bounded_commands else contextlib.nullcontext()):
         yield p, approval, clock, made
 
 
@@ -653,6 +666,74 @@ class ControlledNativeProviderContracts(unittest.TestCase):
             altered[-1][key] = value
             with self.assertRaises(ValueError):
                 profile.lease_transcript(raw, p, altered, sha, capacity(p))
+
+    def test_owner_full_1800_seconds_uses_real_command_accounting(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, owner=True, bounded_commands=True) as (p, approval, clock, made):
+            result = profile.run(p, "4" * 64, approval, "8" * 64)
+            self.assertEqual(result["status"], "PASS")
+            self.assertTrue(result["cleanup_known"])
+            self.assertTrue(result["immutable_after_verified"])
+            self.assertEqual(len(result["containers"]), 11)
+            self.assertEqual(len(result["owner_lease_transcripts"]), 6)
+            commands = made[0].actual_commands
+            self.assertGreater(len(commands.rows), 224)
+            self.assertEqual(commands.command_limit(), 2086)  # 224 + 1800 states + 30 status + 32 cleanup.
+            self.assertLess(len(commands.rows), commands.command_limit())
+            self.assertTrue(all(row["exit"] == 0 for row in commands.rows))
+            self.assertEqual(len(list(Path(p["output"]).glob("command-*.log"))), len(commands.rows))
+            calls = made[0].transport_calls
+            states = [row for row in calls if not row["cleanup"] and row["argv"][3:4] == ["inspect"] and len(row["argv"][6:]) == 4]
+            self.assertGreater(len(states), 1750)
+            self.assertTrue(all(1 <= after["at"]-before["at"] < 1.01 for before, after in zip(states, states[1:])))
+            publisher = next(identity for identity, child in made[0].owned.items() if "-publisher-" in child["name"])
+            statuses = [row for row in calls if not row["cleanup"] and row["argv"][3:4] == ["logs"]
+                        and row["argv"][-1] == publisher and row["at"] >= states[0]["at"]]
+            self.assertEqual(len(statuses), 30)
+            self.assertTrue(all(60 <= after["at"]-before["at"] < 62 for before, after in zip(statuses, statuses[1:])))
+            self.assertEqual(next(row["at"] for row in calls if row["cleanup"]), 1800)
+            self.assertLess(clock.elapsed, 1820)
+            self.assertEqual(commands.window.stop, 1800)
+            self.assertEqual(commands.window.cleanup, 1820)
+
+    def test_command_quota_keeps_static_limits_and_exact_cleanup_reserve(self):
+        for owner, monitoring, limit in ((False, False, 224), (True, False, 224), (True, True, 2054)):
+            with self.subTest(owner=owner, monitoring=monitoring), tempfile.TemporaryDirectory() as directory:
+                p, clock = (owner_plan if owner else plan)(), Clock()
+                window = profile.Window(p, clock.wall, clock.monotonic)
+                window.monitoring = monitoring
+                commands = profile.Commands(Path(directory).resolve(), window)
+                self.assertEqual(commands.command_limit(), limit)
+                commands.rows = [{}] * limit
+                with mock.patch("controlled_google_fixture.subprocess.run", return_value=SimpleNamespace(returncode=0)) as process:
+                    with self.assertRaisesRegex(ValueError, "bounded profile command budget exhausted"):
+                        commands.run(["UNIT_NO_REAL_COMMAND"])
+                    process.assert_not_called()
+                    commands.cleanup = True
+                    self.assertEqual(commands.command_limit(), limit + 32)
+                    for _ in range(32):
+                        commands.run(["UNIT_NO_REAL_COMMAND"])
+                    with self.assertRaisesRegex(ValueError, "bounded profile command budget exhausted"):
+                        commands.run(["UNIT_NO_REAL_COMMAND"])
+                    self.assertEqual(process.call_count, 32)
+
+    def test_owner_command_quota_cannot_extend_original_deadlines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p, clock = owner_plan(), Clock()
+            window = profile.Window(p, clock.wall, clock.monotonic)
+            window.monitoring = True
+            commands = profile.Commands(Path(directory).resolve(), window)
+            clock.elapsed = 1800
+            with mock.patch("controlled_google_fixture.subprocess.run", return_value=SimpleNamespace(returncode=0)) as process:
+                with self.assertRaisesRegex(ValueError, "original owner stop reached"):
+                    commands.run(["UNIT_NO_REAL_COMMAND"])
+                process.assert_not_called()
+                commands.cleanup = True
+                commands.run(["UNIT_NO_REAL_COMMAND"])
+                self.assertEqual(process.call_args.kwargs["timeout"], 20)
+                clock.elapsed = 1820
+                with self.assertRaisesRegex(ValueError, "absolute profile command budget exhausted"):
+                    commands.run(["UNIT_NO_REAL_COMMAND"])
+                self.assertEqual(process.call_count, 1)
 
     def test_owner_mocked_renewal_cleanup_and_only_six_public_files_mutable(self):
         with tempfile.TemporaryDirectory() as directory, mocked_window(directory, "capacity_publication_in_progress", owner=True) as (p, approval, _clock, made):

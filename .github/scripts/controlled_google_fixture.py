@@ -328,8 +328,11 @@ class Commands:
         self.window = window
         self.cleanup = False
 
+    def command_limit(self):
+        return 256 if self.cleanup else 224
+
     def run(self, args, timeout=20, check=True):
-        require(len(self.rows) < (256 if self.cleanup else 224), "bounded profile command budget exhausted")
+        require(len(self.rows) < self.command_limit(), "bounded profile command budget exhausted")
         timeout = self.window.command_timeout(timeout, self.cleanup)
         path = self.output / f"command-{len(self.rows):03d}.log"
         start = time.monotonic()
