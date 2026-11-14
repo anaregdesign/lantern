@@ -727,6 +727,91 @@ class ControlledNativeProviderContracts(unittest.TestCase):
                     self.assertLess(clock.elapsed, 600)  # Last genuine lease could still be current; no continued serving.
                     self.assertTrue(all(row["normal_exit"] for row in result["containers"]))
 
+    def test_cleanup_inspects_every_owner_after_early_middle_and_late_proof_errors(self):
+        original_child, original_publisher = profile.child_records, profile.publisher_records
+        for target in ("publisher", "node-2", "node-3"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory, mocked_window(directory, owner=True) as (p, approval, _clock, made):
+                def child(raw, plan, mode, node, config, **options):
+                    if options.get("joined") and node == target:
+                        raise ValueError("UNIT_PRIVATE_CREDENTIAL_UID_AND_PATH_MUST_NOT_APPEAR")
+                    return original_child(raw, plan, mode, node, config, **options)
+                def publisher(raw, plan, capacity_sha, **options):
+                    if options.get("joined") and target == "publisher":
+                        raise ValueError("UNIT_PRIVATE_CREDENTIAL_UID_AND_PATH_MUST_NOT_APPEAR")
+                    return original_publisher(raw, plan, capacity_sha, **options)
+                with mock.patch.object(profile, "child_records", side_effect=child), mock.patch.object(profile, "publisher_records", side_effect=publisher):
+                    result = profile.run(p, "4" * 64, approval, "8" * 64)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertFalse(result["cleanup_known"])
+                self.assertTrue(result["all_owned_containers_stopped"])
+                self.assertEqual(len(result["containers"]), 11)
+                self.assertTrue(all(row["normal_exit"] for row in result["containers"]))
+                self.assertEqual(len(result["cleanup_errors"]), 1)
+                error = result["cleanup_errors"][0]
+                self.assertEqual(error["stage"], "publisher_proof" if target == "publisher" else "child_proof")
+                self.assertEqual(error["exception_class"], "ValueError")
+                self.assertEqual(result["cleanup_failure_class"], "ValueError")
+                rows = made[0].rows
+                after_stop = rows[next(i for i, row in enumerate(rows) if row["argv"][3] == "stop") + 1:]
+                self.assertEqual([row["argv"][-1] for row in after_stop if row["argv"][3] == "inspect"], list(made[0].owned))
+                retained = profile.decode((Path(p["output"]) / "lifecycle.json").read_bytes())
+                self.assertEqual(retained["cleanup_errors"], result["cleanup_errors"])
+                self.assertNotIn("UNIT_PRIVATE_CREDENTIAL_UID_AND_PATH", json.dumps(retained))
+
+    def test_cleanup_inspect_failures_do_not_skip_later_owned_containers(self):
+        original_run = Commands.run
+        for kind, position in (("exception", 0), ("nonzero", 5), ("malformed", 10), ("null", 4), ("array", 7)):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, mocked_window(directory, owner=True) as (p, approval, _clock, made):
+                def run(command, argv, timeout=20, check=True):
+                    raw, code = original_run(command, argv, timeout, check)
+                    if command.cleanup and argv[3] == "inspect" and argv[-1] == list(command.owned)[position]:
+                        if kind == "exception":
+                            raise OSError("UNIT_PRIVATE_PATH_MUST_NOT_APPEAR")
+                        if kind in ("null", "array"):
+                            return (b"null" if kind == "null" else b"[]"), 0
+                        return (b"", 1) if kind == "nonzero" else (b"{", 0)
+                    return raw, code
+                with mock.patch.object(Commands, "run", run):
+                    result = profile.run(p, "4" * 64, approval, "8" * 64)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertFalse(result["cleanup_known"])
+                self.assertFalse(result["all_owned_containers_stopped"])
+                self.assertEqual(len(result["containers"]), 11)
+                self.assertEqual(sum(row["stopped"] for row in result["containers"]), 10)
+                rows = made[0].rows
+                after_stop = rows[next(i for i, row in enumerate(rows) if row["argv"][3] == "stop") + 1:]
+                self.assertEqual([row["argv"][-1] for row in after_stop if row["argv"][3] == "inspect"], list(made[0].owned))
+                self.assertTrue(all(row["stage"] == "inspect" for row in result["cleanup_errors"]))
+                self.assertNotIn("UNIT_PRIVATE_PATH", json.dumps(result))
+
+    def test_cleanup_stop_exception_still_inspects_all_owners_and_retains_fd(self):
+        class PrivateException(Exception):
+            pass
+        class Retained(Exception):
+            pass
+        original_run = Commands.run
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, owner=True) as (p, approval, _clock, made):
+            def run(command, argv, timeout=20, check=True):
+                raw, code = original_run(command, argv, timeout, check)
+                if command.cleanup and argv[3] == "stop":
+                    raise PrivateException("UNIT_PRIVATE_CREDENTIAL_UID_AND_PATH_MUST_NOT_APPEAR")
+                return raw, code
+            with mock.patch.object(Commands, "run", run):
+                result = profile.run(p, "4" * 64, approval, "8" * 64)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertFalse(result["cleanup_known"])
+            self.assertTrue(result["all_owned_containers_stopped"])
+            self.assertEqual(len(result["containers"]), 11)
+            self.assertEqual(result["cleanup_errors"], [{"id": None, "stage": "stop", "exception_class": "OtherException"}])
+            self.assertNotIn("PrivateException", json.dumps(result))
+            self.assertNotIn("UNIT_PRIVATE_CREDENTIAL_UID_AND_PATH", json.dumps(result))
+            with mock.patch.object(profile.fcntl, "flock") as unlock, mock.patch.object(profile.os, "close") as close, \
+                    mock.patch.object(profile.time, "sleep", side_effect=Retained), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(Retained):
+                    profile.retain_or_release(7, result)
+                unlock.assert_not_called()
+                close.assert_not_called()
+
     def test_real_finalization_restoration_failure_publishes_nonacceptance_and_retains_original_fd(self):
         restored = []
         def restore(number, handler):
