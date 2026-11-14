@@ -140,7 +140,53 @@ func controlledNativeCapacityBinding(input controlledNativeProviderInput, capaci
 	return nil
 }
 
+type controlledNativeLeaseFailureStage uint32
+
+const (
+	controlledNativeLeaseFailureNone controlledNativeLeaseFailureStage = iota
+	controlledNativeLeaseFailureNativeBounds
+	controlledNativeLeaseFailureRead
+	controlledNativeLeaseFailureVerify
+	controlledNativeLeaseFailureAdvance
+	controlledNativeLeaseFailureTranscript
+	controlledNativeLeaseFailureFinalStop
+	controlledNativeLeaseFailureRedacted
+)
+
+func (stage controlledNativeLeaseFailureStage) String() string {
+	switch stage {
+	case controlledNativeLeaseFailureNone:
+		return "none"
+	case controlledNativeLeaseFailureNativeBounds:
+		return "native_bounds"
+	case controlledNativeLeaseFailureRead:
+		return "lease_read"
+	case controlledNativeLeaseFailureVerify:
+		return "lease_verify"
+	case controlledNativeLeaseFailureAdvance:
+		return "lease_advance"
+	case controlledNativeLeaseFailureTranscript:
+		return "transcript"
+	case controlledNativeLeaseFailureFinalStop:
+		return "final_stop"
+	default:
+		return "redacted"
+	}
+}
+
+// Diagnostics never retain error text. The original error still controls failure.
+func (m *controlledNativeLeaseMonitor) failure(stage controlledNativeLeaseFailureStage, err error) error {
+	if err != nil {
+		if stage < controlledNativeLeaseFailureNativeBounds || stage > controlledNativeLeaseFailureFinalStop {
+			stage = controlledNativeLeaseFailureRedacted
+		}
+		m.failureStage.CompareAndSwap(0, uint32(stage))
+	}
+	return err
+}
+
 type controlledNativeLeaseMonitor struct {
+	failureStage            atomic.Uint32
 	stop                    context.CancelFunc
 	done                    chan struct{}
 	file                    *os.File
@@ -181,7 +227,7 @@ func controlledNativeMonitorLeaseFile(ctx context.Context, cancelApp context.Can
 		first: first.ObservedAt, authority: authority, nativeEnd: make(chan chan error)}
 	appendCut := func(cut controlledNativeLeaseCut) error {
 		if m.observations >= 128 || json.NewEncoder(file).Encode(cut) != nil || file.Sync() != nil {
-			return errors.New("owner bounded lease transcript failed")
+			return m.failure(controlledNativeLeaseFailureTranscript, errors.New("owner bounded lease transcript failed"))
 		}
 		m.observations++
 		return nil
@@ -191,6 +237,20 @@ func controlledNativeMonitorLeaseFile(ctx context.Context, cancelApp context.Can
 		file.Close()
 		return nil, err
 	}
+	// The same captured-FD reader and verifier are separated only to retain a
+	// closed failure stage; their admission predicates and order are unchanged.
+	readCurrent := func(at time.Time) (controlledNativeLeaseCut, error) {
+		control, err := controlledNativeLeaseRead(authority.ControlPath, peerauth.MaxManifestBytes)
+		if err != nil {
+			return controlledNativeLeaseCut{}, m.failure(controlledNativeLeaseFailureRead, err)
+		}
+		data, err := controlledNativeLeaseRead(authority.DataPath, peerauth.MaxManifestBytes)
+		if err != nil {
+			return controlledNativeLeaseCut{}, m.failure(controlledNativeLeaseFailureRead, err)
+		}
+		cut, err := controlledNativeLeaseVerify(authority, at, control, data)
+		return cut, m.failure(controlledNativeLeaseFailureVerify, err)
+	}
 	observe := func(final bool) error {
 		now := time.Now().UTC()
 		var next controlledNativeLeaseCut
@@ -198,26 +258,26 @@ func controlledNativeMonitorLeaseFile(ctx context.Context, cancelApp context.Can
 		if native != nil {
 			low, high, err := native()
 			if err != nil {
-				return err
+				return m.failure(controlledNativeLeaseFailureNativeBounds, err)
 			}
 			// Wall time is only the auxiliary event stamp during native serving.
 			// Read/admit with the borrowed native bounds before any validity test.
-			next, err = controlledNativeLeaseCurrent(authority, low)
+			next, err = readCurrent(low)
 			if err != nil {
 				return err
 			}
 			next, err = controlledNativeLeaseVerifyBounds(authority, now, low, high, next.ControlManifest, next.DataManifest)
 			if err != nil {
-				return err
+				return m.failure(controlledNativeLeaseFailureVerify, err)
 			}
 		} else {
-			next, err = controlledNativeLeaseCurrent(authority, now)
+			next, err = readCurrent(now)
 			if err != nil {
 				return err
 			}
 		}
 		if err := controlledNativeLeaseAdvance(m.last, next); err != nil {
-			return err
+			return m.failure(controlledNativeLeaseFailureAdvance, err)
 		}
 		if final || next.ControlSHA256 != m.last.ControlSHA256 || next.DataSHA256 != m.last.DataSHA256 {
 			if err := appendCut(next); err != nil {
@@ -300,7 +360,7 @@ func (o controlledNativeObservedLifecycle) finalWitness() error {
 		o.monitor.ownerStopSHA256 = sha
 	}
 	// Even a missing/wrong record cannot skip monitor or original owner close.
-	return errors.Join(err, o.monitor.finishNative())
+	return errors.Join(o.monitor.failure(controlledNativeLeaseFailureFinalStop, err), o.monitor.finishNative())
 }
 func (o controlledNativeObservedLifecycle) Shutdown() error {
 	return errors.Join(o.finalWitness(), o.securityLifecycle.Shutdown())
@@ -316,7 +376,7 @@ func (m *controlledNativeLeaseMonitor) close() error {
 	m.closedAt = time.Now().UTC()
 	m.stop()
 	<-m.done
-	m.err = errors.Join(m.err, m.file.Sync(), m.file.Close())
+	m.err = errors.Join(m.err, m.failure(controlledNativeLeaseFailureTranscript, errors.Join(m.file.Sync(), m.file.Close())))
 	m.closed = true
 	return m.err
 }
@@ -327,11 +387,11 @@ func (m *controlledNativeLeaseMonitor) fields(input controlledNativeProviderInpu
 	}
 	raw, err := controlledNativeOwnerRead(m.path, 4<<20)
 	if err != nil {
-		return nil, err
+		return nil, m.failure(controlledNativeLeaseFailureRead, err)
 	}
 	count, err := controlledNativeLeaseTranscript(raw, m.authority, m.first, m.closedAt)
 	if err != nil || count != m.observations {
-		return nil, errors.New("owner final signed interval transcript refused")
+		return nil, m.failure(controlledNativeLeaseFailureVerify, errors.New("owner final signed interval transcript refused"))
 	}
 	through := m.last.ControlExpires
 	if m.last.DataExpires.Before(through) {
@@ -339,18 +399,18 @@ func (m *controlledNativeLeaseMonitor) fields(input controlledNativeProviderInpu
 	}
 	through = through.Add(-peerauth.ClockMargin)
 	if !time.Now().UTC().Before(through) {
-		return nil, errors.New("owner terminal lease coverage expired")
+		return nil, m.failure(controlledNativeLeaseFailureVerify, errors.New("owner terminal lease coverage expired"))
 	}
 	fields := map[string]any{"owner_window": input.OwnerWindow, "owner_capacity_sha256": input.OwnerCapacity.SHA256,
 		"owner_lease_transcript_sha256": controlledGoogleDigest(raw), "owner_lease_observations": m.observations,
 		"owner_lease_through": through, "owner_lease_time_scope": "host-auxiliary", "owner_native_lease_observations": 0}
 	if input.Mode == "resume" {
 		if !controlledGoogleHex(m.ownerStopSHA256, 32) {
-			return nil, errors.New("owner causal stop acknowledgement absent")
+			return nil, m.failure(controlledNativeLeaseFailureFinalStop, errors.New("owner causal stop acknowledgement absent"))
 		}
 		count, err := controlledNativeNativeInterval(raw, m.nativeFrom, m.nativeUntil)
 		if err != nil {
-			return nil, err
+			return nil, m.failure(controlledNativeLeaseFailureVerify, err)
 		}
 		fields["owner_lease_time_scope"] = "native-serving-with-host-cleanup"
 		fields["owner_native_lease_from"], fields["owner_native_lease_until"], fields["owner_native_lease_observations"] = m.nativeFrom, m.nativeUntil, count
@@ -484,7 +544,22 @@ func (o *controlledNativeUnitLifecycle) Close() error    { o.calls++; o.close();
 func (o *controlledNativeUnitLifecycle) Shutdown() error { return o.Close() }
 
 func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
-	for _, scenario := range []string{"normal", "native-failure", "missing-stop", "wrong-stop"} {
+	t.Run("closed-first-failure-diagnostic", func(t *testing.T) {
+		var monitor controlledNativeLeaseMonitor
+		private := errors.New("UNIT_PRIVATE_PATH_UID_CREDENTIAL")
+		if monitor.failure(controlledNativeLeaseFailureNativeBounds, private) != private ||
+			monitor.failure(controlledNativeLeaseFailureFinalStop, private) != private ||
+			controlledNativeLeaseFailureStage(monitor.failureStage.Load()).String() != "native_bounds" {
+			t.Fatal("first closed monitor stage or original error changed")
+		}
+		var unknown controlledNativeLeaseMonitor
+		unknown.failure(controlledNativeLeaseFailureStage(999), private)
+		raw, err := json.Marshal(controlledNativeLeaseFailureStage(unknown.failureStage.Load()).String())
+		if err != nil || string(raw) != "\"redacted\"" || bytes.Contains(raw, []byte(private.Error())) {
+			t.Fatal("unknown monitor stage exposed private error text")
+		}
+	})
+	for _, scenario := range []string{"normal", "native-failure", "missing-control", "malformed-control", "missing-stop", "wrong-stop"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				time.Sleep(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC).Sub(time.Now().UTC()))
@@ -559,13 +634,44 @@ func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
 						if ctx.Err() == nil {
 							t.Fatal("native witness failure did not cancel App")
 						}
+					} else if scenario == "missing-control" || scenario == "malformed-control" {
+						writeStop(request)
+						var mutationErr error
+						if scenario == "missing-control" {
+							mutationErr = os.Remove(authority.ControlPath)
+						} else {
+							mutationErr = os.WriteFile(authority.ControlPath, []byte("{}"), 0600)
+						}
+						if mutationErr != nil {
+							t.Fatal("UNIT control input mutation failed")
+						}
+						time.Sleep(2 * time.Second)
+						if ctx.Err() == nil {
+							t.Fatal("failed signed input did not cancel App")
+						}
 					} else if scenario == "wrong-stop" {
 						bad := request
 						bad.Nonce = strings.Repeat("0", 64)
 						writeStop(bad)
 					}
-					if wrapped.Shutdown() == nil || original.calls != 1 {
-						t.Fatal("failed native witness/causal stop skipped original shutdown", original.calls)
+					shutdownErr := wrapped.Shutdown()
+					if shutdownErr == nil || original.calls != 1 || monitor.err != nil && !errors.Is(shutdownErr, monitor.err) {
+						t.Fatal("failed native witness/causal stop skipped original shutdown or lost original error", original.calls)
+					}
+					if scenario == "missing-control" && (monitor.err == nil || monitor.err.Error() != "owner signed lease input unavailable") {
+						t.Fatal("missing signed input original read failure lost")
+					}
+					want := controlledNativeLeaseFailureFinalStop
+					switch scenario {
+					case "native-failure":
+						want = controlledNativeLeaseFailureNativeBounds
+					case "missing-control":
+						want = controlledNativeLeaseFailureRead
+					case "malformed-control":
+						want = controlledNativeLeaseFailureVerify
+					}
+					if controlledNativeLeaseFailureStage(monitor.failureStage.Load()) != want {
+						t.Fatal("closed monitor failure stage lost")
 					}
 					return
 				}

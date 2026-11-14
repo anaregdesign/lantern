@@ -242,6 +242,22 @@ func validateControlledNativeProviderConfig(input controlledNativeProviderInput,
 	return nil
 }
 
+// Closed diagnostic flags are not authority; true means that check failed.
+type controlledNativeTerminalDiagnostics struct {
+	appRun       bool
+	awaitReady   bool
+	leaseFields  bool
+	counters     bool
+	emit         bool
+	monitorStage controlledNativeLeaseFailureStage
+}
+
+func (d controlledNativeTerminalDiagnostics) fields() map[string]any {
+	return map[string]any{"app_run_failed": d.appRun, "await_ready_failed": d.awaitReady,
+		"lease_fields_failed": d.leaseFields, "counters_failed": d.counters,
+		"emit_failed": d.emit, "monitor_stage": d.monitorStage.String()}
+}
+
 func controlledNativeProviderCaptured(run func() error, output io.Writer) error {
 	return runFunctionalMain(true, func() (result error) {
 		defer func() {
@@ -411,6 +427,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 	// Reuse the maintained bounded, typed/redacted decision capture. All errors
 	// inside this ownership cut return normally so its terminal Drain runs even
 	// when construction or serving fails; never t.Fatal/Goexit in this callback.
+	terminal := controlledNativeTerminalDiagnostics{}
 	err = controlledNativeProviderCaptured(func() error {
 		var monitor *controlledNativeLeaseMonitor
 		beforeUTC := time.Now().UTC()
@@ -444,6 +461,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 		before := runtime.TimeAcquisitionCounts()
 		if err := emit("constructed", map[string]any{"host_seed_interval_from": beforeUTC, "host_seed_interval_until": time.Now().UTC(),
 			"counters": controlledGoogleCounterFields(before)}); err != nil {
+			terminal.emit = true
 			return err
 		}
 		app.securityWorkers.ObserveReadiness(os.Stdout)
@@ -456,35 +474,45 @@ func TestControlledNativeProviderChild(t *testing.T) {
 			done <- runErr
 		}()
 		readyErr := controlledGoogleAwaitReady(ctx, controlledNativeProviderWindow(input), app.cfg.Net.Port)
+		terminal.awaitReady = readyErr != nil
 		if readyErr == nil {
 			readyErr = emit("ready", map[string]any{"ready_at": time.Now().UTC(), "planned_stop_at": input.PlannedStop})
+			terminal.emit = readyErr != nil
 		}
 		if readyErr != nil {
 			cancel()
 		}
 		err = <-done // App joins workers and closes native authority before return.
+		terminal.appRun = err != nil
 		cleanup()
 		leaseFields := map[string]any{}
 		if monitor != nil {
 			var leaseErr error
 			leaseFields, leaseErr = monitor.fields(input)
+			terminal.leaseFields = leaseErr != nil
+			terminal.monitorStage = controlledNativeLeaseFailureStage(monitor.failureStage.Load())
 			err = errors.Join(err, leaseErr)
 		}
 		after, repeat := runtime.TimeAcquisitionCounts(), runtime.TimeAcquisitionCounts()
-		accepted := err == nil && readyErr == nil && controlledGoogleJoined(before, after, repeat)
+		countersOK := controlledGoogleJoined(before, after, repeat)
+		terminal.counters = !countersOK
+		accepted := err == nil && readyErr == nil && countersOK
 		fields := map[string]any{"ok": accepted, "stopped_at": time.Now().UTC(),
 			"counters": controlledGoogleCounterFields(after), "repeat": controlledGoogleCounterFields(repeat)}
 		for key, value := range leaseFields {
 			fields[key] = value
 		}
+		fields["failure_flags"] = terminal.fields()
 		emitErr := emit("joined", fields)
+		terminal.emit = terminal.emit || emitErr != nil
 		if !accepted {
 			return errors.Join(errors.New("controlled native provider owned App did not join normally"), emitErr)
 		}
 		return emitErr
 	}, os.Stdout)
 	if err != nil {
-		t.Fatal("controlled native provider captured owned lifecycle failed")
+		diagnostic, _ := json.Marshal(terminal.fields())
+		t.Fatalf("controlled native provider captured owned lifecycle failed: %s", diagnostic)
 	}
 }
 
@@ -764,6 +792,26 @@ func TestControlledNativeProviderCaptureFailureFinalizes(t *testing.T) {
 			t.Fatal("UNIT terminal trace lost")
 		}
 	}
+	t.Run("closed-terminal-diagnostics", func(t *testing.T) {
+		for _, stage := range []controlledNativeLeaseFailureStage{controlledNativeLeaseFailureNativeBounds, 999} {
+			diagnostic := controlledNativeTerminalDiagnostics{appRun: true, awaitReady: true, leaseFields: true,
+				counters: true, emit: true, monitorStage: stage}
+			fields := diagnostic.fields()
+			_, err := json.Marshal(fields)
+			want := "native_bounds"
+			if stage == 999 {
+				want = "redacted"
+			}
+			if err != nil || len(fields) != 6 || fields["monitor_stage"] != want {
+				t.Fatal("closed terminal diagnostic redaction failed")
+			}
+			for _, key := range []string{"app_run_failed", "await_ready_failed", "lease_fields_failed", "counters_failed", "emit_failed"} {
+				if fields[key] != true {
+					t.Fatal("terminal failure flag lost")
+				}
+			}
+		}
+	})
 }
 
 func TestControlledNativeProviderWindowContracts(t *testing.T) {

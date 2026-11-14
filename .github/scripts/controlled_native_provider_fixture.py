@@ -802,7 +802,16 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         result["failure_class"] = type(error).__name__
     finally:
         commands.cleanup = True
-        states = []
+        states, cleanup_errors = [], []
+
+        def cleanup_error(identity, stage, error):
+            error_class = type(error).__name__
+            if error_class not in {"ValueError", "OSError", "RuntimeError", "TypeError", "KeyError", "TimeoutError",
+                                   "FileNotFoundError", "PermissionError", "InterruptedError", "UnicodeDecodeError",
+                                   "JSONDecodeError", "KeyboardInterrupt", "SystemExit", "AssertionError"}:
+                error_class = "OtherException"
+            cleanup_errors.append({"id": identity, "stage": stage, "exception_class": error_class})
+
         if renewing:
             try:
                 path = output / "owner-control" / "stop.json"
@@ -814,15 +823,23 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             except BaseException as error:
                 result.update(status="FAIL", owner_stop_publication_failure_class=type(error).__name__)
                 # Still stop every owned container; no record failure may skip cleanup.
-        try:
-            if identities:
+        if identities:
+            try:
                 commands.run(DOCKER + ["stop", "--time", "10", *identities], timeout=15, check=False)
-            for identity in identities:
+            except BaseException as error:
+                cleanup_error(None, "stop", error)
+        for identity in identities:
+            state = {}
+            try:
                 raw, code = commands.run(DOCKER + ["inspect", "--format", "{{json .State}}", identity], check=False)
                 state = decode(raw) if code == 0 else {}
-                stopped = state.get("Running") is False and state.get("Pid") == 0 and state.get("Restarting") is False and state.get("Paused") is False
-                normal = stopped and state.get("Status") == "exited" and state.get("ExitCode") == 0 and state.get("OOMKilled") is False and state.get("Error") == ""
-                states.append({"id": identity, "stopped": stopped, "normal_exit": normal, "exit": state.get("ExitCode")})
+            except BaseException as error:
+                cleanup_error(identity, "inspect", error)
+            stopped = state.get("Running") is False and state.get("Pid") == 0 and state.get("Restarting") is False and state.get("Paused") is False
+            normal = stopped and state.get("Status") == "exited" and state.get("ExitCode") == 0 and state.get("OOMKilled") is False and state.get("Error") == ""
+            states.append({"id": identity, "stopped": stopped, "normal_exit": normal, "exit": state.get("ExitCode")})
+            proof_stage = "child_proof" if identity in serving[:3] else "publisher_proof"
+            try:
                 if identity in serving[:3] and stopped:
                     records = child_records(commands.run(DOCKER + ["logs", identity])[0], plan, "resume", f"node-{serving.index(identity)+1}",
                                             child_input(plan, configs[serving.index(identity)], admitted, "resume", capacity)["config_sha256"], joined=True)
@@ -837,9 +854,15 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                                                 stop_sha256=owner_stop["sha256"] if owner_stop else None)
                     result["publisher_capacity"] = capacity_ref
                     result["publisher_observations"] = len(records)
-            result["cleanup_known"] = len(states) == len(identities) == len(names) and all(s["stopped"] for s in states)
-        except BaseException as error:
-            result["cleanup_failure_class"] = type(error).__name__
+            except BaseException as error:
+                cleanup_error(identity, proof_stage, error)
+        result["all_owned_containers_stopped"] = len(states) == len(identities) == len(names) and all(s["stopped"] for s in states)
+        # Complete state evidence is diagnostic only. Any proof exception still
+        # refuses acceptance and retains the original FD for Root resolution.
+        result["cleanup_known"] = result["all_owned_containers_stopped"] and not cleanup_errors
+        result["cleanup_errors"] = cleanup_errors
+        if cleanup_errors:
+            result["cleanup_failure_class"] = cleanup_errors[0]["exception_class"]
             result["status"] = "FAIL"
         try:
             require(source_snapshot(plan, window, cleanup=True) == source_before and input_snapshot(plan, dispatch_refs) == inputs_before, "immutable input/source drift")
