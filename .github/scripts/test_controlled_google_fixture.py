@@ -348,6 +348,24 @@ class ControlledGoogleUnitContracts(unittest.TestCase):
                     commands.run(["UNIT_NO_REAL_CLI"])
             self.assertEqual(len(commands.rows), 1)
 
+    def test_commands_static_quota_preserves_32_cleanup_dispatches(self):
+        with tempfile.TemporaryDirectory(prefix="UNIT_static_command_quota_") as directory:
+            clock = UnitClock()
+            commands = profile.Commands(Path(directory).resolve(), profile.Window(unit_plan(), clock.wall, clock.monotonic))
+            self.assertEqual(commands.command_limit(), 224)
+            commands.rows = [{}] * 224
+            with mock.patch.object(profile.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as process:
+                with self.assertRaisesRegex(ValueError, "bounded profile command budget exhausted"):
+                    commands.run(["UNIT_NO_REAL_COMMAND"])
+                process.assert_not_called()
+                commands.cleanup = True
+                self.assertEqual(commands.command_limit(), 256)
+                for _ in range(32):
+                    commands.run(["UNIT_NO_REAL_COMMAND"])
+                with self.assertRaisesRegex(ValueError, "bounded profile command budget exhausted"):
+                    commands.run(["UNIT_NO_REAL_COMMAND"])
+                self.assertEqual(process.call_count, 32)
+
     def test_mock_single_window_join_and_immutable_final_fence(self):
         for changed in (False, True):
             with self.subTest(final_input_changed=changed), tempfile.TemporaryDirectory(prefix="UNIT_controlled_window_") as directory:

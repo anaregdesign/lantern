@@ -22,7 +22,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from controlled_google_fixture import (CLIENT, HEX40, HEX64, ROOT, SOURCE_FIELDS, Commands, Window as StaticWindow,
+from controlled_google_fixture import (CLIENT, HEX40, HEX64, ROOT, SOURCE_FIELDS, Commands as StaticCommands, Window as StaticWindow,
                                        counters, instant, material_snapshot, new_file, reference,
                                        source_snapshot)
 from physical_fixture_provenance import canonical, decode, digest, encoded, read, require, utc
@@ -33,6 +33,7 @@ KIND = PROFILE + "-serving"
 CHILD = "TestControlledNativeProviderChild"
 PUBLISHER_CHILD = "TestControlledNativeProviderPublisherChild"
 OWNER_WINDOW = {"mode": "membership-renewal", "lease_seconds": 600, "refresh_seconds": 60}
+OWNER_STATE_INTERVAL_SECONDS = 1
 GOOGLE, APPLE = "https://accounts.google.com", "https://appleid.apple.com"
 PROFILES = ("google_android", "google_ios", "apple_android", "apple_ios")
 CLIENTS = ("google_browser", "google_native", "google_android", "google_ios", "apple_android", "apple_ios")
@@ -57,6 +58,7 @@ class Window(StaticWindow):
     def __init__(self, plan, wall=None, monotonic=None):
         self.monitoring = False
         self.renewing = renewing_membership(plan)
+        self.lifetime_seconds = plan["lifetime_seconds"]
         if not self.renewing:
             super().__init__(plan, wall, monotonic)
             return
@@ -74,6 +76,21 @@ class Window(StaticWindow):
             require(remaining > 0, "original owner stop reached")
             return min(requested, remaining)
         return super().command_timeout(requested, cleanup)
+
+
+class Commands(StaticCommands):
+    def command_limit(self):
+        extra = 0
+        if self.window.renewing and self.window.monitoring:
+            # The admitted owner30m interval adds one state inspect per second
+            # and one publisher log read per refresh; retain the static setup
+            # allowance and its separate 32-command cleanup reserve.
+            lifetime = self.window.lifetime_seconds
+            state_samples = (lifetime + OWNER_STATE_INTERVAL_SECONDS - 1) // OWNER_STATE_INTERVAL_SECONDS
+            refresh = OWNER_WINDOW["refresh_seconds"]
+            status_samples = (lifetime + refresh - 1) // refresh
+            extra = state_samples + status_samples
+        return super().command_limit() + extra
 
 
 def references(plan):
@@ -796,7 +813,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             if (output / "release").exists():
                 require(read(output / "release", maximum=128) == b"release\n", "exact private normal release required")
                 break
-            time.sleep(max(0, min(1, window.left())) if renewing else 0.2)
+            time.sleep(max(0, min(OWNER_STATE_INTERVAL_SECONDS, window.left())) if renewing else 0.2)
         result["status"] = "PASS"
     except BaseException as error:
         result["failure_class"] = type(error).__name__
