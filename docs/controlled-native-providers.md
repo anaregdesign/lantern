@@ -259,12 +259,21 @@ publication failure cannot release the original FD. This is failure-path handlin
 not evidence that such a failure occurred in an actual serving window.
 
 Before READY, one bounded isolated Python child resolves the public hostname
-to exactly the approved LAN IPv4 and makes only an auth-exempt Connect Health
-POST and an Admin `/index.html` GET through the actual public TLS origin. Both
+to exactly the approved LAN IPv4 and makes only auth-exempt Connect Health
+POSTs and an Admin `/index.html` GET through the actual public TLS origin. Both
 use the exact admitted stock public CA file, with proxies and redirects disabled.
 Health must report SERVING; index bytes must hash to the actual Admin build
-receipt. DNS or TLS/content mismatch rejects readiness. The parent owns the
-child's finite15s command budget, including DNS; no provider/management request,
+receipt. A child's earlier local Health success does not carry current authority
+to this public check: a certified slot advance can invalidate the old renewal
+certificate until a fresh quorum certificate is installed. Under #2182, only an
+exact HTTP200 `NOT_SERVING` or `SERVING_STATUS_NOT_SERVING` response is polled,
+at most121 times with100ms intervals, within one12s monotonic deadline sampled
+before DNS and TLS setup. Health requests, waits and the subsequent Admin GET
+consume that same deadline. Malformed, ambiguous, extra or unknown Health
+fields/statuses and DNS, TLS, redirect, transport or content failures reject
+readiness immediately. No result received after the deadline is accepted.
+The parent owns the child's finite15s command budget, including blocking DNS;
+the child deadline does not replace that process-owned bound. No provider/management request,
 cookie, secret or private TLS key enters its argv or output.
 
 `STARTED.json`, `fixture.json`, exact private `ready`, create-attempt records,

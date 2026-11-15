@@ -212,6 +212,20 @@ class Clock:
         self.elapsed += amount
 
 
+@contextlib.contextmanager
+def frontend_inputs(clock, open_response, *, lookup=None, tls_setup=None):
+    import socket
+    import ssl
+    import urllib.request
+    addresses = [(None, None, None, None, ("192.168.1.8", 24443))]
+    with mock.patch.object(socket, "getaddrinfo", side_effect=lookup or (lambda *_a: addresses)), \
+            mock.patch.object(ssl, "create_default_context", side_effect=tls_setup or (lambda **_k: None)), \
+            mock.patch.object(urllib.request, "build_opener", return_value=SimpleNamespace(open=open_response)), \
+            mock.patch.object(profile.time, "monotonic", side_effect=clock.monotonic), \
+            mock.patch.object(profile.time, "sleep", side_effect=clock.sleep):
+        yield
+
+
 class Commands:
     def __init__(self, output, window, p, clock, failure):
         self.output, self.window, self.p, self.clock, self.failure = output, window, p, clock, failure
@@ -464,7 +478,7 @@ class ControlledNativeProviderContracts(unittest.TestCase):
                 self.assertIn(profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/public-roots.pem", a["admin_index_sha256"])["health_status"], ("SERVING", "SERVING_STATUS_SERVING"))
         for failure in ("wrong_dns", "wrong_health", "stale_admin", "duplicate_json", "multiple_json", "malformed_json"):
             requests.clear()
-            health_body = {"wrong_health": b'{"status":"SERVING_STATUS_NOT_SERVING"}', "duplicate_json": b'{"status":"NOT_SERVING","status":"SERVING"}',
+            health_body = {"wrong_health": b'{"status":"SERVING_STATUS_UNKNOWN"}', "duplicate_json": b'{"status":"NOT_SERVING","status":"SERVING"}',
                            "multiple_json": b'{"status":"SERVING"}{}', "malformed_json": b'{"status":'}.get(failure, b'{"status":"SERVING_STATUS_SERVING"}')
             bodies[:] = [health_body,
                          b"UNIT_STALE_ADMIN" if failure == "stale_admin" else b"UNIT_EXACT_SOURCE_ADMIN_INDEX"]
@@ -475,6 +489,152 @@ class ControlledNativeProviderContracts(unittest.TestCase):
         argv = profile.frontend_probe_argv(p, a)
         self.assertEqual(argv[1:4], ["-I", "-B", "-c"])
         self.assertEqual(argv[-4:], [p["public"]["origin"], p["public"]["lan_ip"], p["build"]["public_roots"]["path"], a["admin_index_sha256"]])
+
+    def test_frontend_waits_only_for_known_not_ready_and_closes_each_response(self):
+        clock, requests, closed = Clock(), [], []
+        p, a = plan(), admitted(plan())
+        bodies = [b'{"status":"NOT_SERVING"}', b'{"status":"SERVING_STATUS_NOT_SERVING"}',
+                  b'{"status":"SERVING"}', b"UNIT_EXACT_SOURCE_ADMIN_INDEX"]
+        @contextlib.contextmanager
+        def response(request, timeout):
+            index = len(requests)
+            requests.append((request, timeout))
+            try:
+                yield SimpleNamespace(status=200, read=lambda _maximum: bodies[index])
+            finally:
+                closed.append(index)
+        with frontend_inputs(clock, response):
+            value = profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/roots", a["admin_index_sha256"])
+        self.assertEqual(set(value), {"origin", "dns_addresses", "health_status", "admin_index_sha256"})
+        self.assertEqual(value["health_status"], "SERVING")
+        self.assertEqual([r.full_url for r, _ in requests],
+                         [p["public"]["origin"] + "/grpc.health.v1.Health/Check"] * 3 + [p["public"]["origin"] + "/index.html"])
+        self.assertEqual(closed, [0, 1, 2, 3])
+        self.assertAlmostEqual(clock.elapsed, 0.2)
+        self.assertTrue(all(0 < timeout <= 5 for _, timeout in requests))
+        # Exercise the actual inspect.getsource child composition without a process.
+        requests.clear(); closed.clear()
+        argv = profile.frontend_probe_argv(p, a)
+        output = io.StringIO()
+        with frontend_inputs(clock, response), mock.patch("sys.argv", ["UNIT_CHILD", *argv[-4:]]), contextlib.redirect_stdout(output):
+            exec(argv[4], {})
+        self.assertEqual(json.loads(output.getvalue()), value)
+
+    def test_frontend_not_ready_stops_at_shared_deadline_or_finite_attempt_bound(self):
+        p, a = plan(), admitted(plan())
+        for stalled in (False, True):
+            clock, requests, closed, sleeps = Clock(), [], [], []
+            def sleep(amount):
+                self.assertLessEqual(amount, 0.1)
+                self.assertLessEqual(amount, 12 - clock.elapsed)
+                sleeps.append(amount)
+                if not stalled:
+                    clock.elapsed = round(clock.elapsed + amount, 9)
+            clock.sleep = sleep
+            @contextlib.contextmanager
+            def response(request, timeout):
+                requests.append(request)
+                try:
+                    yield SimpleNamespace(status=200, read=lambda _maximum: b'{"status":"NOT_SERVING"}')
+                finally:
+                    closed.append(request)
+            with self.subTest(stalled=stalled), frontend_inputs(clock, response), self.assertRaises(ValueError) as failure:
+                profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/roots", a["admin_index_sha256"])
+            self.assertEqual(len(requests), len(closed))
+            self.assertLessEqual(len(requests), 121)
+            self.assertEqual({r.full_url for r in requests}, {p["public"]["origin"] + "/grpc.health.v1.Health/Check"})
+            self.assertIn("attempts=" + str(len(requests)), str(failure.exception))
+            if stalled:
+                self.assertEqual(len(requests), 121)
+                self.assertIn("category=not_serving_attempt_limit", str(failure.exception))
+            else:
+                self.assertAlmostEqual(clock.elapsed, 12)
+                self.assertIn("category=deadline", str(failure.exception))
+
+    def test_frontend_not_ready_sleep_cancellation_propagates(self):
+        p, a = plan(), admitted(plan())
+        clock, requests, closed, accepted = Clock(), [], [], []
+        clock.sleep = mock.Mock(side_effect=KeyboardInterrupt("UNIT_CANCEL"))
+        @contextlib.contextmanager
+        def response(request, timeout):
+            requests.append(request)
+            try:
+                yield SimpleNamespace(status=200, read=lambda _maximum: b'{"status":"NOT_SERVING"}')
+            finally:
+                closed.append(request)
+        with frontend_inputs(clock, response), self.assertRaises(KeyboardInterrupt):
+            accepted.append(profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/roots", a["admin_index_sha256"]))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].full_url, p["public"]["origin"] + "/grpc.health.v1.Health/Check")
+        self.assertEqual(closed, requests)
+        self.assertEqual(accepted, [])
+        clock.sleep.assert_called_once_with(0.1)
+
+    def test_frontend_unknown_malformed_and_transport_failures_never_retry(self):
+        import ssl
+        import urllib.error
+        p, a = plan(), admitted(plan())
+        cases = [b'{"status":"UNKNOWN"}', b'{"status":1}', b'{"status":null}', b'[]',
+                 b'{"status":"SERVING","extra":true}', b'{"status":"NOT_SERVING","status":"SERVING"}',
+                 b'{"status":', b'{"status":"SERVING"}{}', b"x" * 1025,
+                 urllib.error.URLError(ssl.SSLError("UNIT_PRIVATE_DO_NOT_ECHO")),
+                 urllib.error.URLError("UNIT_PRIVATE_DO_NOT_ECHO")]
+        for body in cases:
+            clock, requests, closed = Clock(), [], []
+            @contextlib.contextmanager
+            def response(request, timeout):
+                requests.append(request)
+                if isinstance(body, Exception):
+                    raise body
+                try:
+                    yield SimpleNamespace(status=200, read=lambda _maximum: body)
+                finally:
+                    closed.append(request)
+            with self.subTest(body_type=type(body).__name__), frontend_inputs(clock, response), self.assertRaises(ValueError) as failure:
+                profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/roots", a["admin_index_sha256"])
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(len(closed), 0 if isinstance(body, Exception) else 1)
+            self.assertEqual(clock.elapsed, 0)
+            self.assertIn("attempts=1", str(failure.exception))
+            self.assertNotIn("UNIT_PRIVATE", str(failure.exception))
+            self.assertTrue(failure.exception.__suppress_context__)
+        error = urllib.error.HTTPError(p["public"]["origin"], 503, "UNIT_PRIVATE_DO_NOT_ECHO", {}, io.BytesIO(b"UNIT_PRIVATE_BODY"))
+        with frontend_inputs(Clock(), mock.Mock(side_effect=error)), self.assertRaisesRegex(ValueError, "category=health_http; attempts=1"):
+            profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/roots", a["admin_index_sha256"])
+        self.assertTrue(error.closed)
+
+    def test_frontend_one_deadline_covers_dns_tls_health_and_admin(self):
+        p, a = plan(), admitted(plan())
+        for phase in ("dns", "tls", "health", "admin"):
+            clock, requests, closed = Clock(), [], []
+            def lookup(*_args):
+                if phase == "dns": clock.elapsed = 12
+                return [(None, None, None, None, (p["public"]["lan_ip"], 24443))]
+            def tls_setup(**_kwargs):
+                if phase == "tls": clock.elapsed = 12
+                return None
+            @contextlib.contextmanager
+            def response(request, timeout):
+                requests.append((request, timeout))
+                index = len(requests)
+                def read(_maximum):
+                    if phase == "health":
+                        clock.elapsed = 12
+                    elif phase == "admin":
+                        clock.elapsed += 4.9 if index <= 2 else 2.2
+                    if phase == "admin" and index == 1:
+                        return b'{"status":"NOT_SERVING"}'
+                    return b"UNIT_EXACT_SOURCE_ADMIN_INDEX" if request.full_url.endswith("index.html") else b'{"status":"SERVING"}'
+                try:
+                    yield SimpleNamespace(status=200, read=read)
+                finally:
+                    closed.append(request)
+            with self.subTest(phase=phase), frontend_inputs(clock, response, lookup=lookup, tls_setup=tls_setup), self.assertRaisesRegex(ValueError, "category=deadline"):
+                profile.frontend_probe(p["public"]["origin"], p["public"]["lan_ip"], "/UNIT_ONLY/roots", a["admin_index_sha256"])
+            self.assertEqual(len(closed), len(requests))
+            self.assertEqual(len(requests), 0 if phase in ("dns", "tls") else 1 if phase == "health" else 3)
+            if phase == "admin":
+                self.assertAlmostEqual(requests[-1][1], 2.1)
 
     def test_descriptor_has_no_provider_registration_or_utc_claim(self):
         p = plan()
