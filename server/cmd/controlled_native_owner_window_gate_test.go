@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -199,6 +200,7 @@ type controlledNativeLeaseMonitor struct {
 	file                    *os.File
 	path                    string
 	last                    controlledNativeLeaseCut
+	seen                    controlledNativeLeaseCut
 	observations            int
 	limits                  controlledNativeTranscriptLimits
 	bytesWritten            int64
@@ -243,7 +245,7 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 	// Continue checking leases through App teardown after its serving context is
 	// canceled. The caller always stops and joins this monitor after workers join.
 	monitorCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
-	m := &controlledNativeLeaseMonitor{stop: stop, done: make(chan struct{}), file: file, path: path, last: first,
+	m := &controlledNativeLeaseMonitor{stop: stop, done: make(chan struct{}), file: file, path: path, last: first, seen: first,
 		first: first.ObservedAt, authority: authority, nativeEnd: make(chan chan error), limits: limits}
 	appendCut := func(cut controlledNativeLeaseCut) error {
 		raw, encodeErr := json.Marshal(cut)
@@ -263,8 +265,8 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 		file.Close()
 		return nil, err
 	}
-	// The same captured-FD reader and verifier are separated only to retain a
-	// closed failure stage; their admission predicates and order are unchanged.
+	// Authenticate every captured candidate before considering its native time.
+	// The auxiliary observation stamp never substitutes for those bounds.
 	readCurrent := func(at time.Time) (controlledNativeLeaseCut, error) {
 		control, err := controlledNativeLeaseRead(authority.ControlPath, peerauth.MaxManifestBytes)
 		if err != nil {
@@ -274,7 +276,7 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 		if err != nil {
 			return controlledNativeLeaseCut{}, m.failure(controlledNativeLeaseFailureRead, err)
 		}
-		cut, err := controlledNativeLeaseVerify(authority, at, control, data)
+		cut, err := controlledNativeLeaseAuthenticate(authority, at, control, data)
 		return cut, m.failure(controlledNativeLeaseFailureVerify, err)
 	}
 	observe := func(final bool) error {
@@ -287,12 +289,21 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 				return m.failure(controlledNativeLeaseFailureNativeBounds, err)
 			}
 			// Wall time is only the auxiliary event stamp during native serving.
-			// Read/admit with the borrowed native bounds before any validity test.
-			next, err = readCurrent(low)
+			// Authenticate first; only the later selection uses native validity.
+			next, err = readCurrent(now)
 			if err != nil {
 				return err
 			}
-			next, err = controlledNativeLeaseVerifyBounds(authority, now, low, high, next.ControlManifest, next.DataManifest)
+			// Seen is independent from selected: even a future candidate fixes
+			// its per-stream anti-rollback/equivocation/continuity floor.
+			if err := controlledNativeLeaseAdvance(m.seen, next); err != nil {
+				return m.failure(controlledNativeLeaseFailureAdvance, err)
+			}
+			if err := controlledNativeLeaseAdvance(m.last, next); err != nil {
+				return m.failure(controlledNativeLeaseFailureAdvance, err)
+			}
+			m.seen = next
+			next, err = controlledNativeLeaseSelectBounds(authority, now, low, high, m.last, next)
 			if err != nil {
 				return m.failure(controlledNativeLeaseFailureVerify, err)
 			}
@@ -300,6 +311,14 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 			next, err = readCurrent(now)
 			if err != nil {
 				return err
+			}
+			if err := controlledNativeLeaseAdvance(m.seen, next); err != nil {
+				return m.failure(controlledNativeLeaseFailureAdvance, err)
+			}
+			m.seen = next
+			next, err = controlledNativeLeaseVerify(authority, now, next.ControlManifest, next.DataManifest)
+			if err != nil {
+				return m.failure(controlledNativeLeaseFailureVerify, err)
 			}
 		}
 		if err := controlledNativeLeaseAdvance(m.last, next); err != nil {
@@ -708,6 +727,145 @@ func (o *controlledNativeUnitLifecycle) Close() error    { o.calls++; o.close();
 func (o *controlledNativeUnitLifecycle) Shutdown() error { return o.Close() }
 
 func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
+	t.Run("pending-native-renewal", func(t *testing.T) {
+		for _, scenario := range []string{"adopt", "independent streams", "rollback", "equivocation", "bad signature", "foreign profile", "foreign members", "gap", "gap from selected", "invalid bounds"} {
+			t.Run(scenario, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					time.Sleep(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC).Sub(time.Now().UTC()))
+					authority, sign := unitControlledNativeLeases(t)
+					dir := t.TempDir()
+					authority.ControlPath, authority.DataPath = filepath.Join(dir, "control.json"), filepath.Join(dir, "data.json")
+					write := func(path string, raw []byte) {
+						t.Helper()
+						if err := os.WriteFile(path+".next", raw, 0600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Rename(path+".next", path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					oldControl, oldData := sign(1, time.Now().UTC().Add(-time.Minute), peerauth.MaxMembershipLifetime)
+					write(authority.ControlPath, oldControl)
+					write(authority.DataPath, oldData)
+					first, err := controlledNativeLeaseCurrent(authority, time.Now().UTC())
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					calls := 0
+					nextObservation := make(chan struct{})
+					releaseObservation := sync.OnceFunc(func() { close(nextObservation) })
+					var published time.Time
+					var newControl, newData []byte
+					monitor, err := controlledNativeMonitorLeaseFile(ctx, cancel, filepath.Join(dir, "transcript.jsonl"), authority, first, func() (time.Time, time.Time, error) {
+						calls++
+						if calls == 3 {
+							// The test inspects the completed pending cut before
+							// allowing any subsequent monitor write to that cut.
+							<-nextObservation
+						}
+						now := time.Now().UTC()
+						if calls == 2 {
+							// Publish at exactly this borrowed-clock observation. The
+							// host stamp is current; native low legitimately lags3s.
+							published = now
+							newControl, newData = sign(2, now, peerauth.MaxMembershipLifetime)
+							if scenario == "independent streams" {
+								_, newData = sign(2, now.Add(-time.Second), peerauth.MaxMembershipLifetime)
+							}
+							write(authority.ControlPath, newControl)
+							write(authority.DataPath, newData)
+						}
+						if calls > 2 && scenario == "invalid bounds" {
+							return now, now.Add(-time.Nanosecond), nil
+						}
+						return now.Add(-3 * time.Second), now.Add(3 * time.Second), nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer monitor.close()
+					defer releaseObservation() // Release a blocked sample before close, including t.Fatal.
+					time.Sleep(time.Second)
+					synctest.Wait()
+					wantData := uint64(1)
+					if scenario == "independent streams" {
+						wantData = 2
+					}
+					if ctx.Err() != nil || monitor.last.ControlVersion != 1 || monitor.last.DataVersion != wantData ||
+						monitor.seen.ControlVersion != 2 || monitor.seen.DataVersion != 2 {
+						t.Fatal("future candidate became selected, lost its seen floor, or canceled App", ctx.Err())
+					}
+					switch scenario {
+					case "rollback":
+						write(authority.ControlPath, oldControl)
+					case "equivocation":
+						changed, _ := sign(2, published.Add(time.Millisecond), peerauth.MaxMembershipLifetime)
+						write(authority.ControlPath, changed)
+					case "bad signature":
+						var envelope struct {
+							Payload   json.RawMessage `json:"payload"`
+							Signature []byte          `json:"signature"`
+						}
+						if err := json.Unmarshal(newControl, &envelope); err != nil {
+							t.Fatal(err)
+						}
+						envelope.Signature[0] ^= 1
+						raw, _ := json.Marshal(envelope)
+						write(authority.ControlPath, raw)
+					case "foreign profile":
+						profile := authority.Profile
+						profile.ProtocolScope[0]++
+						raw, err := peerauth.SignControlManifest(peerauth.ControlManifest{Version: 3, Profile: profile, IssuedAt: published, ExpiresAt: published.Add(peerauth.MaxMembershipLifetime)}, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{71}, ed25519.SeedSize)))
+						if err != nil {
+							t.Fatal(err)
+						}
+						write(authority.ControlPath, raw)
+					case "foreign members":
+						members := slices.Clone(authority.Members)
+						members[0].SPKI[0]++
+						raw, err := peerauth.SignManifest(peerauth.Manifest{Version: 3, Domain: authority.Domain, IssuedAt: published, ExpiresAt: published.Add(peerauth.MaxMembershipLifetime), Members: members}, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{72}, ed25519.SeedSize)))
+						if err != nil {
+							t.Fatal(err)
+						}
+						write(authority.DataPath, raw)
+					case "gap":
+						gap, _ := sign(3, published.Add(peerauth.MaxMembershipLifetime), peerauth.MaxMembershipLifetime)
+						write(authority.ControlPath, gap)
+					case "gap from selected":
+						gap, _ := sign(3, first.ControlExpires, peerauth.MaxMembershipLifetime)
+						write(authority.ControlPath, gap)
+					}
+					releaseObservation()
+					time.Sleep(time.Second)
+					synctest.Wait()
+					if scenario == "adopt" || scenario == "independent streams" {
+						if ctx.Err() != nil || monitor.last.ControlVersion != 2 || monitor.last.DataVersion != 2 {
+							t.Fatal("eligible candidate not selected", ctx.Err())
+						}
+						if err := monitor.finishNative(); err != nil {
+							t.Fatal(err)
+						}
+						if err := monitor.close(); err != nil {
+							t.Fatal(err)
+						}
+						raw, err := os.ReadFile(monitor.path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := controlledNativeLeaseTranscript(raw, authority, monitor.first, monitor.closedAt); err != nil {
+							t.Fatal("selected genuine bytes did not replay under unchanged predicates", err)
+						}
+						return
+					}
+					if ctx.Err() == nil || monitor.err == nil {
+						t.Fatal("invalid pending candidate did not immediately cancel App")
+					}
+				})
+			})
+		}
+	})
 	t.Run("closed-first-failure-diagnostic", func(t *testing.T) {
 		var monitor controlledNativeLeaseMonitor
 		private := errors.New("UNIT_PRIVATE_PATH_UID_CREDENTIAL")

@@ -160,6 +160,24 @@ func controlledNativeLeaseCurrent(authority controlledNativeLeaseAuthority, now 
 }
 
 func controlledNativeLeaseVerify(authority controlledNativeLeaseAuthority, now time.Time, controlRaw, dataRaw []byte) (controlledNativeLeaseCut, error) {
+	cut, err := controlledNativeLeaseAuthenticate(authority, now, controlRaw, dataRaw)
+	if err != nil {
+		return cut, err
+	}
+	valid := func(issued, expires time.Time) bool {
+		// Identical time predicate to native membership admission. In particular
+		// a freshly published lease is not spuriously rejected for its first2s.
+		return !now.Before(issued.Add(-peerauth.ClockMargin)) && now.Add(peerauth.ClockMargin).Before(expires)
+	}
+	if !valid(cut.ControlIssued, cut.ControlExpires) || !valid(cut.DataIssued, cut.DataExpires) {
+		return controlledNativeLeaseCut{}, errors.New("owner current signed lease expired or future")
+	}
+	return cut, nil
+}
+
+// Authentication is separate from selection: a future candidate is still
+// checked in full before it can be remembered or deferred by the monitor.
+func controlledNativeLeaseAuthenticate(authority controlledNativeLeaseAuthority, now time.Time, controlRaw, dataRaw []byte) (controlledNativeLeaseCut, error) {
 	var cut controlledNativeLeaseCut
 	control, err := peerauth.VerifyControlManifest(controlRaw, authority.ControlKey, authority.Profile.Lineage)
 	if err != nil || control.Profile.Digest() != authority.Profile.Digest() {
@@ -168,14 +186,6 @@ func controlledNativeLeaseVerify(authority controlledNativeLeaseAuthority, now t
 	data, err := peerauth.VerifyManifest(dataRaw, authority.DataKey, authority.Domain)
 	if err != nil || !slices.Equal(data.Members, authority.Members) {
 		return cut, errors.New("owner signed data membership refused")
-	}
-	valid := func(issued, expires time.Time) bool {
-		// Identical time predicate to native membership admission. In particular
-		// a freshly published lease is not spuriously rejected for its first2s.
-		return !now.Before(issued.Add(-peerauth.ClockMargin)) && now.Add(peerauth.ClockMargin).Before(expires)
-	}
-	if !valid(control.IssuedAt, control.ExpiresAt) || !valid(data.IssuedAt, data.ExpiresAt) {
-		return cut, errors.New("owner current signed lease expired or future")
 	}
 	profile, domain := control.Profile.Digest(), data.Domain.Digest()
 	return controlledNativeLeaseCut{ObservedAt: now, ControlVersion: control.Version, ControlIssued: control.IssuedAt,
@@ -212,6 +222,25 @@ func controlledNativeLeaseVerifyBounds(authority controlledNativeLeaseAuthority,
 	}
 	cut.ObservedAt, cut.NativeLow, cut.NativeHigh = observed, &low, &high
 	return cut, nil
+}
+
+// Both cuts must already have passed authentication. Selection never changes a
+// signed time: only a strictly newer, not-yet-current stream can leave its
+// previously selected bytes in use. The returned bytes must still cover the
+// entire current native interval under the original verification predicate.
+func controlledNativeLeaseSelectBounds(authority controlledNativeLeaseAuthority, observed, low, high time.Time, previous, candidate controlledNativeLeaseCut) (controlledNativeLeaseCut, error) {
+	control, data := candidate.ControlManifest, candidate.DataManifest
+	deferFuture := func(version, previousVersion uint64, issued, expires time.Time) bool {
+		return version > previousVersion && low.Before(issued.Add(-peerauth.ClockMargin)) &&
+			high.Add(peerauth.ClockMargin).Before(expires)
+	}
+	if deferFuture(candidate.ControlVersion, previous.ControlVersion, candidate.ControlIssued, candidate.ControlExpires) {
+		control = previous.ControlManifest
+	}
+	if deferFuture(candidate.DataVersion, previous.DataVersion, candidate.DataIssued, candidate.DataExpires) {
+		data = previous.DataManifest
+	}
+	return controlledNativeLeaseVerifyBounds(authority, observed, low, high, control, data)
 }
 
 type controlledNativeTranscriptLimits struct {
@@ -712,4 +741,48 @@ func TestControlledNativeProviderNativeBoundsLeaseVerification(t *testing.T) {
 			t.Fatal("invalid native whole bounds accepted")
 		}
 	}
+	t.Run("future renewal retains only whole-interval-valid selected bytes", func(t *testing.T) {
+		oldControl, oldData := sign(1, now.Add(-time.Minute), peerauth.MaxMembershipLifetime)
+		newControl, newData := sign(2, now, peerauth.MaxMembershipLifetime)
+		low, high := now.Add(-3*time.Second), now.Add(3*time.Second)
+		previous, err := controlledNativeLeaseVerifyBounds(authority, now, low, high, oldControl, oldData)
+		if err != nil {
+			t.Fatal("previous genuine lease must cover the whole native interval", err)
+		}
+		if _, err := controlledNativeLeaseVerifyBounds(authority, now, low, high, newControl, newData); err == nil {
+			t.Fatal("three-second lower-bound lag must refuse the newly issued lease")
+		}
+		candidate, err := controlledNativeLeaseAuthenticate(authority, now, newControl, newData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected, err := controlledNativeLeaseSelectBounds(authority, now, low, high, previous, candidate)
+		if err != nil || selected.ControlVersion != 1 || selected.DataVersion != 1 ||
+			!bytes.Equal(selected.ControlManifest, oldControl) || !bytes.Equal(selected.DataManifest, oldData) {
+			t.Fatal("future candidate replaced current signed bytes", err)
+		}
+		adopted, err := controlledNativeLeaseSelectBounds(authority, now.Add(time.Second), low.Add(time.Second), high.Add(time.Second), selected, candidate)
+		if err != nil || adopted.ControlVersion != 2 || adopted.DataVersion != 2 {
+			t.Fatal("eligible genuine candidate did not replace the previous bytes", err)
+		}
+		// A future candidate cannot extend an expired selected lease or excuse
+		// an invalid native interval. No generic time-error retry is allowed.
+		shortControl, shortData := sign(1, now.Add(-time.Minute), 64*time.Second)
+		short, err := controlledNativeLeaseAuthenticate(authority, now, shortControl, shortData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, previous := range map[string]controlledNativeLeaseCut{"expired previous": short, "future previous": candidate} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := controlledNativeLeaseSelectBounds(authority, now, low, high, previous, candidate); err == nil {
+					t.Fatal("noncurrent previous lease excused a future candidate")
+				}
+			})
+		}
+		for _, bounds := range [][2]time.Time{{{}, high}, {high, low}, {low, now.Add(peerauth.MaxMembershipLifetime)}} {
+			if _, err := controlledNativeLeaseSelectBounds(authority, now, bounds[0], bounds[1], previous, candidate); err == nil {
+				t.Fatal("future candidate excused invalid bounds or expiry")
+			}
+		}
+	})
 }
