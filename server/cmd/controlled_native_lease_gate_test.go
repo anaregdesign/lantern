@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,7 @@ func controlledNativeOwnerRead(path string, maximum int64) ([]byte, error) {
 	return controlledNativeOwnerReadCaptured(file, maximum)
 }
 
-func controlledNativeOwnerReadCaptured(file *os.File, maximum int64) ([]byte, error) {
+func controlledNativeOwnerFileInfo(file *os.File, maximum int64) (os.FileInfo, error) {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() <= 0 || info.Size() > maximum {
 		return nil, errors.New("owner bounded private input refused")
@@ -42,6 +43,14 @@ func controlledNativeOwnerReadCaptured(file *os.File, maximum int64) ([]byte, er
 	identity, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || identity.Uid != uint32(os.Getuid()) || identity.Nlink != 1 {
 		return nil, errors.New("owner private input identity refused")
+	}
+	return info, nil
+}
+
+func controlledNativeOwnerReadCaptured(file *os.File, maximum int64) ([]byte, error) {
+	info, err := controlledNativeOwnerFileInfo(file, maximum)
+	if err != nil {
+		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil || int64(len(raw)) != info.Size() {
@@ -205,25 +214,60 @@ func controlledNativeLeaseVerifyBounds(authority controlledNativeLeaseAuthority,
 	return cut, nil
 }
 
+type controlledNativeTranscriptLimits struct {
+	Records  int
+	RowBytes int
+	Bytes    int64
+}
+
+func controlledNativeStaticTranscriptLimits() controlledNativeTranscriptLimits {
+	return controlledNativeTranscriptLimits{Records: 128, RowBytes: 64 << 10, Bytes: 4 << 20}
+}
+
+func controlledNativeTranscriptLimitsFor(input controlledNativeProviderInput) (controlledNativeTranscriptLimits, error) {
+	if input.OwnerWindow == nil || input.OwnerWindow.Mode != "unattended-maintenance-renewal" {
+		return controlledNativeStaticTranscriptLimits(), nil
+	}
+	if !controlledNativeRenewalWindowShape(input.OwnerWindow, input.LifetimeSeconds) {
+		return controlledNativeTranscriptLimits{}, errors.New("maintenance transcript horizon refused")
+	}
+	// Two independently observed signed streams per refresh; setup, final native
+	// and cleanup boundaries remain included without an unbounded global quota.
+	records := 2*((input.LifetimeSeconds+controlledNativeCleanupSeconds(input.OwnerWindow)+59)/60) + 16
+	return controlledNativeTranscriptLimits{Records: records, RowBytes: 32 << 10, Bytes: int64(records) * (32 << 10)}, nil
+}
+
+func (l controlledNativeTranscriptLimits) valid() bool {
+	return l.Records > 0 && l.RowBytes >= 4096 && l.RowBytes <= 64<<10 && l.Bytes > 0
+}
+
 func controlledNativeLeaseTranscript(raw []byte, authority controlledNativeLeaseAuthority, from, through time.Time) (int, error) {
-	if len(raw) == 0 || len(raw) > 4<<20 || through.Before(from) {
+	return controlledNativeLeaseTranscriptReader(bytes.NewReader(raw), authority, from, through, controlledNativeStaticTranscriptLimits())
+}
+
+func controlledNativeLeaseTranscriptReader(reader io.Reader, authority controlledNativeLeaseAuthority, from, through time.Time, limits controlledNativeTranscriptLimits) (int, error) {
+	if !limits.valid() || through.Before(from) {
 		return 0, errors.New("owner bounded lease interval transcript refused")
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 4096), 64<<10)
+	limited := &io.LimitedReader{R: reader, N: limits.Bytes + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 4096), limits.RowBytes)
 	count := 0
 	var first, previous controlledNativeLeaseCut
 	for scanner.Scan() {
 		var cut controlledNativeLeaseCut
-		if count == 128 || controlledNativeOwnerDecode(scanner.Bytes(), &cut) != nil {
+		if count == limits.Records || controlledNativeOwnerDecode(scanner.Bytes(), &cut) != nil {
 			return count, errors.New("owner exact signed lease transcript refused")
 		}
-		verified, err := controlledNativeLeaseVerify(authority, cut.ObservedAt, cut.ControlManifest, cut.DataManifest)
+		var verified controlledNativeLeaseCut
+		var err error
 		if cut.NativeLow != nil || cut.NativeHigh != nil {
 			if cut.NativeLow == nil || cut.NativeHigh == nil {
 				return count, errors.New("owner partial native witness refused")
 			}
 			verified, err = controlledNativeLeaseVerifyBounds(authority, cut.ObservedAt, *cut.NativeLow, *cut.NativeHigh, cut.ControlManifest, cut.DataManifest)
+		} else {
+			verified, err = controlledNativeLeaseVerify(authority, cut.ObservedAt, cut.ControlManifest, cut.DataManifest)
 		}
 		expected, _ := json.Marshal(verified)
 		actual, _ := json.Marshal(cut)
@@ -236,7 +280,7 @@ func controlledNativeLeaseTranscript(raw []byte, authority controlledNativeLease
 		previous = cut
 		count++
 	}
-	if scanner.Err() != nil || count == 0 || first.ObservedAt.After(from) || previous.ObservedAt.Before(through) ||
+	if scanner.Err() != nil || limited.N == 0 || count == 0 || first.ObservedAt.After(from) || previous.ObservedAt.Before(through) ||
 		!through.Add(peerauth.ClockMargin).Before(previous.ControlExpires) || !through.Add(peerauth.ClockMargin).Before(previous.DataExpires) {
 		return count, errors.New("owner whole actual lease interval not covered")
 	}
@@ -244,13 +288,21 @@ func controlledNativeLeaseTranscript(raw []byte, authority controlledNativeLease
 }
 
 func controlledNativeNativeInterval(raw []byte, from, until time.Time) (int, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 4096), 64<<10)
+	return controlledNativeNativeIntervalReader(bytes.NewReader(raw), from, until, controlledNativeStaticTranscriptLimits())
+}
+
+func controlledNativeNativeIntervalReader(reader io.Reader, from, until time.Time, limits controlledNativeTranscriptLimits) (int, error) {
+	if !limits.valid() {
+		return 0, errors.New("owner native interval bounds refused")
+	}
+	limited := &io.LimitedReader{R: reader, N: limits.Bytes + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 4096), limits.RowBytes)
 	count, ended := 0, false
 	var first, last time.Time
 	for scanner.Scan() {
 		var cut controlledNativeLeaseCut
-		if controlledNativeOwnerDecode(scanner.Bytes(), &cut) != nil {
+		if count >= limits.Records || controlledNativeOwnerDecode(scanner.Bytes(), &cut) != nil {
 			return count, errors.New("owner native interval decode refused")
 		}
 		if cut.NativeLow == nil && cut.NativeHigh == nil {
@@ -268,7 +320,7 @@ func controlledNativeNativeInterval(raw []byte, from, until time.Time) (int, err
 		last = cut.ObservedAt
 		count++
 	}
-	if scanner.Err() != nil || count < 2 || !first.Equal(from) || !last.Equal(until) {
+	if scanner.Err() != nil || limited.N == 0 || count < 2 || !first.Equal(from) || !last.Equal(until) {
 		return count, errors.New("owner whole native serving interval absent")
 	}
 	return count, nil
@@ -311,6 +363,132 @@ func unitControlledNativeLeases(t *testing.T) (controlledNativeLeaseAuthority, f
 func TestControlledNativeProviderSignedRenewalTranscript(t *testing.T) {
 	authority, sign := unitControlledNativeLeases(t)
 	from := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, duration := range []struct {
+		name    string
+		seconds int
+	}{{"maintenance streaming two hours", 7200}, {"maintenance maximum seven days replay", 604800}} {
+		t.Run(duration.name, func(t *testing.T) {
+			input, _ := unitControlledNativeProvider()
+			input.OwnerWindow = &controlledNativeOwnerWindow{Mode: "unattended-maintenance-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
+			input.LifetimeSeconds = duration.seconds
+			input.Mode = "resume"
+			limits, err := controlledNativeTranscriptLimitsFor(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "closed-leases.jsonl")
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hash := sha256.New()
+			count := 0
+			var last controlledNativeLeaseCut
+			var lastRaw []byte
+			var lastOffset int64
+			var size int64
+			appendCut := func(control, data []byte, at time.Time) {
+				t.Helper()
+				cut, err := controlledNativeLeaseVerifyBounds(authority, at, at, at.Add(time.Millisecond), control, data)
+				if err != nil {
+					t.Fatal("genuine advancing native cut", err)
+				}
+				raw, err := json.Marshal(cut)
+				raw = append(raw, '\n')
+				if err != nil || len(raw) > limits.RowBytes {
+					t.Fatal("three-member canonical row exceeds admitted bound", len(raw), err)
+				}
+				if n, err := file.Write(raw); err != nil || n != len(raw) {
+					t.Fatal("write fixture", err)
+				}
+				hash.Write(raw)
+				count++
+				last, lastRaw, lastOffset = cut, raw, size
+				size += int64(len(raw))
+			}
+			control, previousData := sign(1, from, peerauth.MaxMembershipLifetime)
+			appendCut(control, previousData, from)
+			for minute := 1; minute <= duration.seconds/60; minute++ {
+				at := from.Add(time.Duration(minute) * time.Minute)
+				control, data := sign(uint64(minute+1), at, peerauth.MaxMembershipLifetime)
+				// Independent atomic per-stream publication may expose one new stream
+				// before the other. Both genuine cuts must remain admitted.
+				appendCut(control, previousData, at)
+				appendCut(control, data, at)
+				previousData = data
+			}
+			if err := errors.Join(file.Sync(), file.Close()); err != nil {
+				t.Fatal(err)
+			}
+			through := from.Add(time.Duration(duration.seconds) * time.Second)
+			m := controlledNativeLeaseMonitor{path: path, authority: authority, first: from, closedAt: through, nativeFrom: from, nativeUntil: through, last: last}
+			start := time.Now()
+			digest, observed, native, err := m.replay(input)
+			elapsed := time.Since(start)
+			if err != nil || digest != hex.EncodeToString(hash.Sum(nil)) || observed != count || native != count || count <= 128 {
+				t.Fatal("bounded captured-FD streaming replay", observed, native, count, err)
+			}
+			t.Logf("maintenance replay seconds=%d rows=%d bytes=%d elapsed=%s", duration.seconds, count, size, elapsed)
+			if duration.seconds != 7200 {
+				return
+			}
+			open := func() *os.File {
+				t.Helper()
+				f, e := os.Open(path)
+				if e != nil {
+					t.Fatal(e)
+				}
+				t.Cleanup(func() { f.Close() })
+				return f
+			}
+			if _, err := controlledNativeLeaseTranscriptReader(open(), authority, from, through, controlledNativeStaticTranscriptLimits()); err == nil {
+				t.Fatal("legacy128-row profile consumed maintenance evidence")
+			}
+			short := limits
+			short.Bytes = size - 1
+			if _, err := controlledNativeLeaseTranscriptReader(open(), authority, from, through, short); err == nil {
+				t.Fatal("maintenance byte cap ignored")
+			}
+			if _, err := controlledNativeNativeIntervalReader(open(), from, through.Add(time.Second), limits); err == nil {
+				t.Fatal("missing native interval end admitted")
+			}
+			aux := last
+			aux.NativeLow = nil
+			aux.NativeHigh = nil
+			auxRaw, _ := json.Marshal(aux)
+			if _, err := controlledNativeNativeIntervalReader(bytes.NewReader(append(auxRaw, '\n')), from, through, limits); err == nil {
+				t.Fatal("absent native block admitted")
+			}
+			oversized := strings.Repeat(" ", limits.RowBytes) + string(lastRaw)
+			if _, err := controlledNativeLeaseTranscriptReader(strings.NewReader(oversized), authority, from, through, limits); err == nil {
+				t.Fatal("maintenance line cap ignored")
+			}
+			bad := last
+			bad.DataSHA256 = strings.Repeat("0", 64)
+			badRaw, _ := json.Marshal(bad)
+			badRaw = append(badRaw, '\n')
+			if len(badRaw) != len(lastRaw) {
+				t.Fatal("late corruption fixture changed size")
+			}
+			changed, err := os.OpenFile(path, os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = changed.Seek(lastOffset, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = changed.Write(badRaw); err != nil {
+				t.Fatal(err)
+			}
+			if err = changed.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if processed, err := controlledNativeLeaseTranscriptReader(open(), authority, from, through, limits); err == nil || processed != count-1 {
+				t.Fatal("late signed metadata corruption not refused at its actual cut", processed, err)
+			}
+		})
+	}
+
 	t.Run("captured atomically replaced signed inputs", func(t *testing.T) {
 		oldControl, oldData := sign(1, from, peerauth.MaxMembershipLifetime)
 		newControl, newData := sign(2, from.Add(time.Minute), peerauth.MaxMembershipLifetime)

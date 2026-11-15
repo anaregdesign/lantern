@@ -192,6 +192,67 @@ unknown. No automatic restart, cohort reuse, clock reset or external NTP
 acquisition is introduced. Production `--serve`, the Google-only component and
 the independent mandatory normal configured-source qualification are unchanged.
 
+## Unattended maintenance interval (#2185)
+
+The time reserved for human account selection is independent of the Server's
+lifetime. A validation environment may instead select the explicit test-only
+maintenance mode:
+
+```json
+"owner_window": {"mode":"unattended-maintenance-renewal","lease_seconds":600,"refresh_seconds":60}
+```
+
+Its integer `lifetime_seconds` is between3600 and604800, with one absolute
+`planned_stop_at` and `cleanup_by` exactly120 seconds later. This separate
+cleanup allowance covers listener teardown and final streaming/signature
+verification. The original serving-phase stop remains unchanged, and phone
+actions cannot use the cleanup allowance. The existing static
+and 1800-second owner-present contracts remain unchanged. The maintenance
+dispatch identifies its unattended supervisor and states `owner_present=false`.
+This authorizes environment supervision, never account selection, management
+approval or a claim that a person is present. Human operations still require
+their own fresh, bounded action admission and genuine provider authentication.
+
+Select the same-binary passive description with
+`CONTROLLED_NATIVE_PROVIDER_DESCRIBE=1` and
+`CONTROLLED_NATIVE_PROVIDER_DESCRIBE_MAINTENANCE_WINDOW=1`. Its fifteen fields
+include `maintenance_window` with the exact object above,
+`maintenance_window_min_lifetime_seconds=3600`, and
+`maintenance_window_max_lifetime_seconds=604800`. Selecting both owner and
+maintenance description modes is refused; an old fourteen-field owner
+description cannot qualify maintenance serving.
+
+Before dispatch, admit certificate and provider-secret capacity for the entire
+maintenance interval, including cleanup. Provisioning capacity and child test
+timeouts cover that declared interval. Membership leases remain at most600
+seconds, refreshed every60 seconds; native time, certificate expiry, policy
+freshness, CSRF, CAS and per-operation reauthentication remain authoritative.
+Use the original Apple signing key only in the separate credential mint. Keep
+that key outside serving and publisher mounts. Existing inline Apple credentials
+do not reload when a file changes: mint sufficient capacity before starting.
+
+The maintenance owner retains the same cohort, identity, users, policy and
+persistence while a person is away. Reaching a real material-maintenance boundary
+requires an explicit clean stop and same-state maintenance/resume procedure with
+fresh admissible material. Retain the original publisher journal, version floors
+and all evidence. Never reinitialize an environment, reset its clock, accept
+expired material or create a fresh cohort to disguise an expired interval.
+The interval's readiness alone is no provider, phone or normal UTC qualification.
+
+Long intervals use horizon-bounded streaming validation of signed lease evidence
+and publisher events. Retain the first ready event and the final causal stop
+acknowledgement; preserve signatures, native low/high bounds and uninterrupted
+version/lease coverage. Bounded live status reads must not repeatedly load the
+whole growing event history. A failed renewal, unexpected exit, evidence-limit
+violation or unknown cleanup remains nonaccepting. Completing a finite phone
+operation does not require stopping the maintenance environment.
+
+Keep the environment running until validation is complete, performing explicit
+material maintenance before its admitted capacity expires. A request to return
+within a short human operation window must never become an automatic Server
+shutdown deadline. Use real NTP only for the independently mandatory
+qualifications; functional maintenance continues on the controlled source.
+
 ## Public origin and normal management journey
 
 Only the new edge publishes the selected LAN address at24443. New node1 gets a

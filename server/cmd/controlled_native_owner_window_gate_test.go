@@ -17,6 +17,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/provider"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -34,22 +35,24 @@ import (
 // still admits only the genuine signed manifests below, with unchanged ten
 // minute leases, profile bindings and durable production floors.
 type controlledNativeRenewalCapacity struct {
-	Schema                int       `json:"schema"`
-	Kind                  string    `json:"kind"`
-	Revision              string    `json:"revision"`
-	Nonce                 string    `json:"nonce"`
-	PlannedStop           time.Time `json:"planned_stop_at"`
-	CleanupBy             time.Time `json:"cleanup_by"`
-	PublisherEnd          time.Time `json:"publisher_end"`
-	PublisherCleanupBy    time.Time `json:"publisher_cleanup_by"`
-	TLSCapacityEnd        time.Time `json:"tls_capacity_end"`
-	LeaseSeconds          int       `json:"lease_seconds"`
-	RefreshSeconds        int       `json:"refresh_seconds"`
-	TargetCount           int       `json:"target_count"`
-	ControlProfileSHA256  string    `json:"control_profile_sha256"`
-	DataDomainSHA256      string    `json:"data_domain_sha256"`
-	ControlOperatorSHA256 string    `json:"control_operator_sha256"`
-	DataOperatorSHA256    string    `json:"data_operator_sha256"`
+	Schema                int                          `json:"schema"`
+	Kind                  string                       `json:"kind"`
+	Revision              string                       `json:"revision"`
+	Nonce                 string                       `json:"nonce"`
+	PlannedStop           time.Time                    `json:"planned_stop_at"`
+	CleanupBy             time.Time                    `json:"cleanup_by"`
+	PublisherEnd          time.Time                    `json:"publisher_end"`
+	PublisherCleanupBy    time.Time                    `json:"publisher_cleanup_by"`
+	TLSCapacityEnd        time.Time                    `json:"tls_capacity_end"`
+	LeaseSeconds          int                          `json:"lease_seconds"`
+	RefreshSeconds        int                          `json:"refresh_seconds"`
+	TargetCount           int                          `json:"target_count"`
+	ControlProfileSHA256  string                       `json:"control_profile_sha256"`
+	DataDomainSHA256      string                       `json:"data_domain_sha256"`
+	ControlOperatorSHA256 string                       `json:"control_operator_sha256"`
+	DataOperatorSHA256    string                       `json:"data_operator_sha256"`
+	OwnerWindow           *controlledNativeOwnerWindow `json:"owner_window,omitempty"`
+	LifetimeSeconds       int                          `json:"lifetime_seconds,omitempty"`
 }
 
 func controlledNativeWholeCertificates(config provider.SecurityConfig, now, cleanup time.Time) error {
@@ -108,7 +111,7 @@ func controlledNativeRenewalAdmission(input controlledNativeProviderInput, confi
 	if err != nil {
 		return authority, cut, err
 	}
-	if !controlledNativeProviderWindowShape(input) || input.OwnerWindow == nil || input.PlannedStop.Sub(now) < 15*time.Second || input.PlannedStop.Sub(now) > 30*time.Minute {
+	if !controlledNativeProviderWindowShape(input) || input.OwnerWindow == nil || input.PlannedStop.Sub(now) < 15*time.Second || input.PlannedStop.Sub(now) > time.Duration(input.LifetimeSeconds)*time.Second {
 		return authority, cut, errors.New("owner finite window unavailable")
 	}
 	raw, err := controlledNativeOwnerRead(input.OwnerCapacity.Path, 16<<10)
@@ -127,6 +130,10 @@ func controlledNativeRenewalAdmission(input controlledNativeProviderInput, confi
 }
 
 func controlledNativeCapacityBinding(input controlledNativeProviderInput, capacity controlledNativeRenewalCapacity, authority controlledNativeLeaseAuthority) error {
+	maintenance := input.OwnerWindow != nil && input.OwnerWindow.Mode == "unattended-maintenance-renewal"
+	if maintenance && (capacity.OwnerWindow == nil || *capacity.OwnerWindow != *input.OwnerWindow || capacity.LifetimeSeconds != input.LifetimeSeconds) || !maintenance && (capacity.OwnerWindow != nil || capacity.LifetimeSeconds != 0) {
+		return errors.New("owner renewal mode capacity refused")
+	}
 	controlProfile, domain := authority.Profile.Digest(), authority.Domain.Digest()
 	controlKey, dataKey := sha256.Sum256(authority.ControlKey), sha256.Sum256(authority.DataKey)
 	if capacity.Schema != 1 || capacity.Kind != "controlled-native-provider-renewal-capacity" || capacity.Revision != input.Revision || capacity.Nonce != input.Nonce ||
@@ -193,6 +200,8 @@ type controlledNativeLeaseMonitor struct {
 	path                    string
 	last                    controlledNativeLeaseCut
 	observations            int
+	limits                  controlledNativeTranscriptLimits
+	bytesWritten            int64
 	err                     error
 	closed                  bool
 	first                   time.Time
@@ -212,10 +221,21 @@ func controlledNativeMonitorLeases(ctx context.Context, cancelApp context.Cancel
 		}
 	}
 	path := "/state/controlled-native-provider-owner-leases-" + input.Mode + ".jsonl"
-	return controlledNativeMonitorLeaseFile(ctx, cancelApp, path, authority, first, native)
+	limits, err := controlledNativeTranscriptLimitsFor(input)
+	if err != nil {
+		return nil, err
+	}
+	return controlledNativeMonitorLeaseFileWithLimits(ctx, cancelApp, path, authority, first, native, limits)
 }
 
 func controlledNativeMonitorLeaseFile(ctx context.Context, cancelApp context.CancelFunc, path string, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error)) (*controlledNativeLeaseMonitor, error) {
+	return controlledNativeMonitorLeaseFileWithLimits(ctx, cancelApp, path, authority, first, native, controlledNativeStaticTranscriptLimits())
+}
+
+func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp context.CancelFunc, path string, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error), limits controlledNativeTranscriptLimits) (*controlledNativeLeaseMonitor, error) {
+	if !limits.valid() {
+		return nil, errors.New("owner transcript limits unavailable")
+	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, errors.New("owner create-only lease transcript unavailable")
@@ -224,12 +244,18 @@ func controlledNativeMonitorLeaseFile(ctx context.Context, cancelApp context.Can
 	// canceled. The caller always stops and joins this monitor after workers join.
 	monitorCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	m := &controlledNativeLeaseMonitor{stop: stop, done: make(chan struct{}), file: file, path: path, last: first,
-		first: first.ObservedAt, authority: authority, nativeEnd: make(chan chan error)}
+		first: first.ObservedAt, authority: authority, nativeEnd: make(chan chan error), limits: limits}
 	appendCut := func(cut controlledNativeLeaseCut) error {
-		if m.observations >= 128 || json.NewEncoder(file).Encode(cut) != nil || file.Sync() != nil {
+		raw, encodeErr := json.Marshal(cut)
+		raw = append(raw, '\n')
+		if encodeErr != nil || m.observations >= limits.Records || len(raw) > limits.RowBytes || m.bytesWritten+int64(len(raw)) > limits.Bytes {
+			return m.failure(controlledNativeLeaseFailureTranscript, errors.New("owner bounded lease transcript failed"))
+		}
+		if count, err := file.Write(raw); err != nil || count != len(raw) || file.Sync() != nil {
 			return m.failure(controlledNativeLeaseFailureTranscript, errors.New("owner bounded lease transcript failed"))
 		}
 		m.observations++
+		m.bytesWritten += int64(len(raw))
 		return nil
 	}
 	if err := appendCut(first); err != nil {
@@ -381,15 +407,69 @@ func (m *controlledNativeLeaseMonitor) close() error {
 	return m.err
 }
 
+func (m *controlledNativeLeaseMonitor) replay(input controlledNativeProviderInput) (digest string, observations, nativeCount int, err error) {
+	limits, err := controlledNativeTranscriptLimitsFor(input)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	if input.OwnerWindow == nil || input.OwnerWindow.Mode != "unattended-maintenance-renewal" {
+		raw, err := controlledNativeOwnerRead(m.path, limits.Bytes)
+		if err != nil {
+			return "", 0, 0, err
+		}
+		count, err := controlledNativeLeaseTranscript(raw, m.authority, m.first, m.closedAt)
+		if err != nil {
+			return "", 0, 0, err
+		}
+		if input.Mode == "resume" {
+			nativeCount, err = controlledNativeNativeInterval(raw, m.nativeFrom, m.nativeUntil)
+		}
+		return controlledGoogleDigest(raw), count, nativeCount, err
+	}
+	// A maintenance transcript can exceed App memory. Verify and hash its closed,
+	// strict-owned captured FD with bounded scanners; never load the whole file.
+	file, err := os.OpenFile(m.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", 0, 0, errors.New("owner transcript unavailable")
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	info, err := controlledNativeOwnerFileInfo(file, limits.Bytes)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	hash := sha256.New()
+	count, err := controlledNativeLeaseTranscriptReader(io.TeeReader(file, hash), m.authority, m.first, m.closedAt, limits)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	position, err := file.Seek(0, io.SeekCurrent)
+	if err != nil || position != info.Size() {
+		return "", 0, 0, errors.New("owner transcript changed")
+	}
+	if input.Mode == "resume" {
+		if _, err = file.Seek(0, io.SeekStart); err != nil {
+			return "", 0, 0, err
+		}
+		nativeHash := sha256.New()
+		nativeCount, err = controlledNativeNativeIntervalReader(io.TeeReader(file, nativeHash), m.nativeFrom, m.nativeUntil, limits)
+		nativePosition, positionErr := file.Seek(0, io.SeekCurrent)
+		if err != nil || positionErr != nil || nativePosition != info.Size() || !bytes.Equal(hash.Sum(nil), nativeHash.Sum(nil)) {
+			return "", 0, 0, errors.New("owner transcript changed between bounded passes")
+		}
+	}
+	after, err := controlledNativeOwnerFileInfo(file, limits.Bytes)
+	pathInfo, pathErr := os.Lstat(m.path)
+	if err != nil || pathErr != nil || !pathInfo.Mode().IsRegular() || !os.SameFile(info, pathInfo) || !os.SameFile(info, after) || info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) {
+		return "", 0, 0, errors.New("owner transcript changed")
+	}
+	return hex.EncodeToString(hash.Sum(nil)), count, nativeCount, nil
+}
+
 func (m *controlledNativeLeaseMonitor) fields(input controlledNativeProviderInput) (map[string]any, error) {
 	if err := m.close(); err != nil {
 		return nil, err
 	}
-	raw, err := controlledNativeOwnerRead(m.path, 4<<20)
-	if err != nil {
-		return nil, m.failure(controlledNativeLeaseFailureRead, err)
-	}
-	count, err := controlledNativeLeaseTranscript(raw, m.authority, m.first, m.closedAt)
+	digest, count, nativeCount, err := m.replay(input)
 	if err != nil || count != m.observations {
 		return nil, m.failure(controlledNativeLeaseFailureVerify, errors.New("owner final signed interval transcript refused"))
 	}
@@ -402,18 +482,14 @@ func (m *controlledNativeLeaseMonitor) fields(input controlledNativeProviderInpu
 		return nil, m.failure(controlledNativeLeaseFailureVerify, errors.New("owner terminal lease coverage expired"))
 	}
 	fields := map[string]any{"owner_window": input.OwnerWindow, "owner_capacity_sha256": input.OwnerCapacity.SHA256,
-		"owner_lease_transcript_sha256": controlledGoogleDigest(raw), "owner_lease_observations": m.observations,
+		"owner_lease_transcript_sha256": digest, "owner_lease_observations": m.observations,
 		"owner_lease_through": through, "owner_lease_time_scope": "host-auxiliary", "owner_native_lease_observations": 0}
 	if input.Mode == "resume" {
 		if !controlledGoogleHex(m.ownerStopSHA256, 32) {
 			return nil, m.failure(controlledNativeLeaseFailureFinalStop, errors.New("owner causal stop acknowledgement absent"))
 		}
-		count, err := controlledNativeNativeInterval(raw, m.nativeFrom, m.nativeUntil)
-		if err != nil {
-			return nil, m.failure(controlledNativeLeaseFailureVerify, err)
-		}
 		fields["owner_lease_time_scope"] = "native-serving-with-host-cleanup"
-		fields["owner_native_lease_from"], fields["owner_native_lease_until"], fields["owner_native_lease_observations"] = m.nativeFrom, m.nativeUntil, count
+		fields["owner_native_lease_from"], fields["owner_native_lease_until"], fields["owner_native_lease_observations"] = m.nativeFrom, m.nativeUntil, nativeCount
 		fields["owner_stop_sha256"] = m.ownerStopSHA256
 	}
 	return fields, nil
@@ -465,6 +541,72 @@ func TestControlledNativeProviderOwnerWindowContracts(t *testing.T) {
 			}
 		})
 	}
+	t.Run("explicit unattended maintenance", func(t *testing.T) {
+		maintenance := input
+		window := controlledNativeOwnerWindow{Mode: "unattended-maintenance-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
+		maintenance.OwnerWindow = &window
+		maintenance.CleanupBy = maintenance.PlannedStop.Add(120 * time.Second)
+		for _, seconds := range []int{3600, 604800} {
+			maintenance.LifetimeSeconds = seconds
+			if err := decode(maintenance); err != nil {
+				t.Fatal("finite maintenance bound refused", seconds, err)
+			}
+			limits, err := controlledNativeTranscriptLimitsFor(maintenance)
+			want := 2*((seconds+120+59)/60) + 16
+			if err != nil || limits.Records != want || limits.RowBytes != 32<<10 || limits.Bytes != int64(want)*(32<<10) {
+				t.Fatal("finite maintenance evidence bound", limits, err)
+			}
+		}
+		for _, seconds := range []int{1800, 3599, 604801, int(^uint(0) >> 1)} {
+			maintenance.LifetimeSeconds = seconds
+			if decode(maintenance) == nil {
+				t.Fatal("unadmitted maintenance horizon", seconds)
+			}
+		}
+		maintenance.LifetimeSeconds = 3600
+		for _, cleanup := range []int{20, 119, 121} {
+			maintenance.CleanupBy = maintenance.PlannedStop.Add(time.Duration(cleanup) * time.Second)
+			if decode(maintenance) == nil {
+				t.Fatal("wrong maintenance cleanup admitted", cleanup)
+			}
+		}
+		maintenance.CleanupBy = maintenance.PlannedStop.Add(120 * time.Second)
+		legacyExtended := input
+		legacyExtended.CleanupBy = legacyExtended.PlannedStop.Add(120 * time.Second)
+		if decode(legacyExtended) == nil {
+			t.Fatal("legacy owner cleanup widened")
+		}
+		window.LeaseSeconds++
+		if decode(maintenance) == nil {
+			t.Fatal("longer membership admitted")
+		}
+		window.LeaseSeconds--
+		window.RefreshSeconds++
+		if decode(maintenance) == nil {
+			t.Fatal("weaker maintenance cadence admitted")
+		}
+		legacy, err := controlledNativeTranscriptLimitsFor(input)
+		if err != nil || legacy.Records != 128 || legacy.Bytes != 4<<20 || legacy.RowBytes != 64<<10 {
+			t.Fatal("legacy evidence limits changed")
+		}
+		for _, flags := range [][2]bool{{false, false}, {true, false}, {false, true}} {
+			description := map[string]any{}
+			if err := controlledNativeDescribeWindows(description, flags[0], flags[1]); err != nil {
+				t.Fatal(err)
+			}
+			if flags[1] {
+				if len(description) != 3 || description["maintenance_window"] != (controlledNativeOwnerWindow{Mode: "unattended-maintenance-renewal", LeaseSeconds: 600, RefreshSeconds: 60}) || description["maintenance_window_min_lifetime_seconds"] != 3600 || description["maintenance_window_max_lifetime_seconds"] != 604800 {
+					t.Fatal("maintenance capability description", description)
+				}
+			} else if flags[0] && len(description) != 2 || !flags[0] && len(description) != 0 {
+				t.Fatal("old descriptor shape changed")
+			}
+		}
+		if controlledNativeDescribeWindows(map[string]any{}, true, true) == nil {
+			t.Fatal("mixed capability projection accepted")
+		}
+	})
+
 }
 
 func TestControlledNativeProviderWholeOwnerCapacity(t *testing.T) {
@@ -533,6 +675,28 @@ func TestControlledNativeProviderWholeOwnerCapacity(t *testing.T) {
 	if controlledNativeWholeCertificates(config, now, input.CleanupBy) == nil {
 		t.Fatal("short ordinary TLS certificate accepted for whole owner interval")
 	}
+	t.Run("maintenance exact capacity mode", func(t *testing.T) {
+		maintenance := input
+		window := controlledNativeOwnerWindow{Mode: "unattended-maintenance-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
+		maintenance.OwnerWindow, maintenance.LifetimeSeconds = &window, 604800
+		if controlledNativeCapacityBinding(maintenance, capacity, authority) == nil {
+			t.Fatal("old capacity widened to maintenance")
+		}
+		bound := capacity
+		bound.OwnerWindow, bound.LifetimeSeconds = &window, 604800
+		if err := controlledNativeCapacityBinding(maintenance, bound, authority); err != nil {
+			t.Fatal("explicit maintenance capacity refused", err)
+		}
+		bound.LifetimeSeconds--
+		if controlledNativeCapacityBinding(maintenance, bound, authority) == nil {
+			t.Fatal("different maintenance horizon accepted")
+		}
+		bound.LifetimeSeconds++
+		if controlledNativeCapacityBinding(input, bound, authority) == nil {
+			t.Fatal("maintenance capacity borrowed by old mode")
+		}
+	})
+
 }
 
 type controlledNativeUnitLifecycle struct {
