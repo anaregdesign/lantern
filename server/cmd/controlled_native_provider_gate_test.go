@@ -36,6 +36,9 @@ const controlledNativeProviderProfile = "controlled-real-native-providers"
 // These bounds belong only to the explicitly linked test profile. In
 // particular, owner-window renewal never changes peerauth's ten-minute lease.
 const controlledNativeOwnerSeconds = 30 * 60
+const controlledNativeMaintenanceMinSeconds = 60 * 60
+const controlledNativeMaintenanceMaxSeconds = 7 * 24 * 60 * 60
+const controlledNativeMaintenanceCleanupSeconds = 120
 
 type controlledNativeOwnerWindow struct {
 	Mode           string `json:"mode"`
@@ -84,10 +87,45 @@ func controlledNativeProviderWindowShape(input controlledNativeProviderInput) bo
 	if input.OwnerWindow == nil {
 		return input.OwnerCapacity == nil && input.LifetimeSeconds >= 15 && input.LifetimeSeconds <= 540
 	}
-	window := input.OwnerWindow
-	return window.Mode == "membership-renewal" && window.LeaseSeconds == int(peerauth.MaxMembershipLifetime/time.Second) &&
-		window.RefreshSeconds == 60 && input.LifetimeSeconds == controlledNativeOwnerSeconds && input.OwnerCapacity != nil &&
+	return controlledNativeRenewalWindowShape(input.OwnerWindow, input.LifetimeSeconds) && input.OwnerCapacity != nil &&
 		input.OwnerCapacity.Path == "/owner-capacity.json" && controlledGoogleHex(input.OwnerCapacity.SHA256, 32)
+}
+
+func controlledNativeCleanupSeconds(window *controlledNativeOwnerWindow) int {
+	if window != nil && window.Mode == "unattended-maintenance-renewal" {
+		return controlledNativeMaintenanceCleanupSeconds
+	}
+	return 20
+}
+
+func controlledNativeRenewalWindowShape(window *controlledNativeOwnerWindow, lifetime int) bool {
+	if window == nil || window.LeaseSeconds != int(peerauth.MaxMembershipLifetime/time.Second) || window.RefreshSeconds != 60 {
+		return false
+	}
+	switch window.Mode {
+	case "membership-renewal":
+		return lifetime == controlledNativeOwnerSeconds
+	case "unattended-maintenance-renewal":
+		return lifetime >= controlledNativeMaintenanceMinSeconds && lifetime <= controlledNativeMaintenanceMaxSeconds
+	default:
+		return false
+	}
+}
+
+func controlledNativeDescribeWindows(description map[string]any, owner, maintenance bool) error {
+	if owner && maintenance {
+		return errors.New("one controlled window description required")
+	}
+	if owner {
+		description["owner_window"] = controlledNativeOwnerWindow{Mode: "membership-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
+		description["owner_window_lifetime_seconds"] = controlledNativeOwnerSeconds
+	}
+	if maintenance {
+		description["maintenance_window"] = controlledNativeOwnerWindow{Mode: "unattended-maintenance-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
+		description["maintenance_window_min_lifetime_seconds"] = controlledNativeMaintenanceMinSeconds
+		description["maintenance_window_max_lifetime_seconds"] = controlledNativeMaintenanceMaxSeconds
+	}
+	return nil
 }
 
 func decodeControlledNativeProviderInput(raw []byte) (controlledNativeProviderInput, error) {
@@ -98,7 +136,7 @@ func decodeControlledNativeProviderInput(raw []byte) (controlledNativeProviderIn
 		input.Schema != 1 || input.Profile != controlledNativeProviderProfile || input.Mode != "initialize" && input.Mode != "resume" ||
 		!controlledGoogleHex(input.Revision, 20) || !controlledGoogleHex(input.Nonce, 32) || !controlledGoogleHex(input.ConfigSHA256, 32) ||
 		!controlledGoogleHex(input.SeedSHA256, 32) || !controlledGoogleHex(input.RolesSHA256, 32) ||
-		!controlledNativeProviderWindowShape(input) || input.PlannedStop.IsZero() || input.CleanupBy.Sub(input.PlannedStop) != 20*time.Second || len(input.ProfileIDs) != 4 {
+		!controlledNativeProviderWindowShape(input) || input.PlannedStop.IsZero() || input.CleanupBy.Sub(input.PlannedStop) != time.Duration(controlledNativeCleanupSeconds(input.OwnerWindow))*time.Second || len(input.ProfileIDs) != 4 {
 		return input, errors.New("controlled native provider input refused")
 	}
 	identifier := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -320,9 +358,8 @@ func TestControlledNativeProviderProfileDescription(t *testing.T) {
 		"revision": controlledNativeProviderRevision, "build_tags": []string{"lantern_test_time"},
 		"roles_sha256": controlledGoogleDefaultRolesDigest(), "provider_source": "real-google-apple", "profile": controlledNativeProviderProfile, "native_profile_count": 4, "registration_at_genesis": false, "synthetic_utc": true,
 		"binary_sha256": publicDigest(binary, 512<<20), "public_roots_sha256": publicDigest("/etc/ssl/certs/ca-certificates.crt", 2<<20)}
-	if os.Getenv("CONTROLLED_NATIVE_PROVIDER_DESCRIBE_OWNER_WINDOW") == "1" {
-		description["owner_window"] = controlledNativeOwnerWindow{Mode: "membership-renewal", LeaseSeconds: 600, RefreshSeconds: 60}
-		description["owner_window_lifetime_seconds"] = controlledNativeOwnerSeconds
+	if err := controlledNativeDescribeWindows(description, os.Getenv("CONTROLLED_NATIVE_PROVIDER_DESCRIBE_OWNER_WINDOW") == "1", os.Getenv("CONTROLLED_NATIVE_PROVIDER_DESCRIBE_MAINTENANCE_WINDOW") == "1"); err != nil {
+		t.Fatal(err)
 	}
 	if json.NewEncoder(os.Stdout).Encode(description) != nil {
 		t.Fatal("controlled native provider description output failed")

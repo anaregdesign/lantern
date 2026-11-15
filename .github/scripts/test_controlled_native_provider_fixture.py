@@ -118,6 +118,12 @@ def owner_plan(output="/UNIT_ONLY_NOT_ACTUAL/output"):
             "planned_stop_at": "2026-11-12T00:30:00Z", "cleanup_by": "2026-11-12T00:30:20Z"}
 
 
+def maintenance_plan(output="/UNIT_ONLY_NOT_ACTUAL/output", lifetime=3600):
+    begin = profile.utc("2026-11-12T00:00:00Z")
+    return {**plan(output), "owner_window": dict(profile.MAINTENANCE_WINDOW), "lifetime_seconds": lifetime,
+            "planned_stop_at": profile.instant(begin + lifetime), "cleanup_by": profile.instant(begin + lifetime + 120)}
+
+
 def publisher_config():
     return {"Version": 1, "End": "2026-11-12T01:00:00Z", "CleanupBy": "2026-11-12T01:00:20Z", "Interval": 60_000_000_000, "Lifetime": 600_000_000_000,
             "Streams": [{"Kind": kind, "KeyFile": f"/operator/custody/{kind}-signing-key.pem", "RootsFile": "/operator/custody/roots.pem", "Initial": "VU5JVF9PTkxZ",
@@ -126,13 +132,17 @@ def publisher_config():
 
 
 def capacity(p):
-    return {"schema": 1, "kind": "controlled-native-provider-renewal-capacity", "revision": p["source"]["head"], "nonce": p["cohort"],
+    value = {"schema": 1, "kind": "controlled-native-provider-renewal-capacity", "revision": p["source"]["head"], "nonce": p["cohort"],
             "planned_stop_at": p["planned_stop_at"], "cleanup_by": p["cleanup_by"], "publisher_end": profile.instant(profile.utc(p["cleanup_by"]) + 5),
             "publisher_cleanup_by": profile.instant(profile.utc(p["cleanup_by"]) + 10), "tls_capacity_end": "2026-11-12T01:00:00Z",
             "lease_seconds": 600, "refresh_seconds": 60, "target_count": 3,
             "control_profile_sha256": profile.digest(b"lantern.peer.control.profile.v1\0" + profile.go_json(unit_control_profile())),
             "data_domain_sha256": profile.digest(b"lantern.peer.domain.v1\0" + profile.go_json(unit_data_domain())),
             "control_operator_sha256": "2" * 64, "data_operator_sha256": "3" * 64}
+    if profile.unattended_maintenance(p):
+        value.update(owner_window=dict(profile.MAINTENANCE_WINDOW), lifetime_seconds=p["lifetime_seconds"],
+                     tls_capacity_end=profile.instant(profile.utc(p["cleanup_by"]) + 60))
+    return value
 
 
 def unit_control_profile():
@@ -147,7 +157,7 @@ def unit_data_domain():
 
 def lease_rows(p, joined):
     base = profile.utc("2026-11-12T00:00:00Z")
-    samples = range(0, 1801, 60) if joined else (0,)
+    samples = range(0, p["lifetime_seconds"] + 1, 60) if joined else (0,)
     rows = []
     for second in samples:
         row = {"observed_at": profile.instant(base + second + (0 if joined and second else .5))}
@@ -176,7 +186,7 @@ def lease_rows(p, joined):
         final = copy.deepcopy(rows[-1])
         final.pop("native_low")
         final.pop("native_high")
-        final["observed_at"] = "2026-11-12T00:30:00.500000Z"
+        final["observed_at"] = profile.instant(profile.utc(p["planned_stop_at"]) + .5)
         rows.append(final)  # Post-close signed-envelope observation is explicitly host-only.
     return rows
 
@@ -188,7 +198,7 @@ def owner_records(p, mode, node, config, joined=False):
     if mode == "initialize" or joined:
         terminal = values[2] if joined else values[0]
         last = lease_rows(p, joined)[-1]
-        terminal.update(owner_window=dict(profile.OWNER_WINDOW), owner_capacity_sha256=profile.digest(profile.encoded(capacity(p))),
+        terminal.update(owner_window=dict(p["owner_window"]), owner_capacity_sha256=profile.digest(profile.encoded(capacity(p))),
                         owner_lease_transcript_sha256=profile.digest(raw), owner_lease_observations=len(lease_rows(p, joined)),
                         owner_lease_through=profile.instant(profile.utc(last["control_expires_at"]) - 2),
                         owner_lease_time_scope="native-serving-with-host-cleanup" if joined else "host-auxiliary", owner_native_lease_observations=0)
@@ -258,6 +268,9 @@ class Commands:
                 self.clock.elapsed += 1  # Owned native close/auxiliary teardown interval.
             if self.failure == "cleanup_deadline":
                 self.clock.elapsed += 100
+            if profile.unattended_maintenance(self.p):
+                publisher = next(i for i, v in self.owned.items() if "-publisher-" in v["name"])
+                self.run(profile.DOCKER + ["logs", publisher])  # Mirror the actual final emitted joined event.
             return b"", 0
         if verb == "inspect":
             selected = argv[6:]
@@ -305,6 +318,13 @@ class Commands:
             if self.stopped:
                 values.append({**base, "event": "publisher_joined", "ok": True, "stopped_at": profile.instant(self.clock.wall()),
                                "owner_stop_sha256": profile.digest((self.output / "owner-control/stop.json").read_bytes())})
+            if profile.unattended_maintenance(self.p):
+                path = self.output / "publisher-journal/events.jsonl"
+                if path.exists():
+                    path.write_bytes(lines(values))
+                else:
+                    profile.new_file(path, lines(values))
+                return lines(values[-1:]) if "--tail" in argv else lines(values), 0
             return lines(values), 0
         if verb == "start" and "--attach" not in argv:
             return b"", 0
@@ -327,12 +347,14 @@ class Commands:
 
 
 @contextlib.contextmanager
-def mocked_window(directory, failure=None, owner=False, bounded_commands=False):
-    p = (owner_plan if owner else plan)(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT"))
+def mocked_window(directory, failure=None, owner=False, bounded_commands=False, maintenance=False):
+    p = (maintenance_plan if maintenance else owner_plan if owner else plan)(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT"))
     clock, made = Clock(), []
     approval = {"kind": profile.PROFILE + "-owner-dispatch", "status": "APPROVE", "owner_present": True, "plan_sha256": "4" * 64,
                 "seed_verification_sha256": p["seed"]["verification"]["sha256"], "secret_and_tls_whole_window_verified": True,
                 "approved_public_origin": p["public"]["origin"], "admin_and_edge_source_reviewed": True}
+    if maintenance:
+        approval.update(owner_present=False, unattended_supervisor="unit-owned-supervisor")
     original_commands = profile.Commands
     def command(output, window):
         value = Commands(output, window, p, clock, failure)
@@ -362,6 +384,238 @@ def mocked_window(directory, failure=None, owner=False, bounded_commands=False):
 
 
 class ControlledNativeProviderContracts(unittest.TestCase):
+    def test_maintenance_is_explicit_bounded_and_never_claims_human_presence(self):
+        for lifetime in (3600, 604800):
+            p, clock = maintenance_plan(lifetime=lifetime), Clock()
+            self.assertIs(profile.resolved(p), p)
+            window = profile.Window(p, clock.wall, clock.monotonic)
+            self.assertEqual((window.stop, window.cleanup), (lifetime, lifetime + 120))
+            window.monitoring = True
+            self.assertEqual(window.command_timeout(lifetime + 100), lifetime)
+            approval = {"kind": profile.PROFILE + "-owner-dispatch", "status": "APPROVE", "owner_present": False,
+                        "unattended_supervisor": "unit-owned-supervisor", "plan_sha256": "4" * 64,
+                        "seed_verification_sha256": p["seed"]["verification"]["sha256"], "secret_and_tls_whole_window_verified": True,
+                        "approved_public_origin": p["public"]["origin"], "admin_and_edge_source_reviewed": True}
+            profile.approved_dispatch(p, "4" * 64, approval)
+            for changed in ({"owner_present": True}, {"owner_present": 0}, {"unattended_supervisor": ""}, {"unattended_supervisor": "PENDING/owner"}):
+                with self.subTest(changed=changed), self.assertRaises(ValueError):
+                    profile.approved_dispatch(p, "4" * 64, {**approval, **changed})
+            rows = admission_records(p)
+            with admission_inputs(rows), self.assertRaises(ValueError):
+                profile.admitted_inputs(p)
+            rows["description"].update(maintenance_window=dict(profile.MAINTENANCE_WINDOW), maintenance_window_min_lifetime_seconds=3600,
+                                       maintenance_window_max_lifetime_seconds=604800)
+            with admission_inputs(rows):
+                profile.admitted_inputs(p)
+            profile.renewal_capacity(profile.encoded(capacity(p)), p)
+            for key, value in (("lifetime_seconds", lifetime + 1), ("owner_window", profile.OWNER_WINDOW)):
+                with self.assertRaises(ValueError):
+                    profile.renewal_capacity(profile.encoded({**capacity(p), key: value}), p)
+            for cleanup in (20, 119, 121):
+                bad = {**p, "cleanup_by": profile.instant(profile.utc(p["planned_stop_at"]) + cleanup)}
+                with self.subTest(cleanup=cleanup), self.assertRaises(ValueError):
+                    profile.resolved(bad)
+        for lifetime in (3599, 604801, True, 3600.0):
+            with self.subTest(lifetime=lifetime), self.assertRaises(ValueError):
+                profile.resolved(maintenance_plan(lifetime=lifetime))
+        for mode in (None, "membership-renewal", "maintenance"):
+            p = maintenance_plan()
+            if mode is None:
+                p.pop("owner_window")
+            else:
+                p["owner_window"]["mode"] = mode
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                profile.resolved(p)
+
+    def test_maintenance_streams_finite_rows_bytes_and_native_lease_proof(self):
+        p = maintenance_plan(lifetime=10800)
+        values, raw = owner_records(p, "resume", "node-1", "6" * 64, True)
+        result = profile.lease_transcript(raw, p, values[:3], profile.digest(profile.encoded(capacity(p))), capacity(p))
+        self.assertGreater(result["observations"], 128)
+        with self.assertRaises(ValueError):
+            profile.lease_transcript(raw, owner_plan(), values[:3], profile.digest(profile.encoded(capacity(p))), capacity(p))
+        class ReadlineOnly:
+            def __init__(self, count, line):
+                self.count, self.line, self.requests = count, line, []
+
+            def readline(self, maximum):
+                self.requests.append(maximum)
+                if self.count == 0:
+                    return b""
+                self.count -= 1
+                return self.line
+        p = maintenance_plan(lifetime=604800)
+        line, summary = profile.encoded({"unit": "x" * 1024}), {}
+        source = ReadlineOnly(5000, line)
+        self.assertEqual(sum(1 for _ in profile.renewal_lines(source, p, summary)), 5000)
+        self.assertGreater(summary["bytes"], 4 << 20)
+        self.assertEqual(set(source.requests), {profile.MAINTENANCE_ROW_BYTES + 1})
+        self.assertEqual(profile.renewal_record_limit(p), 20180)
+        for source in (ReadlineOnly(profile.renewal_record_limit(p) + 1, b"{}\n"), ReadlineOnly(1, b"x" * (profile.MAINTENANCE_ROW_BYTES + 1))):
+            with self.assertRaises(ValueError):
+                for _ in profile.renewal_lines(source, p, {}):
+                    pass
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "transcript.jsonl"
+            profile.new_file(path, raw)
+            # Exact supplied maintenance horizon remains bound to the terminal.
+            q = maintenance_plan(lifetime=10800)
+            profile.lease_transcript_file(path, q, values[:3], profile.digest(profile.encoded(capacity(q))), capacity(q))
+            path.chmod(0o644)
+            with self.assertRaises(ValueError):
+                profile.lease_transcript_file(path, q, values[:3], "8" * 64, capacity(q))
+
+    def test_maintenance_command_journals_are_linear_bounded_and_keep_deadlines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p, clock = maintenance_plan(), Clock()
+            window = profile.Window(p, clock.wall, clock.monotonic)
+            commands = profile.Commands(Path(directory), window)
+            self.assertEqual(commands.command_limit(), 224)
+            def transport(_argv, **kwargs):
+                kwargs["stdout"].write(b"UNIT_RAW\n")
+                return SimpleNamespace(returncode=0)
+            with mock.patch.object(profile.subprocess, "run", side_effect=transport):
+                for _ in range(40):
+                    commands.run(["UNIT_NO_PROCESS"])
+                self.assertEqual(len(commands.rows), 32)
+                self.assertEqual(commands.command_count, 40)
+                window.monitoring = True
+                self.assertEqual(commands.command_limit(), 224 + 3600 + 60)
+                clock.elapsed = 3600
+                with self.assertRaises(ValueError):
+                    commands.run(["UNIT_NO_PROCESS"])
+                commands.cleanup = True
+                commands.run(["UNIT_NO_PROCESS"])
+                clock.elapsed = 3720
+                with self.assertRaises(ValueError):
+                    commands.run(["UNIT_NO_PROCESS"])
+            value = commands.finish()
+            self.assertEqual(value["count"], 41)
+            self.assertEqual(len(list(Path(directory).iterdir())), 2)
+            rows = [profile.decode(line) for line in (Path(directory) / "commands.jsonl").read_bytes().splitlines()]
+            self.assertEqual([r["index"] for r in rows], list(range(41)))
+            self.assertEqual([r["offset"] for r in rows], [i * len(b"UNIT_RAW\n") for i in range(41)])
+            for name, ref in value["files"].items():
+                self.assertEqual(profile.digest((Path(directory) / name).read_bytes()), ref["sha256"])
+
+    def test_maintenance_mocked_full_hour_uses_tail_status_and_complete_mirror(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, maintenance=True, bounded_commands=True) as (p, approval, clock, made):
+            result = profile.run(p, "4" * 64, approval, "8" * 64)
+            self.assertEqual(result["status"], "PASS")
+            self.assertTrue(result["cleanup_known"])
+            self.assertNotIn("commands", result)
+            journal = result["command_journal"]
+            self.assertGreater(journal["count"], 3600)
+            self.assertLessEqual(len(journal["recent"]), 32)
+            self.assertEqual(len(result["owner_lease_transcripts"]), 6)
+            self.assertLess(clock.elapsed, 3720)
+            calls = made[0].transport_calls
+            publisher = next(i for i, v in made[0].owned.items() if "-publisher-" in v["name"])
+            logs = [v["argv"] for v in calls if v["argv"][3:4] == ["logs"] and v["argv"][-1] == publisher]
+            self.assertLessEqual(sum("--tail" not in row for row in logs), 2)
+            self.assertTrue(any("--tail" in row for row in logs))
+            self.assertEqual(result["publisher_events"]["observations"], 2)
+            for row in calls:
+                if row["argv"][3:4] == ["create"] and any("-publisher-" in x or "-resume-" in x for x in row["argv"]):
+                    self.assertIn("-test.timeout=3840s", row["argv"])
+                if row["argv"][3:4] == ["create"] and "provision-security" in row["argv"]:
+                    self.assertEqual(row["argv"][row["argv"].index("--valid-for") + 1], "3840s")
+            self.assertEqual([path.name for path in Path(p["output"]).glob("command-*.log")], ["command-output.log"])
+
+    def test_maintenance_publisher_mirror_requires_all_events_and_owned_file(self):
+        p = maintenance_plan(lifetime=86400)
+        status = {"failure": "none", "end": capacity(p)["publisher_end"], "cleanup_by": capacity(p)["publisher_cleanup_by"],
+                  "streams": [{"kind": kind, "journal_version": 1, "pending": False,
+                               "targets": [{"ordinal": i, "failure": "none", "candidate_matches": True, "observed_version": 1} for i in (1, 2, 3)]}
+                              for kind in ("control", "data")]}
+        base = {"schema": 1, "profile": profile.PROFILE, "revision": p["source"]["head"], "nonce": p["cohort"], "pid": 13, "status": status}
+        ready = {**base, "event": "publisher_ready", "capacity_sha256": "8" * 64}
+        joined = {**base, "event": "publisher_joined", "ok": True, "owner_stop_sha256": "9" * 64, "stopped_at": p["planned_stop_at"]}
+        values = [ready] + [{**base, "event": "publisher_status"} for _ in range(200)] + [joined]
+        raw = lines(values)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "events.jsonl"
+            profile.new_file(path, raw)
+            consume = lambda stream: profile.publisher_records(stream, p, "8" * 64, joined=True, stop_sha256="9" * 64)
+            result = profile.renewal_file(path, p, consume)
+            self.assertEqual(result["observations"], 202)
+            self.assertEqual(result["sha256"], profile.digest(raw))
+            alias = path.with_name("alias.jsonl")
+            alias.symlink_to(path)
+            with self.assertRaises(ValueError):
+                profile.renewal_file(alias, p, consume)
+            alias.unlink()
+            alias.hardlink_to(path)
+            with self.assertRaises(ValueError):
+                profile.renewal_file(path, p, consume)
+        for bad in (values[:-1], values[1:], values + [values[1]], [ready, {**values[1], "pid": 14}, joined],
+                    [ready, {**values[1], "status": {**status, "failure": "delivery_retry"}}, joined]):
+            with self.subTest(events=len(bad)), self.assertRaises(ValueError):
+                profile.publisher_records(lines(bad), p, "8" * 64, joined=True, stop_sha256="9" * 64)
+        with self.assertRaises(ValueError):
+            profile.publisher_records(raw, owner_plan(), "8" * 64, joined=True, stop_sha256="9" * 64)
+
+    def test_maintenance_command_io_and_capacity_fail_closed_without_dispatch(self):
+        for failure in ("byte_budget", "quota", "sync"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                p, clock = maintenance_plan(), Clock()
+                window = profile.Window(p, clock.wall, clock.monotonic)
+                commands = profile.Commands(Path(directory).resolve(), window)
+                def transport(_argv, **kwargs):
+                    kwargs["stdout"].write(b"UNIT_RAW\n")
+                    return SimpleNamespace(returncode=0)
+                if failure == "byte_budget":
+                    commands.maximum_raw_bytes = 1
+                if failure == "quota":
+                    commands.command_count = 224
+                with mock.patch.object(profile.subprocess, "run", side_effect=transport) as process:
+                    if failure == "sync":
+                        with mock.patch.object(profile.os, "fsync", side_effect=OSError("UNIT_NO_PRIVATE_DETAIL")), self.assertRaises(OSError):
+                            commands.run(["UNIT_NO_PROCESS"])
+                        self.assertEqual(process.call_count, 1)
+                    else:
+                        with self.assertRaises(ValueError):
+                            commands.run(["UNIT_NO_PROCESS"])
+                        process.assert_not_called()
+                if failure == "quota":
+                    with self.assertRaises(ValueError):
+                        commands.finish()
+                else:
+                    commands.finish()
+
+    def test_maintenance_completed_journals_refuse_overwrite_and_path_replacement(self):
+        for name in ("commands.jsonl", "command-output.log"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                clock = Clock()
+                commands = profile.Commands(Path(directory).resolve(), profile.Window(maintenance_plan(), clock.wall, clock.monotonic))
+                def transport(_argv, **kwargs):
+                    kwargs["stdout"].write(b"UNIT_RAW\n")
+                    return SimpleNamespace(returncode=0)
+                with mock.patch.object(profile.subprocess, "run", side_effect=transport):
+                    commands.run(["UNIT_NO_PROCESS"])
+                path = Path(directory) / name
+                raw = path.read_bytes()
+                path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                with self.assertRaises(ValueError):
+                    commands.finish()
+                self.assertTrue(all(s.closed for s in commands.journals.values()))
+        for mutation in ("replace", "mode", "hardlink"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory).resolve() / "events.jsonl"
+                profile.new_file(path, b"{}\n")
+                def consume(stream):
+                    stream.read()
+                    if mutation == "replace":
+                        replacement = path.with_name("replacement.jsonl")
+                        profile.new_file(replacement, b"{}\n")
+                        replacement.replace(path)
+                    elif mutation == "mode":
+                        path.chmod(0o644)
+                    else:
+                        path.with_name("extra-link").hardlink_to(path)
+                with self.assertRaises(ValueError):
+                    profile.renewal_file(path, maintenance_plan(), consume)
+
     def test_default_and_pending_before_any_input_or_lock(self):
         with mock.patch.object(profile, "reference", side_effect=AssertionError("UNIT input")), mock.patch.object(profile.os, "open", side_effect=AssertionError("UNIT lock")), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(profile.main([]), 0)

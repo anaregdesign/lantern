@@ -9,8 +9,10 @@ import argparse
 import base64
 import copy
 import fcntl
+import hashlib
 import ipaddress
 import inspect
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ import re
 import shutil
 import signal
 import stat
+import subprocess
 import sys
 import time
 from urllib.parse import urlsplit
@@ -33,6 +36,10 @@ KIND = PROFILE + "-serving"
 CHILD = "TestControlledNativeProviderChild"
 PUBLISHER_CHILD = "TestControlledNativeProviderPublisherChild"
 OWNER_WINDOW = {"mode": "membership-renewal", "lease_seconds": 600, "refresh_seconds": 60}
+MAINTENANCE_WINDOW = {"mode": "unattended-maintenance-renewal", "lease_seconds": 600, "refresh_seconds": 60}
+MAINTENANCE_MIN_SECONDS, MAINTENANCE_MAX_SECONDS = 3600, 604800
+MAINTENANCE_CLEANUP_SECONDS = 120
+MAINTENANCE_ROW_BYTES = 32 << 10
 OWNER_STATE_INTERVAL_SECONDS = 1
 GOOGLE, APPLE = "https://accounts.google.com", "https://appleid.apple.com"
 PROFILES = ("google_android", "google_ios", "apple_android", "apple_ios")
@@ -46,11 +53,38 @@ DOCKER = ["docker", "--context", "desktop-linux"]
 def renewing_membership(plan):
     if "owner_window" not in plan:
         return False
-    require(type(plan["owner_window"]) is dict and plan["owner_window"] == OWNER_WINDOW
+    require(type(plan["owner_window"]) is dict and plan["owner_window"] in (OWNER_WINDOW, MAINTENANCE_WINDOW)
             and all(type(plan["owner_window"][key]) is int for key in ("lease_seconds", "refresh_seconds"))
-            and type(plan.get("lifetime_seconds")) is int and plan["lifetime_seconds"] == 1800,
-            "explicit owner30m renewal contract required")
+            and type(plan.get("lifetime_seconds")) is int
+            and (plan["lifetime_seconds"] == 1800 if plan["owner_window"] == OWNER_WINDOW
+                 else MAINTENANCE_MIN_SECONDS <= plan["lifetime_seconds"] <= MAINTENANCE_MAX_SECONDS),
+            "explicit finite renewal contract required")
     return True
+
+
+def unattended_maintenance(plan):
+    return renewing_membership(plan) and plan["owner_window"] == MAINTENANCE_WINDOW
+
+
+def cleanup_seconds(plan):
+    return MAINTENANCE_CLEANUP_SECONDS if unattended_maintenance(plan) else 20
+
+
+def renewal_record_limit(plan):
+    if not unattended_maintenance(plan):
+        return 128
+    # Control and data can renew independently at each minute boundary.
+    return 2 * ((plan["lifetime_seconds"] + cleanup_seconds(plan) + 59) // 60) + 16
+
+
+def renewal_byte_limit(plan):
+    return renewal_record_limit(plan) * MAINTENANCE_ROW_BYTES if unattended_maintenance(plan) else 4 << 20
+
+
+def child_timeout(plan):
+    if unattended_maintenance(plan):
+        return str(plan["lifetime_seconds"] + cleanup_seconds(plan) + 120) + "s"
+    return "32m" if renewing_membership(plan) else "11m"
 
 
 class Window(StaticWindow):
@@ -58,6 +92,7 @@ class Window(StaticWindow):
     def __init__(self, plan, wall=None, monotonic=None):
         self.monitoring = False
         self.renewing = renewing_membership(plan)
+        self.maintenance = unattended_maintenance(plan)
         self.lifetime_seconds = plan["lifetime_seconds"]
         if not self.renewing:
             super().__init__(plan, wall, monotonic)
@@ -65,8 +100,8 @@ class Window(StaticWindow):
         self.wall, self.monotonic = wall or time.time, monotonic or time.monotonic
         self.started_wall, self.started_mono = self.wall(), self.monotonic()
         remaining = utc(plan["planned_stop_at"]) - self.started_wall
-        require(15 <= remaining <= 1800 and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == 20,
-                "fixed owner30m interval unavailable")
+        require(15 <= remaining <= self.lifetime_seconds and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == cleanup_seconds(plan),
+                "fixed original renewal interval unavailable")
         self.stop = self.started_mono + remaining
         self.cleanup = self.started_mono + utc(plan["cleanup_by"]) - self.started_wall
 
@@ -79,10 +114,29 @@ class Window(StaticWindow):
 
 
 class Commands(StaticCommands):
+    def __init__(self, output, window):
+        super().__init__(output, window)
+        self.maintenance = window.maintenance
+        if self.maintenance:
+            self.command_count = 0
+            self.record_count, self.record_bytes, self.raw_bytes = 0, 0, 0
+            self.journals = {}
+            self.hashers = {}
+            try:
+                for name in ("commands.jsonl", "command-output.log"):
+                    self.journals[name] = os.fdopen(os.open(output / name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w+b")
+                    self.hashers[name] = hashlib.sha256()
+            except BaseException:
+                for stream in self.journals.values():
+                    stream.close()
+                raise
+            self.maximum_commands = 256 + window.lifetime_seconds + (window.lifetime_seconds + 59) // 60
+            self.maximum_raw_bytes = self.maximum_commands * (16 << 10)
+
     def command_limit(self):
         extra = 0
         if self.window.renewing and self.window.monitoring:
-            # The admitted owner30m interval adds one state inspect per second
+            # The admitted finite interval adds one state inspect per second
             # and one publisher log read per refresh; retain the static setup
             # allowance and its separate 32-command cleanup reserve.
             lifetime = self.window.lifetime_seconds
@@ -91,6 +145,76 @@ class Commands(StaticCommands):
             status_samples = (lifetime + refresh - 1) // refresh
             extra = state_samples + status_samples
         return super().command_limit() + extra
+
+    def run(self, args, timeout=20, check=True):
+        if not self.maintenance:
+            return super().run(args, timeout, check)
+        require(self.command_count < self.command_limit(), "bounded profile command budget exhausted")
+        timeout = self.window.command_timeout(timeout, self.cleanup)
+        log = self.journals["command-output.log"]
+        offset = log.tell()
+        require(offset + (8 << 20) <= self.maximum_raw_bytes, "finite maintenance raw journal exhausted")
+        index, self.command_count = self.command_count, self.command_count + 1
+        started, code = time.monotonic(), None
+        try:
+            code = subprocess.run(args, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            pass
+        log.flush()
+        end = log.tell()
+        require(0 <= end - offset <= 8 << 20, "bounded profile log exceeded")
+        log.seek(offset)
+        raw = log.read(end - offset)
+        log.seek(end)
+        self.hashers["command-output.log"].update(raw)
+        self.raw_bytes += len(raw)
+        row = {"index": index, "argv": args, "exit": code, "timeout_seconds": timeout, "cleanup_phase": self.cleanup,
+               "seconds": time.monotonic() - started, "log": "command-output.log", "offset": offset, "bytes": len(raw), "sha256": digest(raw)}
+        encoded_row = encoded(row)
+        require(len(encoded_row) <= 16 << 10, "bounded maintenance command record required")
+        self.journals["commands.jsonl"].write(encoded_row)
+        self.hashers["commands.jsonl"].update(encoded_row)
+        self.record_count, self.record_bytes = self.record_count + 1, self.record_bytes + len(encoded_row)
+        for stream in self.journals.values():
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.rows.append(row)
+        del self.rows[:-32]
+        require(not check or code == 0, "owned profile command failed")
+        return raw, code
+
+    def finish(self):
+        value = {"count": self.command_count, "maximum_commands": self.maximum_commands, "maximum_raw_bytes": self.maximum_raw_bytes,
+                 "recent": self.rows, "files": {}}
+        try:
+            require(self.command_count == self.record_count <= self.maximum_commands, "complete finite maintenance command records required")
+            for name, stream in self.journals.items():
+                stream.flush()
+                os.fsync(stream.fileno())
+                info = os.fstat(stream.fileno())
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600,
+                        "owned maintenance command journal changed")
+                expected_bytes = self.raw_bytes if name == "command-output.log" else self.record_bytes
+                maximum = self.maximum_raw_bytes if name == "command-output.log" else self.maximum_commands * (16 << 10)
+                require(info.st_size == expected_bytes <= maximum, "maintenance command journal extent changed")
+                actual = hashlib.sha256()
+                offset = 0
+                while offset < info.st_size:
+                    chunk = os.pread(stream.fileno(), min(64 << 10, info.st_size - offset), offset)
+                    require(chunk, "maintenance command journal truncated")
+                    actual.update(chunk)
+                    offset += len(chunk)
+                after, path_info = os.fstat(stream.fileno()), (self.output / name).lstat()
+                require(actual.digest() == self.hashers[name].digest()
+                        and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                        and after.st_uid == os.getuid() and after.st_nlink == 1 and stat.S_IMODE(after.st_mode) == 0o600
+                        and (path_info.st_dev, path_info.st_ino) == (after.st_dev, after.st_ino) and stat.S_ISREG(path_info.st_mode),
+                        "maintenance command journal content/path changed")
+                value["files"][name] = {"path": str(self.output / name), "bytes": info.st_size, "sha256": actual.hexdigest()}
+        finally:
+            for stream in self.journals.values():
+                stream.close()
+        return value
 
 
 def references(plan):
@@ -112,8 +236,8 @@ def resolved(plan):
                          "android_package", "public", "network", "admin", "edge", "output", "cohort", "lifetime_seconds", "planned_stop_at", "cleanup_by"}
             | ({"owner_window"} if renewing else set()), "unknown profile input refused")
     require(set(source) == {"head", "tree", "source_sha256", "proof", "review"}, "exact main source admission required")
-    require(type(plan["lifetime_seconds"]) is int and (plan["lifetime_seconds"] == 1800 if renewing else 15 <= plan["lifetime_seconds"] <= 540)
-            and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == 20 and HEX64.fullmatch(plan["cohort"]), "fixed finite window required")
+    require(type(plan["lifetime_seconds"]) is int and (renewing or 15 <= plan["lifetime_seconds"] <= 540)
+            and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == cleanup_seconds(plan) and HEX64.fullmatch(plan["cohort"]), "fixed finite window required")
     clients = plan["clients"]
     require(set(clients) == set(CLIENTS) and all(CLIENT.fullmatch(clients[k]) for k in CLIENTS[:4])
             and len({clients[k] for k in CLIENTS[1:4]}) == 3
@@ -207,7 +331,14 @@ def admitted_inputs(plan):
             and description.get("registration_at_genesis") is False and description.get("synthetic_utc") is True
             and description.get("build_tags") == ["lantern_test_time"] and HEX64.fullmatch(description.get("roles_sha256", ""))
             and build.get("roles_sha256") == description["roles_sha256"], "actual native4 same-binary description required")
-    if renewing_membership(plan):
+    if unattended_maintenance(plan):
+        require(description.get("maintenance_window") == MAINTENANCE_WINDOW
+                and type(description.get("maintenance_window_min_lifetime_seconds")) is int
+                and description["maintenance_window_min_lifetime_seconds"] == MAINTENANCE_MIN_SECONDS
+                and type(description.get("maintenance_window_max_lifetime_seconds")) is int
+                and description["maintenance_window_max_lifetime_seconds"] == MAINTENANCE_MAX_SECONDS,
+                "same-binary unattended maintenance capability required")
+    elif renewing_membership(plan):
         require(description.get("owner_window") == OWNER_WINDOW and description.get("owner_window_lifetime_seconds") == 1800,
                 "same-binary owner renewal capability required")
     require(HEX64.fullmatch(build.get("binary_sha256", "")) and description.get("binary_sha256") == build["binary_sha256"], "same binary binding required")
@@ -274,7 +405,7 @@ def child_input(plan, config, admitted, mode, capacity=None):
     if renewing_membership(plan):
         require(isinstance(capacity, dict) and set(capacity) == {"path", "sha256"}
                 and capacity["path"] == "/owner-capacity.json" and HEX64.fullmatch(capacity["sha256"]), "verified public owner capacity required")
-        result.update(owner_window=dict(OWNER_WINDOW), owner_capacity=capacity)
+        result.update(owner_window=dict(plan["owner_window"]), owner_capacity=capacity)
     return result
 
 
@@ -308,9 +439,13 @@ def publisher_mounts(output):
 
 def renewal_capacity(raw, plan):
     value = decode(raw)
+    maintenance = unattended_maintenance(plan)
     require(set(value) == {"schema", "kind", "revision", "nonce", "planned_stop_at", "cleanup_by", "publisher_end", "publisher_cleanup_by",
                           "tls_capacity_end", "lease_seconds", "refresh_seconds", "target_count", "control_profile_sha256", "data_domain_sha256",
-                          "control_operator_sha256", "data_operator_sha256"} and type(value["schema"]) is int and value["schema"] == 1
+                          "control_operator_sha256", "data_operator_sha256"} | ({"owner_window", "lifetime_seconds"} if maintenance else set())
+            and (not maintenance or value.get("owner_window") == MAINTENANCE_WINDOW
+                 and type(value.get("lifetime_seconds")) is int and value["lifetime_seconds"] == plan["lifetime_seconds"])
+            and type(value["schema"]) is int and value["schema"] == 1
             and value["kind"] == "controlled-native-provider-renewal-capacity" and value["revision"] == plan["source"]["head"]
             and value["nonce"] == plan["cohort"] and utc(value["planned_stop_at"]) == utc(plan["planned_stop_at"])
             and utc(value["cleanup_by"]) == utc(plan["cleanup_by"])
@@ -322,21 +457,68 @@ def renewal_capacity(raw, plan):
     return value
 
 
+def renewal_lines(source, plan, summary):
+    """Bounded row-at-a-time replay; no maintenance horizon-sized read/list."""
+    stream = io.BytesIO(source) if isinstance(source, bytes) else source
+    hasher, count, total = hashlib.sha256(), 0, 0
+    maximum = MAINTENANCE_ROW_BYTES if unattended_maintenance(plan) else 4 << 20
+    while True:
+        line = stream.readline(maximum + 1)
+        if not line:
+            break
+        count, total = count + 1, total + len(line)
+        require(len(line) <= maximum and count <= renewal_record_limit(plan) and total <= renewal_byte_limit(plan),
+                "finite renewal evidence budget exceeded")
+        hasher.update(line)
+        yield decode(line)
+    summary.update(observations=count, bytes=total, sha256=hasher.hexdigest())
+    require(count > 0, "nonempty renewal evidence required")
+
+
+def renewal_file(path, plan, consume):
+    """Only completed, owned, unique regular evidence files can be replayed."""
+    path = canonical(path)
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600
+                and info.st_nlink == 1 and 0 < info.st_size <= renewal_byte_limit(plan), "owned bounded renewal evidence required")
+        value = consume(stream)
+        after = os.fstat(stream.fileno())
+        path_info = path.lstat()
+        require((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                and stream.tell() == info.st_size and after.st_uid == os.getuid() and after.st_nlink == 1 and stat.S_IMODE(after.st_mode) == 0o600
+                and (path_info.st_dev, path_info.st_ino) == (after.st_dev, after.st_ino) and stat.S_ISREG(path_info.st_mode), "completed renewal evidence changed")
+        return value
+
+
 def publisher_records(raw, plan, capacity_sha256, *, joined=False, stop_sha256=None):
-    records = [decode(line) for line in raw.splitlines() if line.startswith(b"{")]
-    require(0 < len(records) <= 128 and all(type(v.get("schema")) is int and v["schema"] == 1 and v.get("profile") == PROFILE and v.get("revision") == plan["source"]["head"]
-            and v.get("nonce") == plan["cohort"] and type(v.get("pid")) is int and v["pid"] > 0 for v in records)
-            and len({v["pid"] for v in records}) == 1 and records[0].get("event") == "publisher_ready"
-            and records[0].get("capacity_sha256") == capacity_sha256, "actual owned publisher ready required")
-    events = [v.get("event") for v in records]
-    require(all(event == "publisher_status" for event in (events[1:-1] if joined else events[1:])), "unexpected publisher lifecycle")
-    if joined:
-        require(events[-1] == "publisher_joined" and len(records) >= 2 and records[-1].get("ok") is True
-                and isinstance(stop_sha256, str) and HEX64.fullmatch(stop_sha256) and records[-1].get("owner_stop_sha256") == stop_sha256
-                and utc(records[-1]["stopped_at"]) <= utc(plan["cleanup_by"]), "normal publisher join with actual owned stop acknowledgement required")
+    # The legacy stdout projection includes test-harness lines; maintenance's
+    # complete mirror is pure JSONL and is streamed with its own finite budget.
+    maintenance, summary = unattended_maintenance(plan), {}
+    records = renewal_lines(raw, plan, summary) if maintenance else [decode(line) for line in raw.splitlines() if line.startswith(b"{")]
+    if not maintenance:
+        require(0 < len(records) <= 128, "bounded publisher lifecycle required")
+    first, previous, count = None, None, 0
     for value in records:
+        count += 1
+        require(type(value.get("schema")) is int and value["schema"] == 1 and value.get("profile") == PROFILE and value.get("revision") == plan["source"]["head"]
+                and value.get("nonce") == plan["cohort"] and type(value.get("pid")) is int and value["pid"] > 0,
+                "bound publisher event required")
+        if first is None:
+            first = value
+            require(value.get("event") == "publisher_ready" and value.get("capacity_sha256") == capacity_sha256,
+                    "actual owned publisher ready required")
+        else:
+            require(value["pid"] == first["pid"] and previous.get("event") != "publisher_joined"
+                    and value.get("event") in (("publisher_status", "publisher_joined") if joined else ("publisher_status",)),
+                    "unexpected publisher lifecycle")
+        final = value.get("event") == "publisher_joined"
+        if final:
+            require(value.get("ok") is True and isinstance(stop_sha256, str) and HEX64.fullmatch(stop_sha256)
+                    and value.get("owner_stop_sha256") == stop_sha256
+                    and utc(value["stopped_at"]) <= utc(plan["cleanup_by"]), "normal publisher join with actual owned stop acknowledgement required")
         status = value.get("status", {})
-        require(status.get("failure") in (("none", "stopped") if joined and value is records[-1] else ("none",))
+        require(status.get("failure") in (("none", "stopped") if final else ("none",))
                 and utc(status["end"]) == utc(plan["cleanup_by"]) + 5 and utc(status["cleanup_by"]) == utc(plan["cleanup_by"]) + 10
                 and len(status.get("streams", [])) == 2 and {s.get("kind") for s in status["streams"]} == {"control", "data"}, "publisher failure or budget drift")
         for stream in status["streams"]:
@@ -344,7 +526,9 @@ def publisher_records(raw, plan, capacity_sha256, *, joined=False, stop_sha256=N
                     and len(stream.get("targets", [])) == 3 and {t.get("ordinal") for t in stream["targets"]} == {1, 2, 3}
                     and all(t.get("failure") in ("", "none") and t.get("candidate_matches") is True
                             and t.get("observed_version") == stream["journal_version"] for t in stream["targets"]), "incomplete membership publication")
-    return records
+        previous = value
+    require(count > 0 and (not joined or count >= 2 and previous.get("event") == "publisher_joined"), "actual complete publisher lifecycle required")
+    return {**summary, "observations": count, "first": first, "last": previous} if maintenance else records
 
 
 def owner_stop_record(plan):
@@ -363,24 +547,29 @@ def go_json(value):
 def lease_transcript(raw, plan, records, capacity_sha256, public_capacity):
     """Replay real envelope bytes/intervals; the native child verifies signatures."""
     terminal, first = records[-1], records[0]
-    require(0 < len(raw) <= 4 << 20, "bounded native lease transcript required")
-    rows = [decode(line) for line in raw.splitlines()]
-    require(1 <= len(rows) <= 128
-            and terminal.get("owner_window") == OWNER_WINDOW and terminal.get("owner_capacity_sha256") == capacity_sha256
-            and terminal.get("owner_lease_transcript_sha256") == digest(raw)
-            and type(terminal.get("owner_lease_observations")) is int and terminal["owner_lease_observations"] == len(rows), "actual native lease transcript required")
+    if isinstance(raw, bytes):
+        require(0 < len(raw) <= renewal_byte_limit(plan), "bounded native lease transcript required")
+    require(terminal.get("owner_window") == plan["owner_window"] and terminal.get("owner_capacity_sha256") == capacity_sha256,
+            "actual native lease transcript required")
     keys = {"observed_at", "control_profile_sha256", "data_domain_sha256", "control_manifest", "data_manifest"} | {
         kind + suffix for kind in ("control", "data") for suffix in ("_version", "_issued_at", "_expires_at", "_sha256")}
-    previous = None
-    stable = None
-    for row in rows:
+    previous, first_row, first_native, last_native = None, None, None, None
+    stable, summary = None, {}
+    count, native_count, native_ended = 0, 0, False
+    for row in renewal_lines(raw, plan, summary):
+        count += 1
+        first_row = first_row or row
         has_native = "native_low" in row or "native_high" in row
         require(set(row) == keys | ({"native_low", "native_high"} if has_native else set()), "exact lease observation required")
         observed = utc(row["observed_at"])
         require(previous is None or observed >= utc(previous["observed_at"]), "lease observation time rollback")
         low, high = (utc(row["native_low"]), utc(row["native_high"])) if has_native else (observed, observed)
         if has_native:
-            require(low <= high, "ordered owned native bounds required")
+            require(low <= high and not native_ended, "ordered contiguous owned native bounds required")
+            first_native, last_native = first_native or row, row
+            native_count += 1
+        elif native_count:
+            native_ended = True
         for kind in ("control", "data"):
             version, issued, expires, sha = (row[kind + suffix] for suffix in ("_version", "_issued_at", "_expires_at", "_sha256"))
             require(type(version) is int and version > 0 and HEX64.fullmatch(sha)
@@ -412,29 +601,36 @@ def lease_transcript(raw, plan, records, capacity_sha256, public_capacity):
                 if version == previous[kind + "_version"]:
                     require(all(row[kind + suffix] == previous[kind + suffix] for suffix in ("_issued_at", "_expires_at", "_sha256")), "same-version lease replacement")
         previous = row
+    require(terminal.get("owner_lease_transcript_sha256") == summary["sha256"]
+            and type(terminal.get("owner_lease_observations")) is int and terminal["owner_lease_observations"] == count,
+            "actual native lease transcript required")
     begin = utc(first["host_seed_interval_from"])
     end = utc(terminal["stopped_at"] if terminal.get("event") == "joined" else terminal["host_seed_interval_until"])
-    through = min(utc(rows[-1][kind + "_expires_at"]) for kind in ("control", "data")) - 2
-    require(utc(rows[0]["observed_at"]) <= begin <= end and utc(rows[-1]["observed_at"]) <= utc(plan["cleanup_by"])
-            and (terminal.get("event") != "joined" or utc(rows[-1]["observed_at"]) <= end)
-            and all(utc(rows[0][kind + "_issued_at"]) - 2 <= begin < utc(rows[0][kind + "_expires_at"]) - 2 for kind in ("control", "data"))
+    through = min(utc(previous[kind + "_expires_at"]) for kind in ("control", "data")) - 2
+    require(utc(first_row["observed_at"]) <= begin <= end and utc(previous["observed_at"]) <= utc(plan["cleanup_by"])
+            and (terminal.get("event") != "joined" or utc(previous["observed_at"]) <= end)
+            and all(utc(first_row[kind + "_issued_at"]) - 2 <= begin < utc(first_row[kind + "_expires_at"]) - 2 for kind in ("control", "data"))
             and utc(terminal["owner_lease_through"]) == through and end < through and end <= utc(plan["cleanup_by"]), "actual initialized/serving interval not covered")
-    native_indices = [i for i, row in enumerate(rows) if "native_low" in row]
     if terminal.get("event") == "joined":
-        require(len(native_indices) >= 2 and native_indices == list(range(native_indices[0], native_indices[-1]+1))
+        require(native_count >= 2
                 and terminal.get("owner_lease_time_scope") == "native-serving-with-host-cleanup"
-                and type(terminal.get("owner_native_lease_observations")) is int and terminal["owner_native_lease_observations"] == len(native_indices)
-                and utc(terminal["owner_native_lease_from"]) == utc(rows[native_indices[0]]["observed_at"])
-                and utc(terminal["owner_native_lease_until"]) == utc(rows[native_indices[-1]]["observed_at"])
+                and type(terminal.get("owner_native_lease_observations")) is int and terminal["owner_native_lease_observations"] == native_count
+                and utc(terminal["owner_native_lease_from"]) == utc(first_native["observed_at"])
+                and utc(terminal["owner_native_lease_until"]) == utc(last_native["observed_at"])
                 and begin <= utc(terminal["owner_native_lease_from"]) <= utc(records[1]["ready_at"])
                 and utc(terminal["owner_native_lease_from"]) <= utc(terminal["owner_native_lease_until"]) <= end, "actual owned native serving witness block required")
     else:
-        require(not native_indices and terminal.get("owner_lease_time_scope") == "host-auxiliary"
+        require(not native_count and terminal.get("owner_lease_time_scope") == "host-auxiliary"
                 and type(terminal.get("owner_native_lease_observations")) is int and terminal["owner_native_lease_observations"] == 0
                 and "owner_native_lease_from" not in terminal and "owner_native_lease_until" not in terminal
                 and "owner_stop_sha256" not in terminal, "initializer must not claim native serving time/stop acknowledgement")
-    return {"sha256": digest(raw), "observations": len(rows), "through": terminal["owner_lease_through"],
-            "time_scope": terminal["owner_lease_time_scope"], "native_observations": len(native_indices)}
+    return {"sha256": summary["sha256"], "observations": count, "through": terminal["owner_lease_through"],
+            "time_scope": terminal["owner_lease_time_scope"], "native_observations": native_count}
+
+
+def lease_transcript_file(path, plan, records, capacity_sha256, public_capacity):
+    consume = lambda raw: lease_transcript(raw, plan, records, capacity_sha256, public_capacity)
+    return renewal_file(path, plan, consume) if unattended_maintenance(plan) else consume(read(path, maximum=4 << 20))
 
 
 def cohort_material_snapshot(output, renewing, owner_stop=None):
@@ -534,7 +730,8 @@ def container_argv(plan, role, name, mounts, env_file=None, *, alias=None, netwo
 def descriptor(plan, plan_sha256, started, ready, authority, capacity=None):
     require(re.fullmatch(r"current-v2:[0-9a-f]{64}", authority), "original signed cohort required")
     renewing = renewing_membership(plan)
-    require(15 <= utc(plan["planned_stop_at"]) - ready <= plan["lifetime_seconds"] <= (1800 if renewing else 540), "finite actual serving interval required")
+    require(15 <= utc(plan["planned_stop_at"]) - ready <= plan["lifetime_seconds"]
+            and (renewing or plan["lifetime_seconds"] <= 540), "finite actual serving interval required")
     value = {"schema": 1, "kind": KIND, "profile": PROFILE, "provider_source": "real-google-apple", "time_source": "controlled-source",
             "synthetic_utc": True, "build_kind": "test-only", "build_tags": ["lantern_test_time"], **{k: plan["source"][k] for k in SOURCE_FIELDS},
             "plan_sha256": plan_sha256, "cohort": plan["cohort"], "authority_profile": authority, "image": plan["build"]["image"],
@@ -547,7 +744,7 @@ def descriptor(plan, plan_sha256, started, ready, authority, capacity=None):
             "input_refs": references(plan)}
     if renewing:
         require(isinstance(capacity, dict) and set(capacity) == {"path", "sha256"} and HEX64.fullmatch(capacity["sha256"]), "owner capacity descriptor required")
-        value.update(owner_window=dict(OWNER_WINDOW), owner_capacity=capacity, owned_container_count=11)
+        value.update(owner_window=dict(plan["owner_window"]), owner_capacity=capacity, owned_container_count=11)
     return value
 
 
@@ -681,9 +878,13 @@ def frontend_probe_argv(plan, admitted):
 
 
 def approved_dispatch(plan, plan_sha256, approval):
+    maintenance = unattended_maintenance(plan)
     require(approval.get("kind") == PROFILE + "-owner-dispatch" and approval.get("status") == "APPROVE"
-            and approval.get("owner_present") is True and approval.get("plan_sha256") == plan_sha256
-            and approval.get("seed_verification_sha256") == plan["seed"]["verification"]["sha256"], "single reviewed owner-present dispatch required")
+            and approval.get("owner_present") is (False if maintenance else True) and approval.get("plan_sha256") == plan_sha256
+            and approval.get("seed_verification_sha256") == plan["seed"]["verification"]["sha256"], "single reviewed dispatch required")
+    if maintenance:
+        require(isinstance(approval.get("unattended_supervisor"), str) and IDENTIFIER.fullmatch(approval["unattended_supervisor"]),
+                "explicit unattended maintenance supervisor required")
     require(approval.get("secret_and_tls_whole_window_verified") is True and approval.get("approved_public_origin") == plan["public"]["origin"]
             and approval.get("admin_and_edge_source_reviewed") is True, "actual secret/TLS/callback/Admin whole-window admission pending")
 
@@ -693,6 +894,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
     approved_dispatch(plan, plan_sha256, approval)
     admitted, window = admitted_inputs(plan), Window(plan)
     renewing = renewing_membership(plan)
+    maintenance = unattended_maintenance(plan)
     source_before, inputs_before = source_snapshot(plan, window), input_snapshot(plan, dispatch_refs)
     output = canonical(plan["output"])
     output.mkdir(mode=0o700)
@@ -700,6 +902,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
     names, identities, serving = [], [], []
     configs, authority, immutable = configurations(plan, admitted), None, None
     publisher, capacity, capacity_ref, capacity_data, owner_stop = None, None, None, None, None
+    publisher_ready = None
     started, ready_at, interrupted = time.time(), None, set()
     previous = {n: signal.getsignal(n) for n in (signal.SIGINT, signal.SIGTERM)}
     for number in previous:
@@ -733,20 +936,31 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         return env
 
     def publisher_running(*, include_apps=False, with_records=True):
+        nonlocal publisher_ready
         selected = [publisher] + (serving[:3] if include_apps else [])
         states = [decode(line) for line in commands.run(DOCKER + ["inspect", "--format", "{{json .State}}", *selected])[0].splitlines()]
         require(len(states) == len(selected) and all(state.get("Running") is True and state.get("Status") == "running"
                 and type(state.get("Pid")) is int and state["Pid"] > 0 and state.get("OOMKilled") is False and state.get("Error") == "" for state in states),
                 "owned membership publisher/App exited before stop")
         if with_records:
-            return publisher_records(commands.run(DOCKER + ["logs", publisher])[0], plan, capacity["sha256"])
+            tail = ["--tail", "1"] if maintenance and publisher_ready is not None else []
+            raw = commands.run(DOCKER + ["logs", *tail, publisher])[0]
+            if maintenance:
+                values = [decode(line) for line in raw.splitlines() if line.startswith(b"{")]
+                if publisher_ready is not None:
+                    require(len(values) == 1, "one latest publisher observation required")
+                    values = [publisher_ready] if values[0] == publisher_ready else [publisher_ready, values[0]]
+                result = publisher_records(b"".join(encoded(value) for value in values), plan, capacity["sha256"])
+                publisher_ready = result["first"]
+                return result
+            return publisher_records(raw, plan, capacity["sha256"])
 
     try:
         new_file(output / "STARTED.json", {"schema": 1, "kind": PROFILE + "-start", "status": "SETUP", "driver_pid": os.getpid(),
                  "source": plan["source"], "cohort": plan["cohort"], "plan_sha256": plan_sha256, "root_dispatch_sha256": approval_sha256,
                  "started_at": instant(started), "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]})
         if renewing:
-            result["owner_window"] = dict(OWNER_WINDOW)
+            result["owner_window"] = dict(plan["owner_window"])
         for role in ("build", "admin", "edge"):
             require(commands.run(DOCKER + ["image", "inspect", "--format", "{{.Id}}", plan[role]["image"]])[0].decode().strip() == plan[role]["image"], "admitted immutable image missing")
         fields = decode(commands.run(DOCKER + ["image", "inspect", "--format", '{"entrypoint":{{json .Config.Entrypoint}},"cmd":{{json .Config.Cmd}},"env_count":{{len .Config.Env}}}', plan["build"]["image"]])[0])
@@ -759,12 +973,14 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         for name in ("material", "operator", "state", "inputs", "views"):
             (output / name).mkdir(mode=0o700)
         env = output / "inputs" / "description.env"
-        new_file(env, b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE=1\n" + (b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE_OWNER_WINDOW=1\n" if renewing else b""))
+        new_file(env, b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE=1\n" + (b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE_MAINTENANCE_WINDOW=1\n" if maintenance
+                    else b"CONTROLLED_NATIVE_PROVIDER_DESCRIBE_OWNER_WINDOW=1\n" if renewing else b""))
         identity = create("description", 0, [], env, ["-test.v", "-test.run=^TestControlledNativeProviderProfileDescription$", "-test.timeout=20s"])
         raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=25)[0]
         require([decode(line) for line in raw.splitlines() if line.startswith(b"{")] == [decode(reference(plan["build"]["description"]))], "actual same-image description missing")
         identity = create("provision", 0, [(output / "material", "/material", True), (output / "operator", "/operator", True)],
-                          environment(0, "initialize", "provision"), ["provision-security", "--operator-directory", "/operator/custody", "--valid-for", "1h"])
+                          environment(0, "initialize", "provision"), ["provision-security", "--operator-directory", "/operator/custody", "--valid-for",
+                          str(plan["lifetime_seconds"] + cleanup_seconds(plan) + 120) + "s" if maintenance else "1h"])
         commands.run(DOCKER + ["start", "--attach", identity], timeout=60)
         if renewing:
             # Finish all views before the publisher takes its six stable leases.
@@ -781,11 +997,14 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             publisher_input = {"schema": 1, "profile": PROFILE, "revision": plan["source"]["head"], "nonce": plan["cohort"],
                                "config_path": "/publisher-config.json", "config_sha256": digest(read(config_path)), "state_path": "/publisher-journal/state.json",
                                "capacity_path": "/publisher-public/capacity.json", "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]}
+            if maintenance:
+                publisher_input.update(owner_window=dict(MAINTENANCE_WINDOW), lifetime_seconds=plan["lifetime_seconds"],
+                                       events_path="/publisher-journal/events.jsonl")
             new_file(output / "inputs" / "publisher-input.json", publisher_input)
             env = output / "inputs" / "publisher.env"
             new_file(env, ("CONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT=/publisher-input.json\nCONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT_SHA256="
                            + digest(read(output / "inputs" / "publisher-input.json")) + "\n").encode())
-            publisher = create("publisher", 0, publisher_mounts(output), env, ["-test.v", "-test.run=^" + PUBLISHER_CHILD + "$", "-test.timeout=32m"])
+            publisher = create("publisher", 0, publisher_mounts(output), env, ["-test.v", "-test.run=^" + PUBLISHER_CHILD + "$", "-test.timeout=" + child_timeout(plan)])
             commands.run(DOCKER + ["start", publisher])
             # O_EXCL makes the path visible before Write/Sync/Close. Only the
             # producer's subsequent ready event admits a capacity-file read.
@@ -816,15 +1035,15 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=75)[0]
             records = child_records(raw, plan, "initialize", f"node-{index+1}", child_input(plan, configs[index], admitted, "initialize", capacity)["config_sha256"])
             if renewing:
-                result.setdefault("owner_lease_transcripts", {})[f"node-{index+1}/initialize"] = lease_transcript(
-                    read(state / "controlled-native-provider-owner-leases-initialize.jsonl", maximum=4 << 20), plan, records, capacity["sha256"], capacity_data)
+                result.setdefault("owner_lease_transcripts", {})[f"node-{index+1}/initialize"] = lease_transcript_file(
+                    state / "controlled-native-provider-owner-leases-initialize.jsonl", plan, records, capacity["sha256"], capacity_data)
                 publisher_running()
             authority = authority or records[0]["authority_profile"]
             require(records[0]["authority_profile"] == authority, "initializer original cohort drift")
             aliases = [f"cnp-{plan['cohort'][:16]}-{index+1}"] + ([urlsplit(plan["public"]["origin"]).hostname] if index == 0 else [])
             if renewing:
                 mounts.append((output / "owner-control", "/owner-control", False))
-            identity = create("resume", index, mounts, environment(index, "resume"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=" + ("32m" if renewing else "11m")], aliases=aliases, network=plan["network"]["id"])
+            identity = create("resume", index, mounts, environment(index, "resume"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=" + child_timeout(plan)], aliases=aliases, network=plan["network"]["id"])
             serving.append(identity)
         edge, admin_env = routes(plan)
         new_file(output / "inputs" / "edge.Caddyfile", edge)
@@ -929,14 +1148,17 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                     require(all(r["authority_profile"] == authority for r in records), "final original cohort drift")
                     if renewing:
                         require(owner_stop is not None and records[-1].get("owner_stop_sha256") == owner_stop["sha256"], "actual native stop acknowledgement required")
-                        result.setdefault("owner_lease_transcripts", {})[f"node-{serving.index(identity)+1}/resume"] = lease_transcript(
-                            read(output / "state" / str(serving.index(identity)) / "controlled-native-provider-owner-leases-resume.jsonl", maximum=4 << 20),
+                        result.setdefault("owner_lease_transcripts", {})[f"node-{serving.index(identity)+1}/resume"] = lease_transcript_file(
+                            output / "state" / str(serving.index(identity)) / "controlled-native-provider-owner-leases-resume.jsonl",
                             plan, records, capacity["sha256"], capacity_data)
                 if identity == publisher and stopped:
-                    records = publisher_records(commands.run(DOCKER + ["logs", identity])[0], plan, capacity["sha256"], joined=True,
-                                                stop_sha256=owner_stop["sha256"] if owner_stop else None)
+                    consume = lambda raw: publisher_records(raw, plan, capacity["sha256"], joined=True,
+                                                           stop_sha256=owner_stop["sha256"] if owner_stop else None)
+                    records = renewal_file(output / "publisher-journal/events.jsonl", plan, consume) if maintenance else consume(commands.run(DOCKER + ["logs", identity])[0])
                     result["publisher_capacity"] = capacity_ref
-                    result["publisher_observations"] = len(records)
+                    result["publisher_observations"] = records["observations"] if maintenance else len(records)
+                    if maintenance:
+                        result["publisher_events"] = {key: records[key] for key in ("sha256", "bytes", "observations")}
             except BaseException as error:
                 cleanup_error(identity, proof_stage, error)
         result["all_owned_containers_stopped"] = len(states) == len(identities) == len(names) and all(s["stopped"] for s in states)
@@ -960,7 +1182,14 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                 result.update(status="FAIL", cleanup_known=False, signal_restoration_failure_class=type(error).__name__)
         if interrupted or window.left(cleanup=True) < 0 or not result["cleanup_known"] or any(not s["normal_exit"] for s in states):
             result["status"] = "FAIL"
-        result.update(commands=commands.rows, attempted_names=names, containers=states, ready_at=instant(ready_at) if ready_at else None,
+        if maintenance:
+            try:
+                result["command_journal"] = commands.finish()
+            except BaseException as error:
+                result.update(status="FAIL", cleanup_known=False, command_journal_failure_class=type(error).__name__)
+        else:
+            result["commands"] = commands.rows
+        result.update(attempted_names=names, containers=states, ready_at=instant(ready_at) if ready_at else None,
                       finished_at=instant(time.time()), provider_components_passed=0, full_provider_cells_passed=0, signup_passed=0)
         new_file(output / "lifecycle.json", result)
         if interrupted or window.left(cleanup=True) < 0:
