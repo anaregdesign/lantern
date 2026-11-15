@@ -573,16 +573,37 @@ def frontend_probe(origin, lan_ip, public_roots, index_sha256):
     import json
     import socket
     import ssl
+    import time
+    import urllib.error
     import urllib.request
     from urllib.parse import urlsplit
+    deadline, attempts = time.monotonic() + 12, 0
+
+    def fail(category):
+        raise ValueError(f"owned public frontend unavailable: category={category}; attempts={attempts}") from None
+
+    def remaining():
+        left = deadline - time.monotonic()
+        if left <= 0:
+            fail("deadline")
+        return left
+
     host = urlsplit(origin).hostname
-    addresses = sorted({row[4][0] for row in socket.getaddrinfo(host, 24443, socket.AF_UNSPEC, socket.SOCK_STREAM)})
+    try:
+        addresses = sorted({row[4][0] for row in socket.getaddrinfo(host, 24443, socket.AF_UNSPEC, socket.SOCK_STREAM)})
+    except OSError:
+        fail("dns")
+    remaining()
     if addresses != [lan_ip]:
-        raise ValueError("public origin does not resolve to the approved LAN address")
+        fail("dns_binding")
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *_args, **_kwargs):
-            raise ValueError("frontend redirect refused")
-    tls = ssl.create_default_context(cafile=public_roots)
+            fail("redirect")
+    try:
+        tls = ssl.create_default_context(cafile=public_roots)
+    except (OSError, ValueError):
+        fail("tls_setup")
+    remaining()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=tls), NoRedirect())
     health = urllib.request.Request(origin + "/grpc.health.v1.Health/Check", data=b"{}", method="POST",
                                     headers={"Content-Type": "application/json", "Connect-Protocol-Version": "1", "Accept-Encoding": "identity"})
@@ -590,19 +611,64 @@ def frontend_probe(origin, lan_ip, public_roots, index_sha256):
         value = {}
         for key, item in pairs:
             if key in value:
-                raise ValueError("ambiguous public Health JSON")
+                fail("duplicate_json")
             value[key] = item
         return value
-    with opener.open(health, timeout=5) as response:
-        body = response.read(1025)
-        health_value = json.loads(body, object_pairs_hook=unique)
-        if response.status != 200 or len(body) > 1024 or not isinstance(health_value, dict) or set(health_value) != {"status"} or health_value["status"] not in ("SERVING", "SERVING_STATUS_SERVING"):
-            raise ValueError("owned public Health not SERVING")
+
+    def fetch(request, maximum, category):
+        nonlocal attempts
+        timeout = min(5, remaining())
+        if category == "health":
+            attempts += 1
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                remaining()
+                status, body = response.status, response.read(maximum + 1)
+                remaining()
+        except urllib.error.HTTPError as error:
+            try:
+                error.close()
+            except OSError:
+                pass
+            fail(category + "_http")
+        except urllib.error.URLError as error:
+            fail("tls" if isinstance(error.reason, ssl.SSLError) else category + "_transport")
+        except ssl.SSLError:
+            fail("tls")
+        except OSError:
+            fail(category + "_transport")
+        if status != 200:
+            fail(category + "_http")
+        if len(body) > maximum:
+            fail(category + "_size")
+        remaining()
+        return body
+
+    # Child readiness is a past success. Wait only for an explicit current
+    # not-ready response, never for a transport, TLS or malformed-body failure.
+    # The parent still owns blocking DNS/socket cleanup within its original 15s.
+    for _ in range(121):
+        body = fetch(health, 1024, "health")
+        try:
+            health_value = json.loads(body, object_pairs_hook=unique)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            fail("malformed_json")
+        if not isinstance(health_value, dict) or set(health_value) != {"status"}:
+            fail("health_shape")
+        status = health_value["status"]
+        remaining()
+        if status in ("SERVING", "SERVING_STATUS_SERVING"):
+            break
+        if status not in ("NOT_SERVING", "SERVING_STATUS_NOT_SERVING"):
+            fail("health_status")
+        if attempts == 121:
+            fail("not_serving_attempt_limit")
+        time.sleep(min(0.1, remaining()))
     request = urllib.request.Request(origin + "/index.html", headers={"Accept-Encoding": "identity"})
-    with opener.open(request, timeout=5) as response:
-        body = response.read((2 << 20) + 1)
-        if response.status != 200 or len(body) > 2 << 20 or hashlib.sha256(body).hexdigest() != index_sha256:
-            raise ValueError("exact-source Admin index content mismatch")
+    body = fetch(request, 2 << 20, "admin")
+    if hashlib.sha256(body).hexdigest() != index_sha256:
+        fail("admin_index")
+    remaining()
     return {"origin": origin, "dns_addresses": addresses, "health_status": health_value["status"], "admin_index_sha256": index_sha256}
 
 
