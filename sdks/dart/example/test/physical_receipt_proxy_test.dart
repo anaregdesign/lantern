@@ -10,6 +10,101 @@ import '../tool/physical_receipt_proxy.dart';
 
 void main() {
   test(
+    'privacy observation waits past a reset for concrete OS denial',
+    () async {
+      final scripted = _privacyTransport([
+        const SocketException('Connection reset by peer'),
+        const SocketException('No route to host'),
+      ]);
+      addTearDown(scripted.client.close);
+      final waits = <Duration>[];
+      await waitForIosLocalNetworkDenial(
+        scripted.client.getReceiptCapability,
+        pause: (duration) async => waits.add(duration),
+        maxAttempts: 3,
+      );
+      expect(scripted.attempts(), 2);
+      expect(waits, [const Duration(milliseconds: 500)]);
+    },
+  );
+
+  test('generic socket failure cannot qualify privacy denial', () async {
+    final scripted = _privacyTransport([
+      const SocketException('Connection refused'),
+    ]);
+    addTearDown(scripted.client.close);
+    await expectLater(
+      waitForIosLocalNetworkDenial(
+        scripted.client.getReceiptCapability,
+        pause: (_) async {},
+        maxAttempts: 3,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'bounded category',
+          contains('iOS Local Network denial was not observed'),
+        ),
+      ),
+    );
+    expect(scripted.attempts(), 3);
+  });
+
+  test(
+    'privacy observation preserves certificate and protocol failures',
+    () async {
+      for (final failure in [
+        HandshakeException('CERTIFICATE_VERIFY_FAILED'),
+        const FormatException('malformed response'),
+        HandshakeException('Operation not permitted'),
+        const FormatException('No route to host'),
+      ]) {
+        final scripted = _privacyTransport([failure]);
+        try {
+          await expectLater(
+            waitForIosLocalNetworkDenial(
+              scripted.client.getReceiptCapability,
+              pause: (_) async => fail('unexpected retry'),
+              maxAttempts: 3,
+            ),
+            throwsA(
+              predicate<Object>((error) {
+                final inner = error is LanternRetryExhaustedException
+                    ? error.cause
+                    : error;
+                return inner is LanternException &&
+                    identical(inner.cause, failure);
+              }, 'the original certificate or protocol cause'),
+            ),
+          );
+          expect(scripted.attempts(), 1);
+        } finally {
+          await scripted.client.close();
+        }
+      }
+    },
+  );
+
+  test('a stalled request stays bounded and does not prove denial', () async {
+    final never = Completer<ConnectionTask<Socket>>();
+    final io = HttpClient()..connectionFactory = (_, _, _) => never.future;
+    final client = LanternClient.connect(
+      Uri.parse('http://127.0.0.1:1'),
+      allowInsecure: true,
+      httpClientFactory: () => io,
+      retryPolicy: const RetryPolicy(maxAttempts: 1),
+    );
+    addTearDown(client.close);
+    await expectLater(
+      waitForIosLocalNetworkDenial(
+        client.getReceiptCapability,
+        recoveryWindow: const Duration(milliseconds: 30),
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test(
     'receipt transport recognizes bounded unavailable without widening denial',
     () async {
       final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -566,4 +661,27 @@ void main() {
       throwsStateError,
     );
   });
+}
+
+({LanternClient client, int Function() attempts}) _privacyTransport(
+  List<Object> failures,
+) {
+  var attempts = 0;
+  final io = HttpClient()
+    ..findProxy = ((_) => 'DIRECT')
+    ..connectionFactory = (_, _, _) async {
+      final failure =
+          failures[attempts < failures.length ? attempts : failures.length - 1];
+      attempts++;
+      throw failure;
+    };
+  return (
+    client: LanternClient.connect(
+      Uri.parse('http://127.0.0.1:1'),
+      allowInsecure: true,
+      httpClientFactory: () => io,
+      retryPolicy: const RetryPolicy(maxAttempts: 1),
+    ),
+    attempts: () => attempts,
+  );
 }

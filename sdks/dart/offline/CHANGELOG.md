@@ -2,6 +2,10 @@
 
 ## 0.6.0
 
+- Allow legacy receipt replay to make its first send without an absence-status
+  lookup when durable evidence proves it was never dispatched. Keep capability,
+  endpoint and freshness checks, persist the dispatch marker before the RPC,
+  and retain status-first recovery for possibly sent or legacy unmarked work.
 - Add the common Offline admission/result contract with checked preparation,
   full pending projection, bounded dependency groups, exact durable results
   and storage migrations.

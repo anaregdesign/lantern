@@ -732,10 +732,16 @@ Future<void> _verifyIosPrivacy(
   final lan = fixture.client(fixture.lanEndpoint);
   try {
     await actions.announce('ios_deny_local_network');
-    await _waitForTransportFailure(
-      lan.getReceiptCapability,
-      localPrivacy: true,
-    );
+    await _waitForTransportFailure(() async {
+      // A socket opened before Settings changes can remain alive or report
+      // only its teardown. Each probe must observe the current OS decision.
+      final probe = fixture.client(fixture.lanEndpoint);
+      try {
+        return await probe.getReceiptCapability();
+      } finally {
+        await probe.close();
+      }
+    }, localPrivacy: true);
     await actions.announce('ios_allow_local_network');
     await _waitForCapability(
       lan,
@@ -1048,21 +1054,19 @@ Future<void> _waitForTransportFailure(
   Future<Object?> Function() attempt, {
   bool localPrivacy = false,
 }) async {
+  if (localPrivacy) {
+    return waitForIosLocalNetworkDenial(
+      attempt,
+      recoveryWindow: _actionDeadline,
+    );
+  }
   final deadline = DateTime.now().add(_actionDeadline);
   while (DateTime.now().isBefore(deadline)) {
     try {
       await attempt();
     } on Object catch (error) {
-      if (!localPrivacy) {
-        if (receiptTransientTransportCause(error) != null) return;
-        rethrow;
-      }
-      final unavailable = receiptUnavailableCause(error);
-      if (unavailable == null) rethrow;
-      if (isIosLocalNetworkDeniedCause(unavailable.cause)) {
-        return;
-      }
-      throw StateError('iOS Local Network denial was not observed');
+      if (receiptTransientTransportCause(error) != null) return;
+      rethrow;
     }
     await Future<void>.delayed(const Duration(milliseconds: 500));
   }

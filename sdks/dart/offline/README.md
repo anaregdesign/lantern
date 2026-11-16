@@ -322,12 +322,14 @@ its operation ID, one-item logical receipt group, endpoint NodeID/generation,
 policy fingerprint, and exact `itemIndex=0`/`itemCount=1` receipt topology
 before its first mutation send.
 
-The legacy explicit repository replay checks status before every mutation send,
-including after an
-ambiguous response, lease recovery, or process restart. A freshly enqueued
-receipt also retains a never-dispatched marker. If the server clock shows its
-provisional ID nearing the five-minute admission limit, replay may replace
-that ID and group under a live claim *before* status lookup, but only while the
+The legacy explicit repository replay may make a first send without a status
+lookup only while durable evidence proves the receipt was never dispatched.
+It still checks the current capability, endpoint continuity and ID freshness,
+and persists the dispatch marker before calling the mutation RPC. Possibly sent
+receipts, including older records without that proof, remain status-first after
+an ambiguous response, lease recovery or process restart. If the server clock
+shows a provisional ID nearing the five-minute admission limit, replay may replace
+that ID and group under a live claim before its first send, but only while the
 durable marker proves no send could have begun. The marker becomes
 `mayHaveDispatched` before the first mutation RPC; missing markers in older
 records mean it may already have been sent and can never authorize rekeying.

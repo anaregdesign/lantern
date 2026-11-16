@@ -149,6 +149,7 @@ void main() {
               _ => await repository.deleteEdge(partitionId: 'p', edge: edge),
             };
             if (family == 'status') {
+              await _markPossiblyDispatched(store, 'p');
               remote.beforeReceiptStatusReturn = (id) async {
                 remote.receiptStatuses[id] = OfflineReceiptStatus(
                   operationId: id,
@@ -279,6 +280,87 @@ void main() {
   });
 
   group('receipt reconciliation', () {
+    for (final asynchronous in [false, true]) {
+      test(
+        'never-dispatched receipts send without absent-status authority (async: $asynchronous)',
+        () async {
+          final clock = MutableClock(initial);
+          final memory = InMemoryOfflineStore();
+          final OfflineStore store = asynchronous
+              ? DelayedOfflineStore(memory)
+              : memory;
+          final remote = FakeOfflineRemote()
+            ..receiptStatusFailures.add(
+              failure(OfflineRemoteErrorKind.permanent),
+            )
+            ..receiptSendResults.addAll(const [
+              OfflineVertexPutReceiptResult(PutOutcome.conditionNotMet),
+              OfflineVertexPutReceiptResult(PutOutcome.appliedAndLive),
+            ]);
+          final repository = OfflineLanternRepository(
+            store: store,
+            remote: remote,
+            config: testConfig(clock),
+          );
+          addTearDown(repository.dispose);
+          final write = await repository.putVerticesIfAbsent(
+            partitionId: 'p',
+            inputs: [
+              VertexInput(key: 'existing', value: VertexValue.string('next')),
+              VertexInput(key: 'created', value: VertexValue.string('new')),
+            ],
+          );
+          final queued = await store.transaction(
+            (transaction) async => await transaction.outbox('p'),
+          );
+          expect(queued, hasLength(2));
+          expect(queued.every((r) => !r.receipt!.mayHaveDispatched), isTrue);
+          var checkedBeforeSend = 0;
+          remote.beforeReceiptSend = (context) async {
+            final original = queued.singleWhere(
+              (r) => r.receipt!.operationId == context.operationIds.single,
+            );
+            final persisted = await store.transaction(
+              (transaction) async =>
+                  await transaction.getOutbox('p', original.recordId),
+            );
+            expect(persisted!.mayHaveDispatched, isTrue);
+            expect(persisted.receipt!.mayHaveDispatched, isTrue);
+            expect(persisted.attemptCount, 0);
+            expect(
+              persisted.receipt!.operationId,
+              original.receipt!.operationId,
+            );
+            expect(persisted.receipt!.groupId, original.receipt!.groupId);
+            // Preparation is not a fabricated Server absence observation.
+            expect(
+              persisted.receipt!.state,
+              OfflineReceiptReconciliationState.statusRequired,
+            );
+            checkedBeforeSend++;
+          };
+
+          expect(await repository.drain('p'), 2);
+          expect(checkedBeforeSend, 2);
+          expect(remote.receiptStatusCalls, 0);
+          expect(remote.receiptStatusFailures, hasLength(1));
+          expect(remote.receiptSendCalls, 2);
+          final status = await repository.getWriteStatus(
+            'p',
+            write.operationId,
+          );
+          expect(status!.confirmedCount, 2);
+          expect(
+            status.items.map(
+              (item) =>
+                  (item.receiptResult as OfflineVertexPutReceiptResult).outcome,
+            ),
+            [PutOutcome.conditionNotMet, PutOutcome.appliedAndLive],
+          );
+        },
+      );
+    }
+
     for (final asynchronous in [false, true]) {
       test(
         'contribution Delete preserves pending weight, FIFO and duplicates (async: $asynchronous)',
@@ -662,7 +744,7 @@ void main() {
 
         expect(await repository.drain('p'), 4);
         expect(remote.receiptSendCalls, 4);
-        expect(remote.receiptStatusCalls, 4);
+        expect(remote.receiptStatusCalls, 0);
         expect(remote.receiptCapabilityCalls, 8);
         final status = await repository.getWriteStatus('p', 'conditional');
         expect(status!.items.map((item) => item.state), [
@@ -1183,13 +1265,10 @@ void main() {
           expect(remote.receiptCalls, <String>[
             'capability',
             'prepare',
-            'status',
             'capability',
             'send',
           ]);
-          expect(remote.receiptStatusIds, <ReceiptOperationId>[
-            remote.receiptSendContexts.single.operationIds.single,
-          ]);
+          expect(remote.receiptStatusIds, isEmpty);
           expect(
             remote.receiptSendContexts.single.operationIds.single,
             isNot(queued.receipt!.operationId),
@@ -1217,7 +1296,7 @@ void main() {
       const Duration(minutes: 4, seconds: 1),
       const Duration(minutes: 6),
     ]) {
-      test('delayed capability $delay rekeys before status and send', () async {
+      test('delayed capability $delay rekeys before its first send', () async {
         final clock = MutableClock(initial);
         final store = InMemoryOfflineStore();
         final remote = FakeOfflineRemote()
@@ -1273,17 +1352,12 @@ void main() {
         expect(remote.receiptCalls, <String>[
           'capability',
           'prepare',
-          'status',
           'capability',
           'send',
         ]);
-        expect(remote.receiptStatusIds, hasLength(1));
+        expect(remote.receiptStatusIds, isEmpty);
         expect(
-          remote.receiptStatusIds.single,
           remote.receiptSendContexts.single.operationIds.single,
-        );
-        expect(
-          remote.receiptStatusIds.single,
           isNot(queued.receipt!.operationId),
         );
         expect(remote.receiptSendCalls, 1);
@@ -1389,15 +1463,10 @@ void main() {
       expect(await repository.drain('p'), 1);
       expect(delayed, isTrue);
       expect(checkedRollback, isTrue);
-      expect(remote.receiptStatusIds, hasLength(2));
-      expect(remote.receiptStatusIds.first, original.receipt!.operationId);
-      expect(
-        remote.receiptStatusIds.last,
-        isNot(original.receipt!.operationId),
-      );
+      expect(remote.receiptStatusIds, isEmpty);
       expect(
         remote.receiptSendContexts.single.operationIds.single,
-        remote.receiptStatusIds.last,
+        isNot(original.receipt!.operationId),
       );
       expect(remote.receiptSendCalls, 1);
       final status = await repository.getWriteStatus('p', handle.operationId);
@@ -1454,72 +1523,74 @@ void main() {
       },
     );
 
-    test('status latency cannot send a newly stale unsent ID', () async {
-      final clock = MutableClock(initial);
-      final store = InMemoryOfflineStore();
-      final remote = FakeOfflineRemote()
-        ..receiptCapability = offlineReceiptCapability(serverNow: clock.now);
-      var advanced = false;
-      remote.beforeReceiptStatusReturn = (_) async {
-        if (!advanced) {
-          advanced = true;
-          clock.advance(const Duration(minutes: 6));
-          remote.receiptCapability = offlineReceiptCapability(
-            serverNow: clock.now,
-          );
-        }
-      };
-      final repository = OfflineLanternRepository(
-        store: store,
-        remote: remote,
-        config: OfflineConfig(
-          clock: clock.call,
-          idGenerator: testConfig(clock).idGenerator,
-          jitter: (_) => Duration.zero,
-          leaseDuration: const Duration(hours: 1),
-        ),
-      );
-      addTearDown(repository.dispose);
-      final handle = await repository.deleteEdge(
-        partitionId: 'p',
-        edge: const EdgeRef('tail', 'head'),
-      );
-      final original = await store.transaction(
-        (transaction) async => (await transaction.outbox('p')).single,
-      );
-      remote.receiptCalls.clear();
+    test(
+      'pre-send capability latency cannot send a newly stale unsent ID',
+      () async {
+        final clock = MutableClock(initial);
+        final store = InMemoryOfflineStore();
+        final remote = FakeOfflineRemote()
+          ..receiptCapability = offlineReceiptCapability(serverNow: clock.now);
+        var advanced = false;
+        remote.beforeReceiptCapabilityReturn = () async {
+          if (!advanced && remote.receiptCapabilityCalls == 2) {
+            advanced = true;
+            clock.advance(const Duration(minutes: 6));
+            remote.receiptCapability = offlineReceiptCapability(
+              serverNow: clock.now,
+            );
+          }
+        };
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: OfflineConfig(
+            clock: clock.call,
+            idGenerator: testConfig(clock).idGenerator,
+            jitter: (_) => Duration.zero,
+            leaseDuration: const Duration(hours: 1),
+          ),
+        );
+        addTearDown(repository.dispose);
+        final handle = await repository.deleteEdge(
+          partitionId: 'p',
+          edge: const EdgeRef('tail', 'head'),
+        );
+        final original = await store.transaction(
+          (transaction) async => (await transaction.outbox('p')).single,
+        );
+        remote.receiptCalls.clear();
 
-      expect(await repository.drain('p'), 1);
-      expect(remote.receiptStatusIds, hasLength(2));
-      expect(remote.receiptStatusIds.first, original.receipt!.operationId);
-      expect(
-        remote.receiptStatusIds.last,
-        remote.receiptSendContexts.single.operationIds.single,
-      );
-      expect(
-        remote.receiptStatusIds.last,
-        isNot(original.receipt!.operationId),
-      );
-      expect(remote.receiptSendCalls, 1);
-      expect(
-        (await repository.getWriteStatus(
-          'p',
-          handle.operationId,
-        ))!.items.single.attemptCount,
-        1,
-      );
-    });
+        expect(await repository.drain('p'), 1);
+        expect(remote.receiptStatusIds, isEmpty);
+        expect(remote.receiptPrepareCalls, 2);
+        expect(
+          remote.receiptSendContexts.single.operationIds.single,
+          isNot(original.receipt!.operationId),
+        );
+        expect(remote.receiptSendCalls, 1);
+        expect(
+          (await repository.getWriteStatus(
+            'p',
+            handle.operationId,
+          ))!.items.single.attemptCount,
+          1,
+        );
+      },
+    );
 
     test('crash before the send marker preserves unsent proof', () async {
       final clock = MutableClock(initial);
       final store = InMemoryOfflineStore();
       final entered = Completer<void>();
       final release = Completer<void>();
+      var capabilityReturns = 0;
       final remote = FakeOfflineRemote()
         ..receiptCapability = offlineReceiptCapability(serverNow: clock.now)
-        ..beforeReceiptStatusReturn = (_) async {
-          entered.complete();
-          await release.future;
+        ..beforeReceiptCapabilityReturn = () async {
+          if (++capabilityReturns == 2) {
+            entered.complete();
+            await release.future;
+          }
         };
       final repository = OfflineLanternRepository(
         store: store,
@@ -1568,13 +1639,9 @@ void main() {
       addTearDown(restored.dispose);
 
       expect(await restored.drain('p'), 1);
-      expect(restoredRemote.receiptStatusIds, hasLength(1));
+      expect(restoredRemote.receiptStatusIds, isEmpty);
       expect(
-        restoredRemote.receiptStatusIds.single,
         restoredRemote.receiptSendContexts.single.operationIds.single,
-      );
-      expect(
-        restoredRemote.receiptStatusIds.single,
         isNot(rekeyed.receipt!.operationId),
       );
       expect(restoredRemote.receiptSendCalls, 1);
@@ -1991,10 +2058,11 @@ void main() {
           key: 'missing',
           operationId: 'delete-vertex',
         );
+        await _markPossiblyDispatched(store, 'p');
         remote.receiptCalls.clear();
 
         expect(await repository.drain('p'), 0);
-        expect(remote.receiptCalls, <String>['capability', 'status']);
+        expect(remote.receiptCalls, <String>['status']);
         expect(remote.receiptSendCalls, 0);
         final unresolved = await store.transaction(
           (transaction) async => (await transaction.outbox('p')).single,
@@ -2014,12 +2082,7 @@ void main() {
         clock.advance(const Duration(microseconds: 1));
         remote.receiptCalls.clear();
         expect(await repository.drain('p'), 1);
-        expect(remote.receiptCalls, <String>[
-          'capability',
-          'status',
-          'capability',
-          'send',
-        ]);
+        expect(remote.receiptCalls, <String>['status', 'capability', 'send']);
         final confirmed = await repository.getWriteStatus(
           'p',
           handle.operationId,
@@ -2035,13 +2098,14 @@ void main() {
 
     test('zero jitter receipt retry resumes on the next drain', () async {
       final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
       final remote = FakeOfflineRemote()
         ..receiptStatusFailures.add(
           failure(OfflineRemoteErrorKind.resourceExhausted),
         )
         ..receiptSendResults.add(const OfflineVertexDeleteReceiptResult(false));
       final repository = OfflineLanternRepository(
-        store: InMemoryOfflineStore(),
+        store: store,
         remote: remote,
         config: OfflineConfig(
           clock: clock.call,
@@ -2055,10 +2119,11 @@ void main() {
         key: 'missing',
         operationId: 'zero-jitter-retry',
       );
+      await _markPossiblyDispatched(store, 'p');
       remote.receiptCalls.clear();
 
       expect(await repository.drain('p'), 0);
-      expect(remote.receiptCalls, <String>['capability', 'status']);
+      expect(remote.receiptCalls, <String>['status']);
       expect(remote.receiptSendCalls, 0);
       expect(
         (await repository.getWriteStatus(
@@ -2070,12 +2135,7 @@ void main() {
 
       remote.receiptCalls.clear();
       expect(await repository.drain('p'), 1);
-      expect(remote.receiptCalls, <String>[
-        'capability',
-        'status',
-        'capability',
-        'send',
-      ]);
+      expect(remote.receiptCalls, <String>['status', 'capability', 'send']);
       expect(remote.receiptSendCalls, 1);
       expect(
         (await repository.getWriteStatus(
@@ -2093,6 +2153,7 @@ void main() {
       addTearDown(() {
         if (!releaseSecondStatus.isCompleted) releaseSecondStatus.complete();
       });
+      final store = InMemoryOfflineStore();
       final remote = FakeOfflineRemote()
         ..receiptStatusFailures.add(
           failure(OfflineRemoteErrorKind.resourceExhausted),
@@ -2102,7 +2163,7 @@ void main() {
           await releaseSecondStatus.future;
         };
       final repository = OfflineLanternRepository(
-        store: InMemoryOfflineStore(),
+        store: store,
         remote: remote,
         config: OfflineConfig(
           clock: clock.call,
@@ -2127,6 +2188,7 @@ void main() {
         partitionId: 'p',
         input: VertexInput(key: 'later', value: VertexValue.string('value')),
       );
+      await _markPossiblyDispatched(store, 'p');
       var drainCompleted = false;
       final draining = repository.drain('p');
       unawaited(draining.then((_) => drainCompleted = true));
@@ -2236,6 +2298,7 @@ void main() {
                   (await transaction.outbox(scenario)).single,
             );
             if (scenario == 'no-longer-provable') {
+              await _markPossiblyDispatched(store, scenario);
               remote.receiptStatuses[record.receipt!.operationId] =
                   OfflineReceiptStatus(
                     operationId: record.receipt!.operationId,
@@ -2271,7 +2334,7 @@ void main() {
             expect(
               remote.receiptCalls,
               scenario == 'no-longer-provable'
-                  ? <String>['capability', 'status']
+                  ? <String>['status']
                   : <String>['capability'],
             );
             final status = await repository.getWriteStatus(
@@ -2327,17 +2390,13 @@ void main() {
         (transaction) async => (await transaction.outbox('p')).single.receipt!,
       );
 
+      await _markPossiblyDispatched(store, 'p');
       expect(await repository.drain('p'), 0);
       expect(await repository.isReplayPausedForAuth('p'), isTrue);
       expect(remote.receiptSendCalls, 0);
       remote.receiptCalls.clear();
       expect(await repository.resume('p'), 1);
-      expect(remote.receiptCalls, <String>[
-        'capability',
-        'status',
-        'capability',
-        'send',
-      ]);
+      expect(remote.receiptCalls, <String>['status', 'capability', 'send']);
       expect(
         remote.receiptSendContexts.single.operationIds.single,
         receipt.operationId,
@@ -2439,7 +2498,6 @@ void main() {
       expect(remote.receiptCalls, <String>[
         'prepare',
         'capability',
-        'status',
         'capability',
       ]);
       expect(remote.receiptSendCalls, 0);
@@ -2551,6 +2609,7 @@ void main() {
       final record = await store.transaction(
         (transaction) async => (await transaction.outbox('p')).single,
       );
+      await _markPossiblyDispatched(store, 'p');
       remote.receiptStatuses[record.receipt!.operationId] =
           OfflineReceiptStatus(
             operationId: record.receipt!.operationId,
@@ -2635,6 +2694,7 @@ void main() {
         final record = await store.transaction(
           (transaction) async => (await transaction.outbox('p')).single,
         );
+        await _markPossiblyDispatched(store, 'p');
         remote.receiptStatuses[record.receipt!.operationId] =
             OfflineReceiptStatus(
               operationId: testReceiptOperationId(
@@ -2645,7 +2705,7 @@ void main() {
             );
 
         expect(await repository.drain('p'), 0);
-        expect(remote.receiptCapabilityCalls, 1);
+        expect(remote.receiptCapabilityCalls, 0);
         expect(remote.receiptSendCalls, 0);
         final status = await repository.getWriteStatus('p', handle.operationId);
         expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
@@ -5903,6 +5963,19 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   Future<void> wipePartition(String partitionId) async =>
       await inner.wipePartition(partitionId);
 }
+
+Future<void> _markPossiblyDispatched(OfflineStore store, String partitionId) =>
+    store.transaction((transaction) async {
+      for (final record in await transaction.outbox(partitionId)) {
+        if (record.receipt != null) {
+          await transaction.updateOutbox(
+            record.copyWith(
+              receipt: record.receipt!.copyWith(mayHaveDispatched: true),
+            ),
+          );
+        }
+      }
+    });
 
 final class _UndisclosedRemote extends FakeOfflineRemote {
   Future<void> Function()? beforePutAcknowledgement;
