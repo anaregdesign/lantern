@@ -371,6 +371,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 	if path == "" {
 		t.Skip("explicit controlled real native provider child only")
 	}
+	now := controlledNativeFixtureClock()
 	expectedInput := os.Getenv("CONTROLLED_NATIVE_PROVIDER_CHILD_INPUT_SHA256")
 	if !controlledGoogleHex(controlledNativeProviderRevision, 20) || !controlledGoogleHex(expectedInput, 32) || !filepath.IsAbs(path) {
 		t.Fatal("controlled native provider exact-source build required")
@@ -407,7 +408,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 			t.Fatal("controlled native provider signed whole-window capacity refused")
 		}
 	} else {
-		leaseAuthority, firstLease, err = controlledNativeRenewalAdmission(input, config, time.Now().UTC())
+		leaseAuthority, firstLease, err = controlledNativeRenewalAdmission(input, config, now())
 		if err != nil {
 			t.Fatal("controlled native provider whole renewal interval refused")
 		}
@@ -433,7 +434,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 		defer cancel()
 		var monitor *controlledNativeLeaseMonitor
 		if input.OwnerWindow != nil {
-			monitor, err = controlledNativeMonitorLeases(ctx, cancel, input, leaseAuthority, firstLease, nil)
+			monitor, err = controlledNativeMonitorLeases(ctx, cancel, input, leaseAuthority, firstLease, nil, now)
 			if err != nil {
 				t.Fatal("controlled native provider initialization lease monitor refused")
 			}
@@ -486,7 +487,7 @@ func TestControlledNativeProviderChild(t *testing.T) {
 			defer nativeCancel()
 			monitor, err = controlledNativeMonitorLeases(ctx, cancel, input, leaseAuthority, firstLease, func() (time.Time, time.Time, error) {
 				return controlledNativeCertifiedBounds(config, func() (time.Time, time.Time, error) { return runtime.ControlledNativeWindowTimeBounds(nativeCtx) })
-			})
+			}, now)
 			if err != nil {
 				return err
 			}

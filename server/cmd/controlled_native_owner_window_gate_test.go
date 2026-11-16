@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -208,6 +209,7 @@ type controlledNativeLeaseMonitor struct {
 	closed                  bool
 	first                   time.Time
 	closedAt                time.Time
+	clock                   func() time.Time
 	authority               controlledNativeLeaseAuthority
 	nativeEnd               chan chan error
 	nativeOnce              sync.Once
@@ -216,7 +218,41 @@ type controlledNativeLeaseMonitor struct {
 	ownerStopSHA256         string
 }
 
-func controlledNativeMonitorLeases(ctx context.Context, cancelApp context.CancelFunc, input controlledNativeProviderInput, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error)) (*controlledNativeLeaseMonitor, error) {
+// The controlled fixture observes one initial UTC point plus monotonic elapsed
+// time. These auxiliary stamps are independent of the owned native UTC bounds.
+func controlledNativeFixtureClock() func() time.Time {
+	anchor := time.Now()
+	return controlledNativeAnchoredUTC(anchor, func() time.Duration { return time.Since(anchor) })
+}
+
+func controlledNativeAnchoredUTC(anchor time.Time, elapsed func() time.Duration) func() time.Time {
+	utc := anchor.UTC()
+	return func() time.Time { return utc.Add(elapsed()) }
+}
+
+func controlledNativeLeaseReadDiagnostic(output io.Writer, stream string, err error) {
+	if stream != "control" && stream != "data" {
+		return
+	}
+	stage, reason := "unknown", "unknown"
+	var errno syscall.Errno
+	var readErr *controlledNativeLeaseReadError
+	if errors.As(err, &readErr) && readErr != nil {
+		switch readErr.Stage {
+		case "open", "stat", "read", "close":
+			stage = readErr.Stage
+		}
+		switch readErr.Reason {
+		case "io", "type", "mode", "size", "identity", "size-changed":
+			reason = readErr.Reason
+		}
+		errno = readErr.Errno
+	}
+	// Diagnostics never determine admission and never format the original error.
+	fmt.Fprintf(output, "controlled_native_lease_read_failure stream=%s stage=%s reason=%s errno=%d\n", stream, stage, reason, errno)
+}
+
+func controlledNativeMonitorLeases(ctx context.Context, cancelApp context.CancelFunc, input controlledNativeProviderInput, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error), clock func() time.Time) (*controlledNativeLeaseMonitor, error) {
 	if native != nil {
 		if err := controlledNativeOwnerControlDirectory(controlledNativeOwnerControl, false); err != nil {
 			return nil, err
@@ -227,15 +263,15 @@ func controlledNativeMonitorLeases(ctx context.Context, cancelApp context.Cancel
 	if err != nil {
 		return nil, err
 	}
-	return controlledNativeMonitorLeaseFileWithLimits(ctx, cancelApp, path, authority, first, native, limits)
+	return controlledNativeMonitorLeaseFileWithLimits(ctx, cancelApp, path, authority, first, native, limits, clock)
 }
 
 func controlledNativeMonitorLeaseFile(ctx context.Context, cancelApp context.CancelFunc, path string, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error)) (*controlledNativeLeaseMonitor, error) {
-	return controlledNativeMonitorLeaseFileWithLimits(ctx, cancelApp, path, authority, first, native, controlledNativeStaticTranscriptLimits())
+	return controlledNativeMonitorLeaseFileWithLimits(ctx, cancelApp, path, authority, first, native, controlledNativeStaticTranscriptLimits(), controlledNativeFixtureClock())
 }
 
-func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp context.CancelFunc, path string, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error), limits controlledNativeTranscriptLimits) (*controlledNativeLeaseMonitor, error) {
-	if !limits.valid() {
+func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp context.CancelFunc, path string, authority controlledNativeLeaseAuthority, first controlledNativeLeaseCut, native func() (time.Time, time.Time, error), limits controlledNativeTranscriptLimits, clock func() time.Time) (*controlledNativeLeaseMonitor, error) {
+	if !limits.valid() || clock == nil {
 		return nil, errors.New("owner transcript limits unavailable")
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
@@ -246,7 +282,7 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 	// canceled. The caller always stops and joins this monitor after workers join.
 	monitorCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	m := &controlledNativeLeaseMonitor{stop: stop, done: make(chan struct{}), file: file, path: path, last: first, seen: first,
-		first: first.ObservedAt, authority: authority, nativeEnd: make(chan chan error), limits: limits}
+		first: first.ObservedAt, authority: authority, nativeEnd: make(chan chan error), limits: limits, clock: clock}
 	appendCut := func(cut controlledNativeLeaseCut) error {
 		raw, encodeErr := json.Marshal(cut)
 		raw = append(raw, '\n')
@@ -270,24 +306,22 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 	readCurrent := func(at time.Time) (controlledNativeLeaseCut, error) {
 		control, err := controlledNativeLeaseRead(authority.ControlPath, peerauth.MaxManifestBytes)
 		if err != nil {
+			controlledNativeLeaseReadDiagnostic(os.Stderr, "control", err)
 			return controlledNativeLeaseCut{}, m.failure(controlledNativeLeaseFailureRead, err)
 		}
 		data, err := controlledNativeLeaseRead(authority.DataPath, peerauth.MaxManifestBytes)
 		if err != nil {
+			controlledNativeLeaseReadDiagnostic(os.Stderr, "data", err)
 			return controlledNativeLeaseCut{}, m.failure(controlledNativeLeaseFailureRead, err)
 		}
 		cut, err := controlledNativeLeaseAuthenticate(authority, at, control, data)
 		return cut, m.failure(controlledNativeLeaseFailureVerify, err)
 	}
 	observe := func(final bool) error {
-		now := time.Now().UTC()
+		now := m.clock().UTC()
 		var next controlledNativeLeaseCut
 		var err error
 		if native != nil {
-			low, high, err := native()
-			if err != nil {
-				return m.failure(controlledNativeLeaseFailureNativeBounds, err)
-			}
 			// Wall time is only the auxiliary event stamp during native serving.
 			// Authenticate first; only the later selection uses native validity.
 			next, err = readCurrent(now)
@@ -303,6 +337,12 @@ func controlledNativeMonitorLeaseFileWithLimits(ctx context.Context, cancelApp c
 				return m.failure(controlledNativeLeaseFailureAdvance, err)
 			}
 			m.seen = next
+			// Capture and authenticate the exact candidate before sampling native
+			// time, so bounded input acquisition cannot extend its validity.
+			low, high, err := native()
+			if err != nil {
+				return m.failure(controlledNativeLeaseFailureNativeBounds, err)
+			}
 			next, err = controlledNativeLeaseSelectBounds(authority, now, low, high, m.last, next)
 			if err != nil {
 				return m.failure(controlledNativeLeaseFailureVerify, err)
@@ -418,7 +458,7 @@ func (m *controlledNativeLeaseMonitor) close() error {
 	if m.closed {
 		return m.err
 	}
-	m.closedAt = time.Now().UTC()
+	m.closedAt = m.clock().UTC()
 	m.stop()
 	<-m.done
 	m.err = errors.Join(m.err, m.failure(controlledNativeLeaseFailureTranscript, errors.Join(m.file.Sync(), m.file.Close())))
@@ -497,7 +537,7 @@ func (m *controlledNativeLeaseMonitor) fields(input controlledNativeProviderInpu
 		through = m.last.DataExpires
 	}
 	through = through.Add(-peerauth.ClockMargin)
-	if !time.Now().UTC().Before(through) {
+	if !m.clock().Before(through) {
 		return nil, m.failure(controlledNativeLeaseFailureVerify, errors.New("owner terminal lease coverage expired"))
 	}
 	fields := map[string]any{"owner_window": input.OwnerWindow, "owner_capacity_sha256": input.OwnerCapacity.SHA256,
@@ -727,6 +767,128 @@ func (o *controlledNativeUnitLifecycle) Close() error    { o.calls++; o.close();
 func (o *controlledNativeUnitLifecycle) Shutdown() error { return o.Close() }
 
 func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
+	t.Run("read-failure-diagnostic", func(t *testing.T) {
+		private := errors.New("UNIT_PRIVATE_PATH_PAYLOAD")
+		var output bytes.Buffer
+		controlledNativeLeaseReadDiagnostic(&output, "control", errors.Join(private, &controlledNativeLeaseReadError{Stage: "open", Reason: "io", Errno: syscall.ENOENT}))
+		if got, want := output.String(), fmt.Sprintf("controlled_native_lease_read_failure stream=control stage=open reason=io errno=%d\n", syscall.ENOENT); got != want {
+			t.Fatal("typed read failure diagnostic lost bounded stage/errno")
+		}
+		output.Reset()
+		controlledNativeLeaseReadDiagnostic(&output, "data", private)
+		controlledNativeLeaseReadDiagnostic(&output, "data", &controlledNativeLeaseReadError{Stage: private.Error(), Reason: private.Error()})
+		if got, want := output.String(), strings.Repeat("controlled_native_lease_read_failure stream=data stage=unknown reason=unknown errno=0\n", 2); got != want {
+			t.Fatal("read failure diagnostic disclosed unclassified error content")
+		}
+		output.Reset()
+		controlledNativeLeaseReadDiagnostic(&output, private.Error(), private)
+		if output.Len() != 0 {
+			t.Fatal("read failure diagnostic accepted an arbitrary stream label")
+		}
+	})
+	t.Run("capture-before-native-sample", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			anchor := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+			authority, sign := unitControlledNativeLeases(t)
+			control, data := sign(1, anchor.Add(-time.Minute), peerauth.MaxMembershipLifetime)
+			dir := t.TempDir()
+			authority.ControlPath, authority.DataPath = filepath.Join(dir, "control.json"), filepath.Join(dir, "data.json")
+			for path, raw := range map[string][]byte{authority.ControlPath: control, authority.DataPath: data} {
+				if err := os.WriteFile(path, raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first, err := controlledNativeLeaseCurrent(authority, anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			calls := 0
+			monitor, err := controlledNativeMonitorLeaseFileWithLimits(ctx, cancel, filepath.Join(dir, "transcript.jsonl"), authority, first, func() (time.Time, time.Time, error) {
+				calls++
+				// A native sample can occur only after both exact signed inputs
+				// have been captured. This mutation belongs to the NEXT capture.
+				if err := os.WriteFile(authority.ControlPath, []byte("{}"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				return anchor, anchor.Add(time.Millisecond), nil
+			}, controlledNativeStaticTranscriptLimits(), func() time.Time { return anchor })
+			if err != nil {
+				t.Fatal("native sampling preceded capture/authentication", err)
+			}
+			defer monitor.close()
+			if calls != 1 || monitor.last.ControlSHA256 != controlledGoogleDigest(control) {
+				t.Fatal("native observation did not retain the captured candidate")
+			}
+			time.Sleep(time.Second)
+			synctest.Wait()
+			if calls != 1 || ctx.Err() == nil || monitor.err == nil || controlledNativeLeaseFailureStage(monitor.failureStage.Load()) != controlledNativeLeaseFailureVerify {
+				t.Fatal("bad next candidate reached native sampling or failed open")
+			}
+		})
+	})
+	t.Run("anchored-observation-clock", func(t *testing.T) {
+		for _, rollback := range []bool{false, true} {
+			t.Run(fmt.Sprintf("elapsed-rollback-%t", rollback), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					wall := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+					anchor := wall
+					var elapsed atomic.Int64
+					clock := controlledNativeAnchoredUTC(wall, func() time.Duration { return time.Duration(elapsed.Load()) })
+					authority, sign := unitControlledNativeLeases(t)
+					control, data := sign(1, anchor.Add(-time.Minute), peerauth.MaxMembershipLifetime)
+					dir := t.TempDir()
+					authority.ControlPath, authority.DataPath = filepath.Join(dir, "control.json"), filepath.Join(dir, "data.json")
+					for path, raw := range map[string][]byte{authority.ControlPath: control, authority.DataPath: data} {
+						if err := os.WriteFile(path, raw, 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					first, err := controlledNativeLeaseCurrent(authority, clock())
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					monitor, err := controlledNativeMonitorLeaseFileWithLimits(ctx, cancel, filepath.Join(dir, "transcript.jsonl"), authority, first, func() (time.Time, time.Time, error) {
+						return anchor, anchor.Add(time.Millisecond), nil
+					}, controlledNativeStaticTranscriptLimits(), clock)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer monitor.close()
+					wall = wall.Add(-24 * time.Hour)
+					elapsed.Store(int64(2 * time.Second))
+					if rollback {
+						elapsed.Store(-int64(time.Second))
+					}
+					time.Sleep(time.Second)
+					synctest.Wait()
+					if rollback {
+						if ctx.Err() == nil || monitor.err == nil || controlledNativeLeaseFailureStage(monitor.failureStage.Load()) != controlledNativeLeaseFailureAdvance {
+							t.Fatal("fixture clock seam bypassed observation rollback refusal")
+						}
+						return
+					}
+					if ctx.Err() != nil || !monitor.last.ObservedAt.Equal(anchor.Add(2*time.Second)) || !monitor.first.Equal(anchor) || !wall.Before(anchor) {
+						t.Fatal("host wall step changed anchored fixture observations", ctx.Err())
+					}
+					elapsed.Store(int64(3 * time.Second))
+					if err := monitor.close(); err != nil || !monitor.closedAt.Equal(anchor.Add(3*time.Second)) {
+						t.Fatal("fixture closing stamp sampled another clock", err)
+					}
+					raw, err := os.ReadFile(monitor.path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := controlledNativeLeaseTranscript(raw, authority, monitor.first, monitor.closedAt); err != nil {
+						t.Fatal("anchored fixture transcript did not cover actual close", err)
+					}
+				})
+			})
+		}
+	})
 	t.Run("pending-native-renewal", func(t *testing.T) {
 		for _, scenario := range []string{"adopt", "independent streams", "rollback", "equivocation", "bad signature", "foreign profile", "foreign members", "gap", "gap from selected", "invalid bounds"} {
 			t.Run(scenario, func(t *testing.T) {
@@ -754,28 +916,24 @@ func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
 					ctx, cancel := context.WithCancel(t.Context())
 					defer cancel()
 					calls := 0
+					observationReady := make(chan struct{})
 					nextObservation := make(chan struct{})
 					releaseObservation := sync.OnceFunc(func() { close(nextObservation) })
 					var published time.Time
 					var newControl, newData []byte
 					monitor, err := controlledNativeMonitorLeaseFile(ctx, cancel, filepath.Join(dir, "transcript.jsonl"), authority, first, func() (time.Time, time.Time, error) {
 						calls++
-						if calls == 3 {
-							// The test inspects the completed pending cut before
-							// allowing any subsequent monitor write to that cut.
-							<-nextObservation
-						}
 						now := time.Now().UTC()
-						if calls == 2 {
-							// Publish at exactly this borrowed-clock observation. The
-							// host stamp is current; native low legitimately lags3s.
-							published = now
-							newControl, newData = sign(2, now, peerauth.MaxMembershipLifetime)
-							if scenario == "independent streams" {
-								_, newData = sign(2, now.Add(-time.Second), peerauth.MaxMembershipLifetime)
-							}
-							write(authority.ControlPath, newControl)
-							write(authority.DataPath, newData)
+						if calls == 3 {
+							// Capture and seen-floor updates precede native sampling.
+							// Publish that boundary, then park all monitor writes while
+							// the test inspects the previous selected pending cut.
+							close(observationReady)
+							<-nextObservation
+							// Keep this captured observation pending under the prior
+							// borrowed interval. The next capture must still validate
+							// both the selected old floor and the newer seen floor.
+							now = now.Add(-time.Second)
 						}
 						if calls > 2 && scenario == "invalid bounds" {
 							return now, now.Add(-time.Nanosecond), nil
@@ -787,8 +945,16 @@ func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
 					}
 					defer monitor.close()
 					defer releaseObservation() // Release a blocked sample before close, including t.Fatal.
-					time.Sleep(time.Second)
-					synctest.Wait()
+					// Publish before the next capture. Its native lower endpoint
+					// legitimately lags the next observation stamp by three seconds.
+					published = time.Now().UTC().Add(time.Second)
+					newControl, newData = sign(2, published, peerauth.MaxMembershipLifetime)
+					if scenario == "independent streams" {
+						_, newData = sign(2, published.Add(-time.Second), peerauth.MaxMembershipLifetime)
+					}
+					write(authority.ControlPath, newControl)
+					write(authority.DataPath, newData)
+					<-observationReady
 					wantData := uint64(1)
 					if scenario == "independent streams" {
 						wantData = 2
@@ -838,17 +1004,15 @@ func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
 						write(authority.ControlPath, gap)
 					}
 					releaseObservation()
-					time.Sleep(time.Second)
-					synctest.Wait()
 					if scenario == "adopt" || scenario == "independent streams" {
-						if ctx.Err() != nil || monitor.last.ControlVersion != 2 || monitor.last.DataVersion != 2 {
-							t.Fatal("eligible candidate not selected", ctx.Err())
-						}
 						if err := monitor.finishNative(); err != nil {
 							t.Fatal(err)
 						}
 						if err := monitor.close(); err != nil {
 							t.Fatal(err)
+						}
+						if ctx.Err() != nil || monitor.last.ControlVersion != 2 || monitor.last.DataVersion != 2 {
+							t.Fatal("eligible candidate not selected", ctx.Err())
 						}
 						raw, err := os.ReadFile(monitor.path)
 						if err != nil {
@@ -859,6 +1023,7 @@ func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
 						}
 						return
 					}
+					<-monitor.done
 					if ctx.Err() == nil || monitor.err == nil {
 						t.Fatal("invalid pending candidate did not immediately cancel App")
 					}
@@ -980,8 +1145,11 @@ func TestControlledNativeProviderNativeLeaseMonitor(t *testing.T) {
 					if shutdownErr == nil || original.calls != 1 || monitor.err != nil && !errors.Is(shutdownErr, monitor.err) {
 						t.Fatal("failed native witness/causal stop skipped original shutdown or lost original error", original.calls)
 					}
-					if scenario == "missing-control" && (monitor.err == nil || monitor.err.Error() != "owner signed lease input unavailable") {
-						t.Fatal("missing signed input original read failure lost")
+					if scenario == "missing-control" {
+						var readErr *controlledNativeLeaseReadError
+						if !errors.As(monitor.err, &readErr) || readErr.Stage != "open" || readErr.Reason != "io" || readErr.Errno != syscall.ENOENT {
+							t.Fatal("missing signed input original read failure lost")
+						}
 					}
 					want := controlledNativeLeaseFailureFinalStop
 					switch scenario {

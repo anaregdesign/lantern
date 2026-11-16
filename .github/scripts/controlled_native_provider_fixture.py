@@ -218,10 +218,13 @@ class Commands(StaticCommands):
 
 
 def references(plan):
-    return [plan[section][key] for section, keys in (
+    result = [plan[section][key] for section, keys in (
         ("source", ("proof", "review")), ("build", ("receipt", "description", "public_roots")),
         ("seed", ("material", "verification")), ("public", ("certificate", "key")),
         ("network", ("admission",)), ("admin", ("receipt",)), ("edge", ("admission",))) for key in keys] + [plan["issuer_intent"]]
+    if "retained" in plan:
+        result += [plan["retained"][key] for key in ("prior_plan", "prior_fixture", "prior_lifecycle", "prior_cleanup", "state_manifest")]
+    return result
 
 
 def resolved(plan):
@@ -234,7 +237,16 @@ def resolved(plan):
     renewing = renewing_membership(plan)
     require(set(plan) == {"schema", "kind", "source", "build", "seed", "issuer_intent", "clients", "profile_ids", "secrets",
                          "android_package", "public", "network", "admin", "edge", "output", "cohort", "lifetime_seconds", "planned_stop_at", "cleanup_by"}
-            | ({"owner_window"} if renewing else set()), "unknown profile input refused")
+            | ({"owner_window"} if renewing else set()) | ({"retained"} if "retained" in plan else set()), "unknown profile input refused")
+    if "retained" in plan:
+        retained = plan["retained"]
+        require(unattended_maintenance(plan) and type(retained) is dict
+                and set(retained) == {"schema", "mode", "root", "prior_plan", "prior_fixture", "prior_lifecycle", "prior_cleanup", "state_manifest"}
+                and type(retained["schema"]) is int and retained["schema"] == 1 and retained["mode"] == "resume-existing",
+                "explicit retained maintenance state required")
+        require(isinstance(retained["root"], str) and not any(c in retained["root"] for c in ",\r\n\0"), "unambiguous retained root required")
+        old, new = canonical(retained["root"]), canonical(plan["output"])
+        require(old != new and old not in new.parents and new not in old.parents, "new evidence and retained state must be disjoint")
     require(set(source) == {"head", "tree", "source_sha256", "proof", "review"}, "exact main source admission required")
     require(type(plan["lifetime_seconds"]) is int and (renewing or 15 <= plan["lifetime_seconds"] <= 540)
             and utc(plan["cleanup_by"]) - utc(plan["planned_stop_at"]) == cleanup_seconds(plan) and HEX64.fullmatch(plan["cohort"]), "fixed finite window required")
@@ -266,9 +278,128 @@ def resolved(plan):
     for ref in references(plan):
         require(isinstance(ref, dict) and set(ref) == {"path", "sha256"} and HEX64.fullmatch(ref["sha256"])
                 and Path(ref["path"]).is_absolute(), "immutable profile reference pending")
+    if "retained" in plan:
+        root = canonical(plan["retained"]["root"])
+        manifest = canonical(plan["retained"]["state_manifest"]["path"])
+        require(manifest != root and root not in manifest.parents, "cold state manifest must remain outside retained root")
     require(not any(c in plan["output"] for c in ",\r\n\0"), "unambiguous new private output required")
     canonical(plan["output"])
     return plan
+
+
+def retained_inventory(root):
+    """Cold owned inventory; stream file hashes without exposing any contents."""
+    root, result, total = canonical(root), {}, 0
+    paths = [root]
+    def failed(error):
+        raise error
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=failed):
+        paths.extend(Path(directory) / name for name in sorted(dirs + files))
+        require(len(paths) <= 4096, "bounded retained file inventory required")
+    for path in paths:
+        info = path.lstat()
+        require(info.st_uid == os.getuid() and not info.st_mode & 0o022
+                and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)), "owned retained file or directory required")
+        row = {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid, "dev": info.st_dev, "inode": info.st_ino}
+        if stat.S_ISDIR(info.st_mode):
+            row["directory"] = True
+        else:
+            require(info.st_nlink == 1 and info.st_size <= 512 << 20, "bounded unique retained file required")
+            total += info.st_size
+            require(total <= 4 << 30, "bounded retained state extent required")
+            hashed = hashlib.sha256()
+            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                require((opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino), "retained file changed before capture")
+                count = 0
+                while chunk := stream.read(64 << 10):
+                    count += len(chunk)
+                    require(count <= info.st_size, "retained file grew during capture")
+                    hashed.update(chunk)
+                after = os.fstat(stream.fileno())
+            current = path.lstat()
+            fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns")
+            require(count == info.st_size and all(getattr(info, key) == getattr(other, key) for other in (opened, after, current) for key in fields),
+                    "retained file changed during capture")
+            row.update(nlink=info.st_nlink, size=info.st_size, mtime_ns=info.st_mtime_ns, sha256=hashed.hexdigest())
+        result[path.relative_to(root).as_posix()] = row
+    return result
+
+
+def retained_mutable(name):
+    if name == "publisher-journal/state.json":
+        return True
+    for index in range(3):
+        state = f"state/{index}/node-{index+1}"
+        if name.startswith(state + "/") or name in {
+                f"views/{index}/identity/nodes/node-{index+1}/membership/{kind}.json" for kind in ("control", "data")}:
+            return True
+    return False
+
+
+def retained_inputs(plan, configs):
+    """Admit an intact stopped cohort, never infer or provision missing state."""
+    item = plan["retained"]
+    root = canonical(item["root"])
+    old = decode(reference(item["prior_plan"]))
+    require("retained" not in old and resolved(old) and old["output"] == str(root), "original retained plan required")
+    for key in ("cohort", "seed", "issuer_intent", "clients", "profile_ids", "secrets", "android_package", "public", "network",
+                "owner_window", "lifetime_seconds", "planned_stop_at", "cleanup_by"):
+        require(old[key] == plan[key], "retained identity/configuration/original horizon mismatch")
+    previous = decode(reference(item["prior_fixture"]))
+    authority = previous.get("authority_profile", "")
+    capacity_ref = {"path": str(root / "publisher-public/capacity.json"), "sha256": digest(read(root / "publisher-public/capacity.json"))}
+    validate_descriptor(previous, old, item["prior_plan"]["sha256"], authority, capacity_ref)
+    lifecycle = decode(reference(item["prior_lifecycle"]))
+    owners = lifecycle.get("containers", [])
+    require(lifecycle.get("kind") == KIND + "-lifecycle" and lifecycle.get("cohort") == plan["cohort"]
+            and lifecycle.get("head") == old["source"]["head"] and lifecycle.get("status") in ("FAIL", "PASS")
+            and len(owners) == 11 and len({owner.get("id") for owner in owners}) == 11
+            and all(HEX64.fullmatch(owner.get("id", "")) and owner.get("stopped") is True for owner in owners),
+            "complete prior stopped lifecycle required")
+    cleanup = decode(reference(item["prior_cleanup"]))
+    require(set(cleanup) == {"schema", "kind", "status", "cohort", "prior_lifecycle_sha256", "containers", "holder_joined", "qualification"}
+            and type(cleanup["schema"]) is int and cleanup["schema"] == 1 and cleanup["kind"] == PROFILE + "-retained-cleanup"
+            and cleanup["status"] == "ALL_OWNED_RESOURCES_STOPPED" and cleanup["cohort"] == plan["cohort"]
+            and cleanup["prior_lifecycle_sha256"] == item["prior_lifecycle"]["sha256"] and cleanup["holder_joined"] is True
+            and cleanup["qualification"] is False and type(cleanup["containers"]) is list
+            and len(cleanup["containers"]) == len(owners)
+            and all(set(row) == {"id", "stopped"} and row["stopped"] is True for row in cleanup["containers"])
+            and {row["id"] for row in cleanup["containers"]} == {row["id"] for row in owners}, "explicit prior resource resolution required")
+    manifest = decode(reference(item["state_manifest"]))
+    config_path = root / "inputs/publisher-config.json"
+    require(set(manifest) == {"schema", "kind", "root", "cohort", "authority_profile", "prior_plan_sha256", "prior_fixture_sha256", "publisher_config_sha256", "files"}
+            and type(manifest["schema"]) is int and manifest["schema"] == 1 and manifest["kind"] == PROFILE + "-retained-state"
+            and manifest["root"] == str(root) and manifest["cohort"] == plan["cohort"] and manifest["authority_profile"] == authority
+            and manifest["prior_plan_sha256"] == item["prior_plan"]["sha256"] and manifest["prior_fixture_sha256"] == item["prior_fixture"]["sha256"]
+            and manifest["publisher_config_sha256"] == digest(read(config_path)), "retained state provenance mismatch")
+    inventory = retained_inventory(root)
+    require(type(manifest["files"]) is dict and encoded(manifest["files"]) == encoded(inventory), "exact cold retained state inventory mismatch")
+    for index, config in enumerate(configs):
+        node = f"node-{index+1}"
+        required = [f"state/{index}/{node}/control-membership", f"state/{index}/{node}/data-membership",
+                    f"views/{index}/identity/nodes/{node}/identity.json", f"views/{index}/identity/nodes/{node}/COMPLETE"]
+        required += [f"views/{index}/identity/nodes/{node}/membership/{kind}.json{suffix}"
+                     for kind in ("control", "data") for suffix in ("", ".publisher.lease")]
+        require(all(name in inventory and "sha256" in inventory[name] for name in required), "partial retained node state refused")
+        values = dict(line.split("=", 1) for line in read(root / "inputs" / f"{index}-resume.env").decode().splitlines())
+        require(values.get("LANTERN_SECURITY_CONFIG_JSON") == json.dumps(config, separators=(",", ":")), "retained exact configuration changed")
+    require(all(name in inventory and "sha256" in inventory[name] for name in ("publisher-journal/state.json", "publisher-journal/state.json.lease")),
+            "retained publisher journal/lease missing")
+    config = decode(read(config_path))
+    original_input = decode(read(root / "inputs/publisher-input.json"))
+    require(original_input.get("revision") == old["source"]["head"] and original_input.get("nonce") == plan["cohort"]
+            and original_input.get("config_sha256") == manifest["publisher_config_sha256"], "original publisher configuration binding changed")
+    require(config["End"] == instant(utc(plan["cleanup_by"]) + 5) and config["CleanupBy"] == instant(utc(plan["cleanup_by"]) + 10)
+            and config["Version"] == 1 and config["Interval"] == 60_000_000_000 and config["Lifetime"] == 600_000_000_000,
+            "original retained publisher budget required")
+    return {"root": root, "authority": authority, "inventory": inventory, "owners": [row["id"] for row in owners], "config": config}
+
+
+def retained_unchanged(retained):
+    before = {key: value for key, value in retained["inventory"].items() if not retained_mutable(key)}
+    after = {key: value for key, value in retained_inventory(retained["root"]).items() if not retained_mutable(key)}
+    require(before == after, "historical retained evidence or immutable identity changed")
 
 
 def issuer_configuration(plan, intent):
@@ -426,15 +557,17 @@ def publisher_configuration(plan, original):
     return value
 
 
-def publisher_mounts(output):
-    custody = output / "operator" / "custody"
+def publisher_mounts(output, retained=None):
+    original = retained["root"] if retained else output
+    custody = original / "operator" / "custody"
     return [(custody / name, "/operator/custody/" + name, False)
             for name in ("control-signing-key.pem", "data-signing-key.pem", "roots.pem", "certificates")] + [
-        (output / "inputs" / "publisher-config.json", "/publisher-config.json", False),
+        (original / "inputs" / "publisher-config.json", "/publisher-config.json", False),
         (output / "inputs" / "publisher-input.json", "/publisher-input.json", False),
         (output / "owner-control", "/owner-control", False),
-        (output / "publisher-journal", "/publisher-journal", True), (output / "publisher-public", "/publisher-public", True)] + [
-        (output / "views" / str(i-1) / "identity" / "nodes" / f"node-{i}" / "membership", f"/targets/node-{i}", True) for i in (1, 2, 3)]
+        (original / "publisher-journal", "/publisher-journal", True), (output / "publisher-public", "/publisher-public", True)] + [
+        (original / "views" / str(i-1) / "identity" / "nodes" / f"node-{i}" / "membership", f"/targets/node-{i}", True) for i in (1, 2, 3)] + (
+            [(output / "publisher-events", "/publisher-events", True)] if retained else [])
 
 
 def renewal_capacity(raw, plan):
@@ -633,14 +766,15 @@ def lease_transcript_file(path, plan, records, capacity_sha256, public_capacity)
     return renewal_file(path, plan, consume) if unattended_maintenance(plan) else consume(read(path, maximum=4 << 20))
 
 
-def cohort_material_snapshot(output, renewing, owner_stop=None):
+def cohort_material_snapshot(output, renewing, owner_stop=None, *, retained=False):
     value = material_snapshot(output)
     if renewing:
-        for i in (1, 2, 3):
-            for kind in ("control", "data"):
-                name = f"views/{i-1}/identity/nodes/node-{i}/membership/{kind}.json"
-                require(name in value and "sha256" in value[name], "exact public membership target missing")
-                del value[name]  # ONLY these six files may be atomically renewed.
+        if not retained:
+            for i in (1, 2, 3):
+                for kind in ("control", "data"):
+                    name = f"views/{i-1}/identity/nodes/node-{i}/membership/{kind}.json"
+                    require(name in value and "sha256" in value[name], "exact public membership target missing")
+                    del value[name]  # ONLY these six files may be atomically renewed.
         public = output / "publisher-public"
         require({p.name for p in public.iterdir()} == {"capacity.json"}, "unexpected public capacity material")
         info = public.stat()
@@ -744,7 +878,12 @@ def descriptor(plan, plan_sha256, started, ready, authority, capacity=None):
             "input_refs": references(plan)}
     if renewing:
         require(isinstance(capacity, dict) and set(capacity) == {"path", "sha256"} and HEX64.fullmatch(capacity["sha256"]), "owner capacity descriptor required")
-        value.update(owner_window=dict(plan["owner_window"]), owner_capacity=capacity, owned_container_count=11)
+        value.update(owner_window=dict(plan["owner_window"]), owner_capacity=capacity, owned_container_count=7 if "retained" in plan else 11)
+    if "retained" in plan:
+        value.update(state_mode="resume-existing", retained_state_sha256=plan["retained"]["state_manifest"]["sha256"],
+                     prior_fixture=plan["retained"]["prior_fixture"], stopped_gap_qualified=False,
+                     admin_backend="retained-cohort-node-1-only")
+        value["route_classes"][-1] = "same-origin-admin-bff-retained-node1"
     return value
 
 
@@ -885,6 +1024,10 @@ def approved_dispatch(plan, plan_sha256, approval):
     if maintenance:
         require(isinstance(approval.get("unattended_supervisor"), str) and IDENTIFIER.fullmatch(approval["unattended_supervisor"]),
                 "explicit unattended maintenance supervisor required")
+    if "retained" in plan:
+        require(approval.get("same_state_resume") is True
+                and approval.get("retained_state_sha256") == plan["retained"]["state_manifest"]["sha256"]
+                and approval.get("retained_cleanup_sha256") == plan["retained"]["prior_cleanup"]["sha256"], "explicit retained-state dispatch required")
     require(approval.get("secret_and_tls_whole_window_verified") is True and approval.get("approved_public_origin") == plan["public"]["origin"]
             and approval.get("admin_and_edge_source_reviewed") is True, "actual secret/TLS/callback/Admin whole-window admission pending")
 
@@ -896,11 +1039,14 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
     renewing = renewing_membership(plan)
     maintenance = unattended_maintenance(plan)
     source_before, inputs_before = source_snapshot(plan, window), input_snapshot(plan, dispatch_refs)
+    configs = configurations(plan, admitted)
+    retained = retained_inputs(plan, configs) if "retained" in plan else None
+    require(window.left(setup=True) > 0, "retained admission exceeded original setup budget")
     output = canonical(plan["output"])
     output.mkdir(mode=0o700)
     commands = Commands(output, window)
     names, identities, serving = [], [], []
-    configs, authority, immutable = configurations(plan, admitted), None, None
+    authority, immutable = retained["authority"] if retained else None, None
     publisher, capacity, capacity_ref, capacity_data, owner_stop = None, None, None, None, None
     publisher_ready = None
     started, ready_at, interrupted = time.time(), None, set()
@@ -912,7 +1058,8 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
 
     def create(stage, index, mounts, env_file, tail, *, role="build", aliases=None, network="none"):
         require(not interrupted and window.left(setup=True) > 0, "late/interrupted dispatch refused")
-        name = f"cnp-{plan['cohort'][:16]}-{stage}-{index}"
+        prefix = f"cnp-{plan['cohort'][:16]}" + ("-" + plan_sha256[:12] if retained else "")
+        name = f"{prefix}-{stage}-{index}"
         argv = container_argv(plan, role, name, mounts, env_file, alias=aliases, network=network) + tail
         names.append(name)
         new_file(output / f"create-attempt-{len(names):02d}.json", {"name": name, "argv": argv})
@@ -961,6 +1108,12 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                  "started_at": instant(started), "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]})
         if renewing:
             result["owner_window"] = dict(plan["owner_window"])
+        if retained:
+            result.update(state_mode="resume-existing", retained_state_sha256=plan["retained"]["state_manifest"]["sha256"],
+                          stopped_gap_qualified=False, prior_fixture=plan["retained"]["prior_fixture"])
+            states = [decode(line) for line in commands.run(DOCKER + ["inspect", "--format", "{{json .State}}", *retained["owners"]])[0].splitlines()]
+            require(len(states) == len(retained["owners"]) and all(state.get("Running") is False and state.get("Pid") == 0
+                    and state.get("Restarting") is False and state.get("Paused") is False for state in states), "prior owned resources are not stopped")
         for role in ("build", "admin", "edge"):
             require(commands.run(DOCKER + ["image", "inspect", "--format", "{{.Id}}", plan[role]["image"]])[0].decode().strip() == plan[role]["image"], "admitted immutable image missing")
         fields = decode(commands.run(DOCKER + ["image", "inspect", "--format", '{"entrypoint":{{json .Config.Entrypoint}},"cmd":{{json .Config.Cmd}},"env_count":{{len .Config.Env}}}', plan["build"]["image"]])[0])
@@ -978,33 +1131,41 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
         identity = create("description", 0, [], env, ["-test.v", "-test.run=^TestControlledNativeProviderProfileDescription$", "-test.timeout=20s"])
         raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=25)[0]
         require([decode(line) for line in raw.splitlines() if line.startswith(b"{")] == [decode(reference(plan["build"]["description"]))], "actual same-image description missing")
-        identity = create("provision", 0, [(output / "material", "/material", True), (output / "operator", "/operator", True)],
-                          environment(0, "initialize", "provision"), ["provision-security", "--operator-directory", "/operator/custody", "--valid-for",
-                          str(plan["lifetime_seconds"] + cleanup_seconds(plan) + 120) + "s" if maintenance else "1h"])
-        commands.run(DOCKER + ["start", "--attach", identity], timeout=60)
+        if not retained:
+            identity = create("provision", 0, [(output / "material", "/material", True), (output / "operator", "/operator", True)],
+                              environment(0, "initialize", "provision"), ["provision-security", "--operator-directory", "/operator/custody", "--valid-for",
+                              str(plan["lifetime_seconds"] + cleanup_seconds(plan) + 120) + "s" if maintenance else "1h"])
+            commands.run(DOCKER + ["start", "--attach", identity], timeout=60)
         if renewing:
             # Finish all views before the publisher takes its six stable leases.
             for index in range(3):
                 view = output / "views" / str(index)
                 (view / "identity" / "nodes").mkdir(mode=0o700, parents=True)
-                shutil.copytree(output / "material" / "identity" / "nodes" / f"node-{index+1}", view / "identity" / "nodes" / f"node-{index+1}")
+                if not retained:
+                    shutil.copytree(output / "material" / "identity" / "nodes" / f"node-{index+1}", view / "identity" / "nodes" / f"node-{index+1}")
                 (output / "state" / str(index)).mkdir(mode=0o700)
-            for name in ("publisher-journal", "publisher-public", "owner-control"):
+            for name in (("publisher-public", "owner-control") if retained else ("publisher-journal", "publisher-public", "owner-control")):
                 (output / name).mkdir(mode=0o700)
-            config = publisher_configuration(plan, decode(read(output / "operator" / "custody" / "publisher.json")))
-            config_path = output / "inputs" / "publisher-config.json"
-            new_file(config_path, config)
+            if retained:
+                (output / "publisher-events").mkdir(mode=0o700)
+                config_path = retained["root"] / "inputs/publisher-config.json"
+                require(retained_inventory(retained["root"]) == retained["inventory"], "retained state changed before publisher dispatch")
+            else:
+                config = publisher_configuration(plan, decode(read(output / "operator" / "custody" / "publisher.json")))
+                config_path = output / "inputs" / "publisher-config.json"
+                new_file(config_path, config)
             publisher_input = {"schema": 1, "profile": PROFILE, "revision": plan["source"]["head"], "nonce": plan["cohort"],
+                               "mode": "resume" if retained else "init",
                                "config_path": "/publisher-config.json", "config_sha256": digest(read(config_path)), "state_path": "/publisher-journal/state.json",
                                "capacity_path": "/publisher-public/capacity.json", "planned_stop_at": plan["planned_stop_at"], "cleanup_by": plan["cleanup_by"]}
             if maintenance:
                 publisher_input.update(owner_window=dict(MAINTENANCE_WINDOW), lifetime_seconds=plan["lifetime_seconds"],
-                                       events_path="/publisher-journal/events.jsonl")
+                                       events_path="/publisher-events/events.jsonl" if retained else "/publisher-journal/events.jsonl")
             new_file(output / "inputs" / "publisher-input.json", publisher_input)
             env = output / "inputs" / "publisher.env"
             new_file(env, ("CONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT=/publisher-input.json\nCONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT_SHA256="
                            + digest(read(output / "inputs" / "publisher-input.json")) + "\n").encode())
-            publisher = create("publisher", 0, publisher_mounts(output), env, ["-test.v", "-test.run=^" + PUBLISHER_CHILD + "$", "-test.timeout=" + child_timeout(plan)])
+            publisher = create("publisher", 0, publisher_mounts(output, retained), env, ["-test.v", "-test.run=^" + PUBLISHER_CHILD + "$", "-test.timeout=" + child_timeout(plan)])
             commands.run(DOCKER + ["start", publisher])
             # O_EXCL makes the path visible before Write/Sync/Close. Only the
             # producer's subsequent ready event admits a capacity-file read.
@@ -1024,22 +1185,28 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             publisher_running()
         for index in range(3):
             view, state = output / "views" / str(index), output / "state" / str(index)
+            if retained:
+                view = retained["root"] / "views" / str(index)
             if not renewing:
                 (view / "identity" / "nodes").mkdir(mode=0o700, parents=True)
                 shutil.copytree(output / "material" / "identity" / "nodes" / f"node-{index+1}", view / "identity" / "nodes" / f"node-{index+1}")
                 state.mkdir(mode=0o700)
             mounts = [(view, "/material", False), (state, "/state", True), (output / "inputs", "/inputs", False)]
+            if retained:
+                node = f"node-{index+1}"
+                mounts.append((retained["root"] / "state" / str(index) / node, f"/state/{node}", True))
             if renewing:
                 mounts.append((output / "publisher-public" / "capacity.json", "/owner-capacity.json", False))
-            identity = create("initialize", index, mounts, environment(index, "initialize"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=80s"])
-            raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=75)[0]
-            records = child_records(raw, plan, "initialize", f"node-{index+1}", child_input(plan, configs[index], admitted, "initialize", capacity)["config_sha256"])
-            if renewing:
-                result.setdefault("owner_lease_transcripts", {})[f"node-{index+1}/initialize"] = lease_transcript_file(
-                    state / "controlled-native-provider-owner-leases-initialize.jsonl", plan, records, capacity["sha256"], capacity_data)
-                publisher_running()
-            authority = authority or records[0]["authority_profile"]
-            require(records[0]["authority_profile"] == authority, "initializer original cohort drift")
+            if not retained:
+                identity = create("initialize", index, mounts, environment(index, "initialize"), ["-test.v", "-test.run=^" + CHILD + "$", "-test.timeout=80s"])
+                raw = commands.run(DOCKER + ["start", "--attach", identity], timeout=75)[0]
+                records = child_records(raw, plan, "initialize", f"node-{index+1}", child_input(plan, configs[index], admitted, "initialize", capacity)["config_sha256"])
+                if renewing:
+                    result.setdefault("owner_lease_transcripts", {})[f"node-{index+1}/initialize"] = lease_transcript_file(
+                        state / "controlled-native-provider-owner-leases-initialize.jsonl", plan, records, capacity["sha256"], capacity_data)
+                    publisher_running()
+                authority = authority or records[0]["authority_profile"]
+                require(records[0]["authority_profile"] == authority, "initializer original cohort drift")
             aliases = [f"cnp-{plan['cohort'][:16]}-{index+1}"] + ([urlsplit(plan["public"]["origin"]).hostname] if index == 0 else [])
             if renewing:
                 mounts.append((output / "owner-control", "/owner-control", False))
@@ -1059,7 +1226,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                                      (output / "inputs" / "server-key.pem", "/edge-tls/server-key.pem", False)], None,
                           ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"], role="edge", network=plan["network"]["id"])
         serving.append(identity)
-        immutable = cohort_material_snapshot(output, renewing)
+        immutable = cohort_material_snapshot(output, renewing, retained=retained is not None)
         new_file(output / "immutable-before.json", {"source": source_before, "inputs": inputs_before, "material": immutable})
         for identity in serving:
             commands.run(DOCKER + ["start", identity])
@@ -1154,7 +1321,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
                 if identity == publisher and stopped:
                     consume = lambda raw: publisher_records(raw, plan, capacity["sha256"], joined=True,
                                                            stop_sha256=owner_stop["sha256"] if owner_stop else None)
-                    records = renewal_file(output / "publisher-journal/events.jsonl", plan, consume) if maintenance else consume(commands.run(DOCKER + ["logs", identity])[0])
+                    records = renewal_file(output / ("publisher-events/events.jsonl" if retained else "publisher-journal/events.jsonl"), plan, consume) if maintenance else consume(commands.run(DOCKER + ["logs", identity])[0])
                     result["publisher_capacity"] = capacity_ref
                     result["publisher_observations"] = records["observations"] if maintenance else len(records)
                     if maintenance:
@@ -1171,7 +1338,9 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             result["status"] = "FAIL"
         try:
             require(source_snapshot(plan, window, cleanup=True) == source_before and input_snapshot(plan, dispatch_refs) == inputs_before, "immutable input/source drift")
-            require(immutable is None or cohort_material_snapshot(output, renewing, owner_stop) == immutable, "immutable cohort/custody drift")
+            require(immutable is None or cohort_material_snapshot(output, renewing, owner_stop, retained=retained is not None) == immutable, "immutable cohort/custody drift")
+            if retained:
+                retained_unchanged(retained)
             result["immutable_after_verified"] = True
         except BaseException as error:
             result.update(status="FAIL", immutable_after_verified=False, final_fence_failure_class=type(error).__name__)

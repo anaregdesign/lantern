@@ -34,6 +34,7 @@ type controlledNativePublisherInput struct {
 	Profile         string                       `json:"profile"`
 	Revision        string                       `json:"revision"`
 	Nonce           string                       `json:"nonce"`
+	Mode            string                       `json:"mode"`
 	ConfigPath      string                       `json:"config_path"`
 	ConfigSHA256    string                       `json:"config_sha256"`
 	StatePath       string                       `json:"state_path"`
@@ -57,12 +58,21 @@ func controlledNativePublisherWindow(input controlledNativePublisherInput, now t
 		}
 		maximum = input.LifetimeSeconds
 		maintenance := input.OwnerWindow.Mode == "unattended-maintenance-renewal"
-		if maintenance && input.EventsPath != "/publisher-journal/events.jsonl" || !maintenance && input.EventsPath != "" {
+		eventsPath := "/publisher-journal/events.jsonl"
+		if input.Mode == "resume" {
+			eventsPath = "/publisher-events/events.jsonl"
+		}
+		if maintenance && input.EventsPath != eventsPath || !maintenance && input.EventsPath != "" {
 			return false
 		}
 	}
 	remaining := input.PlannedStop.Sub(now)
 	return remaining >= 15*time.Second && remaining <= time.Duration(maximum)*time.Second && input.CleanupBy.Sub(input.PlannedStop) == time.Duration(controlledNativeCleanupSeconds(input.OwnerWindow))*time.Second
+}
+
+func controlledNativePublisherMode(input controlledNativePublisherInput) bool {
+	return input.Mode == "init" || input.Mode == "resume" && input.OwnerWindow != nil &&
+		input.OwnerWindow.Mode == "unattended-maintenance-renewal" && input.EventsPath == "/publisher-events/events.jsonl"
 }
 
 type controlledNativePublisherEventFile interface {
@@ -94,7 +104,7 @@ func (e *controlledNativePublisherEvents) append(raw []byte) error {
 
 func controlledNativePublisherCapacity(input controlledNativePublisherInput, config membershippublisher.Config, status membershippublisher.Status) (controlledNativeRenewalCapacity, error) {
 	var capacity controlledNativeRenewalCapacity
-	if config.Version != 1 || config.Interval != time.Minute || config.Lifetime != peerauth.MaxMembershipLifetime || len(config.Streams) != 2 ||
+	if !controlledNativePublisherMode(input) || config.Version != 1 || config.Interval != time.Minute || config.Lifetime != peerauth.MaxMembershipLifetime || len(config.Streams) != 2 ||
 		!config.End.Equal(input.CleanupBy.Add(5*time.Second)) || !config.CleanupBy.Equal(input.CleanupBy.Add(10*time.Second)) ||
 		status.Failure != "none" || !status.TLSCapacityEnd.After(config.CleanupBy.Add(peerauth.ClockMargin)) {
 		return capacity, errors.New("owner publisher whole interval refused")
@@ -160,7 +170,8 @@ func controlledNativePublisherCapacity(input controlledNativePublisherInput, con
 		TargetCount: 3, ControlProfileSHA256: hex.EncodeToString(profile[:]), DataDomainSHA256: hex.EncodeToString(domain[:]),
 		ControlOperatorSHA256: hex.EncodeToString(controlKey[:]), DataOperatorSHA256: hex.EncodeToString(dataKey[:])}
 	if input.OwnerWindow != nil && input.OwnerWindow.Mode == "unattended-maintenance-renewal" {
-		if !controlledNativeRenewalWindowShape(input.OwnerWindow, input.LifetimeSeconds) || input.EventsPath != "/publisher-journal/events.jsonl" {
+		if !controlledNativeRenewalWindowShape(input.OwnerWindow, input.LifetimeSeconds) || !controlledNativePublisherMode(input) ||
+			input.Mode == "init" && input.EventsPath != "/publisher-journal/events.jsonl" {
 			return capacity, errors.New("maintenance publisher mode refused")
 		}
 		window := *input.OwnerWindow
@@ -174,14 +185,16 @@ func TestControlledNativeProviderPublisherChild(t *testing.T) {
 	if path == "" {
 		t.Skip("explicit controlled native publisher child only")
 	}
+	now := controlledNativeFixtureClock()
 	expected := os.Getenv("CONTROLLED_NATIVE_PROVIDER_PUBLISHER_INPUT_SHA256")
 	raw, err := controlledNativeOwnerRead(path, 16<<10)
 	var input controlledNativePublisherInput
 	if !controlledGoogleHex(controlledNativeProviderRevision, 20) || !controlledGoogleHex(expected, 32) || err != nil || controlledGoogleDigest(raw) != expected ||
 		controlledNativeOwnerDecode(raw, &input) != nil || input.Schema != 1 || input.Profile != controlledNativeProviderProfile ||
 		input.Revision != controlledNativeProviderRevision || !controlledGoogleHex(input.Nonce, 32) || !controlledGoogleHex(input.ConfigSHA256, 32) ||
+		!controlledNativePublisherMode(input) ||
 		input.ConfigPath != "/publisher-config.json" || input.StatePath != "/publisher-journal/state.json" || input.CapacityPath != "/publisher-public/capacity.json" ||
-		!controlledNativePublisherWindow(input, time.Now().UTC()) {
+		!controlledNativePublisherWindow(input, now()) {
 		t.Fatal("controlled native publisher exact-source input refused")
 	}
 	configRaw, err := controlledNativeOwnerRead(input.ConfigPath, 64<<10)
@@ -192,15 +205,15 @@ func TestControlledNativeProviderPublisherChild(t *testing.T) {
 	if controlledNativeOwnerControlDirectory(controlledNativeOwnerControl, false) != nil {
 		t.Fatal("controlled native publisher premature stop metadata refused")
 	}
-	publisher, err := membershippublisher.Open(input.ConfigPath, input.StatePath, "init")
+	publisher, err := membershippublisher.OpenControlledFixture(input.ConfigPath, input.StatePath, input.Mode, now)
 	if err != nil {
-		t.Fatal("controlled native publisher ordinary open refused")
+		t.Fatal("controlled native publisher fixture open refused")
 	}
 	defer publisher.Close()
-	if err := publisher.Step(time.Now().UTC()); err != nil {
+	if err := publisher.Step(now()); err != nil {
 		t.Fatal("controlled native publisher initial delivery refused")
 	}
-	status := publisher.Status(time.Now().UTC(), time.Minute)
+	status := publisher.Status(now(), time.Minute)
 	capacity, err := controlledNativePublisherCapacity(input, config, status)
 	if err != nil {
 		t.Fatal("controlled native publisher verified capacity refused")
@@ -238,7 +251,7 @@ func TestControlledNativeProviderPublisherChild(t *testing.T) {
 			"revision": input.Revision, "nonce": input.Nonce, "pid": os.Getpid(), "capacity_sha256": controlledGoogleDigest(capacityRaw), "status": status}
 		if event == "publisher_joined" {
 			value["ok"] = true
-			value["stopped_at"] = time.Now().UTC()
+			value["stopped_at"] = now()
 			value["owner_stop_sha256"] = ownerStopSHA256
 		}
 		if mirror == nil {
@@ -296,7 +309,7 @@ func TestControlledNativeProviderPublisherChild(t *testing.T) {
 	if err != nil || closeErr != nil {
 		t.Fatal("controlled native publisher causal stop or close refused")
 	}
-	if emit("publisher_joined", publisher.Status(time.Now().UTC(), time.Minute)) != nil {
+	if emit("publisher_joined", publisher.Status(now(), time.Minute)) != nil {
 		t.Fatal("controlled native publisher normal join failed")
 	}
 	if mirrorFile != nil && mirrorFile.Close() != nil {
@@ -325,7 +338,7 @@ func TestControlledNativeProviderPublisherRenewal(t *testing.T) {
 
 	t.Run("explicit maintenance input and bounded event mirror", func(t *testing.T) {
 		now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-		input := controlledNativePublisherInput{PlannedStop: now.Add(30 * time.Minute), CleanupBy: now.Add(30*time.Minute + 20*time.Second)}
+		input := controlledNativePublisherInput{Mode: "init", PlannedStop: now.Add(30 * time.Minute), CleanupBy: now.Add(30*time.Minute + 20*time.Second)}
 		if !controlledNativePublisherWindow(input, now) {
 			t.Fatal("legacy publisher window changed")
 		}
@@ -340,6 +353,31 @@ func TestControlledNativeProviderPublisherRenewal(t *testing.T) {
 		input.EventsPath = "/publisher-journal/events.jsonl"
 		if !controlledNativePublisherWindow(input, now) {
 			t.Fatal("explicit maintenance publisher refused")
+		}
+		retained := input
+		retained.Mode, retained.EventsPath = "resume", "/publisher-events/events.jsonl"
+		if !controlledNativePublisherMode(retained) || !controlledNativePublisherWindow(retained, now) {
+			t.Fatal("explicit retained publisher refused")
+		}
+		for name, mutate := range map[string]func(*controlledNativePublisherInput){
+			"missing explicit mode": func(v *controlledNativePublisherInput) { v.Mode = "" },
+			"unknown explicit mode": func(v *controlledNativePublisherInput) { v.Mode = "fresh-fallback" },
+			"historical event path": func(v *controlledNativePublisherInput) { v.EventsPath = "/publisher-journal/events.jsonl" },
+			"owner present resume":  func(v *controlledNativePublisherInput) { v.OwnerWindow.Mode = "membership-renewal" },
+			"missing window":        func(v *controlledNativePublisherInput) { v.OwnerWindow = nil },
+		} {
+			t.Run(name, func(t *testing.T) {
+				bad := retained
+				window := *retained.OwnerWindow
+				bad.OwnerWindow = &window
+				mutate(&bad)
+				if controlledNativePublisherMode(bad) {
+					t.Fatal("implicit/unsafe retained publisher accepted")
+				}
+			})
+		}
+		if controlledNativePublisherWindow(retained, retained.PlannedStop) {
+			t.Fatal("expired retained window accepted")
 		}
 		for name, mutate := range map[string]func(*controlledNativePublisherInput){
 			"missing horizon":    func(v *controlledNativePublisherInput) { v.LifetimeSeconds = 0 },
@@ -443,7 +481,10 @@ func TestControlledNativeProviderPublisherRenewal(t *testing.T) {
 			config.Streams = append(config.Streams, stream)
 		}
 		raw, _ := json.Marshal(config)
-		publisher, err := membershippublisher.Open(write("publisher.json", raw), filepath.Join(dir, "journal.json"), "init")
+		configPath, statePath := write("publisher.json", raw), filepath.Join(dir, "journal.json")
+		clockAt := now
+		clock := func() time.Time { return clockAt }
+		publisher, err := membershippublisher.OpenControlledFixture(configPath, statePath, "init", clock)
 		if err != nil {
 			t.Fatal("ordinary publisher open", err)
 		}
@@ -471,6 +512,37 @@ func TestControlledNativeProviderPublisherRenewal(t *testing.T) {
 		var transcript bytes.Buffer
 		for minute := 0; minute <= 30; minute++ {
 			at := now.Add(time.Duration(minute) * time.Minute)
+			clockAt = at
+			if minute == 15 {
+				retained, readErr := os.ReadFile(statePath)
+				if readErr != nil || publisher.Close() != nil {
+					t.Fatal("retained publisher close", readErr)
+				}
+				if replacement, err := membershippublisher.OpenControlledFixture(configPath, statePath, "init", clock); err == nil {
+					_ = replacement.Close()
+					t.Fatal("retained state admitted fresh initialization")
+				}
+				hidden := statePath + ".retained"
+				if err := os.Rename(statePath, hidden); err != nil {
+					t.Fatal(err)
+				}
+				if replacement, err := membershippublisher.OpenControlledFixture(configPath, statePath, "resume", clock); err == nil {
+					_ = replacement.Close()
+					t.Fatal("missing journal admitted resume")
+				}
+				if err := os.Rename(hidden, statePath); err != nil {
+					t.Fatal(err)
+				}
+				publisher, err = membershippublisher.OpenControlledFixture(configPath, statePath, "resume", clock)
+				if err != nil {
+					t.Fatal("same-state publisher resume", err)
+				}
+				defer publisher.Close()
+				current, err := os.ReadFile(statePath)
+				if err != nil || !bytes.Equal(current, retained) {
+					t.Fatal("resume rewrote original candidate before Step", err)
+				}
+			}
 			if err := publisher.Step(at); err != nil {
 				t.Fatal("real bounded renewal", err)
 			}
@@ -507,7 +579,7 @@ func TestControlledNativeProviderPublisherRenewal(t *testing.T) {
 				projection.Streams[i].Targets = append(projection.Streams[i].Targets, fmt.Sprintf("/targets/node-%d/%s.json", node, projection.Streams[i].Kind))
 			}
 		}
-		publisherInput := controlledNativePublisherInput{Revision: input.Revision, Nonce: input.Nonce, PlannedStop: input.PlannedStop, CleanupBy: input.CleanupBy}
+		publisherInput := controlledNativePublisherInput{Mode: "init", Revision: input.Revision, Nonce: input.Nonce, PlannedStop: input.PlannedStop, CleanupBy: input.CleanupBy}
 		capacity, err := controlledNativePublisherCapacity(publisherInput, projection, publisher.Status(input.PlannedStop, time.Minute))
 		if err != nil || controlledNativeCapacityBinding(input, capacity, authority) != nil {
 			t.Fatal("actual publisher capacity", err)
