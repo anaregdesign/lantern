@@ -2840,98 +2840,106 @@ final class OfflineLanternRepository {
       claimed = preflight.record!;
     }
 
-    late final OfflineReceiptStatus status;
-    try {
-      status = await receiptRemote.getReceiptStatus(
-        claimed.receipt!.operationId,
-        cancellation: cancellation,
-      );
-    } on OfflineRemoteFailure catch (failure) {
-      return _recordReceiptLookupFailure(
-        partitionId,
-        claimed,
-        owner,
-        failure,
-        runtime,
-        authEpoch,
-      );
-    } on OfflineCanceledException {
-      if (authEpoch.pauseInProgress) {
-        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
-      }
-      await _releaseClaim(partitionId, claimed, owner);
-      rethrow;
-    } on OfflineException {
-      return _recordReceiptUnresolved(
-        partitionId,
-        claimed,
-        owner,
-        receiptState: claimed.receipt!.state,
-        diagnosticCode: 'receipt_protocol',
-      );
-    }
-    if (authEpoch.pauseInProgress) {
-      return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
-    }
-    if (status.operationId != claimed.receipt!.operationId) {
-      return _recordReceiptUnresolved(
-        partitionId,
-        claimed,
-        owner,
-        receiptState: claimed.receipt!.state,
-        diagnosticCode: 'receipt_protocol',
-      );
-    }
-
-    switch (status.state) {
-      case ReceiptStatusState.effectUndisclosed:
-        return _acceptUndisclosed(
+    // Only durable never-dispatched evidence can take a first send without
+    // an absence lookup. Its freshness was checked above; the existing live
+    // claim and pre-send transaction still guard and persist dispatch below.
+    // Possibly sent (including legacy missing-marker) work stays status-first.
+    var observed = claimed;
+    if (claimed.receipt!.mayHaveDispatched) {
+      late final OfflineReceiptStatus status;
+      try {
+        status = await receiptRemote.getReceiptStatus(
+          claimed.receipt!.operationId,
+          cancellation: cancellation,
+        );
+      } on OfflineRemoteFailure catch (failure) {
+        return _recordReceiptLookupFailure(
           partitionId,
           claimed,
           owner,
-          mutationAttempted: false,
+          failure,
+          runtime,
+          authEpoch,
         );
-      case ReceiptStatusState.confirmed:
-        late final OfflineReceiptResult result;
-        try {
-          result = _validatedReceiptResult(claimed, status);
-        } on OfflineException {
-          return _recordReceiptUnresolved(
-            partitionId,
-            claimed,
-            owner,
-            receiptState: claimed.receipt!.state,
-            diagnosticCode: 'receipt_protocol',
-          );
+      } on OfflineCanceledException {
+        if (authEpoch.pauseInProgress) {
+          return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
         }
-        return _confirmReceiptResult(
-          partitionId,
-          claimed,
-          owner,
-          result,
-          mutationAttempted: false,
-        );
-      case ReceiptStatusState.noLongerProvable:
+        await _releaseClaim(partitionId, claimed, owner);
+        rethrow;
+      } on OfflineException {
         return _recordReceiptUnresolved(
           partitionId,
           claimed,
           owner,
-          receiptState: OfflineReceiptReconciliationState.noLongerProvable,
-          diagnosticCode: 'receipt_no_longer_provable',
-          incrementReconciliationAttempt: true,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_protocol',
         );
-      case ReceiptStatusState.notYetObserved:
-        break;
-    }
+      }
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      if (status.operationId != claimed.receipt!.operationId) {
+        return _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_protocol',
+        );
+      }
 
-    final observed = await _recordReceiptObservation(
-      partitionId,
-      claimed,
-      owner,
-      OfflineReceiptReconciliationState.notYetObserved,
-    );
-    if (observed == null) {
-      return const _ReplayOutcome();
+      switch (status.state) {
+        case ReceiptStatusState.effectUndisclosed:
+          return _acceptUndisclosed(
+            partitionId,
+            claimed,
+            owner,
+            mutationAttempted: false,
+          );
+        case ReceiptStatusState.confirmed:
+          late final OfflineReceiptResult result;
+          try {
+            result = _validatedReceiptResult(claimed, status);
+          } on OfflineException {
+            return _recordReceiptUnresolved(
+              partitionId,
+              claimed,
+              owner,
+              receiptState: claimed.receipt!.state,
+              diagnosticCode: 'receipt_protocol',
+            );
+          }
+          return _confirmReceiptResult(
+            partitionId,
+            claimed,
+            owner,
+            result,
+            mutationAttempted: false,
+          );
+        case ReceiptStatusState.noLongerProvable:
+          return _recordReceiptUnresolved(
+            partitionId,
+            claimed,
+            owner,
+            receiptState: OfflineReceiptReconciliationState.noLongerProvable,
+            diagnosticCode: 'receipt_no_longer_provable',
+            incrementReconciliationAttempt: true,
+          );
+        case ReceiptStatusState.notYetObserved:
+          break;
+      }
+
+      final recorded = await _recordReceiptObservation(
+        partitionId,
+        claimed,
+        owner,
+        OfflineReceiptReconciliationState.notYetObserved,
+      );
+      if (recorded == null) {
+        return const _ReplayOutcome();
+      }
+      observed = recorded;
     }
 
     final capabilityRequestAge = Stopwatch()..start();

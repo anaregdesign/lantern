@@ -59,12 +59,12 @@ final class PhysicalSocketRelay {
   int transportDisconnects = 0;
   int get activeConnections => _sockets.length;
 
-  HttpClient createHttpClient() {
+  HttpClient createHttpClient({SecurityContext? context}) {
     if (_closed) throw StateError('Physical relay is closed');
-    return HttpClient()
+    return HttpClient(context: context)
       ..connectionTimeout = const Duration(seconds: 5)
       ..findProxy = ((_) => 'DIRECT')
-      ..connectionFactory = (url, proxyHost, proxyPort) {
+      ..connectionFactory = (url, proxyHost, proxyPort) async {
         if (_closed ||
             url.scheme != endpoint.scheme ||
             url.host != endpoint.host ||
@@ -72,7 +72,48 @@ final class PhysicalSocketRelay {
             proxyHost != null) {
           throw StateError('Physical relay route changed');
         }
-        return Socket.startConnect(_server.address, _server.port);
+        final task = await Socket.startConnect(_server.address, _server.port);
+        if (url.scheme == 'http') return task;
+
+        // A custom direct connectionFactory must supply TLS itself. The TCP
+        // peer is loopback, but TLS authenticates the original endpoint host.
+        final connected = Completer<Socket>();
+        Socket? owned;
+        var canceled = false;
+        unawaited(() async {
+          try {
+            final raw = owned = await task.socket;
+            if (canceled) {
+              raw.destroy();
+              return;
+            }
+            final secure = await SecureSocket.secure(
+              raw,
+              host: endpoint.host,
+              context: context,
+            );
+            owned = secure;
+            // TLS may complete after cancellation detached the raw Socket.
+            if (canceled) {
+              secure.destroy();
+              return;
+            }
+            connected.complete(secure);
+          } catch (error, stack) {
+            owned?.destroy();
+            if (!connected.isCompleted) connected.completeError(error, stack);
+          }
+        }());
+        return ConnectionTask.fromSocket(connected.future, () {
+          canceled = true;
+          task.cancel();
+          owned?.destroy();
+          if (!connected.isCompleted) {
+            connected.completeError(
+              const SocketException('Physical relay connection canceled'),
+            );
+          }
+        });
       };
   }
 

@@ -75,9 +75,64 @@ LanternException? receiptTransientTransportCause(Object error) {
 }
 
 bool isIosLocalNetworkDeniedCause(Object? cause) {
+  if (cause is! SocketException) return false;
   final message = '$cause';
   return message.contains('No route to host') ||
       message.contains('Operation not permitted');
+}
+
+/// Waits through interruption of an existing connection for a concrete denial.
+/// A generic transport failure or deadline never supplies privacy evidence.
+Future<void> waitForIosLocalNetworkDenial(
+  Future<Object?> Function() request, {
+  Future<void> Function(Duration)? pause,
+  Duration recoveryWindow = const Duration(minutes: 4),
+  int maxAttempts = 480,
+}) async {
+  if (recoveryWindow <= Duration.zero || maxAttempts < 1) {
+    throw ArgumentError('Invalid privacy observation bound');
+  }
+  final wait = pause ?? (duration) => Future<void>.delayed(duration);
+  final stopwatch = Stopwatch()..start();
+  Object? lastFailure;
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    final remaining = recoveryWindow - stopwatch.elapsed;
+    if (remaining <= Duration.zero) break;
+    try {
+      await request().timeout(remaining);
+    } on Object catch (error) {
+      final unavailable = receiptUnavailableCause(error);
+      if (unavailable != null) {
+        final cause = unavailable.cause;
+        if (isIosLocalNetworkDeniedCause(cause)) return;
+        // A pre-existing connection can reset before a fresh socket observes
+        // the changed permission. Certificate/protocol failures are distinct.
+        if (cause is TlsException || cause is FormatException) rethrow;
+      } else if (error is! TimeoutException &&
+          receiptTransientTransportCause(error)
+              is! LanternDeadlineExceededException) {
+        rethrow;
+      }
+      lastFailure = error;
+    }
+    if (attempt == maxAttempts) break;
+    final remainingAfterRequest = recoveryWindow - stopwatch.elapsed;
+    if (remainingAfterRequest <= Duration.zero) break;
+    const backoff = Duration(milliseconds: 500);
+    await wait(
+      backoff < remainingAfterRequest ? backoff : remainingAfterRequest,
+    ).timeout(remainingAfterRequest);
+  }
+  final unavailable = receiptUnavailableCause(
+    lastFailure ?? StateError('none'),
+  );
+  final cause = unavailable?.cause;
+  final osCode = cause is SocketException ? cause.osError?.errorCode : null;
+  throw StateError(
+    'iOS Local Network denial was not observed '
+    '(failure=${lastFailure.runtimeType}, cause=${cause.runtimeType}, '
+    'osError=$osCode)',
+  );
 }
 
 /// Private, compile-time fixture addresses never enter the public attestation.
@@ -292,14 +347,13 @@ final class ReceiptProxyTrace {
         )) {
       throw StateError('Committed receipt response loss was not observed');
     }
-    var statuses = 0;
+    if ((forwarded['GetReceiptStatuses'] ?? 0) != 0 ||
+        trace.contains('GetReceiptStatuses')) {
+      throw StateError('Never-dispatched receipt queried status before send');
+    }
     var mutations = 0;
     for (final event in trace) {
-      if (event == 'GetReceiptStatuses') statuses++;
       if (_receiptMutations.contains(event)) {
-        if (statuses <= mutations) {
-          throw StateError('Receipt mutation preceded status lookup');
-        }
         mutations++;
       }
     }

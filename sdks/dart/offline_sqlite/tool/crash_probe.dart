@@ -118,17 +118,14 @@ Future<void> _runReceiptCrash() async {
     );
     _requireReceiptCounts(proxy);
     final statusesBeforeReopen = proxy.forwarded('GetReceiptStatuses');
-    if (statusesBeforeReopen < _receiptMutations.length) {
-      throw StateError('initial_status_first');
+    // Fresh durable false evidence permits each first send without querying
+    // absence. After SIGKILL these same IDs must instead reconcile status-first.
+    if (statusesBeforeReopen != 0) {
+      throw StateError('initial_status_query');
     }
-    var precedingStatuses = 0;
     var observedMutations = 0;
     for (final rpc in proxy.requestTrace) {
-      if (rpc == 'GetReceiptStatuses') precedingStatuses++;
       if (_receiptMutations.contains(rpc)) {
-        if (precedingStatuses <= observedMutations) {
-          throw StateError('initial_status_order');
-        }
         observedMutations++;
       }
     }
@@ -188,8 +185,7 @@ String _failureCode(Object error) {
   }
   if (error is StateError &&
       const {
-        'initial_status_first',
-        'initial_status_order',
+        'initial_status_query',
         'initial_mutation_count',
         'reopened_status_first',
         'bound_initial_status_query',
