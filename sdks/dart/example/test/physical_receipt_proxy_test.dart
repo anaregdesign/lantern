@@ -614,13 +614,13 @@ void main() {
       'AddEdges',
       'DeleteEdgeContributions',
     ];
-    final initial = [
-      for (final mutation in mutations) ...['GetReceiptStatuses', mutation],
-    ];
+    final initial = [...mutations];
     Map<String, Object> snapshot(List<String> events) => {
       'schema': 1,
       'forwarded': {
-        'GetReceiptStatuses': 10,
+        'GetReceiptStatuses': events
+            .where((event) => event == 'GetReceiptStatuses')
+            .length,
         for (final mutation in mutations) mutation: 1,
       },
       'dropped': {for (final mutation in mutations) mutation: 1},
@@ -640,6 +640,7 @@ void main() {
       <String>[...initial, 'AwaitingSigkill'],
       <String>[...initial, 'AwaitingSigkill', 'PutVertices'],
       <String>[...initial.skip(1)],
+      <String>['GetReceiptStatuses', ...initial],
     ]) {
       final trace = ReceiptProxyTrace.parse(snapshot(events));
       expect(

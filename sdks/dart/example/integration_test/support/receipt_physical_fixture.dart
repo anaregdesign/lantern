@@ -347,14 +347,13 @@ final class ReceiptProxyTrace {
         )) {
       throw StateError('Committed receipt response loss was not observed');
     }
-    var statuses = 0;
+    if ((forwarded['GetReceiptStatuses'] ?? 0) != 0 ||
+        trace.contains('GetReceiptStatuses')) {
+      throw StateError('Never-dispatched receipt queried status before send');
+    }
     var mutations = 0;
     for (final event in trace) {
-      if (event == 'GetReceiptStatuses') statuses++;
       if (_receiptMutations.contains(event)) {
-        if (statuses <= mutations) {
-          throw StateError('Receipt mutation preceded status lookup');
-        }
         mutations++;
       }
     }
