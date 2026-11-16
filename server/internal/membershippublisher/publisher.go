@@ -118,6 +118,10 @@ func Open(configPath, statePath, mode string) (*Publisher, error) {
 // advance-window opens only authenticated retained state; it cannot issue.
 // New-period capacity is validated separately before its binding is committed.
 func openOwned(configPath, statePath, mode string, now time.Time, additionalInputs []string) (_ *Publisher, err error) {
+	return openOwnedWithClock(configPath, statePath, mode, now, additionalInputs, time.Now)
+}
+
+func openOwnedWithClock(configPath, statePath, mode string, now time.Time, additionalInputs []string, clock func() time.Time) (_ *Publisher, err error) {
 	if !canonical(statePath) {
 		return nil, ErrState
 	}
@@ -125,7 +129,7 @@ func openOwned(configPath, statePath, mode string, now time.Time, additionalInpu
 	if err != nil {
 		return nil, ErrState
 	}
-	p := &Publisher{path: statePath, files: systemFiles(), retainedOnly: mode == "advance-window", started: now, clock: time.Now}
+	p := &Publisher{path: statePath, files: systemFiles(), retainedOnly: mode == "advance-window", started: now, clock: clock}
 	defer func() {
 		if err != nil {
 			_ = p.Close()

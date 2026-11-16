@@ -125,7 +125,37 @@ def affected_steps(plan, scope):
         names.add("harness-contracts")
     if scope["generation"]:
         names |= generation
-    return tuple(Step(s.name, s.cwd, s.command + tuple(
+    selected = tuple(Step(s.name, s.cwd, s.command + tuple(
         arg for group in groups for arg in ("--group", group)), s.empty,
         s.glob_args, s.reject_line_prefixes) if s.name == "harness-contracts" else s
         for s in plan if s.name in names)
+    if "controlled-native-provider" not in scope.get("fixture_contracts", []):
+        return selected
+    # These are affected-only product contracts. The canonical full79 commands
+    # stay unchanged, and no provider/serving child is selected by these patterns.
+    python = () if "docs-tests" in names else (Step("controlled-native-python-contracts", ".", (
+        "python3", "-B", "-m", "unittest", "discover", "-s", ".github/scripts", "-p",
+        "test_controlled_native_provider_fixture.py")),)
+    selector = (
+        "^(TestControlledNativeProvider(Contracts|InputBoundaries|CohortContracts|CaptureFailureFinalizes|"
+        "WindowContracts|OwnerWindowContracts|WholeOwnerCapacity|PublisherRenewal|NativeBoundsLeaseVerification|"
+        "NativeLeaseMonitor|OwnerStopAcknowledgement|MonitorUsesOwnedNativeBounds)|"
+        "TestControlledNativeWindowBounds(RefusesUnavailableWithoutHostFallback|IndependentOfManagementReadiness)|"
+        "TestInheritedProfileControlsNeutralized|TestControlledFixtureClock(OwnsAdmissionPublicationAndObservations|"
+        "PreservesFiniteBudgetAndModes))$"
+    )
+    tagged = (
+        Step("server-controlled-native-contracts", "server", (
+            "go", "test", "-tags=lantern_test_time", "-count=1", "-timeout=10m", "-run", selector,
+            "./cmd", "./provider", "./internal/membershippublisher")),
+        # Full maximum-horizon replay remains in required PR/main CI. Local
+        # capture changes exercise their exact bounded subtests without that loop.
+        Step("server-controlled-native-capture-contracts", "server", (
+            "go", "test", "-tags=lantern_test_time", "-count=1", "-timeout=10m", "-run",
+            "^TestControlledNativeProviderSignedRenewalTranscript$/"
+            "^(captured_atomically_replaced_signed_inputs|bounded_open_ENOENT_capture|unsafe_renewable_input_refused)$",
+            "./cmd")),
+    )
+    final = {"final-diff", "final-clean"}
+    return (python + tuple(s for s in selected if s.name not in final) + tagged
+            + tuple(s for s in selected if s.name in final))

@@ -11,12 +11,13 @@ its provider/config/profile boundaries; its shared readiness helper is corrected
 to use the actual Connect Health route. Normal `native_login_gate.py --serve`
 remains unchanged.
 
-This is a finite new three-member cohort with new create-only material, operator
-custody, state and container names. Existing cohorts, WAL, identities, policies,
-keys and servers are never read as current state or reset. A verified historical
-seed identity is an explicit input; its old credential/session is not authority.
-The fresh production genesis contains only that seed, the exact default Roles
-and assignments, no UID, and registration OFF. It is not a precreated signup or
+Fresh mode creates a finite three-member cohort with create-only material,
+operator custody and state. The explicit retained-state maintenance mode below
+instead resumes the selected original cohort, WAL, identities, policy, users and
+persistence. Neither route resets existing state. A verified historical seed
+identity is an explicit input; its old credential/session is not authority. Fresh
+production genesis contains only that seed, the exact default Roles and
+assignments, no UID, and registration OFF. It is not a precreated signup or
 personal-user test account.
 
 ## Exact private inputs
@@ -47,9 +48,10 @@ The plan contains:
   file mode is not an instruction to read that old path as current authority.
   Merely decoding an email, subject or token cannot supply this predicate.
 - `issuer_intent`: hash-pinned owner-custody normal JSON with `public_origin` and
-  `issuers`. Only its exact reviewed Issuers are projected into fresh generated
-  configs. Its old node, root, state, TLS or initial administrator fields are not
-  reused. The normal strict parser revalidates the complete generated config.
+  `issuers`. Fresh mode projects only its exact reviewed Issuers into generated
+  configs; its old node, root, state, TLS or initial administrator fields are not
+  reused. Retained mode verifies the original selected configuration unchanged.
+  The normal strict parser revalidates the complete config in both modes.
 - `clients`: exact `google_browser`, `google_native`, `google_android`,
   `google_ios`, `apple_android` and `apple_ios` public IDs. The three native
   Google IDs are distinct and from one selected project. Browser can use a
@@ -65,8 +67,9 @@ The plan contains:
   normal compiler's explicit Issuer ID or its derived handle. Apple uses explicit
   `secret_id`. No arbitrary path-backed secret or destination override is admitted.
 - `public`: canonical HTTPS `origin` at approved port24443, explicit Mac LAN
-  `lan_ip`, and private `certificate`/`key` refs. `network` contains fresh empty
-  dedicated bridge `id`, `name`, and its Root `admission`.
+  `lan_ip`, and private `certificate`/`key` refs. `network` contains the empty
+  dedicated bridge `id`, `name`, and its Root `admission`; retained mode keeps the
+  selected original bridge.
 - `admin`: current exact-source immutable `image` and build `receipt`. The
   receipt kind is `controlled-real-native-providers-admin-build`, status PASS,
   exact source fields, actual image, `dockerfile=admin/Dockerfile`,
@@ -76,7 +79,8 @@ The plan contains:
   the current maintained Admin source; a stale image label alone is insufficient.
 - `edge`: immutable image and Root `admission` with status
   `APPROVE_FIXED_CADDY_EDGE_IMAGE`, actual image and `/usr/bin/caddy` binary path.
-- `output`: absent private absolute directory; new hex64 `cohort`;
+- `output`: absent private absolute directory; hex64 `cohort` (new for fresh mode,
+  unchanged for explicit retained mode);
   integer `lifetime_seconds` 15..540; absolute `planned_stop_at`, and
   `cleanup_by` exactly20s later. No deadline renewal or retry is available.
   The separate owner-present mode below requires an explicit `owner_window`
@@ -98,7 +102,7 @@ stock public CA bundle. The separately opted-in
 binary/public-roots/revision/Role hashes, profile, real-google-apple source,
 four-profile count and registration-at-genesis false. Exit0 for an absent test
 does not qualify the image. The controller repeats this passive description
-from the actual selected image before provisioning.
+from the actual selected image before fresh provisioning or retained resume.
 
 ## Explicit 30-minute owner window (#2163)
 
@@ -171,7 +175,7 @@ and private TLS guards remain authoritative. The controller checks publisher/App
 publisher publication status as well. An unexpected publisher exit fails the
 window even while the last signed ten-minute lease is still current.
 
-The owner lifecycle has eleven containers, including the separately joined
+The fresh owner lifecycle has eleven containers, including the separately joined
 publisher. Its descriptor carries `owner_window`, the public capacity reference
 and the explicit container count. Normal cleanup requires the publisher's actual
 stop acknowledgement, all native lease transcripts to cover their observed
@@ -253,15 +257,73 @@ within a short human operation window must never become an automatic Server
 shutdown deadline. Use real NTP only for the independently mandatory
 qualifications; functional maintenance continues on the controlled source.
 
+## Explicit retained-state resume (#2185/#2191)
+
+Use this route only for the unattended maintenance mode and an explicitly
+selected, stopped original cohort. Add the optional `retained` object with
+exactly these keys: `schema: 1`, `mode: "resume-existing"`, canonical absolute
+`root` naming the old window directory, and five hash-pinned references:
+`prior_plan`, `prior_fixture`, `prior_lifecycle`, `prior_cleanup`, and
+`state_manifest`. Each reference has the existing exact `path`/`sha256` shape.
+The new `output` must be absent and disjoint from `root`; neither directory may
+contain the other. Missing, partial, foreign or changed retained state refuses
+dispatch; there is no fresh fallback.
+
+Retain the original cohort, configuration, publisher Config and absolute
+stop/cleanup endpoints. This route does not advance the publisher horizon.
+Current source proof, selected CI, required configured-source qualification,
+Root review, server/Admin builds and whole-interval secret/TLS capacity still
+require independent current admission. An expired current window cannot resume.
+Old source proofs and successful setup events cannot qualify the current build.
+
+The existing Root owner-dispatch must additionally bind `same_state_resume: true`,
+`retained_state_sha256` equal to the manifest reference hash, and
+`retained_cleanup_sha256` equal to the cleanup reference hash. The cleanup record
+is schema1, kind `controlled-real-native-providers-retained-cleanup`, status
+`ALL_OWNED_RESOURCES_STOPPED`, and binds `cohort` and
+`prior_lifecycle_sha256`. Its `containers` contain exactly the original lifecycle
+IDs with `stopped: true`; `holder_joined` is true and `qualification` is false.
+This record retains actual cleanup evidence even when the original lifecycle
+remains FAIL or cleanup-unknown. It cannot replace or amend that lifecycle.
+
+Generate and verify the state manifest with the controller's read-only helpers,
+and retain it outside the old root. Its exact schema1 kind is
+`controlled-real-native-providers-retained-state`; it binds `root`, `cohort`,
+`authority_profile`, `prior_plan_sha256`, `prior_fixture_sha256`,
+`publisher_config_sha256`, and `files`. The complete old-root inventory records
+each entry's type, mode, UID/GID, device and inode. Regular files additionally
+record link count, size, `mtime_ns` and SHA256; directory modification times are
+excluded. Paths and metadata are checked without printing private contents.
+Admission checks the inventory before any publisher dispatch, and teardown
+checks immutable material and historical evidence again. Only the six renewable
+membership targets, original publisher journal and current node-state contents
+may change through their existing production operations.
+
+The controller performs no provisioning, `InitializeSecurity`, key generation
+or state copying. It mounts original material, serving views, operator custody
+and publisher journal from their retained sources. Each original
+`state/<index>/node-<n>` directory is mounted at the unchanged `/state/node-<n>`;
+a fresh `/state` parent holds only this window's create-only transcript. The
+publisher explicitly opens in `resume` mode with its original Config and journal.
+Fresh side-evidence directories hold current-source capacity, publisher events
+at `/publisher-events/events.jsonl`, and owner control. Old capacity, events,
+transcripts, stop/join records and FAIL evidence remain historical and unchanged.
+
+This lifecycle owns seven containers: description, publisher, three resumed Apps,
+Admin and edge. Its descriptor and consuming phone helpers must use that actual
+count and the retained layout. Readiness and qualification cover only the new
+actual serving interval; the stopped gap is not qualified. This route does not
+itself establish a current-source PASS, provider result or phone acceptance.
+
 ## Public origin and normal management journey
 
-Only the new edge publishes the selected LAN address at24443. New node1 gets a
-scoped bridge alias for the approved public hostname. Edge wire routes and the
-Admin image's maintained `/auth/*`, `/browser/*`, `/graph.v1.*/*` BFF point only to
-that new node1's TLS6380. Admin serves its current-source SPA. No old upstream,
-backend fallback, provider hostname mapping, synthetic provider, private provider
-CA or `/etc/ntp.conf` mount is used. An ordinary Docker bridge is not a claimed
-DNS/HTTPS-only firewall. Actual provider HTTPS uses production pinned destinations
+Only the newly owned edge publishes the selected LAN address at24443. Selected
+node1 gets a scoped bridge alias for the approved public hostname. Edge wire
+routes and the Admin image's maintained `/auth/*`, `/browser/*`, `/graph.v1.*/*` BFF point only to
+that cohort's node1 TLS6380. Admin serves its current-source SPA. No alternate
+upstream, backend fallback, provider hostname mapping, synthetic provider,
+private provider CA or `/etc/ntp.conf` mount is used. An ordinary Docker bridge is
+not a claimed DNS/HTTPS-only firewall. Actual provider HTTPS uses production pinned destinations
 and public trust; time uses the compiled local UDP route.
 
 Normal parser callback bindings remain:

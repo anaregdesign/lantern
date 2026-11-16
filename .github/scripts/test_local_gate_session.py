@@ -227,6 +227,51 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(result["not_selected"], ["go-test-server"])
         self.assertEqual((result["executed"], result["carried"]), (1, 0))
 
+    def test_product_fixture_checks_are_fresh_accounted_and_source_bound(self):
+        path = ".github/scripts/controlled_native_provider_fixture.py"
+        self.write(path, "baseline product fixture\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(path, "changed product fixture\n")
+        self.commit()
+        self.session.plan = steps(self.session.evidence)
+        seen = []
+        def run(step, log):
+            seen.append(step.name)
+            log.write_text("Synthetic command selection only\n")
+            return 0, True
+        with patch.object(self.session, "run", side_effect=run), redirect_stdout(io.StringIO()):
+            result = self.session.qualify_affected("origin/main")
+        self.assertTrue(result["passed"], result)
+        self.assertEqual((result["executed"], result["carried"]), (5, 0))
+        self.assertEqual(seen, [row["name"] for row in result["steps"]])
+        self.assertFalse(set(seen) & set(result["not_selected"]))
+        self.assertIn("dart-publish-dry-run", result["not_selected"])
+        self.assertEqual(seen[-2:], ["final-diff", "final-clean"])
+        self.assertFalse(self.session.receipts)
+        self.session = self.new_session("fixture-drift-evidence")
+        self.session.plan = steps(self.session.evidence)
+        def drift(step, log):
+            log.write_text("Synthetic source-drift refusal\n")
+            if step.name == "server-controlled-native-contracts":
+                self.write(path, "changed during fixture contract\n")
+            return 0, True
+        with patch.object(self.session, "run", side_effect=drift), redirect_stdout(io.StringIO()):
+            result = self.session.qualify_affected("origin/main")
+        self.assertFalse(result["passed"])
+        self.assertIn("clean committed", result["error"])
+        self.assertFalse(self.session.receipts)
+
+    def test_clock_source_is_not_carry_policy_but_real_locks_and_controllers_are(self):
+        for path in ("core/hlc/clock.go", "core/collection/block.go", "core/privatefile/file_lock.go",
+                     "server/internal/membershippublisher/controlled_clock_fixture.go"):
+            self.assertFalse(gate.policy(path), path)
+        for path in ("sdks/node/package-lock.json", "Cargo.lock", "admin/npm-shrinkwrap.json",
+                     "bun.lockb", "packages.lock.json", "lockfile", "CONTRIBUTING.md",
+                     ".github/scripts/controlled_native_provider_fixture.py",
+                     ".github/scripts/validation_scope.py"):
+            self.assertTrue(gate.policy(path), path)
+
     def test_dart_documentation_rejects_zero_exit_warnings(self):
         for name in ("dart-doc", "offline-doc"):
             configured = next(s for s in steps(self.session.evidence) if s.name == name)
@@ -498,6 +543,62 @@ class SessionTest(unittest.TestCase):
         with patch.object(gate.subprocess, "check_output", side_effect=external_replacement):
             with self.assertRaisesRegex(ValueError, "external local replacement"):
                 self.session.check_go_inputs(exported, env)
+
+    def test_fresh_fixture_go_steps_reject_source_overrides_before_launch(self):
+        selection = gate.validation_scope.affected({".github/scripts/controlled_native_provider_fixture.py": "M"})
+        plan = gate.affected_steps(steps(self.session.evidence), selection)
+        selected = [s for s in plan if s.name in gate.FRESH_GO_STEPS]
+        self.assertEqual(len(selected), 2)
+        cases = (("overlay", "-overlay=/developer/overlay.json", "GOFLAGS"),
+                 ("modfile", "-modfile=/developer/go.mod", "GOFLAGS"),
+                 ("workspace", "", "external workspace"),
+                 ("replacement", "", "external local replacement"))
+        for step in selected:
+            for scenario, flags, refusal in cases:
+                self.session.env.update(GOWORK="/developer/go.work", PWD="/developer", GOFLAGS=flags)
+                def metadata(command, **kwargs):
+                    self.assertTrue(kwargs["cwd"] == self.root or self.root in kwargs["cwd"].parents)
+                    self.assertEqual(kwargs["env"]["GOWORK"], str(self.root / "go.work"))
+                    self.assertEqual(kwargs["env"]["PWD"], str(self.root / step.cwd))
+                    if command == ["go", "env", "GOFLAGS"]:
+                        return flags
+                    if scenario == "workspace":
+                        return json.dumps({"Use": [{"DiskPath": "../external"}]})
+                    return json.dumps({"Replace": [{"New": {"Path": "../external", "Version": ""}}]})
+                log = self.session.evidence / (step.name + "-" + scenario + ".log")
+                with self.subTest(step=step.name, scenario=scenario), \
+                        patch.object(gate.subprocess, "check_output", side_effect=metadata), \
+                        patch.object(gate.subprocess, "run") as launch:
+                    with self.assertRaisesRegex(ValueError, refusal):
+                        self.session.run(step, log)
+                    launch.assert_not_called()
+                    self.assertFalse(log.exists())
+
+    def test_fresh_fixture_go_steps_force_checkout_workspace_without_carry(self):
+        selection = gate.validation_scope.affected({".github/scripts/controlled_native_provider_fixture.py": "M"})
+        plan = gate.affected_steps(steps(self.session.evidence), selection)
+        self.assertFalse(gate.FRESH_GO_STEPS & gate.ELIGIBLE)
+        self.session.eligible_root = self.base / "different-readonly-export"
+        self.session.env.update(GOWORK="/developer/go.work", PWD="/developer", GOFLAGS="")
+        def metadata(command, **kwargs):
+            if command == ["go", "env", "GOFLAGS"]:
+                return ""
+            return json.dumps({"Use": [{"DiskPath": "."}]}) if command[:3] == ["go", "work", "edit"] else "{}"
+        for step in plan:
+            if step.name not in gate.FRESH_GO_STEPS:
+                continue
+            with self.subTest(step=step.name), \
+                    patch.object(gate.subprocess, "check_output", side_effect=metadata), \
+                    patch.object(gate.subprocess, "run", return_value=subprocess.CompletedProcess(step.command, 0)) as launch:
+                self.assertEqual(self.session.run(step, self.session.evidence / (step.name + "-normal.log")), (0, True))
+                options = launch.call_args.kwargs
+                self.assertEqual(options["cwd"], self.root / step.cwd)
+                self.assertEqual(options["env"]["GOWORK"], str(self.root / "go.work"))
+                self.assertEqual(options["env"]["PWD"], str(self.root / step.cwd))
+                self.assertEqual(gate.inputs(step, {"server/source.go": "s", "admin/app/view.tsx": "a"}),
+                                 {"server/source.go": "s", "admin/app/view.tsx": "a"})
+        self.assertEqual(self.session.env["GOWORK"], "/developer/go.work")
+        self.assertFalse(self.session.receipts)
 
     def test_hidden_dirty_inputs_and_changes_during_execution_refuse_qualification(self):
         self.git("update-index", "--assume-unchanged", "core/source.go")

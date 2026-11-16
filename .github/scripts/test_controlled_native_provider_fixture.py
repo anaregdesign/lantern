@@ -145,6 +145,90 @@ def capacity(p):
     return value
 
 
+def private_reference(path):
+    return {"path": str(path), "sha256": profile.digest(path.read_bytes())}
+
+
+def retained_plan(directory, current):
+    """Owned UNIT files only; never a signed fixture or actual runtime state."""
+    base = Path(directory).resolve()
+    root, evidence = base / "UNIT_OLD_WINDOW", base / "UNIT_RETAINED_ADMISSION"
+    root.mkdir(mode=0o700)
+    evidence.mkdir(mode=0o700)
+    old = copy.deepcopy(current)
+    old["output"] = str(root)
+    old["source"].update(head="9" * 40, tree="8" * 40, source_sha256="7" * 64)
+    configs = profile.configurations(current, admitted(current))
+    for name in ("inputs", "material", "operator/custody/certificates", "publisher-public", "publisher-journal", "owner-control"):
+        (root / name).mkdir(mode=0o700, parents=True)
+    for index, config in enumerate(configs):
+        node = f"node-{index+1}"
+        state = root / "state" / str(index) / node
+        view = root / "views" / str(index) / "identity/nodes" / node
+        state.mkdir(mode=0o700, parents=True)
+        (view / "membership").mkdir(mode=0o700, parents=True)
+        for name in ("control-membership", "data-membership"):
+            profile.new_file(state / name, b"UNIT_RETAINED_NATIVE_FLOOR_79")
+        profile.new_file(state / "policy-users.json", {"roles": ["UNIT_CURRENT_ROLE"], "users": ["UNIT_CURRENT_USER"], "registration_enabled": True})
+        profile.new_file(view / "identity.json", {"node": node, "UNIT": "NOT_REAL_IDENTITY"})
+        profile.new_file(view / "COMPLETE", b"UNIT_COMPLETE")
+        for kind in ("control", "data"):
+            profile.new_file(view / "membership" / (kind + ".json"), b"UNIT_RETAINED_SIGNED_ENVELOPE_79")
+            profile.new_file(view / "membership" / (kind + ".json.publisher.lease"), b"UNIT_RETAINED_SIDECAR")
+        profile.new_file(root / "inputs" / f"{index}-resume.env",
+                         ("LANTERN_SECURITY_CONFIG_JSON=" + json.dumps(config, separators=(",", ":")) + "\n").encode())
+        for mode in ("initialize", "resume"):
+            profile.new_file(root / "state" / str(index) / f"controlled-native-provider-owner-leases-{mode}.jsonl", b"UNIT_HISTORICAL_FAILED_WINDOW\n")
+    for name in ("control-signing-key.pem", "data-signing-key.pem", "roots.pem"):
+        profile.new_file(root / "operator/custody" / name, b"UNIT_NOT_REAL_OPERATOR_MATERIAL")
+    for index in (1, 2, 3):
+        profile.new_file(root / "operator/custody/certificates" / f"node-{index}.pem", b"UNIT_NOT_REAL_CERTIFICATE")
+    config_path = root / "inputs/publisher-config.json"
+    profile.new_file(config_path, profile.publisher_configuration(old, publisher_config()))
+    profile.new_file(root / "inputs/publisher-input.json", {"schema": 1, "profile": profile.PROFILE, "revision": old["source"]["head"],
+                     "nonce": old["cohort"], "config_path": "/publisher-config.json", "config_sha256": profile.digest(config_path.read_bytes()),
+                     "state_path": "/publisher-journal/state.json", "capacity_path": "/publisher-public/capacity.json",
+                     "planned_stop_at": old["planned_stop_at"], "cleanup_by": old["cleanup_by"], "owner_window": dict(profile.MAINTENANCE_WINDOW),
+                     "lifetime_seconds": old["lifetime_seconds"], "events_path": "/publisher-journal/events.jsonl"})
+    profile.new_file(root / "publisher-journal/state.json", {"Version": 1, "Streams": [{"Version": 79, "Pending": False}] * 2})
+    profile.new_file(root / "publisher-journal/state.json.lease", b"UNIT_RETAINED_JOURNAL_LEASE")
+    profile.new_file(root / "publisher-journal/events.jsonl", b"UNIT_HISTORICAL_PUBLISHER_JOINED\n")
+    profile.new_file(root / "publisher-public/capacity.json", capacity(old))
+    profile.new_file(root / "owner-control/stop.json", profile.owner_stop_record(old))
+    plan_path, fixture_path, lifecycle_path = evidence / "prior-plan.json", root / "fixture.json", root / "lifecycle.json"
+    profile.new_file(plan_path, old)
+    plan_ref = private_reference(plan_path)
+    cap_ref = private_reference(root / "publisher-public/capacity.json")
+    authority = "current-v2:" + "5" * 64
+    profile.new_file(fixture_path, profile.descriptor(old, plan_ref["sha256"], Clock().wall(), Clock().wall() + 2, authority, cap_ref))
+    owners = [{"id": profile.digest(f"UNIT_OLD_OWNER_{index}".encode()), "stopped": True, "normal_exit": index != 2, "exit": int(index == 2)} for index in range(11)]
+    profile.new_file(lifecycle_path, {"schema": 1, "kind": profile.KIND + "-lifecycle", "status": "FAIL", "cohort": old["cohort"],
+                                     "head": old["source"]["head"], "cleanup_known": False, "containers": owners})
+    lifecycle_ref = private_reference(lifecycle_path)
+    cleanup_path = evidence / "prior-cleanup.json"
+    profile.new_file(cleanup_path, {"schema": 1, "kind": profile.PROFILE + "-retained-cleanup", "status": "ALL_OWNED_RESOURCES_STOPPED",
+                                   "cohort": old["cohort"], "prior_lifecycle_sha256": lifecycle_ref["sha256"],
+                                   "containers": [{"id": row["id"], "stopped": True} for row in owners], "holder_joined": True, "qualification": False})
+    manifest_path = evidence / "state-manifest.json"
+    profile.new_file(manifest_path, {"schema": 1, "kind": profile.PROFILE + "-retained-state", "root": str(root), "cohort": old["cohort"],
+                                    "authority_profile": authority, "prior_plan_sha256": plan_ref["sha256"],
+                                    "prior_fixture_sha256": private_reference(fixture_path)["sha256"],
+                                    "publisher_config_sha256": profile.digest(config_path.read_bytes()), "files": profile.retained_inventory(root)})
+    current["retained"] = {"schema": 1, "mode": "resume-existing", "root": str(root), "prior_plan": plan_ref,
+                           "prior_fixture": private_reference(fixture_path), "prior_lifecycle": lifecycle_ref,
+                           "prior_cleanup": private_reference(cleanup_path), "state_manifest": private_reference(manifest_path)}
+    return current
+
+
+def refresh_retained_reference(p, key, change=None):
+    path = Path(p["retained"][key]["path"])
+    if change:
+        value = profile.decode(path.read_bytes())
+        change(value)
+        path.write_bytes(profile.encoded(value))
+    p["retained"][key] = private_reference(path)
+
+
 def unit_control_profile():
     return {"profile_version": 1, "lineage": {"deployment": [1] * 16, "instance": [2] * 16}, "namespace_format": "UNIT_NAMESPACE",
             "protocol_scope": [3] * 32, "trust_digest": [4] * 32, "voters": [{"UNIT": "NOT_SIGNED_AUTHORITY"}]}
@@ -240,6 +324,7 @@ class Commands:
     def __init__(self, output, window, p, clock, failure):
         self.output, self.window, self.p, self.clock, self.failure = output, window, p, clock, failure
         self.cleanup, self.rows, self.owned, self.stopped = False, [], {}, False
+        self.prior_owners = {row["id"] for row in profile.decode(profile.read(p["retained"]["prior_lifecycle"]["path"]))["containers"]} if "retained" in p else set()
 
     def run(self, argv, timeout=20, check=True):
         bound = self.window.command_timeout(timeout, self.cleanup)
@@ -274,6 +359,9 @@ class Commands:
             return b"", 0
         if verb == "inspect":
             selected = argv[6:]
+            if all(identity in self.prior_owners for identity in selected):
+                running = self.failure == "prior_owner_running"
+                return b"".join(profile.encoded({"Running": running, "Pid": 7 if running else 0, "Restarting": False, "Paused": False}) for _ in selected), 0
             return b"".join(profile.encoded({"Running": not self.stopped and not (self.failure == "publisher_exit" and "-publisher-" in self.owned[i]["name"] and self.clock.elapsed > 5),
                                            "Pid": 0 if self.stopped else 7, "Restarting": False, "Paused": False,
                                            "Status": "exited" if self.stopped else "running", "ExitCode": 0, "OOMKilled": False, "Error": ""}) for i in selected), 0
@@ -319,7 +407,7 @@ class Commands:
                 values.append({**base, "event": "publisher_joined", "ok": True, "stopped_at": profile.instant(self.clock.wall()),
                                "owner_stop_sha256": profile.digest((self.output / "owner-control/stop.json").read_bytes())})
             if profile.unattended_maintenance(self.p):
-                path = self.output / "publisher-journal/events.jsonl"
+                path = self.output / ("publisher-events/events.jsonl" if "retained" in self.p else "publisher-journal/events.jsonl")
                 if path.exists():
                     path.write_bytes(lines(values))
                 else:
@@ -347,14 +435,25 @@ class Commands:
 
 
 @contextlib.contextmanager
-def mocked_window(directory, failure=None, owner=False, bounded_commands=False, maintenance=False):
+def mocked_window(directory, failure=None, owner=False, bounded_commands=False, maintenance=False, retained=False):
+    maintenance = maintenance or retained
     p = (maintenance_plan if maintenance else owner_plan if owner else plan)(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT"))
+    if retained:
+        retained_plan(directory, p)
     clock, made = Clock(), []
     approval = {"kind": profile.PROFILE + "-owner-dispatch", "status": "APPROVE", "owner_present": True, "plan_sha256": "4" * 64,
                 "seed_verification_sha256": p["seed"]["verification"]["sha256"], "secret_and_tls_whole_window_verified": True,
                 "approved_public_origin": p["public"]["origin"], "admin_and_edge_source_reviewed": True}
     if maintenance:
         approval.update(owner_present=False, unattended_supervisor="unit-owned-supervisor")
+    if retained:
+        approval.update(same_state_resume=True, retained_state_sha256=p["retained"]["state_manifest"]["sha256"],
+                        retained_cleanup_sha256=p["retained"]["prior_cleanup"]["sha256"])
+    original_reference = profile.reference
+    def fixture_reference(value):
+        if retained and value in [p["retained"][key] for key in ("prior_plan", "prior_fixture", "prior_lifecycle", "prior_cleanup", "state_manifest")]:
+            return original_reference(value)
+        return profile.encoded({"kind": "UNIT_SAME_IMAGE_DESCRIPTION"})
     original_commands = profile.Commands
     def command(output, window):
         value = Commands(output, window, p, clock, failure)
@@ -375,7 +474,7 @@ def mocked_window(directory, failure=None, owner=False, bounded_commands=False, 
     with mock.patch.object(profile, "admitted_inputs", return_value=admitted(p)), \
             mock.patch.object(profile, "source_snapshot", return_value={**p["source"], "clean": ""}), \
             mock.patch.object(profile, "input_snapshot", return_value={"UNIT": "unchanged"}), \
-            mock.patch.object(profile, "reference", return_value=profile.encoded({"kind": "UNIT_SAME_IMAGE_DESCRIPTION"})), \
+            mock.patch.object(profile, "reference", side_effect=fixture_reference), \
             mock.patch.object(profile, "Window", side_effect=lambda p: original_window(p, clock.wall, clock.monotonic)), \
             mock.patch.object(profile, "Commands", side_effect=command), mock.patch.object(profile.signal, "signal"), \
             mock.patch.object(profile.time, "time", side_effect=clock.wall), mock.patch.object(profile.time, "sleep", side_effect=clock.sleep), \
@@ -384,6 +483,193 @@ def mocked_window(directory, failure=None, owner=False, bounded_commands=False, 
 
 
 class ControlledNativeProviderContracts(unittest.TestCase):
+    def test_retained_plan_is_explicit_closed_and_binds_root_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, retained=True) as (p, approval, _clock, _made):
+            self.assertIs(profile.resolved(p), p)
+            profile.approved_dispatch(p, "4" * 64, approval)
+            for change in (lambda v: v["retained"].pop("state_manifest"), lambda v: v["retained"].update(extra=True),
+                           lambda v: v["retained"].update(schema=True), lambda v: v["retained"].update(mode="init"),
+                           lambda v: v["retained"].update(root=p["retained"]["root"] + ",foreign-mount"),
+                           lambda v: v["retained"].update(root=str(Path(p["output"]))),
+                           lambda v: v.update(output=str(Path(p["retained"]["root"]) / "new-window")),
+                           lambda v: v.update(output=str(Path(p["retained"]["root"]).parent)),
+                           lambda v: v.update(owner_window=dict(profile.OWNER_WINDOW), lifetime_seconds=1800)):
+                bad = copy.deepcopy(p)
+                change(bad)
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    profile.resolved(bad)
+            for change in ({"same_state_resume": False}, {"same_state_resume": 1}, {"retained_state_sha256": "0" * 64},
+                           {"retained_cleanup_sha256": "0" * 64}):
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    profile.approved_dispatch(p, "4" * 64, {**approval, **change})
+            omitted = dict(approval)
+            omitted.pop("same_state_resume")
+            with self.assertRaises(ValueError):
+                profile.approved_dispatch(p, "4" * 64, omitted)
+
+    def test_retained_admission_rejects_foreign_partial_or_substituted_state(self):
+        cases = ("cohort", "horizon", "config", "publisher_binding", "node", "sidecar", "journal", "substitution",
+                 "foreign_manifest", "manifest_extra", "manifest_bool_link", "cleanup_id", "cleanup_extra", "holder", "symlink", "hardlink", "writable")
+        for failure in cases:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                p = retained_plan(directory, maintenance_plan(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT")))
+                root = Path(p["retained"]["root"])
+                if failure == "cohort":
+                    p["cohort"] = "0" * 64
+                elif failure == "horizon":
+                    p.update(planned_stop_at=profile.instant(profile.utc(p["planned_stop_at"]) + 60),
+                             cleanup_by=profile.instant(profile.utc(p["cleanup_by"]) + 60))
+                elif failure == "config":
+                    env = root / "inputs/0-resume.env"
+                    env.write_text("LANTERN_SECURITY_CONFIG_JSON={}\n")
+                elif failure == "publisher_binding":
+                    path = root / "inputs/publisher-input.json"
+                    value = profile.decode(path.read_bytes())
+                    path.write_bytes(profile.encoded({**value, "config_sha256": "0" * 64}))
+                elif failure == "node":
+                    (root / "state/1/node-2/control-membership").unlink()
+                elif failure == "sidecar":
+                    (root / "views/2/identity/nodes/node-3/membership/data.json.publisher.lease").unlink()
+                elif failure == "journal":
+                    (root / "publisher-journal/state.json.lease").unlink()
+                elif failure == "substitution":
+                    (root / "state/0/node-1/policy-users.json").write_bytes(b"UNIT_FOREIGN_USER_AND_ROLE_STATE")
+                elif failure == "foreign_manifest":
+                    refresh_retained_reference(p, "state_manifest", lambda value: value.update(cohort="0" * 64))
+                elif failure == "manifest_extra":
+                    refresh_retained_reference(p, "state_manifest", lambda value: value.update(extra=True))
+                elif failure == "manifest_bool_link":
+                    refresh_retained_reference(p, "state_manifest", lambda value: value["files"]["fixture.json"].update(nlink=True))
+                elif failure == "cleanup_id":
+                    refresh_retained_reference(p, "prior_cleanup", lambda value: value["containers"][0].update(id="0" * 64))
+                elif failure == "cleanup_extra":
+                    refresh_retained_reference(p, "prior_cleanup", lambda value: value.update(extra=True))
+                elif failure == "holder":
+                    refresh_retained_reference(p, "prior_cleanup", lambda value: value.update(holder_joined=False))
+                elif failure == "symlink":
+                    (root / "foreign-link").symlink_to(root / "fixture.json")
+                elif failure == "hardlink":
+                    profile.os.link(root / "fixture.json", root / "foreign-hardlink")
+                elif failure == "writable":
+                    (root / "state/0/node-1/control-membership").chmod(0o666)
+                if failure in ("config", "publisher_binding", "node", "sidecar", "journal"):
+                    # Even an admitted inventory cannot turn incomplete state
+                    # or a changed original config into a fresh setup request.
+                    refresh_retained_reference(p, "state_manifest", lambda value: value.update(files=profile.retained_inventory(root)))
+                with mock.patch.object(profile, "Commands") as commands, mock.patch.object(profile.shutil, "copytree") as copying:
+                    with self.assertRaises(ValueError):
+                        profile.retained_inputs(p, profile.configurations(p, admitted(p)))
+                    commands.assert_not_called()
+                    copying.assert_not_called()
+                self.assertFalse(Path(p["output"]).exists())
+
+    def test_retained_inventory_preserves_historical_fail_and_only_allows_runtime_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = retained_plan(directory, maintenance_plan(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT")))
+            kept = profile.retained_inputs(p, profile.configurations(p, admitted(p)))
+            root = kept["root"]
+            self.assertEqual(profile.decode((root / "lifecycle.json").read_bytes())["status"], "FAIL")
+            for name in ("state/0/node-1/policy-users.json", "publisher-journal/state.json",
+                         "views/0/identity/nodes/node-1/membership/control.json"):
+                (root / name).write_bytes(b"UNIT_NORMAL_RUNTIME_CHANGE")
+            profile.retained_unchanged(kept)
+            (root / "lifecycle.json").write_bytes(b"UNIT_MUST_NOT_RELABEL_OLD_FAIL")
+            with self.assertRaises(ValueError):
+                profile.retained_unchanged(kept)
+
+    def test_retained_mode_requires_current_source_proof_and_fresh_capacity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = retained_plan(directory, maintenance_plan(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT")))
+            rows = admission_records(p)
+            rows["description"].update(maintenance_window=dict(profile.MAINTENANCE_WINDOW), maintenance_window_min_lifetime_seconds=3600,
+                                       maintenance_window_max_lifetime_seconds=604800)
+            with admission_inputs(rows):
+                profile.admitted_inputs(p)
+            old = profile.decode(profile.read(p["retained"]["prior_plan"]["path"]))
+            rows["proof"].update({key: old["source"][key] for key in profile.SOURCE_FIELDS})
+            rows["proof"].update(source_head=old["source"]["head"], source_tree=old["source"]["tree"])
+            with admission_inputs(rows), self.assertRaises(ValueError):
+                profile.admitted_inputs(p)
+            with self.assertRaises(ValueError):
+                profile.renewal_capacity(profile.read(Path(p["retained"]["root"]) / "publisher-public/capacity.json"), p)
+
+    def test_retained_node_directory_identity_stays_immutable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = retained_plan(directory, maintenance_plan(str(Path(directory).resolve() / "UNIT_NEW_OUTPUT")))
+            kept = profile.retained_inputs(p, profile.configurations(p, admitted(p)))
+            node = kept["root"] / "state/0/node-1"
+            node.rename(Path(directory) / "UNIT_SAVED_NODE")
+            node.mkdir(mode=0o700)
+            with self.assertRaises(ValueError):
+                profile.retained_unchanged(kept)
+
+    def test_retained_expired_current_window_and_missing_state_never_dispatch(self):
+        for failure in ("expired", "missing"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory, mocked_window(directory, retained=True) as (p, approval, clock, made):
+                if failure == "expired":
+                    clock.elapsed = p["lifetime_seconds"]
+                else:
+                    (Path(p["retained"]["root"]) / "state/0/node-1/data-membership").unlink()
+                with mock.patch.object(profile.shutil, "copytree") as copying, self.assertRaises(ValueError):
+                    profile.run(p, "4" * 64, approval, "8" * 64)
+                self.assertEqual(made, [])
+                copying.assert_not_called()
+                self.assertFalse(Path(p["output"]).exists())
+
+    def test_retained_live_prior_owner_fails_before_creating_new_containers(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, "prior_owner_running", retained=True, bounded_commands=True) as (p, approval, _clock, made):
+            result = profile.run(p, "4" * 64, approval, "8" * 64)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(made[0].owned, {})
+            self.assertFalse(any(row["argv"][3] == "create" for row in made[0].rows))
+
+    def test_retained_lifecycle_resumes_same_state_with_seven_actual_owners(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_window(directory, retained=True, bounded_commands=True) as (p, approval, _clock, made):
+            root = Path(p["retained"]["root"])
+            before = profile.retained_inventory(root)
+            with mock.patch.object(profile.shutil, "copytree") as copying, \
+                    mock.patch.object(profile, "publisher_configuration", side_effect=AssertionError("retained Config must not be regenerated")):
+                result = profile.run(p, "4" * 64, approval, "8" * 64)
+            copying.assert_not_called()
+            self.assertEqual(result["status"], "PASS")
+            self.assertTrue(result["cleanup_known"])
+            self.assertTrue(result["immutable_after_verified"])
+            self.assertEqual(len(result["containers"]), 7)
+            self.assertTrue(all(row["normal_exit"] for row in result["containers"]))
+            self.assertEqual(profile.retained_inventory(root), before)
+            self.assertEqual(profile.decode((root / "lifecycle.json").read_bytes())["status"], "FAIL")
+            output = Path(p["output"])
+            fixture = profile.decode((output / "fixture.json").read_bytes())
+            self.assertEqual(fixture["owned_container_count"], 7)
+            self.assertEqual(fixture["head"], p["source"]["head"])
+            self.assertEqual(fixture["state_mode"], "resume-existing")
+            self.assertFalse(fixture["stopped_gap_qualified"])
+            self.assertEqual(fixture["admin_backend"], "retained-cohort-node-1-only")
+            self.assertEqual(fixture["serving_until"], p["planned_stop_at"])
+            self.assertEqual(profile.decode((output / "publisher-public/capacity.json").read_bytes())["revision"], p["source"]["head"])
+            self.assertNotEqual(profile.decode((root / "publisher-public/capacity.json").read_bytes())["revision"], p["source"]["head"])
+            publisher_input = profile.decode((output / "inputs/publisher-input.json").read_bytes())
+            self.assertEqual(publisher_input["mode"], "resume")
+            self.assertEqual(publisher_input["events_path"], "/publisher-events/events.jsonl")
+            self.assertEqual(publisher_input["config_sha256"], profile.digest((root / "inputs/publisher-config.json").read_bytes()))
+            creates = [row["argv"] for row in made[0].rows if row["argv"][3] == "create"]
+            self.assertEqual(len(creates), 7)
+            self.assertFalse(any("provision-security" in argv or "-initialize-" in argv[argv.index("--name") + 1] for argv in creates))
+            for argv in creates:
+                name = argv[argv.index("--name") + 1]
+                mounts = [argv[index+1] for index, item in enumerate(argv) if item == "--mount"]
+                if "-publisher-" in name:
+                    self.assertIn(f"type=bind,source={root / 'publisher-journal'},target=/publisher-journal", mounts)
+                    self.assertIn(f"type=bind,source={root / 'inputs/publisher-config.json'},target=/publisher-config.json,readonly", mounts)
+                    self.assertIn(f"type=bind,source={output / 'publisher-events'},target=/publisher-events", mounts)
+                elif "-resume-" in name:
+                    index = int(name.rsplit("-", 1)[1])
+                    node = f"node-{index+1}"
+                    self.assertIn(f"type=bind,source={root / 'views' / str(index)},target=/material,readonly", mounts)
+                    self.assertIn(f"type=bind,source={root / 'state' / str(index) / node},target=/state/{node}", mounts)
+                    self.assertIn(f"type=bind,source={output / 'state' / str(index)},target=/state", mounts)
+                    self.assertIn(f"type=bind,source={output / 'owner-control'},target=/owner-control,readonly", mounts)
+
     def test_maintenance_is_explicit_bounded_and_never_claims_human_presence(self):
         for lifetime in (3600, 604800):
             p, clock = maintenance_plan(lifetime=lifetime), Clock()

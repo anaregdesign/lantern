@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 from pathlib import Path
 import re
+import shlex
 import tomllib
 import unittest
 from unittest.mock import patch
@@ -25,6 +26,33 @@ def job(text, name):
 
 
 class RepresentativeCoverageTest(unittest.TestCase):
+    def test_controlled_fixture_clock_tests_have_separate_tagged_coverage(self):
+        body = job(workflow("go"), "modules")
+        parts = body.split("      - name: ")
+        clock = next(part for part in parts
+                     if part.startswith("Controlled membership publisher fixture clock contracts\n"))
+        native = next(part for part in parts
+                      if part.startswith("Controlled real-native provider input and lifecycle contracts\n"))
+        condition = lambda part: re.search(r"(?m)^        if: (.*)$", part)[1]
+        self.assertEqual(condition(clock), condition(native))
+        self.assertIn("        working-directory: server\n", clock)
+        command = shlex.split(re.search(r"(?m)^        run: (.*)$", clock)[1])
+        self.assertEqual(command[:2], ["go", "test"])
+        for flag in ("-race", "-shuffle=on", "-tags=lantern_test_time", "-count=1"):
+            self.assertIn(flag, command)
+        self.assertEqual([arg for arg in command if arg.startswith("./")],
+                         ["./internal/membershippublisher"])
+        pattern = command[command.index("-run") + 1]
+        source = (ROOT / "server/internal/membershippublisher/controlled_clock_fixture_test.go").read_text()
+        names = re.findall(r"(?m)^func (Test\w+)\(t \*testing.T\)", source)
+        expected = {"TestControlledFixtureClockOwnsAdmissionPublicationAndObservations",
+                    "TestControlledFixtureClockPreservesFiniteBudgetAndModes"}
+        self.assertEqual(set(names), expected)
+        self.assertEqual({name for name in names if re.search(pattern, name)}, expected)
+        for excluded in ("TestControlledNativeProviderChild", "TestControlledNativeProviderProfileDescription",
+                         "TestPublisherPartialDistributionExactResumeAndBudget"):
+            self.assertIsNone(re.search(pattern, excluded))
+
     def test_root_release_checks_each_target_before_publish_and_archives_before_upload(self):
         recipe = (ROOT / ".goreleaser.yaml").read_text()
         before = recipe.split("before:\n", 1)[1].split("\nbuilds:\n", 1)[0]

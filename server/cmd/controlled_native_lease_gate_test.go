@@ -64,12 +64,53 @@ func controlledNativeOwnerReadCaptured(file *os.File, maximum int64) ([]byte, er
 // subject to signature, profile, native-time and renewal-continuity validation.
 // Immutable operator inputs continue to require exactly one link above.
 func controlledNativeLeaseRead(path string, maximum int64) ([]byte, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, errors.New("owner signed lease input unavailable")
+	return controlledNativeLeaseReadWith(maximum, func() (*os.File, error) {
+		return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	}, time.Sleep)
+}
+
+// Docker Desktop overlapping bind aliases can briefly report ENOENT while a
+// signed input is atomically replaced. Only that OPEN result is retried: eight
+// attempts with seven monotonic one-millisecond waits, then fail closed. Once
+// opened, every check and read uses that captured inode without retry or fallback.
+func controlledNativeLeaseReadWith(maximum int64, open func() (*os.File, error), wait func(time.Duration)) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		file, err := open()
+		if err != nil {
+			if errors.Is(err, syscall.ENOENT) && attempt < 7 {
+				wait(time.Millisecond)
+				continue
+			}
+			return nil, controlledNativeLeaseReadFailure("open", "io", err)
+		}
+		raw, readErr := controlledNativeLeaseReadCaptured(file, maximum)
+		closeErr := file.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, controlledNativeLeaseReadFailure("close", "io", closeErr)
+		}
+		return raw, nil
 	}
-	defer file.Close()
-	return controlledNativeLeaseReadCaptured(file, maximum)
+}
+
+// Preserve stage and errno for bounded monitor diagnostics without retaining
+// private paths, raw payloads, or the underlying error's text.
+type controlledNativeLeaseReadError struct {
+	Stage  string
+	Reason string
+	Errno  syscall.Errno
+}
+
+func (err *controlledNativeLeaseReadError) Error() string {
+	return fmt.Sprintf("owner signed lease input refused: stage=%s reason=%s errno=%d", err.Stage, err.Reason, err.Errno)
+}
+
+func controlledNativeLeaseReadFailure(stage, reason string, err error) error {
+	var errno syscall.Errno
+	_ = errors.As(err, &errno)
+	return &controlledNativeLeaseReadError{Stage: stage, Reason: reason, Errno: errno}
 }
 
 func controlledNativeLeaseFileIdentity(identity *syscall.Stat_t) bool {
@@ -78,16 +119,28 @@ func controlledNativeLeaseFileIdentity(identity *syscall.Stat_t) bool {
 
 func controlledNativeLeaseReadCaptured(file *os.File, maximum int64) ([]byte, error) {
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() <= 0 || info.Size() > maximum {
-		return nil, errors.New("owner bounded signed lease input refused")
+	if err != nil {
+		return nil, controlledNativeLeaseReadFailure("stat", "io", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, controlledNativeLeaseReadFailure("stat", "type", nil)
+	}
+	if info.Mode().Perm() != 0600 {
+		return nil, controlledNativeLeaseReadFailure("stat", "mode", nil)
+	}
+	if info.Size() <= 0 || info.Size() > maximum {
+		return nil, controlledNativeLeaseReadFailure("stat", "size", nil)
 	}
 	identity, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !controlledNativeLeaseFileIdentity(identity) {
-		return nil, errors.New("owner signed lease input identity refused")
+		return nil, controlledNativeLeaseReadFailure("stat", "identity", nil)
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
-	if err != nil || int64(len(raw)) != info.Size() {
-		return nil, errors.New("owner signed lease input changed")
+	if err != nil {
+		return nil, controlledNativeLeaseReadFailure("read", "io", err)
+	}
+	if int64(len(raw)) != info.Size() {
+		return nil, controlledNativeLeaseReadFailure("read", "size-changed", nil)
 	}
 	return raw, nil
 }
@@ -568,6 +621,101 @@ func TestControlledNativeProviderSignedRenewalTranscript(t *testing.T) {
 		if err != nil || after.ControlVersion != 2 || after.DataVersion != 2 || controlledNativeLeaseAdvance(before, after) != nil {
 			t.Fatal("renewed paths did not verify with exact continuity", err)
 		}
+		if err := os.Rename(current.DataPath, current.DataPath+".target"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(current.DataPath+".target", current.DataPath); err != nil {
+			t.Fatal(err)
+		}
+		if cut, err := controlledNativeLeaseCurrent(current, from.Add(time.Minute)); err == nil || cut.ControlVersion != 0 || cut.DataVersion != 0 {
+			t.Fatal("failed capture reused previous or partial authority", err)
+		}
+	})
+	t.Run("bounded open ENOENT capture", func(t *testing.T) {
+		control, _ := sign(1, from, peerauth.MaxMembershipLifetime)
+		path := filepath.Join(t.TempDir(), "private-signed-payload.json")
+		if err := os.WriteFile(path, control, 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, scenario := range []struct {
+			name   string
+			misses int
+		}{
+			{"first attempt", 0},
+			{"transient", 1},
+			{"last attempt", 7},
+			{"persistent", 8},
+		} {
+			t.Run(scenario.name, func(t *testing.T) {
+				attempts, waits := 0, 0
+				var captured *os.File
+				raw, err := controlledNativeLeaseReadWith(peerauth.MaxManifestBytes, func() (*os.File, error) {
+					attempts++
+					if attempts <= scenario.misses {
+						return nil, &os.PathError{Op: "open", Path: path, Err: syscall.ENOENT}
+					}
+					var err error
+					captured, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+					return captured, err
+				}, func(delay time.Duration) {
+					waits++
+					if delay != time.Millisecond {
+						t.Fatal("capture wait changed", delay)
+					}
+				})
+				if scenario.misses == 8 {
+					var failure *controlledNativeLeaseReadError
+					if len(raw) != 0 || !errors.As(err, &failure) || failure.Stage != "open" || failure.Reason != "io" || failure.Errno != syscall.ENOENT || attempts != 8 || waits != 7 {
+						t.Fatal("persistent absence did not exhaust exact finite bound", attempts, waits, err)
+					}
+					if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), string(control)) {
+						t.Fatal("capture failure disclosed private input")
+					}
+					return
+				}
+				if err != nil || !bytes.Equal(raw, control) || attempts != scenario.misses+1 || waits != scenario.misses {
+					t.Fatal("transient absence did not recover only within capture bound", attempts, waits, err)
+				}
+				if _, err := captured.Stat(); !errors.Is(err, os.ErrClosed) {
+					t.Fatal("successful capture leaked descriptor", err)
+				}
+			})
+		}
+		for _, errno := range []syscall.Errno{syscall.EACCES, syscall.ELOOP, syscall.EIO} {
+			t.Run(errno.Error(), func(t *testing.T) {
+				attempts, waits := 0, 0
+				_, err := controlledNativeLeaseReadWith(peerauth.MaxManifestBytes, func() (*os.File, error) {
+					attempts++
+					return nil, &os.PathError{Op: "open", Path: path, Err: errno}
+				}, func(time.Duration) { waits++ })
+				var failure *controlledNativeLeaseReadError
+				if !errors.As(err, &failure) || failure.Stage != "open" || failure.Errno != errno || attempts != 1 || waits != 0 || strings.Contains(err.Error(), path) {
+					t.Fatal("non-ENOENT OPEN error retried or lost safe classification", attempts, waits, err)
+				}
+			})
+		}
+		for _, stage := range []string{"stat", "read"} {
+			t.Run(stage+" failure", func(t *testing.T) {
+				attempts, waits := 0, 0
+				var captured *os.File
+				_, err := controlledNativeLeaseReadWith(peerauth.MaxManifestBytes, func() (*os.File, error) {
+					attempts++
+					var err error
+					captured, err = os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+					if err == nil && stage == "stat" {
+						err = captured.Close()
+					}
+					return captured, err
+				}, func(time.Duration) { waits++ })
+				var failure *controlledNativeLeaseReadError
+				if !errors.As(err, &failure) || failure.Stage != stage || failure.Reason != "io" || attempts != 1 || waits != 0 {
+					t.Fatal("captured inode IO failure retried or lost classification", attempts, waits, err)
+				}
+				if _, err := captured.Stat(); !errors.Is(err, os.ErrClosed) {
+					t.Fatal("failed capture leaked descriptor", err)
+				}
+			})
+		}
 	})
 	t.Run("unsafe renewable input refused", func(t *testing.T) {
 		control, _ := sign(1, from, peerauth.MaxMembershipLifetime)
@@ -599,8 +747,22 @@ func TestControlledNativeProviderSignedRenewalTranscript(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := controlledNativeLeaseRead(path, maximum); err == nil {
-					t.Fatal("unsafe renewed membership input accepted")
+				attempts, waits := 0, 0
+				var captured *os.File
+				_, err := controlledNativeLeaseReadWith(maximum, func() (*os.File, error) {
+					attempts++
+					var err error
+					captured, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+					return captured, err
+				}, func(time.Duration) { waits++ })
+				var failure *controlledNativeLeaseReadError
+				if !errors.As(err, &failure) || attempts != 1 || waits != 0 {
+					t.Fatal("unsafe renewed membership input accepted or retried", attempts, waits, err)
+				}
+				if captured != nil {
+					if _, err := captured.Stat(); !errors.Is(err, os.ErrClosed) {
+						t.Fatal("unsafe capture leaked descriptor", err)
+					}
 				}
 			})
 		}

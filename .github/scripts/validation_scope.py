@@ -27,8 +27,8 @@ NATIVE_RUST = ("sdks/rust/src/transport", "sdks/rust/src/test_server.rs",
                "sdks/rust/src/value", "sdks/rust/src/smoke.rs")
 
 # Finite read-only reader/preflight dependencies, not a blanket .github exemption.
-# Executable fixtures, workflows, selectors, build/security/protocol policy and new
-# files stay full. These consumers must still reject changed/missing measurement
+# Other executable fixtures, workflows, selectors, build/security/protocol policy
+# and new files stay full. These consumers still reject changed/missing measurement
 # inputs; selecting their contracts never carries a benchmark or release PASS.
 HARNESS_INPUTS = {
     **dict.fromkeys((".github/scripts/bench_time_profile.py",
@@ -41,6 +41,32 @@ HARNESS_INPUTS = {
                      ".github/scripts/test_git_test_fixture.py",
                      ".github/scripts/test_local_gate_session.py"), "git-fixture"),
 }
+
+
+PRODUCT_FIXTURE_INPUTS = dict.fromkeys((
+    ".github/scripts/controlled_native_provider_fixture.py",
+    ".github/scripts/test_controlled_native_provider_fixture.py",
+    "server/cmd/controlled_native_provider_gate_test.go",
+    "server/cmd/controlled_native_owner_window_gate_test.go",
+    "server/cmd/controlled_native_lease_gate_test.go",
+    "server/cmd/controlled_native_publisher_gate_test.go",
+    "server/internal/membershippublisher/controlled_clock_fixture.go",
+    "server/internal/membershippublisher/controlled_clock_fixture_test.go",
+    "server/internal/membershippublisher/publisher.go",
+), "controlled-native-provider")
+
+
+def dependency_lock(path):
+    """Dependency lock filenames, never clock/block/locking source names."""
+    name = PurePosixPath(path).name
+    return (name in {"package-lock.json", "npm-shrinkwrap.json", "lockfile"}
+            or name.endswith((".lock", ".lockb", ".lock.json")))
+
+
+def product_fixture_group(path, status):
+    # Executable product composition is not a read-only harness exemption.
+    # Keep this separate from harness_group: PR/main source Q remains required.
+    return PRODUCT_FIXTURE_INPUTS.get(path) if status == "M" else None
 
 
 def harness_group(path, status):
@@ -59,13 +85,13 @@ def harness_required(result):
 def full(reason):
     return dict(full=True, reason=reason, families=sorted(LANGUAGES),
                 go_modules=list(GO_CONSUMERS), generation=True,
-                windows_required=True, windows_rust_required=True, harness_contracts=[])
+                windows_required=True, windows_rust_required=True, harness_contracts=[], fixture_contracts=[])
 
 
 def affected(changes):
     if not changes:
         return full("empty or unavailable diff")
-    families, modules, harness = set(), set(), set()
+    families, modules, harness, fixtures = set(), set(), set(), set()
     native_go = native_rust = generation = False
     for path, status in changes.items():
         value = PurePosixPath(path)
@@ -75,11 +101,25 @@ def affected(changes):
         if group := harness_group(path, status):
             harness.add(group)
             continue
+        if group := product_fixture_group(path, status):
+            fixtures.add(group)
+            # A fixture consumer edit cannot change its production dependencies.
+            # The ordinary publisher is production code and keeps that closure.
+            if path == "server/internal/membershippublisher/publisher.go":
+                modules |= GO_CONSUMERS["server"]
+            native_go = native_rust = True
+            continue
+        if path in PRODUCT_FIXTURE_INPUTS:
+            return full("new or deleted product fixture input")
+        if (path.startswith("server/cmd/controlled_native_")
+                or path.startswith("server/internal/membershippublisher/")
+                and {"controlled", "fixture"} <= set(value.stem.split("_"))):
+            return full("unmapped controlled-native fixture input")
         # Instructions/build policy cannot narrow its own qualification.
         if (path.startswith((".github/", ".agents/", "deploy/"))
                 or value.name in {"AGENTS.md", "CONTRIBUTING.md", "CLAUDE.md", "Makefile", "Dockerfile", "package.json"}
                 or value.suffix in {".mod", ".sum", ".yaml", ".yml", ".toml", ".lock"}
-                or "lock" in value.name or "config" in value.name
+                or dependency_lock(path) or "config" in value.name
                 or "/generated/" in path or "/src/gen/" in path or "/xtask/" in path
                 or "codegen" in value.name):
             return full("policy, configuration or dependency input")
@@ -122,12 +162,12 @@ def affected(changes):
             # Backend native composition also changes the Windows Rust fixture.
             native_rust |= path.startswith(("server/provider/", "server/cmd/", "server/internal/listenerlaunch/",
                                             "server/internal/config/"))
-    if families == {"docs"} and not harness and not modules:
+    if families == {"docs"} and not harness and not modules and not fixtures:
         return full("documentation uses the existing explicit prose gate")
     return dict(full=False, reason="mapped affected inputs", families=sorted(families),
                 go_modules=sorted(modules), generation=generation,
                 windows_required=native_go or native_rust, windows_rust_required=native_rust,
-                harness_contracts=sorted(harness))
+                harness_contracts=sorted(harness), fixture_contracts=sorted(fixtures))
 
 
 def changed(root, base, head="HEAD"):
