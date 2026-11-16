@@ -40,6 +40,8 @@ ROOT_INPUTS = {"go.mod", "go.sum", "go.work", "go.work.sum", "generate.go",
                ".goreleaser.yaml", ".mailmap"}
 ELIGIBLE = {"go-test-core", "go-test-mcp", "go-test-pb", "go-test-sdks-go",
             "go-test-server", "server-vet"}
+# Fresh affected-only commands share committed-source guards, never carry/export.
+FRESH_GO_STEPS = {"server-controlled-native-contracts", "server-controlled-native-capture-contracts"}
 # Outputs of the fixed installation/build steps. These are never exported into
 # eligible execution inputs; their owning unsupported gates still execute.
 BUILD_OUTPUT_DIRS = (".github/scripts/__pycache__/", "sdks/node/node_modules/", "admin/node_modules/",
@@ -123,7 +125,7 @@ def policy(path: str) -> bool:
     return (path.startswith((".github/", ".agents/", ".vscode/"))
             or value.name in {"AGENTS.md", "CONTRIBUTING.md", "CLAUDE.md", "Makefile", "Dockerfile"}
             or value.suffix in {".yaml", ".yml", ".toml", ".lock", ".mod", ".sum"}
-            or "lock" in value.name or "config" in value.name
+            or validation_scope.dependency_lock(path) or "config" in value.name
             or (len(value.parts) == 1 and path.startswith(".")))
 
 
@@ -352,7 +354,7 @@ class Session:
             else:
                 command.append(arg)
         env = self.env.copy()
-        if step.name in ELIGIBLE:
+        if step.name in ELIGIBLE or step.name in FRESH_GO_STEPS:
             # Prevent an inherited workspace override selecting developer sources.
             env["GOWORK"] = str(root / "go.work")
             env["PWD"] = str(root / step.cwd)

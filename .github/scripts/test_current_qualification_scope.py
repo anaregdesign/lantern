@@ -73,6 +73,22 @@ class QualificationScopeTest(unittest.TestCase):
                 patch.object(scope.evidence_only_pr, "git", return_value="120000 blob abc\\t" + path):
             self.assertTrue(scope.classify({})[0])
 
+    def test_executable_product_fixtures_keep_source_integration_required(self):
+        for path in scope.validation_scope.PRODUCT_FIXTURE_INPUTS:
+            self.assertIsNone(scope.validation_scope.harness_group(path, "M"), path)
+            for status in ("M", "A", "D", "T", "R100"):
+                self.assertTrue(scope.requires_qualification({path: status}), (path, status))
+            self.assertTrue(scope.requires_qualification({path: "M", "admin/app/a.tsx": "M"}), path)
+        for path in (".github/scripts/validation_scope.py", ".github/scripts/local_gate_plan.py",
+                     ".github/scripts/local_gate_session.py", "CONTRIBUTING.md"):
+            self.assertTrue(scope.requires_qualification({path: "M"}), path)
+        for path in (".github/scripts/controlled_native_unknown_fixture.py",
+                     "server/cmd/controlled_native_new_gate_test.go",
+                     "server/cmd/controlled_native_owner_stop_gate_test.go",
+                     "server/internal/membershippublisher/new_controlled_clock_fixture_test.go"):
+            for status in ("M", "A", "D"):
+                self.assertTrue(scope.requires_qualification({path: status}), (path, status))
+
     def test_missing_base_unsupported_event_and_classifier_errors_require_source_integration(self):
         self.assertTrue(scope.classify({})[0])
         self.assertTrue(scope.classify({"GITHUB_EVENT_NAME": "push", "GITHUB_SHA": "a", "PUSH_BEFORE_SHA": "0" * 40})[0])

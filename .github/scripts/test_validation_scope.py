@@ -3,8 +3,10 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from local_gate_plan import steps, affected_steps
+import local_gate_preflight as preflight
 import validation_scope as scope
 from windows_native import GO_PACKAGES, GO_TESTS, RUST_TESTS, require_go, require_rust
 
@@ -138,6 +140,146 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertFalse(result["full"])
         names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
         self.assertEqual(names, {"harness-contracts", "docs-tests", "final-diff", "final-clean"})
+
+    def test_product_fixture_mapping_keeps_owned_checks_and_production_modules(self):
+        full = steps(Path("/tmp/evidence"))
+        for path in scope.PRODUCT_FIXTURE_INPUTS:
+            with self.subTest(path=path):
+                result = scope.affected({path: "M"})
+                self.assertFalse(result["full"])
+                self.assertEqual(result["fixture_contracts"], ["controlled-native-provider"])
+                self.assertEqual(result["harness_contracts"], [])
+                self.assertIsNone(scope.harness_group(path, "M"))
+                production = path == "server/internal/membershippublisher/publisher.go"
+                self.assertEqual(set(result["go_modules"]), {"server", "."} if production else set())
+                self.assertTrue(result["windows_required"])
+                self.assertTrue(result["windows_rust_required"])
+                plan = affected_steps(full, result)
+                names = [s.name for s in plan]
+                self.assertEqual(len(plan), 16 if production else 5)
+                self.assertEqual(names[0], "controlled-native-python-contracts")
+                self.assertEqual(names[-2:], ["final-diff", "final-clean"])
+                self.assertTrue({"server-controlled-native-contracts",
+                                 "server-controlled-native-capture-contracts"} <= set(names))
+                module_checks = {"go-test-server", "go-test-.", "server-vet", "go-lint"}
+                if production:
+                    self.assertTrue(module_checks <= set(names))
+                    self.assertEqual(next(s.command for s in plan if s.name == "go-test-server"),
+                                     ("go", "test", "./..."))
+                else:
+                    self.assertFalse(module_checks & set(names))
+                self.assertFalse({"dart-doc", "offline-doc", "rust-doc", "dart-publish-dry-run",
+                                  "node-verify-package", "go-generate", "current-functional-wire",
+                                  "admin-playwright", "sqlite-performance-probe"} & set(names))
+                for status in ("A", "D", "T", "R100", "U", ""):
+                    self.assertTrue(scope.affected({path: status})["full"], status)
+        self.assertEqual(len(full), 79)
+        self.assertIs(affected_steps(full, scope.full("policy")), full)
+
+    def test_fixture_union_deduplicates_python_and_preserves_unknown_policy(self):
+        fixture = ".github/scripts/controlled_native_provider_fixture.py"
+        changes = {fixture: "M", "docs/controlled-native-providers.md": "M"}
+        result = scope.affected(changes)
+        plan = affected_steps(steps(Path("/tmp/evidence")), result)
+        names = [s.name for s in plan]
+        self.assertEqual(len(plan), 5)
+        self.assertIn("docs-tests", names)
+        self.assertNotIn("controlled-native-python-contracts", names)
+        result = scope.affected({fixture: "M", "core/collection/map.go": "M",
+                                 ".github/scripts/bench_time_profile.py": "M", "admin/app/a.tsx": "M"})
+        self.assertEqual(set(result["go_modules"]), {"core", "server", "."})
+        self.assertEqual(result["families"], ["admin"])
+        self.assertEqual(result["harness_contracts"], ["bench-time"])
+        self.assertEqual(result["fixture_contracts"], ["controlled-native-provider"])
+        for path in ("server/service/connect.go", "server/internal/security/control.go",
+                     "server/internal/membershippublisher/publisher.go"):
+            mixed = scope.affected({fixture: "M", path: "M"})
+            mixed_plan = affected_steps(steps(Path("/tmp/evidence")), mixed)
+            self.assertEqual(set(mixed["go_modules"]), {"server", "."}, path)
+            self.assertEqual(len(mixed_plan), 16, path)
+            self.assertIn("go-test-server", {s.name for s in mixed_plan}, path)
+        for path in (".github/scripts/unknown_fixture.py", ".github/workflows/go.yml",
+                     ".github/scripts/validation_scope.py", ".github/scripts/local_gate_plan.py",
+                     ".github/scripts/local_gate_session.py", ".github/scripts/current_qualification_scope.py",
+                     "CONTRIBUTING.md", "server/go.mod", "sdks/dart/pubspec.lock"):
+            self.assertTrue(scope.affected({fixture: "M", path: "M"})["full"], path)
+        for path in (".github/scripts/controlled_native_unknown_fixture.py",
+                     "server/cmd/controlled_native_new_gate_test.go",
+                     "server/cmd/controlled_native_owner_stop_gate_test.go",
+                     "server/internal/membershippublisher/new_controlled_clock_fixture_test.go"):
+            for status in ("M", "A", "D"):
+                self.assertTrue(scope.affected({path: status})["full"], (path, status))
+                self.assertTrue(scope.affected({fixture: "M", path: status})["full"], (path, status))
+        for path in ("server/cmd/ordinary_test.go", "server/internal/membershippublisher/ordinary_test.go"):
+            result = scope.affected({path: "M"})
+            self.assertFalse(result["full"], path)
+            self.assertEqual(set(result["go_modules"]), {"server", "."}, path)
+
+    def test_clock_source_names_are_not_dependency_lockfiles(self):
+        for path in ("core/hlc/clock.go", "core/collection/block.go",
+                     "core/privatefile/file_lock.go",
+                     "server/internal/membershippublisher/controlled_clock_fixture.go"):
+            self.assertFalse(scope.dependency_lock(path), path)
+            self.assertFalse(scope.affected({path: "M"})["full"], path)
+        for path in ("sdks/node/package-lock.json", "admin/npm-shrinkwrap.json", "Cargo.lock",
+                     "sdks/dart/pubspec.lock", "bun.lockb", "packages.lock.json", "lockfile"):
+            self.assertTrue(scope.dependency_lock(path), path)
+            self.assertTrue(scope.affected({path: "M"})["full"], path)
+
+    def test_focused_tagged_selectors_bind_existing_pure_tests(self):
+        selection = scope.affected({".github/scripts/controlled_native_provider_fixture.py": "M"})
+        plan = affected_steps(steps(Path("/tmp/evidence")), selection)
+        step = next(s for s in plan if s.name == "server-controlled-native-contracts")
+        pattern = re.compile(step.command[step.command.index("-run") + 1])
+        root = Path(__file__).resolve().parents[2] / "server"
+        selected = set()
+        for directory in ("cmd", "provider", "internal/membershippublisher"):
+            for source in (root / directory).glob("*_test.go"):
+                selected.update(name for name in re.findall(r"^func (Test\w+)\(", source.read_text(), re.MULTILINE)
+                                if pattern.fullmatch(name))
+        self.assertEqual(len(selected), 17)
+        self.assertTrue({"TestControlledNativeProviderNativeLeaseMonitor",
+                         "TestControlledNativeProviderPublisherRenewal",
+                         "TestControlledFixtureClockOwnsAdmissionPublicationAndObservations",
+                         "TestControlledFixtureClockPreservesFiniteBudgetAndModes"} <= selected)
+        self.assertFalse({"TestControlledNativeProviderChild", "TestControlledNativeProviderPublisherChild",
+                          "TestControlledNativeProviderProfileDescription", "TestControlledNativeProviderBuildRevision",
+                          "TestControlledNativeProviderSignedRenewalTranscript"} & selected)
+        owners = (
+            "cmd/controlled_native_provider_gate_test.go",
+            "cmd/controlled_native_owner_window_gate_test.go",
+            "cmd/controlled_native_lease_gate_test.go",
+            "cmd/controlled_native_publisher_gate_test.go",
+            "internal/membershippublisher/controlled_clock_fixture_test.go",
+        )
+        actual = {name for owner in owners for name in re.findall(
+            r"^func (Test\w+)\(", (root / owner).read_text(), re.MULTILINE)}
+        delegated = {"TestControlledNativeProviderBuildRevision", "TestControlledNativeProviderChild",
+                     "TestControlledNativeProviderPublisherChild", "TestControlledNativeProviderProfileDescription",
+                     "TestControlledNativeProviderSignedRenewalTranscript"}
+        self.assertFalse(actual - selected - delegated,
+                         "new fixture Tests require explicit coverage: " + str(sorted(actual - selected - delegated)))
+        capture = next(s for s in plan if s.name == "server-controlled-native-capture-contracts")
+        parent, child = capture.command[capture.command.index("-run") + 1].split("/")
+        self.assertTrue(re.fullmatch(parent, "TestControlledNativeProviderSignedRenewalTranscript"))
+        source = (root / "cmd/controlled_native_lease_gate_test.go").read_text()
+        names = [name.replace(" ", "_") for name in re.findall(r't.Run\("([^"\n]+)"', source)]
+        self.assertEqual({name for name in names if re.fullmatch(child, name)}, {
+            "captured_atomically_replaced_signed_inputs", "bounded_open_ENOENT_capture",
+            "unsafe_renewable_input_refused"})
+        self.assertIsNone(re.fullmatch(child, "maintenance_maximum_seven_days_replay"))
+
+    def test_pure_fixture_contracts_still_require_pinned_go_preflight(self):
+        result = scope.affected({".github/scripts/controlled_native_provider_fixture.py": "M"})
+        self.assertEqual(result["go_modules"], [])
+        plan = affected_steps(steps(Path("/tmp/evidence")), result)
+        root = Path(__file__).resolve().parents[2]
+        with patch.object(preflight, "scratch_environment", return_value={}), \
+                patch.object(preflight, "executable", return_value="/selected/go"), \
+                patch.object(preflight, "command", return_value="go version go0.0.1 linux/amd64") as command:
+            with self.assertRaisesRegex(ValueError, "local child.*expected=.*actual=0.0.1"):
+                preflight.check(root, {}, plan)
+            self.assertEqual(command.call_count, 1)
 
     def test_go_with_docs_preserves_module_docs_and_native_obligations(self):
         cases = (

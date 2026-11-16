@@ -201,7 +201,7 @@ the shared Git test helper (#1975). Their paired/consumer Python suites, actual
 owned-shell contracts and pinned-Go raw/effective environment check run through
 `harness_contracts.py`; missing tools, skipped or empty selected tests fail.
 Mixed product edits retain their module/native obligations. New/deleted tools,
-workflows, classifier/policy code, executable fixtures, protocol/scenario/resource
+workflows, classifier/policy code, unmapped executable fixtures, protocol/scenario/resource
 configuration and unknown paths remain conservative. A focused reader check is
 not permission to reuse a measurement: apply the [claim/input/invalidation
 map](docs/ci-inventory.md#claims-inputs-and-invalidation--1974), preserve original
@@ -209,6 +209,29 @@ verdicts and execute fresh affected cases when their required inputs changed or
 are missing. Hosted functional, module, coverage and security checks remain
 independent; only the reviewed unrelated configured-source/native obligation is
 omitted for a known reader-only edit.
+
+The separate finite `PRODUCT_FIXTURE_INPUTS` table selects the existing
+controlled-native provider controller/test, its four Go fixture owners, the
+test-only clock constructor pair and the production membership publisher.
+Only regular modified files use this closure; additions/deletions, unknown
+controllers and mixed policy/dependency changes retain full fallback. These
+are executable product inputs, never reader exemptions. A pure fixture change
+selects five local checks: its Python contracts, two tagged Go contracts and
+final diff/clean checks. It does not change upstream production dependencies.
+The production publisher or mixed ordinary Go edits retain their usual module
+closure; server/root changes therefore select sixteen checks, including normal
+publisher tests and dependency preparation. Selected native Windows Go/Rust
+coverage and configured-source integration stay required in either case.
+Affected-only contracts cover controller admission/cleanup, lease capture and
+clock/renewal behavior. Existing broad Python contracts cover the fixture once
+when docs also change. Full maximum-horizon transcript replay and exact-source linker
+checks remain in required PR/main CI; local capture checks select its bounded
+subtests. No provider, serving child or external time acquisition is enabled.
+Unrelated SDK docs, package dry-runs and distribution/performance matrices are
+NOT_SELECTED locally. Functional-validation, mandatory PR/main configured-source
+integration and final release/selected-environment qualifications are unchanged.
+Dependency lock matching uses actual lock filenames, so a `clock` or `block`
+Go source name does not become gate policy merely by containing `lock`.
 
 Before either local mode starts its selected commands, a bounded passive preflight
 checks selected executable paths and existing authoritative tool pins, including
@@ -239,6 +262,11 @@ the retired repeated-external-source full configured-source-integration campaign
 bounded configured-source-integration and every other applicable mandatory check.
 This policy's adoption PR follows that rule once before push. Later changes use
 the merged policy, with normal exact synthetic-merge/main checks still blocking.
+The bounded product-fixture flow adoption follows the same rule: execute the
+unchanged previous full79 contract once on the final policy candidate, alongside
+its focused scope/runner contracts. An earlier fixture commit's full79 result
+does not qualify a later classifier or runner change; no waiver or receipt carry
+is introduced.
 The owner-approved #1946 migration separately replaces only the full local plan's
 automatic external-source acquisition with complete controlled-source
 functional-validation and isolates inherited qualification opt-ins. Its adoption
