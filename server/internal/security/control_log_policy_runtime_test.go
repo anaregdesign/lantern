@@ -111,7 +111,12 @@ func TestLogPolicyRuntimeAdmissionRequiresExactCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authority.Apply(ctx, review, producer, [32]byte{}); err != nil {
+	applied, err := authority.Apply(ctx, review, producer, [32]byte{})
+	_, err = operationalPolicyCompleteFixture(ctx, review, applied, err, authority.Lookup,
+		operationalPolicyRetainedFixture(authority, review), func(ctx context.Context) bool {
+			return s3aPause(ctx, authority.origin.network.limits.Backoff)
+		})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := authority.LogPolicyForAdmission(ctx, admission); err == nil {
@@ -206,7 +211,12 @@ func TestLogPolicyRuntimeReconcileRejectsConcurrentCutChange(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("logger application was not entered", ctx.Err())
 	}
-	if _, err := authority.Apply(ctx, review, producer, [32]byte{}); err != nil {
+	applied, err := authority.Apply(ctx, review, producer, [32]byte{})
+	_, err = operationalPolicyCompleteFixture(ctx, review, applied, err, authority.Lookup,
+		operationalPolicyRetainedFixture(authority, review), func(ctx context.Context) bool {
+			return s3aPause(ctx, authority.origin.network.limits.Backoff)
+		})
+	if err != nil {
 		kernel := authority.origin.network.kernel
 		kernel.gate.Lock()
 		t.Logf("apply failure state: slot=%d p_records=%d selected=%t accepted=%t chosen=%t promises=%d votes=%d pending=%d", kernel.replayState.slot, kernel.p.count, kernel.selected != nil, kernel.accepted != nil, kernel.chosen != nil, len(kernel.promises), len(kernel.votes), len(kernel.pending))

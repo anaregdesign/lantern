@@ -1029,7 +1029,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		"- name: Prepare iOS simulator data\n        timeout-minutes: 10",
 		"- name: Build production iOS example for release\n        if: startsWith(github.ref, 'refs/tags/sdks/dart/v')",
 		"flutter build ios --debug --no-codesign --no-pub",
-		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
+		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 540",
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720",
 		`contains(fromJSON('["launch_stall","attach_stall"]'),`,
@@ -1051,7 +1051,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		t.Error("iOS launch retry still erases and reuses the wedged simulator")
 	}
 	for _, contract := range []string{
-		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
+		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 540",
 		"IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720",
@@ -1118,7 +1118,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		"separate production/device iOS",
 		"Only `launch_stall` or `attach_stall` may retry",
 		"full attempt 720 seconds",
-		"cold test-app build 360 seconds",
+		"cold test-app build 540 seconds",
 		"native launch 180 seconds",
 		"flutter drive --use-existing-app",
 		"outer step remains 14 minutes",

@@ -429,7 +429,7 @@ This package stays `publish_to: none` until its independent release is qualified
 
 The iOS job classifies the native smoke instead of treating every outer timeout
 as retryable infrastructure. On CI, it gives the full attempt 720 seconds. It
-gives the cold test-app build 360 seconds, the native launch 180 seconds, and
+gives the cold test-app build 540 seconds, the native launch 180 seconds, and
 the install 90 seconds. The longer build budget is necessary when the
 separate production build is skipped and the integration target compiles first.
 The attached helper builds before booting its selected Simulator, so first-boot

@@ -1073,7 +1073,7 @@ jobs:
         env:
           # Without the separate production build, this integration target
           # performs the first native compile on a cold macOS runner.
-          IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360
+          IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 540
           IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720
@@ -1131,7 +1131,7 @@ jobs:
         timeout-minutes: 14
         working-directory: sdks/dart/example
         env:
-          IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360
+          IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 540
           IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720
