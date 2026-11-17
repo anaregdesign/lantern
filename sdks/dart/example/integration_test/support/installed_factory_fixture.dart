@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 import 'package:lantern_example/app_data_session.dart';
 
@@ -17,6 +18,11 @@ final installedFactoryScenarios = {
   'shared_remote_wipe_before_swap',
   'installation_restore_ownership',
 };
+
+/// Extracts the exact string kind for assertions and asynchronous predicates.
+/// Decoded VertexValue objects do not have structural equality.
+String? installedFactoryStringPayload(VertexValue? value) =>
+    value is StringValue ? value.value : null;
 
 /// Relays opaque TCP bytes. HTTPS still authenticates the original URL, not the
 /// loopback relay. Cutting both sockets also interrupts existing WatchChanges.
