@@ -987,23 +987,27 @@ jobs:
     runs-on: macos-15-intel
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    # Cold platform preparation has separate bounds from the unchanged app budgets.
     # Two bounded 14-minute attempts plus fresh-device creation must leave
     # enough margin for setup/build, diagnostics upload, and mandatory cleanup.
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
       # Finish cold runtime migration alongside toolchain setup, then return
       # the selected device to Shutdown before the separately bounded smoke.
       - name: Select unbooted iOS simulator
-        timeout-minutes: 1
+        timeout-minutes: 5
         run: |
           set -euo pipefail
+          printf '%s\n' '[ios smoke setup] stage=select_device_started'
           device=$(xcrun simctl list devices available -j | \
             jq -er '[(.devices["com.apple.CoreSimulator.SimRuntime.iOS-18-5"] // [])[] | select((.name | startswith("iPhone")) and .state == "Shutdown")][0].udid')
           test -n "$device"
           echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
+          printf '%s\n' '[ios smoke setup] stage=boot_request_started'
           xcrun simctl boot "$device"
+          printf '%s\n' '[ios smoke setup] stage=boot_request_returned'
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -1018,11 +1022,15 @@ jobs:
           cache: true
 
       - name: Prepare iOS simulator data
-        timeout-minutes: 4
+        timeout-minutes: 10
         run: |
           set -euo pipefail
+          printf '%s\n' '[ios smoke setup] stage=boot_readiness_started'
           xcrun simctl bootstatus "$DEVICE_ID" -b
+          printf '%s\n' '[ios smoke setup] stage=boot_readiness_returned'
+          printf '%s\n' '[ios smoke setup] stage=shutdown_started'
           xcrun simctl shutdown "$DEVICE_ID"
+          printf '%s\n' '[ios smoke setup] stage=shutdown_returned'
 
       - name: Start Lantern
         run: |
