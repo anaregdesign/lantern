@@ -1,26 +1,49 @@
 {
   "application": {
-    "binarySha256": "d1f1a55d25c1782ccbe1465c426b7504dec69f57a53127fb012142ece88c63e8",
+    "binarySha256": "df869292754cfe01d4f17978eacec408cbc53c152731c456546d8a5887016dd2",
     "packageId": "com.anaregdesign.lanternExample",
     "target": "integration_test/mobile_smoke_test.dart"
   },
   "cleanCheckout": true,
   "contentFree": true,
+  "fixture": {
+    "buildKind": "test-only",
+    "buildTags": [
+      "lantern_test_time"
+    ],
+    "descriptorSha256": "d507b47b9fdbc1482263ee5719fb2dec71ffa33ce4b43c77dca55a3e4bddd02e",
+    "deviceFinishedAt": "2026-11-17T01:18:17.541652Z",
+    "deviceStartedAt": "2026-11-17T01:18:15.752266Z",
+    "imageSha256": "127b1073721e4b11bfe439c5479d9095f0bc457160798009730f04d5250bdeb3",
+    "lifecycleFinishedAt": "2026-11-17T01:20:31.242960Z",
+    "phoneMarkerSha256": "8e4fb5cc8236493ac97a2e99c85f0b0e33d4c58857dd376189ee21c4ce752bff",
+    "preparedAt": "2026-11-17T01:18:07.034373Z",
+    "profile": "physical",
+    "receiptSha256": "2cf4c9c5464b8cc0652de70edf093bcea5bdfb07fb00ea2f1c7118ee87aae668",
+    "recordPayloadSha256": "f1ab94dd09cc52a9648b2d0e5a7b4c2b3452415d416800bfda2435e4c588af61",
+    "schema": 1,
+    "servingStoppedAt": "2026-11-17T01:20:29.231448758Z",
+    "servingUntil": "2026-11-17T01:27:07.030027303Z",
+    "sidecarSha256": "ff1e67c54d8660db12002a59d2c04cb9490708f54081ad6171b2b43517f3ec8c",
+    "sourceCommit": "94e32504957b0bc91c067a36f19ad7a6a543cb95",
+    "sourceKind": "controlled-source",
+    "syntheticUtc": true
+  },
   "kind": "physical_offline_release_evidence",
   "limitations": [],
   "network": {
     "authenticated": true,
     "platformTrustedTls": true,
-    "topology": "private LAN public-CA HTTPS gateway to one synthetic responder",
+    "topology": "Signed core fixture; separate same-source receipt and CDC supplements",
     "transport": "Connect/HTTPS"
   },
   "physicalDevice": true,
   "platform": {
     "kind": "physical-ios",
     "model": "iPhone 16 Pro",
-    "os": "iOS 26.7"
+    "os": "iOS 27.2"
   },
-  "recordedAt": "2026-10-01T08:22:26.776840Z",
+  "recordedAt": "2026-11-17T05:16:47.903537Z",
   "repository": "anaregdesign/lantern",
   "result": "passed",
   "scenarios": [
@@ -40,8 +63,8 @@
     "watch_cleanup",
     "wipe_before_send"
   ],
-  "schema": 1,
-  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
+  "schema": 2,
+  "testedCommit": "94e32504957b0bc91c067a36f19ad7a6a543cb95",
   "toolchain": {
     "dart": "3.12.2",
     "flutter": "3.44.6",

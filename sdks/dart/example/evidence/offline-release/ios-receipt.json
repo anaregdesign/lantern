@@ -1,20 +1,20 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "physical_offline_receipt_evidence",
   "repository": "anaregdesign/lantern",
   "contentFree": true,
   "physicalDevice": true,
-  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
-  "runId": "272e0330d458e9a2e2c26d0c5f9663a6",
-  "runStartedAt": "2026-10-01T08:17:50.455525Z",
-  "recordedAt": "2026-10-01T08:22:09.046893Z",
+  "testedCommit": "94e32504957b0bc91c067a36f19ad7a6a543cb95",
+  "runId": "45bcf0380fa840de56bcb4e57c458068",
+  "runStartedAt": "2026-11-17T04:50:43.804544Z",
+  "recordedAt": "2026-11-17T05:00:07.511696Z",
   "platform": {
     "kind": "physical-ios"
   },
   "application": {
     "packageId": "com.anaregdesign.lanternExample",
     "target": "integration_test/physical_receipt_matrix_test.dart",
-    "binarySha256": "c0fcb73aff21ca2826984da3d768dc7bb37fbc26a23b5f2dd082b196d6fc7ac3"
+    "binarySha256": "b1917e47f55ea2f299412855cebd23115ac6fde3375942032852b9ad01a7e35c"
   },
   "network": {
     "transport": "Connect/HTTPS",
@@ -38,5 +38,28 @@
     "receipt_untrusted_tls_rejected",
     "receipt_vertex_delete_exact"
   ],
-  "result": "passed"
+  "result": "passed",
+  "fixture": {
+    "schema": 1,
+    "profile": "physical",
+    "sourceCommit": "94e32504957b0bc91c067a36f19ad7a6a543cb95",
+    "sourceKind": "controlled-source",
+    "buildKind": "test-only",
+    "buildTags": [
+      "lantern_test_time"
+    ],
+    "syntheticUtc": true,
+    "imageSha256": "127b1073721e4b11bfe439c5479d9095f0bc457160798009730f04d5250bdeb3",
+    "descriptorSha256": "8f1fe846b14ae11a458417e2bae1b8ccc53733337e5cbb61b8d9209829ccb81e",
+    "receiptSha256": "2b1c5a3b06eaa590feeed0e6dad3e02efbedafc3b32dcc5ac59b36abb788dc22",
+    "sidecarSha256": "8ad3ae8ab93114ce62f82fa4d8374e7d9c9a9e0d5cd99c08b4ad663805c8c703",
+    "preparedAt": "2026-11-17T04:50:39.936911Z",
+    "servingUntil": "2026-11-17T04:59:39.928126178Z",
+    "lifecycleFinishedAt": "2026-11-17T04:58:30.482360Z",
+    "servingStoppedAt": "2026-11-17T04:58:29.138722048Z",
+    "deviceStartedAt": "2026-11-17T04:50:46.935598Z",
+    "deviceFinishedAt": "2026-11-17T04:52:43.893330Z",
+    "phoneMarkerSha256": "98999845a1594a5abf27fe1080ceda67988c22a07cf3da3baa3ff81d838f6566",
+    "recordPayloadSha256": "145515033792d182c6c68ca974ef4b7864cd896bd7a8518c5a753588d6c88974"
+  }
 }
