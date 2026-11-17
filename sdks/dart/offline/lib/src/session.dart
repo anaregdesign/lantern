@@ -831,6 +831,8 @@ final class _SessionShared {
       _watchExpiries[query] = earliest!;
     }
     runtime.clearPending('watch-expiry');
+    // Retired owners clear stopped queries without enqueueing a replacement.
+    if (value == null && !authorityCurrent()) return;
     if (_watchExpiries.isNotEmpty) {
       final next = _watchExpiries.values.reduce(
         (a, b) => a.isBefore(b) ? a : b,

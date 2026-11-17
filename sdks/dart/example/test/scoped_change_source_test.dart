@@ -10,6 +10,8 @@ import 'package:lantern_example/app_data_session.dart';
 import 'package:lantern_example/installation_policy.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../integration_test/support/installed_factory_fixture.dart';
+
 void main() {
   final url = io.Platform.environment['LANTERN_SCOPED_WIRE_URL'];
   test(
@@ -406,6 +408,141 @@ void main() {
   );
 
   test(
+    'I7 warm Memory pinned CDC recovers after an actual relay cut',
+    () async {
+      final writer = _wireClient();
+      addTearDown(writer.close);
+      const tail = 'orders:create:app-relay-tail';
+      const head = 'orders:create:app-relay-head';
+      await writer.putVertices([
+        VertexInput(key: tail, value: const StringValue('before')),
+        VertexInput(key: head, value: const StringValue('head')),
+      ]);
+      await writer.putEdge(EdgeInput(tail: tail, head: head, weight: 1));
+      final relay = await PhysicalSocketRelay.open(Uri.parse(url!));
+      addTearDown(relay.close);
+      final client = _wireClient(relay: relay);
+      addTearDown(client.close);
+      final schedule = PhysicalSessionSchedule();
+      final app = await AppDataSessionFactory(
+        client: client,
+        binding: _source(client).binding,
+        profile: AppDataProfile.memory,
+        legacyPartition: 'fixture-memory-relay',
+        pinnedResponder: true,
+        changePrefix: 'orders:',
+        schedule: schedule.call,
+      ).open();
+      addTearDown(app.close);
+      final data = app.data!;
+      final observations = InstalledFactoryObservations();
+      final vertices = <LanternSnapshot<Vertex>>[];
+      final edges = <LanternSnapshot<Edge>>[];
+      final graphs = <LanternTraversalSnapshot>[];
+      final vertex = observations.listen(data.watchVertex(tail), vertices.add);
+      final edge = observations.listen(
+        data.watchEdge(const EdgeRef(tail, head)),
+        edges.add,
+      );
+      final graph = observations.listen(
+        data.watchIlluminate(
+          tail,
+          traversal: const BfsOptions(step: 1, fanOut: 10),
+          vertexPrefix: 'orders:',
+        ),
+        graphs.add,
+      );
+      addTearDown(vertex.cancel);
+      addTearDown(edge.cancel);
+      addTearDown(graph.cancel);
+      Future<void> until(String phase, bool Function() ready) =>
+          _wait(phase, () async {
+            observations.check();
+            return ready();
+          });
+      try {
+        await until(
+          'warm pinned Memory observations',
+          () =>
+              vertices.any(
+                (v) =>
+                    installedFactoryStringPayload(v.confirmed.value?.value) ==
+                    'before',
+              ) &&
+              edges.any((v) => v.confirmed.value?.weight == 1) &&
+              graphs.any(
+                (v) => v.confirmed.value?.edge(tail, head)?.weight == 1,
+              ),
+        );
+        final rejected = relay.rejectedConnections;
+        final cut = relay.cutConnections;
+        relay.setAvailable(false);
+        final ticket = await data.mutations.submit(
+          MutationRequest.putVertices([
+            VertexInput(
+              key: tail,
+              value: const StringValue('restored'),
+              expiresIn: const Duration(minutes: 5),
+            ),
+          ]),
+        );
+        await until(
+          'actual cut and local pending admission',
+          () =>
+              relay.rejectedConnections > rejected &&
+              vertices.any((v) => v.pending.count == 1),
+        );
+        await writer.putEdge(EdgeInput(tail: tail, head: head, weight: 2));
+        relay.setAvailable(true);
+        // No Get/resume/Sync/drain, manual retry or replacement subscription.
+        await until(
+          'availability-only pinned Memory recovery',
+          () =>
+              vertices.any(
+                (v) =>
+                    v.pending.count == 0 &&
+                    installedFactoryStringPayload(v.confirmed.value?.value) ==
+                        'restored',
+              ) &&
+              edges.any((v) => v.confirmed.value?.weight == 2) &&
+              graphs.any(
+                (v) =>
+                    v.confirmed.value?.edge(tail, head)?.weight == 2 &&
+                    installedFactoryStringPayload(
+                          v.confirmed.value?.vertices[tail]?.value,
+                        ) ==
+                        'restored',
+              ),
+        );
+        expect(relay.cutConnections, greaterThan(cut));
+        expect(
+          (await data.mutations.getStatus(
+            ticket.reference.operationId,
+          )).items.single.state,
+          MutationItemState.handled,
+        );
+        await observations.retire(app.close);
+        observations.check();
+        expect(schedule.activeAlarms, 0);
+        relay.check();
+      } catch (error, stack) {
+        final detail = switch (error) {
+          LanternException e =>
+            '${e.runtimeType}/${e.code.name}/${e.transportCodeName}/${e.cause.runtimeType}',
+          LanternDataException e => '${e.runtimeType}/${e.reason.name}',
+          _ => '${error.runtimeType}',
+        };
+        io.stderr.writeln('PINNED_MEMORY_RELAY_HOST_FAILURE $detail');
+        Error.throwWithStackTrace(error, stack);
+      }
+    },
+    skip: url == null
+        ? 'Run through the real OIDC tests/integration fixture.'
+        : false,
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
+
+  test(
     'automatic public CDC permission denial pauses without polling fallback',
     () async {
       final client = _wireClient(denied: true);
@@ -443,13 +580,16 @@ void main() {
 LanternClient _wireClient({
   bool denied = false,
   _WireAvailability? availability,
+  PhysicalSocketRelay? relay,
 }) {
   final context = io.SecurityContext(
     withTrustedRoots: false,
   )..setTrustedCertificates(io.Platform.environment['LANTERN_SCOPED_WIRE_CA']!);
   return LanternClient.connect(
     Uri.parse(io.Platform.environment['LANTERN_SCOPED_WIRE_URL']!),
-    httpClientFactory: () => io.HttpClient(context: context),
+    httpClientFactory: () =>
+        relay?.createHttpClient(context: context) ??
+        io.HttpClient(context: context),
     interceptors: [if (availability != null) availability.intercept],
     tokenProvider: () =>
         io.Platform.environment[denied

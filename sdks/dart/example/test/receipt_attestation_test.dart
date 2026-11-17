@@ -3,9 +3,11 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lantern_client/lantern_client.dart';
 
 import '../integration_test/support/receipt_attestation.dart';
 import '../integration_test/support/receipt_restart_journal.dart';
+import 'app_data_test_support.dart';
 
 const _commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _runId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -341,6 +343,71 @@ void main() {
     );
     expect((await savedMarker())['failureType'], 'cleanup');
   });
+
+  test(
+    'aggregate diagnostics retain typed codes without inner content',
+    () async {
+      final wire = AppWire(AppClock())..available = false;
+      final client = LanternClient.connect(
+        Uri.parse('https://example.invalid'),
+        transport: wire,
+        retryPolicy: const RetryPolicy(maxAttempts: 1),
+      );
+      addTearDown(client.close);
+      Object? unavailable;
+      try {
+        await client.getVertex(
+          'private-graph-key',
+          options: LanternCallOptions(retry: false),
+        );
+      } catch (error) {
+        unavailable = error;
+      }
+      expect(unavailable, isA<LanternUnavailableException>());
+      final errors = [
+        unavailable!,
+        const LanternDataException(DataFailure.closed),
+        const SocketException('private-endpoint-and-credential'),
+        StateError('private-filesystem-path'),
+        'private-graph-value',
+        LanternRetryExhaustedException(
+          attempts: 1,
+          cause: unavailable! as LanternException,
+        ),
+      ];
+      final aggregate = ReceiptAttestationFailure([
+        'body',
+        'cleanup',
+        'cleanup',
+        'cleanup',
+        'private-phase',
+        'cleanup',
+      ], errors);
+      expect(
+        aggregate.toString(),
+        'Receipt attestation failed during body:lantern_unavailable/14/none, '
+        'cleanup:data_closed, cleanup:socket, cleanup:state, other:other, '
+        'cleanup:retry_lantern_unavailable/14/none',
+      );
+      expect(aggregate.errors, same(errors));
+      expect(aggregate.toString(), isNot(contains('private')));
+      expect(aggregate.toString(), isNot(contains('host outage')));
+    },
+  );
+
+  test(
+    'aggregate diagnostics are bounded and tolerate missing error entries',
+    () {
+      final aggregate = ReceiptAttestationFailure(List.filled(100, 'cleanup'), [
+        const LanternDataException(DataFailure.closed),
+      ]);
+      expect(aggregate.toString(), endsWith(', more'));
+      expect(aggregate.toString(), contains('cleanup:missing'));
+      expect(aggregate.toString().length, lessThan(512));
+      expect(aggregate.phases, hasLength(100));
+      expect(aggregate.errors, hasLength(1));
+    },
+  );
 
   test('missing or duplicate scenarios fail closed', () async {
     await expectLater(
