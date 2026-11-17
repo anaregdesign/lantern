@@ -249,7 +249,7 @@ final class ReceiptResponseDropProxy {
           _dropMutations.any(
             (rpc) => _forwarded[rpc] != 1 || _dropped[rpc] != 1,
           ) ||
-          (_forwarded['GetReceiptStatuses'] ?? 0) < _dropMutations.length ||
+          (_forwarded['GetReceiptStatuses'] ?? 0) != 0 ||
           _trace.length >= _maxTraceEntries) {
         request.response.statusCode = HttpStatus.conflict;
       } else {
