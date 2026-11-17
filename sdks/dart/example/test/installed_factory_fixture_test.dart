@@ -82,6 +82,23 @@ void main() {
     },
   );
 
+  test('T18 fences silent retirement at the close Future join', () async {
+    final source = StreamController<int>(sync: true);
+    final observations = InstalledFactoryObservations();
+    final events = <int>[];
+    final watch = observations.listen(source.stream, events.add);
+    final closed = Completer<void>();
+    final retiring = observations.retire(() => closed.future);
+    closed.complete();
+    // The close continuation runs first; this is still before the drain timer.
+    scheduleMicrotask(() => source.add(1));
+    await expectLater(retiring, throwsStateError);
+    expect(events, [1]);
+    expect(observations.closedErrors, 0);
+    await watch.cancel();
+    await source.close();
+  });
+
   test(
     'T18 compares independently allocated string payloads with exact kinds',
     () {

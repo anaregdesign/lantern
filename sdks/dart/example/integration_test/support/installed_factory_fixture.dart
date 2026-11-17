@@ -76,6 +76,7 @@ final class InstalledFactoryObservations {
     _retiring = true;
     try {
       await close();
+      _retired = true;
       // Direct close queues typed errors; Offline may silently cancel upstream.
       await Future<void>.delayed(Duration.zero);
       check();
