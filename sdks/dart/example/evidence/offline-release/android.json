@@ -1,26 +1,49 @@
 {
   "application": {
-    "binarySha256": "62ad7a357e36dfb50d87e945b96c0b1182292615850b1cfa7bf6452264d0048d",
+    "binarySha256": "6354b59d0a8e88cafe3f56373889ba9b1789ebe8cead9130477d8b4374739034",
     "packageId": "com.anaregdesign.lantern_example",
     "target": "integration_test/mobile_smoke_test.dart"
   },
   "cleanCheckout": true,
   "contentFree": true,
+  "fixture": {
+    "buildKind": "test-only",
+    "buildTags": [
+      "lantern_test_time"
+    ],
+    "descriptorSha256": "78713d60e6b7a7ae013b8c7001c67a697c508c4cea4878b8c1badd2fd216140a",
+    "deviceFinishedAt": "2026-11-17T01:04:32.103163Z",
+    "deviceStartedAt": "2026-11-17T01:04:23.439407Z",
+    "imageSha256": "127b1073721e4b11bfe439c5479d9095f0bc457160798009730f04d5250bdeb3",
+    "lifecycleFinishedAt": "2026-11-17T01:06:46.991418Z",
+    "phoneMarkerSha256": "82393c924f6ec178bc7d11df70a8668985197cbbb41b54d6f29d4a97f4733a8d",
+    "preparedAt": "2026-11-17T01:04:13.305302Z",
+    "profile": "physical",
+    "receiptSha256": "0e7b644512c9301f0303fa7fd6f871f7b36d8316cea2aced8115c357225138a5",
+    "recordPayloadSha256": "6fd36c4b4af15015336d61229ccb5c5547a041b2ec7afcd52d6494261c0e6728",
+    "schema": 1,
+    "servingStoppedAt": "2026-11-17T01:06:45.63294546Z",
+    "servingUntil": "2026-11-17T01:13:13.233662417Z",
+    "sidecarSha256": "0780cd35ec33b197c973064d771785699094d9bb4d1e1033fcaa98e0c90dc819",
+    "sourceCommit": "94e32504957b0bc91c067a36f19ad7a6a543cb95",
+    "sourceKind": "controlled-source",
+    "syntheticUtc": true
+  },
   "kind": "physical_offline_release_evidence",
   "limitations": [],
   "network": {
     "authenticated": true,
     "platformTrustedTls": true,
-    "topology": "private LAN public-CA HTTPS gateway to one synthetic responder",
+    "topology": "Signed core fixture; separate same-source receipt and CDC supplements",
     "transport": "Connect/HTTPS"
   },
   "physicalDevice": true,
   "platform": {
     "kind": "physical-android",
     "model": "Pixel 9a",
-    "os": "Android 17 (API 37)"
+    "os": "Android 17"
   },
-  "recordedAt": "2026-10-01T08:15:33.727248Z",
+  "recordedAt": "2026-11-17T05:16:47.903537Z",
   "repository": "anaregdesign/lantern",
   "result": "passed",
   "scenarios": [
@@ -40,8 +63,8 @@
     "watch_cleanup",
     "wipe_before_send"
   ],
-  "schema": 1,
-  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
+  "schema": 2,
+  "testedCommit": "94e32504957b0bc91c067a36f19ad7a6a543cb95",
   "toolchain": {
     "dart": "3.12.2",
     "flutter": "3.44.6",
