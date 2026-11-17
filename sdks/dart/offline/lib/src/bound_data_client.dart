@@ -50,7 +50,9 @@ final class OfflineLanternDataClient
     this._traversalClock,
   ) {
     _observations = LanternObservationCoordinator(
-      scheduler: _session?.runtime.observationScheduler,
+      scheduler: _session?.runtime.observationScheduler(
+        isCurrent: () => _notificationCurrent,
+      ),
     );
     _direct = LanternAdapterReads.bound(
       _client,

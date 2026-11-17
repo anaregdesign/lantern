@@ -302,6 +302,103 @@ void main() {
     });
   }
 
+  for (final retirement in ['authority', 'transport', 'cancel']) {
+    test(
+      'R4 queued subscribe retires before its first microtask $retirement',
+      () async {
+        final failures = <Object>[], streamFailures = <Object>[];
+        final traces = <StackTrace>[];
+        final values = <LanternSnapshot<Vertex>>[];
+        var current = true;
+        final h = Harness();
+        await Zone.current
+            .fork(
+              specification: ZoneSpecification(
+                handleUncaughtError: (_, _, _, error, stack) {
+                  failures.add(error);
+                  traces.add(stack);
+                },
+              ),
+            )
+            .run(() async {
+              try {
+                final session = await h.open(authorityCurrent: () => current);
+                final raw = session
+                    .watchVertex(
+                      'queued',
+                      options: const WatchOptions(source: ReadSource.cacheOnly),
+                    )
+                    .listen(values.add, onError: streamFailures.add);
+                // The query is registered, but its initial request is still queued.
+                if (retirement == 'transport') {
+                  h.client.close();
+                } else if (retirement == 'cancel') {
+                  await raw.cancel();
+                } else {
+                  current = false;
+                }
+                final closing = session.close();
+                await closing;
+                final count = values.length;
+                await h.tick(2000);
+                expect(values.length, count);
+                expect(
+                  () => session.getVertex('queued'),
+                  throwsA(isA<OfflineDisposedException>()),
+                );
+                expect(h.remote.calls, 0);
+                expect(h.clock.active, 0);
+                await raw.cancel();
+              } catch (error, stack) {
+                failures.add(error);
+                traces.add(stack);
+              } finally {
+                try {
+                  await h.close().timeout(const Duration(seconds: 2));
+                } catch (error, stack) {
+                  failures.add(error);
+                  traces.add(stack);
+                }
+              }
+            });
+        expect(failures, isEmpty, reason: traces.join('\n'));
+        expect(streamFailures, isEmpty);
+      },
+    );
+  }
+
+  for (final retireTransport in [false, true]) {
+    test(
+      'R4 stream obtained before retirement listens after ${retireTransport ? 'transport' : 'authority'} retirement',
+      () async {
+        var current = true;
+        final h = Harness();
+        addTearDown(h.close);
+        final session = await h.open(authorityCurrent: () => current);
+        final stream = session.watchVertex('deferred');
+        if (retireTransport) {
+          h.client.close();
+        } else {
+          current = false;
+        }
+        final errors = <Object>[], values = <LanternSnapshot<Vertex>>[];
+        final done = Completer<void>();
+        final sub = stream.listen(
+          values.add,
+          onError: errors.add,
+          onDone: done.complete,
+        );
+        await done.future;
+        expect(values, isEmpty);
+        expect(errors, [isA<OfflineDisposedException>()]);
+        await sub.cancel();
+        await session.close();
+        expect(h.remote.calls, 0);
+        expect(h.clock.active, 0);
+      },
+    );
+  }
+
   test(
     'R2 startup data-join failure never releases the provisional owner',
     () async {

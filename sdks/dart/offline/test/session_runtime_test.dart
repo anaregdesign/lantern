@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client/lantern_client_adapter.dart';
 import 'package:lantern_client_offline/src/errors.dart';
 import 'package:lantern_client_offline/src/session_runtime.dart';
 import 'package:test/test.dart';
@@ -35,6 +36,100 @@ void main() {
     expect(runtime.hasWakeup, isFalse);
     expect(clock.active, 0);
   });
+
+  test(
+    'retired observation callbacks retain their original work join',
+    () async {
+      await runtime.close();
+      var current = true, joined = false;
+      runtime = OfflineSessionRuntime(
+        owner: owner,
+        budget: budget,
+        clock: clock.call,
+        schedule: clock.schedule,
+        fence: () {
+          if (!current) throw const OfflineDisposedException();
+        },
+        onError: (error, _) => errors.add(error),
+      );
+      final scheduler = runtime.observationScheduler(isCurrent: () => current);
+      final held = Completer<void>();
+      var runs = 0;
+      final registration = scheduler.register(
+        'retained',
+        kind: LanternObservationKind.read,
+        run: (work) async {
+          work.checkCurrent();
+          runs++;
+          await held.future;
+          work.checkCurrent();
+        },
+      );
+      registration.request();
+      await clock.advance(const Duration(milliseconds: 50));
+      expect(runs, 1);
+      current = false;
+      registration.request();
+      registration.request(dueAt: clock.now.add(const Duration(seconds: 1)));
+      expect(
+        () => scheduler.register(
+          'new',
+          kind: LanternObservationKind.read,
+          run: (_) async {},
+        ),
+        throwsA(isA<OfflineDisposedException>()),
+      );
+      expect(runtime.jobCount, 1);
+      // Public work registration still observes the original strict fence.
+      expect(
+        () => runtime.enqueue('public', OfflineSessionLane.read, (_) async {}),
+        throwsA(isA<OfflineDisposedException>()),
+      );
+      final closing = registration.cancelAndJoin().then((_) {
+        joined = true;
+      });
+      await flush();
+      expect(joined, isFalse);
+      expect(runtime.inFlightCount, 1);
+      held.complete();
+      await closing;
+      expect(joined, isTrue);
+      expect(runtime.inFlightCount, 0);
+      expect(runtime.jobCount, 0);
+      expect(errors, isEmpty);
+    },
+  );
+
+  test(
+    'closing runtime refuses stale observation allocation before join',
+    () async {
+      final scheduler = runtime.observationScheduler(isCurrent: () => true);
+      final held = Completer<void>();
+      final registration = scheduler.register(
+        'closing',
+        kind: LanternObservationKind.read,
+        run: (_) => held.future,
+      );
+      registration.request();
+      await clock.advance(const Duration(milliseconds: 50));
+      final closing = runtime.close();
+      expect(runtime.inFlightCount, 1);
+      // The old slot is still owned: closed must win over duplicate capacity.
+      expect(
+        () => scheduler.register(
+          'closing',
+          kind: LanternObservationKind.read,
+          run: (_) async {},
+        ),
+        throwsA(isA<OfflineDisposedException>()),
+      );
+      registration.request();
+      held.complete();
+      await closing;
+      await registration.cancelAndJoin();
+      expect(errors, isEmpty);
+    },
+  );
 
   test(
     'hot invalidation reaches maximum wait without restarting work',
