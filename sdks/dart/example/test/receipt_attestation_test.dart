@@ -372,7 +372,7 @@ void main() {
         'private-graph-value',
         LanternRetryExhaustedException(
           attempts: 1,
-          cause: unavailable! as LanternException,
+          cause: unavailable as LanternException,
         ),
       ];
       final aggregate = ReceiptAttestationFailure([
