@@ -3,9 +3,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_example/app_data_session.dart';
 import 'package:lantern_example/data_observations.dart';
 
+import '../integration_test/support/installed_factory_fixture.dart';
 import 'app_data_test_support.dart';
 
 Future<void> drive(WidgetTester tester, AppHarness h) async {
@@ -41,6 +43,120 @@ Future<void> disposeHarness(WidgetTester tester, AppHarness h) async {
 }
 
 void main() {
+  testWidgets(
+    'T18 raw observations close direct before a fresh memory widget',
+    (tester) async {
+      for (final profile in [AppDataProfile.direct, AppDataProfile.memory]) {
+        final h = AppHarness(profile);
+        await tester.runAsync(h.open);
+        addTearDown(() => tester.runAsync(h.close));
+        h.wire.vertices.addAll({
+          'app:alice': {'key': 'app:alice', 'string': 'initial'},
+          'app:bob': {'key': 'app:bob', 'string': 'endpoint'},
+        });
+        h.wire.edges['app:alice\u0000app:bob'] = {
+          'tail': 'app:alice',
+          'head': 'app:bob',
+          'weight': 1,
+        };
+        final observations = InstalledFactoryObservations();
+        final events = <LanternSnapshot<Vertex>>[];
+        final watch = observations.listen(
+          h.data.watchVertex('app:alice'),
+          events.add,
+        );
+        final traversals = <LanternTraversalSnapshot>[];
+        final traversal = observations.listen(
+          h.data.watchIlluminate(
+            'app:alice',
+            traversal: const BfsOptions(step: 2, fanOut: 10),
+            vertexPrefix: 'app:',
+          ),
+          traversals.add,
+        );
+        addTearDown(() => tester.runAsync(watch.cancel));
+        addTearDown(() => tester.runAsync(traversal.cancel));
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DataObservationsScreen(
+              key: ObjectKey(h.owner),
+              session: h.owner,
+              prefix: 'app:',
+            ),
+          ),
+        );
+        for (var turn = 0; turn < 20; turn++) {
+          observations.check();
+          await tester.pump(const Duration(milliseconds: 50));
+          await tester.runAsync(
+            () => h.clock.advance(const Duration(seconds: 1)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+          if (tester
+                  .widget<Text>(find.byKey(const Key('live-vertex')))
+                  .data!
+                  .contains('initial') &&
+              tester
+                  .widget<Text>(find.byKey(const Key('live-edge')))
+                  .data!
+                  .contains('present: 1.0') &&
+              tester
+                  .widget<Text>(find.byKey(const Key('live-traversal')))
+                  .data!
+                  .contains('1 edges')) {
+            break;
+          }
+        }
+        expect(
+          tester.widget<Text>(find.byKey(const Key('live-vertex'))).data,
+          contains('initial'),
+        );
+        expect(
+          tester.widget<Text>(find.byKey(const Key('live-edge'))).data,
+          contains('present: 1.0'),
+        );
+        expect(
+          tester.widget<Text>(find.byKey(const Key('live-traversal'))).data,
+          contains('1 edges'),
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(Duration.zero);
+        await tester.runAsync(
+          () => observations.retire(() async {
+            final closing = h.owner.close();
+            expect(identical(closing, h.owner.close()), isTrue);
+            await closing.timeout(const Duration(seconds: 5));
+          }),
+        );
+        if (profile == AppDataProfile.direct) {
+          expect(observations.closedErrors, 2);
+        }
+        final eventCount = events.length,
+            traversalCount = traversals.length,
+            tokenReads = h.tokenReads,
+            calls = h.wire.calls.length;
+        await tester.runAsync(
+          () => h.clock.advance(const Duration(seconds: 1)),
+        );
+        await tester.pump();
+        observations.check();
+        expect(events, hasLength(eventCount));
+        expect(traversals, hasLength(traversalCount));
+        expect(h.tokenReads, tokenReads);
+        expect(h.wire.calls, hasLength(calls));
+        expect(h.clock.alarms.where((alarm) => !alarm.canceled), isEmpty);
+        expect(h.owner.isClosed, isTrue);
+        expect(h.client.isClosed, isTrue);
+        expect(h.closes, 1);
+        expect(tester.takeException(), isNull);
+        await tester.runAsync(() async {
+          await watch.cancel();
+          await traversal.cancel();
+        });
+      }
+    },
+  );
+
   for (final profile in AppDataProfile.values) {
     testWidgets(
       'I1/I7 same foreground widget ${profile.name} after transport recovery',

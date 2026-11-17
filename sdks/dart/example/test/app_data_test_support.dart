@@ -88,6 +88,10 @@ final class AppHarness {
     Uri.parse('https://example.test'),
     transport: wire,
     clock: clock.call,
+    tokenProvider: () {
+      tokenReads++;
+      return null;
+    },
     onClose: () async {
       closes++;
     },
@@ -102,7 +106,7 @@ final class AppHarness {
   late AppDataSessionFactory factory;
   late AppDataSession owner;
   LanternDataClient get data => owner.data!;
-  var closes = 0, policies = 0;
+  var closes = 0, policies = 0, tokenReads = 0;
   Future<void> open() async {
     sqfliteFfiInit();
     directory = await Directory.systemTemp.createTemp('lantern-common-app-');
