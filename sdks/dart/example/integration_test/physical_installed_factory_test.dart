@@ -253,18 +253,30 @@ final class _InstalledFactoryRun {
     proof.registerCleanup(owner.close);
     expect(owner.restoreHeld, isNull);
     final data = owner.data!;
+    final observations = InstalledFactoryObservations();
+    Future<void> until(bool Function() complete) => _until(() {
+      observations.check();
+      return complete();
+    });
     final events = <LanternSnapshot<Vertex>>[];
-    final watch = data.watchVertex(alice).listen(events.add);
-    proof.registerCleanup(watch.cancel);
+    final watch = observations.listen(data.watchVertex(alice), events.add);
+    proof.registerCleanup(() async {
+      await watch.cancel();
+      observations.check();
+    });
     final traversals = <LanternTraversalSnapshot>[];
-    final traversalWatch = data
-        .watchIlluminate(
-          alice,
-          traversal: const BfsOptions(step: 2, fanOut: 10),
-          vertexPrefix: prefix,
-        )
-        .listen(traversals.add);
-    proof.registerCleanup(traversalWatch.cancel);
+    final traversalWatch = observations.listen(
+      data.watchIlluminate(
+        alice,
+        traversal: const BfsOptions(step: 2, fanOut: 10),
+        vertexPrefix: prefix,
+      ),
+      traversals.add,
+    );
+    proof.registerCleanup(() async {
+      await traversalWatch.cancel();
+      observations.check();
+    });
     runApp(
       MaterialApp(
         home: DataObservationsScreen(
@@ -274,7 +286,7 @@ final class _InstalledFactoryRun {
         ),
       ),
     );
-    await _until(
+    await until(
       () =>
           _visible('initial') &&
           _textHas('live-edge', 'present: 1.0') &&
@@ -306,9 +318,9 @@ final class _InstalledFactoryRun {
     await ui.ensureVisible(find.text('Submit locally'));
     await binding.pump();
     await ui.tap(find.text('Submit locally'));
-    await _until(() => relay.rejectedConnections > rejected);
+    await until(() => relay.rejectedConnections > rejected);
     if (profile != AppDataProfile.direct) {
-      await _until(() => events.any((event) => event.pending.count == 1));
+      await until(() => events.any((event) => event.pending.count == 1));
     }
     await observerA.putEdge(EdgeInput(tail: alice, head: bob, weight: 2));
     // No Get, resume, reachability notification or manual drain after this cut.
@@ -322,11 +334,11 @@ final class _InstalledFactoryRun {
       await ui.tap(find.text('Put'));
     } else {
       final durability = durable ? 'durable' : 'memory';
-      await _until(
+      await until(
         () => find.text('$durability: handled').evaluate().isNotEmpty,
       );
     }
-    await _until(
+    await until(
       () =>
           _visible('Hello Lantern') &&
           _textHas('live-edge', 'present: 2.0') &&
@@ -371,19 +383,25 @@ final class _InstalledFactoryRun {
       );
       await owner.resume();
       _applied(await _pumping(data.mutations.reobserve(ticket.reference)));
-      await _until(() => _visible('after-resume'));
+      await until(() => _visible('after-resume'));
     } else {
       await owner.resume();
     }
     runApp(const SizedBox.shrink());
     await binding.pump();
-    final closing = owner.close();
-    expect(identical(closing, owner.close()), isTrue);
-    await closing;
+    await observations.retire(() async {
+      final closing = owner.close();
+      expect(identical(closing, owner.close()), isTrue);
+      await closing;
+    });
+    if (profile == AppDataProfile.direct) {
+      expect(observations.closedErrors, 2);
+    }
     final eventCount = events.length,
         traversalCount = traversals.length,
         tokenReads = owned.tokenReads;
     await _pause(const Duration(milliseconds: 150));
+    observations.check();
     expect(events, hasLength(eventCount));
     expect(traversals, hasLength(traversalCount));
     expect(owned.tokenReads, tokenReads);
@@ -491,11 +509,16 @@ final class _InstalledFactoryRun {
       ]),
     );
     final oldEvents = <LanternSnapshot<Vertex>>[];
-    final oldWatch = a.dataSession!.data!
-        .watchVertex(key)
-        .listen(oldEvents.add);
-    proof.registerCleanup(oldWatch.cancel);
-    await controller.signOut(revoke: false);
+    final oldObservations = InstalledFactoryObservations();
+    final oldWatch = oldObservations.listen(
+      a.dataSession!.data!.watchVertex(key),
+      oldEvents.add,
+    );
+    proof.registerCleanup(() async {
+      await oldWatch.cancel();
+      oldObservations.check();
+    });
+    await oldObservations.retire(() => controller.signOut(revoke: false));
     expect(a.client.isClosed, isTrue);
     expect(a.cancellation.isCanceled, isTrue);
     expect(await credentials.read(), isNull);
@@ -527,6 +550,7 @@ final class _InstalledFactoryRun {
       throwsA(isA<LanternNotFoundException>()),
     );
     expect(oldEvents, hasLength(oldEventCount));
+    oldObservations.check();
     expect(owned.first.tokenReads, oldTokenReads);
     await controller.signOut(revoke: false);
     final again = await restore(credentialA, nativeA);

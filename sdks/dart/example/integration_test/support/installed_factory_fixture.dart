@@ -24,6 +24,68 @@ final installedFactoryScenarios = {
 String? installedFactoryStringPayload(VertexValue? value) =>
     value is StringValue ? value.value : null;
 
+/// Owns raw fixture errors while keeping observations attached through close.
+/// Only the typed terminal error during an explicit retirement is expected.
+final class InstalledFactoryObservations {
+  bool _retiring = false, _retired = false;
+  Object? _failure;
+  StackTrace? _trace;
+  int closedErrors = 0;
+
+  StreamSubscription<T> listen<T>(Stream<T> stream, void Function(T) receive) {
+    if (_retiring || _retired) throw StateError('Observation owner retired');
+    var closed = false;
+    return stream.listen(
+      (value) {
+        if (closed || _retired) {
+          _fail(
+            StateError('Observation published after retirement'),
+            StackTrace.current,
+          );
+        }
+        receive(value);
+      },
+      onError: (Object error, StackTrace trace) {
+        if (_retiring &&
+            !closed &&
+            error is LanternDataException &&
+            error.reason == DataFailure.closed) {
+          closed = true;
+          closedErrors++;
+        } else {
+          _fail(error, trace);
+        }
+      },
+    );
+  }
+
+  void _fail(Object error, StackTrace trace) {
+    _failure ??= error;
+    _trace ??= trace;
+  }
+
+  void check() {
+    if (_failure case final failure?) {
+      Error.throwWithStackTrace(failure, _trace!);
+    }
+  }
+
+  Future<void> retire(Future<void> Function() close) async {
+    check();
+    if (_retiring || _retired) throw StateError('Observation owner retired');
+    _retiring = true;
+    try {
+      await close();
+      // Direct close queues typed errors; Offline may silently cancel upstream.
+      await Future<void>.delayed(Duration.zero);
+      check();
+    } finally {
+      _retiring = false;
+      _retired = true;
+    }
+  }
+}
+
 /// Relays opaque TCP bytes. HTTPS still authenticates the original URL, not the
 /// loopback relay. Cutting both sockets also interrupts existing WatchChanges.
 final class PhysicalSocketRelay {

@@ -14,6 +14,75 @@ void main() {
   tearDownAll(() => tls.directory.delete(recursive: true));
 
   test(
+    'T18 rejects early closed and arbitrary retirement errors with their stack',
+    () async {
+      for (final retiring in [false, true]) {
+        final source = StreamController<int>(sync: true);
+        final observations = InstalledFactoryObservations();
+        final watch = observations.listen(source.stream, (_) {});
+        final error = retiring
+            ? StateError('unexpected retirement failure')
+            : const LanternDataException(DataFailure.closed);
+        final stack = StackTrace.fromString('original fixture error');
+        if (retiring) {
+          await expectLater(
+            observations.retire(() async => source.addError(error, stack)),
+            throwsA(same(error)),
+          );
+        } else {
+          source.addError(error, stack);
+        }
+        try {
+          observations.check();
+          fail('Unexpected observation error was hidden');
+        } catch (actual, trace) {
+          expect(actual, same(error));
+          expect(trace.toString(), stack.toString());
+        }
+        await watch.cancel();
+        await source.close();
+      }
+    },
+  );
+
+  test(
+    'T18 rejects duplicate terminals and late publication after retirement',
+    () async {
+      for (final mode in ['duplicate', 'during', 'after']) {
+        final source = StreamController<int>(sync: true);
+        final observations = InstalledFactoryObservations();
+        final events = <int>[];
+        final watch = observations.listen(source.stream, events.add);
+        Future<void> close() async {
+          source.addError(const LanternDataException(DataFailure.closed));
+          if (mode == 'duplicate') {
+            source.addError(const LanternDataException(DataFailure.closed));
+          }
+          if (mode == 'during') source.add(1);
+        }
+
+        if (mode == 'duplicate') {
+          await expectLater(
+            observations.retire(close),
+            throwsA(isA<LanternDataException>()),
+          );
+        } else if (mode == 'during') {
+          await expectLater(observations.retire(close), throwsStateError);
+          expect(events, [1]);
+        } else {
+          await observations.retire(close);
+          source.add(1);
+          expect(observations.check, throwsStateError);
+          expect(events, [1]);
+        }
+        expect(observations.closedErrors, 1);
+        await watch.cancel();
+        await source.close();
+      }
+    },
+  );
+
+  test(
     'T18 compares independently allocated string payloads with exact kinds',
     () {
       final decoded = StringValue(String.fromCharCodes('initial'.codeUnits));
