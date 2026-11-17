@@ -36,6 +36,16 @@ class CleanupError(RuntimeError):
 
 
 def stop_process(process, before_stop=None):
+    def refusal(message, error=None):
+        values = (
+            getattr(process, "pid", None), getattr(process, "returncode", None),
+            getattr(error, "errno", None),
+        )
+        pid, status, number = (
+            str(value) if type(value) is int else "unknown" for value in values
+        )
+        return CleanupError(f"{message} (pid={pid} rc={status} errno={number})")
+
     if before_stop:
         try:
             before_stop()
@@ -62,22 +72,31 @@ def stop_process(process, before_stop=None):
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+    deadline = time.monotonic() + 2
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired as error:
-        raise CleanupError("subprocess did not exit after bounded cleanup") from error
+        raise refusal("subprocess did not exit after bounded cleanup", error) from error
     if denied:
-        # An exited, unreaped child can race the signal. Reaping alone does not
-        # prove that its owned group (including descendants) has disappeared.
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return
-        except PermissionError as error:
-            raise CleanupError("subprocess group absence check was denied") from error
-        except OSError as error:
-            raise CleanupError("subprocess group absence check failed") from error
-        raise CleanupError("subprocess group cleanup was denied; group still exists")
+        # Reaping alone does not prove group absence. Use only the remainder
+        # of the same final reap budget, and require an actual ESRCH.
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError as error:
+                message = "subprocess group absence check was denied"
+                cause = error
+            except OSError as error:
+                raise refusal("subprocess group absence check failed", error) from error
+            else:
+                message = "subprocess group cleanup was denied; group still exists"
+                cause = None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise refusal(message, cause) from cause
+            time.sleep(min(0.05, remaining))
 
 
 def wait_bounded(process, deadline, before_stop=None):
@@ -219,6 +238,89 @@ def valid_vm_url(message):
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         return None
     return url
+
+
+class RunnerOwnershipError(RuntimeError):
+    """A fixed, content-free native identity refusal; never an app verdict."""
+
+
+def runner_identity_read(command, deadline, limit):
+    if time.monotonic() >= deadline:
+        raise RunnerOwnershipError("identity_deadline")
+    try:
+        status, raw, timed_out, exceeded = read_process(
+            command, remaining(deadline, 10), limit, merge_stderr=True,
+        )
+    except OSError as error:
+        raise RunnerOwnershipError("identity_unavailable") from error
+    if timed_out or exceeded or time.monotonic() >= deadline:
+        raise RunnerOwnershipError("identity_incomplete")
+    return status, raw
+
+
+def prepare_runner_launch(xcrun, device, deadline):
+    status, raw = runner_identity_read(
+        [xcrun, "simctl", "get_app_container", device, BUNDLE_ID, "app"],
+        deadline, 8192,
+    )
+    try:
+        text = raw.decode("utf-8").strip()
+        container = Path(text).resolve()
+        parts = container.parts
+        owned = (
+            text.startswith("/") and not any(c in text for c in "\n\r\0")
+            and len(parts) >= 8 and parts[-8] == "Devices"
+            and parts[-7].casefold() == device.casefold()
+            and parts[-6:-2] == ("data", "Containers", "Bundle", "Application")
+            and parts[-1] == "Runner.app"
+        )
+    except (UnicodeError, OSError, ValueError) as error:
+        raise RunnerOwnershipError("container_unknown") from error
+    if status or not owned:
+        raise RunnerOwnershipError("container_unknown")
+    executable = str(container / "Runner")
+    status, raw = runner_identity_read(
+        [os.environ.get("IOS_SMOKE_PS_BIN", "ps"), "-axo", "pid=,comm=", "-ww"],
+        deadline, MAX_FILE_BYTES,
+    )
+    try:
+        rows = [line.split(None, 1) for line in raw.decode("utf-8").splitlines()]
+        if status or not rows or any(len(row) != 2 or not row[0].isdecimal() or int(row[0]) < 1 for row in rows):
+            raise RunnerOwnershipError("snapshot_unknown")
+        for _, command in rows:
+            if command == "Runner":
+                raise RunnerOwnershipError("runner_identity_unknown")
+            candidate = Path(command).resolve()
+            if candidate == Path(executable) or (
+                candidate.name == "Runner"
+                and any(
+                    candidate.parts[i] == "Devices"
+                    and candidate.parts[i + 1].casefold() == device.casefold()
+                    for i in range(len(candidate.parts) - 1)
+                )
+            ):
+                raise RunnerOwnershipError("runner_preexisting")
+    except (UnicodeError, OSError, ValueError) as error:
+        raise RunnerOwnershipError("snapshot_unknown") from error
+    return executable
+
+
+def verify_runner_launch(pid, executable, deadline):
+    status, raw = runner_identity_read(
+        [os.environ.get("IOS_SMOKE_PS_BIN", "ps"), "-p", str(pid),
+         "-o", "pid=,stat=,comm=", "-ww"],
+        deadline, 8192,
+    )
+    if status:
+        raise RunnerOwnershipError("returned_process_unobserved")
+    try:
+        rows = raw.decode("utf-8").splitlines()
+        row = rows[0].split(None, 2) if len(rows) == 1 else []
+        if (len(row) != 3 or row[0] != str(pid) or row[1][0] not in "IRSTUD"
+                or Path(row[2]).resolve() != Path(executable)):
+            raise RunnerOwnershipError("returned_identity_unknown")
+    except (UnicodeError, OSError, ValueError) as error:
+        raise RunnerOwnershipError("returned_identity_unknown") from error
 
 
 def process_alive(pid):
@@ -418,13 +520,19 @@ def run_attempt(device, attempt, root):
         if exceeded or status:
             classification = "launch_failure"
             return 72
-        # Let native launch replace any old process after installation. A
-        # separate terminate before install can hang for an absent application.
-        # The returned PID must identify the new run whose logs we inspect.
+        operation = "prelaunch runner identity"
+        try:
+            executable = prepare_runner_launch(xcrun, device, deadline)
+        except RunnerOwnershipError as error:
+            record_operation(phases, "native_launch_operation", f"refused prelaunch_identity={error}")
+            classification = "launch_failure"
+            return 72
+        # Match Flutter's plain launch protocol only after proving that this
+        # selected Simulator has no old Runner whose PID/logs could be reused.
         operation = "native launch"
         record_operation(phases, "native_launch_operation", "started")
         status, timed_out, output = run_logged(
-            [xcrun, "simctl", "launch", "--terminate-running-process", device, BUNDLE_ID,
+            [xcrun, "simctl", "launch", device, BUNDLE_ID,
              "--enable-dart-profiling", "--disable-vm-service-publication",
              "--enable-checked-mode", "--verify-entry-points"],
             flutter_log, remaining(deadline, launch_limit), console_budget, collect_pid=True,
@@ -447,6 +555,13 @@ def run_attempt(device, attempt, root):
         record_operation(
             phases, "native_launch_operation", f"returned exit_code={status}",
         )
+        operation = "returned runner identity"
+        try:
+            verify_runner_launch(pid, executable, deadline)
+        except RunnerOwnershipError as error:
+            record_operation(phases, "native_launch_operation", f"refused returned_identity={error}")
+            classification = "launch_failure"
+            return 72
         vm_url = None
         terminal = None
         while time.monotonic() < deadline:

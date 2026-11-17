@@ -420,8 +420,11 @@ final class OfflineSessionRuntime {
 
   /// Cache-neutral observation adapter sharing this runtime's exact queue,
   /// retained-slot caps, one alarm and network cancellation lifetime.
-  LanternObservationScheduler get observationScheduler =>
-      _RuntimeObservations(this);
+  /// [isCurrent] is sampled again when a queued observation requests work.
+  /// It must describe lifetime retirement, independently of live pause states.
+  LanternObservationScheduler observationScheduler({
+    required bool Function() isCurrent,
+  }) => _RuntimeObservations(this, isCurrent);
 
   /// Runs one bounded read, or shares the attempt already granted to this
   /// runtime's observation callback. This avoids reacquiring its own permit.
@@ -819,8 +822,9 @@ final class _Job {
 }
 
 final class _RuntimeObservations implements LanternObservationScheduler {
-  _RuntimeObservations(this.runtime);
+  _RuntimeObservations(this.runtime, this.isCurrent);
   final OfflineSessionRuntime runtime;
+  final bool Function() isCurrent;
   @override
   DateTime get now => runtime._now();
   @override
@@ -829,6 +833,7 @@ final class _RuntimeObservations implements LanternObservationScheduler {
     required LanternObservationKind kind,
     required Future<void> Function(LanternObservationWork) run,
   }) {
+    if (runtime._closed || !isCurrent()) throw const OfflineDisposedException();
     final lane = switch (kind) {
       LanternObservationKind.local => OfflineSessionLane.local,
       LanternObservationKind.read => OfflineSessionLane.read,
@@ -836,21 +841,28 @@ final class _RuntimeObservations implements LanternObservationScheduler {
     };
     final identity = 'observation:$key';
     runtime.retain(identity, lane, run);
-    return _RuntimeRegistration(runtime, identity, lane, run);
+    return _RuntimeRegistration(runtime, identity, lane, run, isCurrent);
   }
 }
 
 final class _RuntimeRegistration implements LanternObservationRegistration {
-  _RuntimeRegistration(this.runtime, this.key, this.lane, this.run);
+  _RuntimeRegistration(
+    this.runtime,
+    this.key,
+    this.lane,
+    this.run,
+    this.isCurrent,
+  );
   final OfflineSessionRuntime runtime;
   final String key;
   final OfflineSessionLane lane;
   final Future<void> Function(LanternObservationWork) run;
+  final bool Function() isCurrent;
   bool closed = false;
   Future<void>? closing;
   @override
   void request({DateTime? dueAt}) {
-    if (closed) return;
+    if (closed || runtime._closed || !isCurrent()) return;
     runtime.enqueue(key, lane, run, dueAt: dueAt, retain: true);
   }
 

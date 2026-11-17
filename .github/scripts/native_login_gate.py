@@ -70,6 +70,7 @@ CASES = (
 SERVING_CASE = ROOT_TEST + "/native_fixture_serving_export"
 NORMAL_SOURCE_MARKER = "production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H"
 CONTROLLED_SOURCE_MARKER = "test-build controlled source: native sampler and loopback UDP; synthetic UTC; shared current composition, three voters, two origins, observer"
+CONTROLLED_STOP_OBSERVATION_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,25 @@ def controlled_serving_stop(log, profile="native"):
     except ValueError:
         raise RuntimeError("controlled serving stop timestamp is invalid") from None
     return stopped_at
+
+
+def controlled_finish_time(stopped_at):
+    """Observe host completion after the container stop, without changing either clock."""
+    whole, _, fraction = stopped_at.removesuffix("Z").partition(".")
+    stop_ns = int(datetime.fromisoformat(whole + "+00:00").timestamp()) * 1_000_000_000
+    stop_ns += int(fraction.ljust(9, "0"))
+    deadline = time.monotonic() + CONTROLLED_STOP_OBSERVATION_SECONDS
+    while True:
+        observed = time.time()
+        remaining = deadline - time.monotonic()
+        if remaining < 0:
+            raise RuntimeError("host clock did not observe the controlled stop within the finalization bound")
+        numerator, denominator = observed.as_integer_ratio()
+        if numerator * 1_000_000_000 >= stop_ns * denominator:
+            return observed
+        if remaining == 0:
+            raise RuntimeError("host clock did not observe the controlled stop within the finalization bound")
+        time.sleep(min(0.05, remaining))
 
 
 def require_serving(log, profile="native", time_source="configured-source"):
@@ -230,6 +250,7 @@ def run(root, evidence, serving=None):
         return result.returncode
 
     image_created = False
+    controlled_stop = None
     try:
         receipt["head"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
         receipt["tree"] = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
@@ -288,6 +309,8 @@ def run(root, evidence, serving=None):
         if serving is not None:
             log = last_log.read_text()
             require_serving(log, serving.profile, serving.time_source)
+            if controlled:
+                controlled_stop = controlled_serving_stop(log, serving.profile)
             receipt["native_owner_constructors"] = [
                 {"node": int(node), "phase": "initialize" if mode == "fresh" else "serve", "mode": mode}
                 for node, mode, _ in re.findall(r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", log)
@@ -308,8 +331,17 @@ def run(root, evidence, serving=None):
             command(["docker", "image", "rm", name], check=False)
         if serving is not None:
             (private / "ready").unlink(missing_ok=True)
-        receipt["finished"] = time.time()
-        save()
+        try:
+            # Serving has already stopped and owned cleanup has joined. A small
+            # host/container wall-clock offset must not invent a future finish.
+            receipt["finished"] = (controlled_finish_time(controlled_stop)
+                                   if controlled_stop is not None and receipt["status"] == "PASS" else time.time())
+        except BaseException as error:
+            receipt["status"], receipt["error"] = "FAIL", repr(error)
+            receipt["finished"] = time.time()
+            raise
+        finally:
+            save()
     return receipt
 
 

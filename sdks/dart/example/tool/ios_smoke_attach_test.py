@@ -18,6 +18,12 @@ import ios_smoke_log as smoke_log
 
 
 class CleanupTests(unittest.TestCase):
+    def setUp(self):
+        # These existing cases isolate later stage/cleanup failures. Native
+        # identity reads and their refusal paths are exercised separately below.
+        self.enterContext(patch.object(smoke, "prepare_runner_launch", return_value="/owned/Runner.app/Runner"))
+        self.enterContext(patch.object(smoke, "verify_runner_launch"))
+
     def test_child_exit_between_poll_and_denied_signal_proves_group_absence(self):
         process = subprocess.Popen(
             [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
@@ -77,7 +83,10 @@ class CleanupTests(unittest.TestCase):
                     if sig == denied_signal:
                         raise PermissionError("denied")
 
-                with patch.object(smoke.os, "killpg", side_effect=group_signal):
+                with (
+                    patch.object(smoke.os, "killpg", side_effect=group_signal),
+                    patch.object(smoke.time, "monotonic", side_effect=[0, 2]),
+                ):
                     with self.assertRaises(smoke.CleanupError):
                         smoke.stop_process(process)
                 process.send_signal.assert_called_once_with(denied_signal)
@@ -107,7 +116,10 @@ class CleanupTests(unittest.TestCase):
                     if outcome is not None:
                         raise outcome
 
-                with patch.object(smoke.os, "killpg", side_effect=group_signal) as group:
+                with (
+                    patch.object(smoke.os, "killpg", side_effect=group_signal) as group,
+                    patch.object(smoke.time, "monotonic", side_effect=[0, 2]),
+                ):
                     with self.assertRaisesRegex(smoke.CleanupError, reason):
                         smoke.stop_process(process)
                 self.assertEqual(
@@ -115,6 +127,97 @@ class CleanupTests(unittest.TestCase):
                     [call(123, signal.SIGTERM), call(123, signal.SIGKILL), call(123, 0)],
                 )
                 process.send_signal.assert_called_once_with(signal.SIGTERM)
+
+    def test_reaped_child_waits_for_actual_group_absence_within_same_budget(self):
+        process = Mock(pid=123, returncode=0)
+        process.wait.return_value = 0
+        now = [0.0]
+        signals = []
+
+        def group_signal(pid, sig):
+            self.assertEqual(pid, 123)
+            signals.append(sig)
+            if sig == signal.SIGTERM:
+                raise PermissionError(errno.EPERM, "private command detail")
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+            self.assertEqual(sig, 0)
+            if now[0] < 0.1:
+                raise PermissionError(errno.EPERM, "private command detail")
+            raise ProcessLookupError
+
+        def advance(delay):
+            now[0] += delay
+
+        with (
+            patch.object(smoke.os, "killpg", side_effect=group_signal),
+            patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]),
+            patch.object(smoke.time, "sleep", side_effect=advance),
+        ):
+            smoke.stop_process(process)
+        self.assertAlmostEqual(now[0], 0.1)
+        self.assertEqual(
+            [sig for sig in signals if sig], [signal.SIGTERM, signal.SIGKILL],
+        )
+        self.assertEqual(signals[-1], 0)
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        self.assertEqual(process.wait.call_args_list, [call(timeout=2)] * 2)
+
+    def test_absence_refusals_and_consumed_reap_budget_remain_bounded(self):
+        for outcome, consumed, reason, number in [
+            ("denied", 0, "group absence check was denied", errno.EPERM),
+            ("live", 0, "group still exists", "unknown"),
+            ("other", 0, "group absence check failed", errno.EIO),
+            ("denied", 2, "group absence check was denied", errno.EPERM),
+        ]:
+            with self.subTest(outcome=outcome, consumed=consumed):
+                process = Mock(pid=123, returncode=0)
+                now = [0.0]
+                waits = []
+                signals = []
+
+                def wait(timeout):
+                    waits.append(timeout)
+                    if len(waits) == 2:
+                        now[0] += consumed
+                    return 0
+
+                def group_signal(pid, sig):
+                    self.assertEqual(pid, 123)
+                    signals.append(sig)
+                    if sig == signal.SIGTERM:
+                        raise PermissionError(errno.EPERM, "private command detail")
+                    if sig == signal.SIGKILL:
+                        raise ProcessLookupError
+                    self.assertEqual(sig, 0)
+                    if outcome == "denied":
+                        raise PermissionError(errno.EPERM, "private command detail")
+                    if outcome == "other":
+                        raise OSError(errno.EIO, "private command detail")
+
+                def advance(delay):
+                    now[0] += delay
+
+                process.wait.side_effect = wait
+                with (
+                    patch.object(smoke.os, "killpg", side_effect=group_signal),
+                    patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]),
+                    patch.object(smoke.time, "sleep", side_effect=advance) as sleep,
+                ):
+                    with self.assertRaisesRegex(smoke.CleanupError, reason) as caught:
+                        smoke.stop_process(process)
+                self.assertLessEqual(now[0], 2)
+                self.assertEqual(
+                    [sig for sig in signals if sig], [signal.SIGTERM, signal.SIGKILL],
+                )
+                self.assertEqual(waits, [2, 2])
+                self.assertIn(f"pid=123 rc=0 errno={number}", str(caught.exception))
+                self.assertNotIn("private command detail", str(caught.exception))
+                if consumed or outcome == "other":
+                    sleep.assert_not_called()
+                    self.assertEqual(signals.count(0), 1)
+                else:
+                    self.assertAlmostEqual(now[0], 2)
 
     def test_unreaped_child_has_no_unbounded_wait(self):
         for denied in (False, True):
@@ -494,6 +597,97 @@ class CleanupTests(unittest.TestCase):
             self.assertIn(b"token=<redacted>", record)
             for secret in (b"private-vm-code", b"private-auth", b"private-token"):
                 self.assertNotIn(secret, retained)
+
+
+class RunnerOwnershipTests(unittest.TestCase):
+    device = "OWNED-DEVICE"
+    container = str(Path("/tmp/Devices/OWNED-DEVICE/data/Containers/Bundle/Application/INSTALL/Runner.app").resolve())
+
+    def test_identity_deadline_refuses_before_or_after_the_owned_read(self):
+        for before in (True, False):
+            with (
+                self.subTest(before=before),
+                patch.object(smoke.time, "monotonic", side_effect=[110] if before else [100, 100, 110]),
+                patch.object(smoke, "read_process", return_value=(0, b"42 S /owned/Runner\n", False, False)) as read,
+            ):
+                with self.assertRaisesRegex(smoke.RunnerOwnershipError, "identity_deadline" if before else "identity_incomplete"):
+                    smoke.runner_identity_read(["owned-query"], 110, 8192)
+                if before:
+                    read.assert_not_called()
+                else:
+                    read.assert_called_once_with(["owned-query"], 10, 8192, merge_stderr=True)
+
+    def prepared(self, outputs):
+        with patch.object(smoke, "read_process", side_effect=outputs) as read, patch.object(smoke.time, "monotonic", return_value=100):
+            result = smoke.prepare_runner_launch("xcrun", self.device, 200)
+        return result, read
+
+    def test_exact_installed_container_and_content_free_process_snapshot(self):
+        executable, read = self.prepared([(0, (self.container + "\n").encode(), False, False), (0, b"1 /sbin/launchd\n", False, False)])
+        self.assertEqual(executable, self.container + "/Runner")
+        self.assertEqual(read.call_args_list[0].args[0], ["xcrun", "simctl", "get_app_container", self.device, smoke.BUNDLE_ID, "app"])
+        self.assertEqual(read.call_args_list[1].args[0], ["ps", "-axo", "pid=,comm=", "-ww"])
+        self.assertEqual(read.call_args_list[0].args[1:3], (10, 8192))
+        self.assertEqual(read.call_args_list[1].args[1:3], (10, smoke.MAX_FILE_BYTES))
+
+    def test_preexisting_runner_unknown_or_incomplete_identity_is_refused(self):
+        container = (0, (self.container + "\n").encode(), False, False)
+        snapshots = [
+            (0, ("42 " + self.container + "/Runner\n").encode(), False, False),
+            (0, b"42 /tmp/Devices/OWNED-DEVICE/data/Containers/Bundle/Application/OLD/Runner.app/Runner\n", False, False),
+            (0, b"42 Runner\n", False, False),
+            (0, b"malformed\n", False, False), (0, b"", False, False),
+            (1, b"private snapshot detail", False, False),
+            (0, b"1 /sbin/launchd\n", True, False),
+            (0, b"1 /sbin/launchd\n", False, True),
+        ]
+        for snapshot in snapshots:
+            with self.subTest(snapshot=snapshot), self.assertRaises(smoke.RunnerOwnershipError) as caught:
+                self.prepared([container, snapshot])
+            self.assertNotIn("private", str(caught.exception))
+        for invalid in ["/tmp/Runner.app", self.container.replace(self.device, "OTHER-DEVICE"), self.container + "\nprivate path"]:
+            with self.subTest(container=invalid), self.assertRaises(smoke.RunnerOwnershipError):
+                self.prepared([(0, invalid.encode(), False, False)])
+
+    def test_other_simulator_runner_is_not_signalled_or_mistaken_for_this_runner(self):
+        result, _ = self.prepared([(0, (self.container + "\n").encode(), False, False), (0, b"42 /tmp/Devices/OTHER-DEVICE/data/Containers/Bundle/Application/INSTALL/Runner.app/Runner\n", False, False)])
+        self.assertEqual(result, self.container + "/Runner")
+
+    def test_returned_pid_requires_exact_live_executable(self):
+        executable = self.container + "/Runner"
+        for result, accepted in [
+            ((0, ("42 S " + executable + "\n").encode(), False, False), True),
+            ((0, ("42 Z " + executable + "\n").encode(), False, False), False),
+            ((0, ("42 ? " + executable + "\n").encode(), False, False), False),
+            ((0, ("43 S " + executable + "\n").encode(), False, False), False),
+            ((0, b"42 S /other/Runner.app/Runner\n", False, False), False),
+            ((1, b"", False, False), False),
+            ((0, b"", False, False), False),
+            ((0, ("42 S " + executable + "\n").encode(), True, False), False),
+        ]:
+            with self.subTest(result=result), patch.object(smoke, "read_process", return_value=result) as read, patch.object(smoke.time, "monotonic", return_value=100):
+                if accepted:
+                    smoke.verify_runner_launch(42, executable, 200)
+                else:
+                    with self.assertRaises(smoke.RunnerOwnershipError):
+                        smoke.verify_runner_launch(42, executable, 200)
+                self.assertEqual(read.call_args.args[0], ["ps", "-p", "42", "-o", "pid=,stat=,comm=", "-ww"])
+
+    def test_unknown_prelaunch_or_fast_exit_never_reads_body_or_starts_driver(self):
+        for prelaunch in [True, False]:
+            with self.subTest(prelaunch=prelaunch), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                with patch.object(smoke, "prepare_runner_launch", **({"side_effect": smoke.RunnerOwnershipError("runner_preexisting")} if prelaunch else {"return_value": self.container + "/Runner"})), patch.object(smoke, "verify_runner_launch", side_effect=smoke.RunnerOwnershipError("returned_process_unobserved")), patch.object(smoke, "run_logged", side_effect=[(0, False, b"")] * 3 + [(0, False, (smoke.BUNDLE_ID + ": 42\n").encode())]) as logged, patch.object(smoke, "read_process", return_value=(0, b"", False, False)), patch.object(smoke, "read_app_log") as app_log, patch.object(smoke, "capture_diagnostics"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}):
+                    self.assertEqual(smoke.run_attempt(self.device, "initial", root), 72)
+                self.assertEqual((root / "initial/classification.txt").read_text(), "launch_failure\n")
+                app_log.assert_not_called()
+                launches = [c.args[0] for c in logged.call_args_list if "launch" in c.args[0]]
+                self.assertEqual(len(launches), 0 if prelaunch else 1)
+                if launches:
+                    self.assertEqual(launches[0][1:5], ["simctl", "launch", self.device, smoke.BUNDLE_ID])
+                    self.assertNotIn("--terminate-running-process", launches[0])
+                    self.assertEqual(launches[0][5:], ["--enable-dart-profiling", "--disable-vm-service-publication", "--enable-checked-mode", "--verify-entry-points"])
+                self.assertFalse(any("drive" in c.args[0] for c in logged.call_args_list))
 
 
 if __name__ == "__main__":

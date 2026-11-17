@@ -4,6 +4,7 @@ import hashlib
 import json
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -168,7 +169,7 @@ elif args[0] == 'run':
                 else:
                     self.assertEqual(receipt["source_config_sha256"], hashlib.sha256(source_config).hexdigest())
                     self.assertNotIn("LANTERN_NATIVE_FIXTURE_TIME_SOURCE", environment)
-                if outcome in ("pass", "changed"):
+                if outcome in ("pass", "changed", "finish_timeout"):
                     self.assertEqual(receipt["native_owner_constructors"], [
                         {"node": i, "phase": phase, "mode": mode}
                         for phase, mode in (("initialize", "fresh"), ("serve", "resume"))
@@ -176,6 +177,9 @@ elif args[0] == 'run':
                     ])
                 else:
                     self.assertNotIn("native_owner_constructors", receipt)
+                if outcome == "finish_timeout":
+                    self.assertIn("finalization bound", receipt["error"])
+                    self.assertIsInstance(receipt["finished"], float)
                 self.assertIn("configured-source-integration/real provider/device acceptance NOT_RUN", receipt["proof"])
                 self.assertNotIn(options.origin, (destinations[-1] / "receipt.json").read_text())
             else:
@@ -329,6 +333,53 @@ elif args[0] == 'run':
                 gate.controlled_serving_stop(f"native_fixture_stopped reason=timeout stopped_at={timestamp}\n")
         with self.assertRaises(RuntimeError):
             gate.controlled_serving_stop("physical_fixture_stopped reason=released stopped_at=2026-11-10T22:00:00Z\n")
+
+    def test_controlled_finish_returns_only_an_actual_host_sample_after_nanosecond_stop(self):
+        # A datetime microsecond conversion would incorrectly accept the first
+        # sample, which is one nanosecond before the container's stop.
+        stop = "2026-11-17T12:04:48.000000001Z"
+        before = gate.datetime.fromisoformat("2026-11-17T12:04:48+00:00").timestamp()
+        after = math.nextafter(before, math.inf)
+        with patch.object(gate.time, "time", side_effect=[before, after]), \
+                patch.object(gate.time, "monotonic", side_effect=[10, 10.1, 10.2]), \
+                patch.object(gate.time, "sleep") as sleep:
+            self.assertEqual(gate.controlled_finish_time(stop), after)
+        sleep.assert_called_once_with(0.05)
+
+    def test_controlled_finish_already_observed_does_not_sleep(self):
+        observed = 1794917088.5
+        for stop in ("2026-11-17T12:04:48Z", "2026-11-17T12:04:48.258870386Z"):
+            with self.subTest(stop=stop), patch.object(gate.time, "time", return_value=observed), \
+                    patch.object(gate.time, "monotonic", side_effect=[10, 10]), \
+                    patch.object(gate.time, "sleep") as sleep:
+                self.assertEqual(gate.controlled_finish_time(stop), observed)
+                sleep.assert_not_called()
+
+    def test_controlled_finish_timeout_is_monotonic_even_if_host_clock_moves_back(self):
+        with patch.object(gate.time, "time", side_effect=[100.0, 90.0]), \
+                patch.object(gate.time, "monotonic", side_effect=[10, 10, 15]), \
+                patch.object(gate.time, "sleep") as sleep, self.assertRaisesRegex(RuntimeError, "finalization bound"):
+            gate.controlled_finish_time("2026-11-17T12:04:48Z")
+        sleep.assert_called_once_with(0.05)
+
+    def test_controlled_finish_rejects_a_sample_after_monotonic_deadline(self):
+        with patch.object(gate.time, "time", return_value=1794917090.0), \
+                patch.object(gate.time, "monotonic", side_effect=[10, 15.01]), \
+                patch.object(gate.time, "sleep") as sleep, self.assertRaisesRegex(RuntimeError, "finalization bound"):
+            gate.controlled_finish_time("2026-11-17T12:04:48Z")
+        sleep.assert_not_called()
+
+    def test_controlled_finish_timeout_persists_failed_receipt_after_owned_cleanup(self):
+        for profile in ("native", "physical"):
+            with self.subTest(profile=profile), patch.object(gate, "controlled_finish_time", side_effect=RuntimeError("finalization bound")) as finish:
+                self.execute("serve_finish_timeout", profile, "controlled-source")
+                finish.assert_called_once_with("2026-11-10T22:00:00.123456789Z")
+
+    def test_controlled_finish_does_not_change_configured_or_failed_serving(self):
+        for mode, source in (("serve_pass", "configured-source"), ("serve_failure", "controlled-source")):
+            with self.subTest(mode=mode, source=source), patch.object(gate, "controlled_finish_time", side_effect=AssertionError("must not wait")) as finish:
+                self.execute(mode, time_source=source)
+                finish.assert_not_called()
 
     def test_serving_refuses_root_and_build_overrides(self):
         with tempfile.TemporaryDirectory() as directory:

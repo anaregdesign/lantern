@@ -13,9 +13,9 @@
   ownership so admitted writes can reach the server without a manual Sync or
   drain call. Suspend, resume, credential changes and account retirement retain
   their explicit ownership and authorization boundaries.
-- Close sessions with active finite-TTL watches after application authority is
-  retired without scheduling new expiry work. Live shared sessions retain their
-  ordinary expiry handling.
+- Ignore late internal store, clock and scheduler notifications after session
+  authority is retired or its transport closes. Keep strict public lifetime
+  fences and ordinary expiry and pause handling for live shared sessions.
 - Expose common client adapters for volatile storage and the separately
   packaged SQLite factory, including durable writes with the read cache
   disabled. SQLite and native installation policy remain outside this

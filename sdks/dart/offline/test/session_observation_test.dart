@@ -25,7 +25,7 @@ void main() {
       onError: (e, _) => errors.add(e),
     );
     coordinator = LanternObservationCoordinator(
-      scheduler: runtime.observationScheduler,
+      scheduler: runtime.observationScheduler(isCurrent: () => true),
     );
   });
   tearDown(() async {
@@ -177,7 +177,7 @@ void main() {
       );
       coordinator = LanternObservationCoordinator(
         maxQueries: 5,
-        scheduler: runtime.observationScheduler,
+        scheduler: runtime.observationScheduler(isCurrent: () => true),
       );
       final held = Completer<int>();
       var ordinary = 0, traversals = 0;

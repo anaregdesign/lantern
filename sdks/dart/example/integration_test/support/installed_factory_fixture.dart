@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter_test/flutter_test.dart' show expectSync;
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 import 'package:lantern_example/app_data_session.dart';
@@ -23,6 +24,13 @@ final installedFactoryScenarios = {
 /// Decoded VertexValue objects do not have structural equality.
 String? installedFactoryStringPayload(VertexValue? value) =>
     value is StringValue ? value.value : null;
+
+/// Provider callbacks may run outside the zone of an active widget pump.
+/// Keep credential retirement strict without entering a test async guard.
+String installedFactoryReadCredential(String credential, int closes) {
+  expectSync(closes, 0, reason: 'Retired credentials cannot be reused');
+  return credential;
+}
 
 /// Owns raw fixture errors while keeping observations attached through close.
 /// Only the typed terminal error during an explicit retirement is expected.

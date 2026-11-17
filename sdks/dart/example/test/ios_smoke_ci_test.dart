@@ -104,14 +104,29 @@ echo 'All tests passed!'
       expect(boot, greaterThan(build));
       expect(ready, greaterThan(boot));
       expect(install, greaterThan(ready));
+      final container = calls.indexOf(
+        'xcrun simctl get_app_container '
+        'SOURCE-DEVICE com.anaregdesign.lanternExample app',
+      );
+      final snapshot = calls.indexOf('ps -axo pid=,comm= -ww');
+      final launch = calls.indexOf(
+        'xcrun simctl launch '
+        'SOURCE-DEVICE com.anaregdesign.lanternExample '
+        '--enable-dart-profiling --disable-vm-service-publication '
+        '--enable-checked-mode --verify-entry-points',
+      );
+      final identity = calls.indexWhere(
+        (line) =>
+            line.startsWith('ps -p ') &&
+            line.endsWith(' -o pid=,stat=,comm= -ww'),
+      );
+      expect(container, greaterThan(install));
+      expect(snapshot, greaterThan(container));
+      expect(launch, greaterThan(snapshot));
+      expect(identity, greaterThan(launch));
       expect(
-        calls.indexOf(
-          'xcrun simctl launch --terminate-running-process '
-          'SOURCE-DEVICE com.anaregdesign.lanternExample '
-          '--enable-dart-profiling --disable-vm-service-publication '
-          '--enable-checked-mode --verify-entry-points',
-        ),
-        greaterThan(install),
+        calls.any((line) => line.contains('--terminate-running-process')),
+        isFalse,
       );
       expect(
         calls.any((line) => line.startsWith('xcrun simctl terminate ')),
@@ -305,6 +320,12 @@ echo 'build completed during diagnostics'
 
     expect(result.exitCode, isNonZero);
     expect(await _classification(sandbox), 'launch_failure');
+    final calls = await File('${sandbox.path}/attached-calls').readAsLines();
+    expect(
+      calls.where((line) => line.startsWith('xcrun simctl launch ')),
+      hasLength(1),
+    );
+    expect(calls.any((line) => line.startsWith('flutter drive ')), isFalse);
   });
 
   test('attached iOS smoke does not retry an app-side test failure', () async {
@@ -1154,6 +1175,7 @@ Future<ProcessResult> _runAttachedAttempt(
     ...Platform.environment,
     'IOS_SMOKE_FLUTTER_BIN': flutter.path,
     'IOS_SMOKE_XCRUN_BIN': xcrun.path,
+    'IOS_SMOKE_PS_BIN': '${sandbox.path}/ps',
     'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '1',
     'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '4',
     'IOS_SMOKE_BUILD_TIMEOUT_SECONDS': '2',
@@ -1177,6 +1199,35 @@ Future<void> _writeAttachedFakes(
   bool omitVmUrl = false,
   bool runnerExited = false,
 }) async {
+  final container = await Directory(
+    '${sandbox.path}/Devices/SOURCE-DEVICE/data/Containers/Bundle/'
+    'Application/FRESH-INSTALL/Runner.app',
+  ).create(recursive: true);
+  final executable = '${await container.resolveSymbolicLinks()}/Runner';
+  await _writeExecutable(
+    File('${sandbox.path}/ps'),
+    r'''#!/usr/bin/env bash
+set -euo pipefail
+printf 'ps %s\n' "$*" >> '_CALLS_'
+if [[ "$*" == '-axo pid=,comm= -ww' ]]; then
+  echo '1 /sbin/launchd'
+elif [[ "${1:-}" == -p && "${3:-}" == -o ]]; then
+  [[ '_RUNNER_EXITED_' == false ]] || exit 1
+  if [[ "${4:-}" == 'pid=,stat=,comm=' && "${5:-}" == -ww ]]; then
+    printf '%s S %s\n' "$2" '_EXECUTABLE_'
+  elif [[ "${4:-}" == 'stat=' ]]; then
+    echo S
+  else
+    exit 2
+  fi
+else
+  exec /bin/ps "$@"
+fi
+'''
+        .replaceAll('_CALLS_', '${sandbox.path}/attached-calls')
+        .replaceAll('_RUNNER_EXITED_', '$runnerExited')
+        .replaceAll('_EXECUTABLE_', executable),
+  );
   final appLog = File('${sandbox.path}/app-log.json');
   await appLog.writeAsString(
     jsonEncode([
@@ -1237,8 +1288,15 @@ case "${2:-}" in
     if [[ '_BOOT_STALL_' == true ]]; then sleep 30; fi
     ;;
   terminate|install) exit 0 ;;
+  get_app_container)
+    [[ "${3:-}" == SOURCE-DEVICE &&
+       "${4:-}" == com.anaregdesign.lanternExample &&
+       "${5:-}" == app ]] || exit 2
+    printf '%s\n' '_CONTAINER_'
+    ;;
   launch)
-    [[ "${3:-}" == --terminate-running-process ]] || exit 2
+    [[ "${3:-}" == SOURCE-DEVICE &&
+       "${4:-}" == com.anaregdesign.lanternExample ]] || exit 2
     if [[ '_CLOSED_PIPE_LAUNCH_' == true ]]; then
       exec >/dev/null 2>&1
       # Model one live native command. An extra shell-owned child can leave
@@ -1270,6 +1328,7 @@ esac
         .replaceAll('_BOOT_STALL_', '$bootStall')
         .replaceAll('_CALLS_', '${sandbox.path}/attached-calls')
         .replaceAll('_RUNNER_EXITED_', '$runnerExited')
+        .replaceAll('_CONTAINER_', await container.resolveSymbolicLinks())
         .replaceAll('_APP_LOG_', appLog.path),
   );
 }

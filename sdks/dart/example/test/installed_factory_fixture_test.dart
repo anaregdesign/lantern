@@ -7,11 +7,104 @@ import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_example/app_data_session.dart';
 
 import '../integration_test/support/installed_factory_fixture.dart';
+import 'app_data_test_support.dart';
 
 void main() {
   late _RelayTlsMaterial tls;
   setUpAll(() async => tls = await _RelayTlsMaterial.create());
   tearDownAll(() => tls.directory.delete(recursive: true));
+
+  test(
+    'T18 credential callback works outside an active Flutter async guard zone',
+    () async {
+      for (final retired in [false, true]) {
+        final wire = AppWire(AppClock());
+        wire.vertices['app:alice'] = {
+          'key': 'app:alice',
+          'string': 'fixture-value',
+        };
+        var closes = retired ? 1 : 0, tokenReads = 0;
+        final client = LanternClient.connect(
+          Uri.parse('https://example.test'),
+          transport: wire,
+          tokenProvider: () {
+            final token = installedFactoryReadCredential(
+              'fixture-credential',
+              closes,
+            );
+            tokenReads++;
+            return token;
+          },
+          retryPolicy: const RetryPolicy(maxAttempts: 1),
+          onClose: () async {
+            closes++;
+          },
+        );
+        addTearDown(client.close);
+        final release = Completer<void>();
+        // Register in the parent zone, matching a foreground observation callback
+        // registered before an unrelated binding.pump/TestAsyncUtils guard begins.
+        final request = release.future.then(
+          (_) => client.getVertex(
+            'app:alice',
+            options: LanternCallOptions(retry: false),
+          ),
+        );
+        Vertex? received;
+        Object? failure;
+        final observed = request.then<void>(
+          (value) {
+            received = value;
+          },
+          onError: (Object error, StackTrace stack) {
+            failure = error;
+          },
+        );
+        await TestAsyncUtils.guard(() async {
+          release.complete();
+          await observed;
+        });
+        TestAsyncUtils.verifyAllScopesClosed();
+        if (failure case final LanternException error) {
+          // Fixed categories only: no error text, credential, endpoint or value.
+          // ignore: avoid_print
+          print(
+            'T18_PROVIDER_GUARD ${error.runtimeType}/${error.transportCode}/'
+            '${error.cause.runtimeType}/closes=$closes/wire=${wire.calls.length}',
+          );
+        }
+        if (retired) {
+          expect(
+            failure,
+            isA<LanternInternalException>()
+                .having((error) => error.transportCode, 'transportCode', 2)
+                .having((error) => error.cause, 'cause', isA<TestFailure>()),
+          );
+          expect(received, isNull);
+          expect(wire.calls, isEmpty);
+          expect(tokenReads, 0);
+          expect(closes, 1);
+        } else {
+          expect(
+            failure,
+            isNull,
+            reason:
+                'A live credential callback must work during an unrelated pump',
+          );
+          expect(
+            installedFactoryStringPayload(received?.value),
+            'fixture-value',
+          );
+          expect(wire.calls, ['GetVertices']);
+          expect(tokenReads, 1);
+          expect(closes, 0);
+        }
+        await client.close();
+        expect(closes, retired ? 2 : 1);
+      }
+    },
+    timeout: const Timeout(Duration(seconds: 10)),
+  );
 
   test(
     'T18 rejects early closed and arbitrary retirement errors with their stack',

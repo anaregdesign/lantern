@@ -25,13 +25,13 @@ extension _BoundTraversal on OfflineLanternDataClient {
   }
 
   void _traversalClockChanged() {
-    if (_closed || _session?.ended == true || _clockQueued) return;
+    if (!_notificationCurrent || _clockQueued) return;
     _clockQueued = true;
     // The raw clock is also sampled by the runtime's central alarm before it
     // can rearm a clamped deadline. Defer all I/O outside that clock callback.
     scheduleMicrotask(() {
       _clockQueued = false;
-      if (_closed || _session?.ended == true) return;
+      if (!_notificationCurrent) return;
       _observations.invalidate();
       final session = _session;
       if (session != null) {

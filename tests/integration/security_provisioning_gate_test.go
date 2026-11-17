@@ -612,7 +612,7 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 		t.Fatalf("fixed cohort provisioning failed: %v\n%s", err, output)
 	}
 	publisherConfig, publisherState := filepath.Join(operator, "publisher.json"), filepath.Join(operator, "state.json")
-	checkPublisher, stopPublisher := securityProvisioningPublisher(t, publisherBinary, publisherConfig, publisherState, "init")
+	checkPublisher, stopPublisher := securityProvisioningPublisher(t, binary, publisherConfig, publisherState, "init")
 	var environments [][]string
 	var origins []string
 	for i := 1; i <= 3; i++ {
@@ -734,7 +734,7 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 	if output, err := securityProvisioningCommand(t, publisherBinary, securityProvisioningEnvironment(""), "--config", publisherConfig, "--state", publisherState, "--mode", "advance-window", "--next-config", publication.NextConfig); err != nil {
 		t.Fatalf("retained publisher window did not advance: %v\n%s", err, output)
 	}
-	checkPublisher, stopPublisher = securityProvisioningPublisher(t, publisherBinary, publication.NextConfig, publisherState, "resume")
+	checkPublisher, stopPublisher = securityProvisioningPublisher(t, binary, publication.NextConfig, publisherState, "resume")
 	stops = startGroup()
 	checkPublisher()
 	checkGroup()
@@ -746,7 +746,10 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 
 func securityProvisioningPublisher(t *testing.T, binary, config, state, mode string) (func(), func()) {
 	t.Helper()
-	command := securityProvisioningOwnedCommand(t, binary, "--config", config, "--state", state, "--mode", mode)
+	// The functional Server already uses synthetic UTC. Select its explicitly
+	// test-only publisher child too; the normal publisher CLI still owns the
+	// advance-window operation above and keeps its production wall-clock guard.
+	command := securityProvisioningOwnedCommand(t, binary, "controlled-membership-publisher", config, state, mode)
 	command.Env = securityProvisioningEnvironment("")
 	var logs bytes.Buffer
 	command.Stdout, command.Stderr = &logs, &logs
