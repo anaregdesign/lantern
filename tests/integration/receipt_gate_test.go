@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -5644,7 +5645,9 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stream, err := newReplicationRawClient(t, wire.server.url).Subscribe(
+		httpClient := h2cClient()
+		defer httpClient.CloseIdleConnections()
+		stream, err := graphv1connect.NewLanternReplicationServiceClient(httpClient, wire.server.url).Subscribe(
 			ctx,
 			connect.NewRequest(&pb.SubscribeRequest{
 				FromLocalSeq: 1, AcceptReceiptEnvelopes: true,
@@ -5789,74 +5792,81 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 	})
 
 	t.Run("absent Delete reserves maximal receiver-local relay", func(t *testing.T) {
-		node := hlc.NodeID{0x96}
-		prepare := func(sendLimit int, seed byte) (receiptProtocolWireServer, *pb.DeleteVerticesRequest) {
-			wire := newReceiptProtocolWireServerWithNet(t, node, 8, provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit})
-			capability := receiptProtocolCapability(t, wire)
-			if !wire.runtime.GraphCache().ApplyVertexCausalBarrierHLC("frame/protected", hlc.Timestamp{
-				WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: node,
-			}) {
-				t.Fatal("cannot seed Vertex causal barrier")
+		// All three fixtures share one clock so serialized Timestamp widths cannot
+		// drift between the reference, rejected, and exact-fit frames.
+		synctest.Test(t, func(t *testing.T) {
+			node := hlc.NodeID{0x96}
+			prepare := func(sendLimit int, seed byte) (receiptProtocolWireServer, *pb.DeleteVerticesRequest) {
+				wire := newReceiptProtocolWireServerWithNet(t, node, 8, provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit})
+				httpClient := h2cClient()
+				t.Cleanup(httpClient.CloseIdleConnections)
+				wire.raw = graphv1connect.NewLanternServiceClient(httpClient, wire.server.url)
+				capability := receiptProtocolCapability(t, wire)
+				if !wire.runtime.GraphCache().ApplyVertexCausalBarrierHLC("frame/protected", hlc.Timestamp{
+					WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: node,
+				}) {
+					t.Fatal("cannot seed Vertex causal barrier")
+				}
+				now := time.Now()
+				wire.server.svc.WithTombstoneTTL(2*time.Hour + 600*time.Millisecond - time.Duration(now.Nanosecond()))
+				return wire, &pb.DeleteVerticesRequest{
+					Keys: []string{"frame/protected", "frame/absent"},
+					ReceiptContext: receiptProtocolContext(t, capability, seed, 2,
+						time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)),
+				}
 			}
-			now := time.Now()
-			wire.server.svc.WithTombstoneTTL(2*time.Hour + 600*time.Millisecond - time.Duration(now.Nanosecond()))
-			return wire, &pb.DeleteVerticesRequest{
-				Keys: []string{"frame/protected", "frame/absent"},
-				ReceiptContext: receiptProtocolContext(t, capability, seed, 2,
-					time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)),
+			deleteVertices := func(wire receiptProtocolWireServer, request *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
+				response, err := wire.raw.DeleteVertices(
+					context.Background(), connect.NewRequest(request),
+				)
+				if err != nil {
+					return nil, err
+				}
+				return response.Msg, nil
 			}
-		}
-		deleteVertices := func(wire receiptProtocolWireServer, request *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
-			response, err := wire.raw.DeleteVertices(
-				context.Background(), connect.NewRequest(request),
-			)
+			reference, request := prepare(0, 0x34)
+			if response, err := deleteVertices(reference, request); err != nil ||
+				!reflect.DeepEqual(response.GetExisted(), []bool{false, false}) {
+				t.Fatalf("reference absent Vertex Delete = %+v, %v", response, err)
+			}
+			sparse := readFrame(t, reference)
+			maximal := proto.Clone(sparse).(*pb.SubscribeResponse)
+			items := maximal.GetMutation().GetOp().GetReplicatedReceiptVertexDelete().GetItems()
+			if len(items) != 2 || items[0].GetCausallyAccepted() || !items[1].GetCausallyAccepted() {
+				t.Fatalf("sparse Vertex Delete receipt frame = %+v", sparse)
+			}
+			items[0].CausallyAccepted = true
+			sendLimit := proto.Size(maximal)
+			if proto.Size(sparse) >= sendLimit {
+				t.Fatalf("Vertex Delete sparse frame %d did not grow to maximal %d",
+					proto.Size(sparse), sendLimit)
+			}
+
+			rejected, request := prepare(sendLimit-1, 0x35)
+			beforeWAL, err := os.Stat(rejected.config.Path)
 			if err != nil {
-				return nil, err
+				t.Fatal(err)
 			}
-			return response.Msg, nil
-		}
-		reference, request := prepare(0, 0x34)
-		if response, err := deleteVertices(reference, request); err != nil ||
-			!reflect.DeepEqual(response.GetExisted(), []bool{false, false}) {
-			t.Fatalf("reference absent Vertex Delete = %+v, %v", response, err)
-		}
-		sparse := readFrame(t, reference)
-		maximal := proto.Clone(sparse).(*pb.SubscribeResponse)
-		items := maximal.GetMutation().GetOp().GetReplicatedReceiptVertexDelete().GetItems()
-		if len(items) != 2 || items[0].GetCausallyAccepted() || !items[1].GetCausallyAccepted() {
-			t.Fatalf("sparse Vertex Delete receipt frame = %+v", sparse)
-		}
-		items[0].CausallyAccepted = true
-		sendLimit := proto.Size(maximal)
-		if proto.Size(sparse) >= sendLimit {
-			t.Fatalf("Vertex Delete sparse frame %d did not grow to maximal %d",
-				proto.Size(sparse), sendLimit)
-		}
+			if _, err := deleteVertices(rejected, request); connect.CodeOf(err) != connect.CodeResourceExhausted ||
+				!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
+				t.Fatalf("one-byte-under maximal Vertex Delete relay = %v, want ResourceExhausted", err)
+			}
+			checkRejected(t, rejected, request.GetReceiptContext(), beforeWAL.Size(), node)
+			graph := rejected.runtime.GraphCache().SnapshotReplication()
+			if len(graph.Barriers.Vertices) != 1 || len(graph.Tombstones.Vertices) != 0 ||
+				len(graph.Graph.Vertices) != 0 {
+				t.Fatalf("rejected Vertex Delete changed causal identities: %+v", graph)
+			}
 
-		rejected, request := prepare(sendLimit-1, 0x35)
-		beforeWAL, err := os.Stat(rejected.config.Path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := deleteVertices(rejected, request); connect.CodeOf(err) != connect.CodeResourceExhausted ||
-			!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
-			t.Fatalf("one-byte-under maximal Vertex Delete relay = %v, want ResourceExhausted", err)
-		}
-		checkRejected(t, rejected, request.GetReceiptContext(), beforeWAL.Size(), node)
-		graph := rejected.runtime.GraphCache().SnapshotReplication()
-		if len(graph.Barriers.Vertices) != 1 || len(graph.Tombstones.Vertices) != 0 ||
-			len(graph.Graph.Vertices) != 0 {
-			t.Fatalf("rejected Vertex Delete changed causal identities: %+v", graph)
-		}
-
-		exact, request := prepare(sendLimit, 0x36)
-		if response, err := deleteVertices(exact, request); err != nil ||
-			!reflect.DeepEqual(response.GetExisted(), []bool{false, false}) {
-			t.Fatalf("exact-fit absent Vertex Delete = %+v, %v", response, err)
-		}
-		if size := proto.Size(readFrame(t, exact)); size != proto.Size(sparse) {
-			t.Fatalf("exact-fit sparse Vertex Delete frame = %d, want %d", size, proto.Size(sparse))
-		}
+			exact, request := prepare(sendLimit, 0x36)
+			if response, err := deleteVertices(exact, request); err != nil ||
+				!reflect.DeepEqual(response.GetExisted(), []bool{false, false}) {
+				t.Fatalf("exact-fit absent Vertex Delete = %+v, %v", response, err)
+			}
+			if size := proto.Size(readFrame(t, exact)); size != proto.Size(sparse) {
+				t.Fatalf("exact-fit sparse Vertex Delete frame = %d, want %d", size, proto.Size(sparse))
+			}
+		})
 	})
 }
 
