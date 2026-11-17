@@ -197,7 +197,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up current supported Dart
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
@@ -425,7 +425,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up minimum supported Dart
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.11.0
 
@@ -456,7 +456,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up current supported Dart
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
@@ -591,7 +591,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up minimum supported Dart
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.11.0
 
@@ -1397,7 +1397,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up current supported Dart without OIDC
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
@@ -1493,7 +1493,7 @@ jobs:
       # This job executes no repository scripts and has no Release authority.
       # --from-archive publishes the bytes already validated in preflight.
       - name: Set up current supported Dart and pub.dev OIDC
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
@@ -1602,7 +1602,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up current supported Dart without OIDC
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
@@ -1678,7 +1678,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up current supported Dart without OIDC
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
@@ -1784,7 +1784,7 @@ jobs:
 
       # This job executes no repository scripts and has no Release authority.
       - name: Set up current supported Dart and pub.dev OIDC
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: 3.12.2
 
