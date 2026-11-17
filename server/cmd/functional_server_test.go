@@ -25,11 +25,22 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 )
 
+// Only native tagged test files install this child. Ordinary serving and normal
+// binaries retain their existing entry points and clock composition.
+var functionalPublisherChild func([]string, io.Writer) error
+
 // A private serving executable made with go test -c. It runs the real App,
 // listener adoption, certification and cleanup; only UTC composition is the
 // compile-time controlled fixture. Normal binaries cannot select this entry or
 // mint fixture time. go test itself supplies -test.* arguments and runs tests.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "controlled-membership-publisher" {
+		if functionalPublisherChild == nil || functionalPublisherChild(os.Args[2:], os.Stdout) != nil {
+			_, _ = io.WriteString(os.Stderr, "controlled functional publisher failed\n")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) == 1 || os.Args[1] == listenerlaunch.Argument || os.Args[1] == "init-security" || os.Args[1] == "provision-security" || os.Args[1] == "renew-security" || os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
 		if err := runFunctionalMain(len(os.Args) == 1, runMain, os.Stderr); err != nil {
 			decisiontrace.WriteStartupFailure(os.Stderr, err)

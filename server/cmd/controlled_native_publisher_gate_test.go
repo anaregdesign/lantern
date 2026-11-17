@@ -29,6 +29,32 @@ import (
 	"time"
 )
 
+func init() {
+	functionalPublisherChild = func(args []string, output io.Writer) error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runFunctionalPublisher(ctx, args, output, controlledNativeFixtureClock())
+	}
+}
+
+// This explicitly selected test-binary child shares the functional Server's
+// synthetic-clock composition, not the normal operator CLI's wall-clock claim.
+func runFunctionalPublisher(ctx context.Context, args []string, output io.Writer, clock func() time.Time) error {
+	if len(args) != 3 {
+		return membershippublisher.ErrState
+	}
+	publisher, err := membershippublisher.OpenControlledFixture(args[0], args[1], args[2], clock)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(output)
+	err = publisher.RunWithStatus(ctx, func(status membershippublisher.Status) error { return encoder.Encode(status) }, 7*24*time.Hour)
+	if err == context.Canceled {
+		err = nil
+	}
+	return errors.Join(err, publisher.Close())
+}
+
 type controlledNativePublisherInput struct {
 	Schema          int                          `json:"schema"`
 	Profile         string                       `json:"profile"`
@@ -321,6 +347,7 @@ type controlledNativeUnitEventFile struct {
 	bytes.Buffer
 	writeErr, syncErr error
 	short             bool
+	onWrite           func([]byte)
 }
 
 func (f *controlledNativeUnitEventFile) Write(raw []byte) (int, error) {
@@ -329,6 +356,9 @@ func (f *controlledNativeUnitEventFile) Write(raw []byte) (int, error) {
 	}
 	if f.short {
 		return len(raw) - 1, nil
+	}
+	if f.onWrite != nil {
+		f.onWrite(raw)
 	}
 	return f.Buffer.Write(raw)
 }
@@ -591,6 +621,66 @@ func TestControlledNativeProviderPublisherRenewal(t *testing.T) {
 		// manifest has been stretched to make the thirty-minute proof pass.
 		if _, err := controlledNativeLeaseVerify(authority, input.PlannedStop, bundle.Operator.ControlManifest, bundle.Operator.DataManifest); err == nil {
 			t.Fatal("expired original lease accepted")
+		}
+		if err := publisher.Close(); err != nil {
+			t.Fatal("publisher close before functional child resume", err)
+		}
+		// Exercise the actual functional child runner in this existing bubble.
+		{
+			wall := input.PlannedStop
+			anchor := wall
+			elapsed := time.Duration(0)
+			clock := controlledNativeAnchoredUTC(anchor, func() time.Duration { return elapsed })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var observations []membershippublisher.Status
+			output := &controlledNativeUnitEventFile{onWrite: func(raw []byte) {
+				var status membershippublisher.Status
+				if err := json.Unmarshal(raw, &status); err != nil {
+					t.Fatal("functional child status", err)
+				}
+				observations = append(observations, status)
+				if len(observations) == 1 {
+					wall = wall.Add(-time.Hour)
+					elapsed = 5 * time.Second
+				} else {
+					cancel()
+				}
+			}}
+			args := []string{configPath, statePath, "resume"}
+			if err := runFunctionalPublisher(ctx, args, output, clock); err != nil {
+				t.Fatal("functional child followed changed host wall clock", err)
+			}
+			if len(observations) != 3 || observations[0].Failure != "none" || observations[1].Failure != "none" ||
+				!observations[0].ObservedAt.Equal(anchor) || !observations[1].ObservedAt.Equal(anchor.Add(5*time.Second)) ||
+				observations[2].Failure != "stopped" || !wall.Before(anchor) {
+				t.Fatal("functional child did not share the anchored admission/run/status clock", observations)
+			}
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output = &controlledNativeUnitEventFile{onWrite: func(raw []byte) {
+				var status membershippublisher.Status
+				if err := json.Unmarshal(raw, &status); err != nil {
+					t.Fatal(err)
+				}
+				observations = append(observations, status)
+				elapsed = 4 * time.Second // An actual fixture-clock rollback stays fatal.
+			}}
+			if err := runFunctionalPublisher(t.Context(), args, output, clock); !errors.Is(err, membershippublisher.ErrState) {
+				t.Fatal("functional child bypassed intentional rollback refusal", err)
+			}
+			after, err := os.ReadFile(statePath)
+			if err != nil || !bytes.Equal(before, after) || observations[len(observations)-1].Failure != "clock_rollback" {
+				t.Fatal("rollback changed the retained journal or lost its failure", err)
+			}
+			if err := runFunctionalPublisher(t.Context(), []string{configPath, statePath, "advance-window"}, io.Discard, clock); !errors.Is(err, membershippublisher.ErrState) {
+				t.Fatal("functional child accepted a maintenance mode", err)
+			}
+			if err := runFunctionalPublisher(t.Context(), args, io.Discard, func() time.Time { return config.End }); !errors.Is(err, membershippublisher.ErrBudget) {
+				t.Fatal("functional child extended its original budget", err)
+			}
 		}
 	})
 }
