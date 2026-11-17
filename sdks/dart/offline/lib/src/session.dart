@@ -610,6 +610,15 @@ final class _SessionShared {
     owner.checkCurrent();
   }
 
+  // Internal completion/clock/store notifications can arrive while the public
+  // handle is still joining its subscriptions. They must not schedule new work
+  // for an irrevocably retired lifetime. Live pause states remain observable.
+  bool get _notificationCurrent =>
+      !ended &&
+      authorityCurrent() &&
+      !client.isClosed &&
+      (!ready || (!data._closed && !data._invalid));
+
   bool get _credentialLive =>
       credentialExpires == null || dataOrClock().isBefore(credentialExpires!);
   DateTime dataOrClock() => ready ? data.clock() : clock().toUtc();
@@ -668,10 +677,11 @@ final class _SessionShared {
       ? SyncReachability.idle
       : SyncReachability.unknown;
   void _healthChanged() {
-    if (ready && !ended) data._observations.invalidateKey('sync');
+    if (ready && _notificationCurrent) data._observations.invalidateKey('sync');
   }
 
   void _endpointSuccess() {
+    if (!_notificationCurrent) return;
     _endpointObserved = true;
     // A sibling success cannot erase a later throttling deadline.
     if (!(_backoffUntil?.isAfter(dataOrClock()) ?? false)) _failures = 0;
@@ -679,6 +689,7 @@ final class _SessionShared {
   }
 
   void _readEndpoint(LanternException? failure) {
+    if (!_notificationCurrent) return;
     if (failure == null) {
       _endpointSuccess();
       return;
@@ -694,6 +705,7 @@ final class _SessionShared {
 
   DateTime _retryDeadline(Object? failure) {
     final now = data.clock();
+    if (!_notificationCurrent) return now;
     final exponent = _failures;
     _failures = min(_failures + 1, 9);
     final ceiling = min(30000, 100 * (1 << exponent));
@@ -732,21 +744,21 @@ final class _SessionShared {
   }
 
   void _requestAuthPause() {
-    if (ended || auth) return;
+    if (!_notificationCurrent || auth) return;
     auth = true;
     _networkJoin = runtime.pauseNetwork();
     if (ready) data._observations.invalidate();
   }
 
   void _requestPolicyPause() {
-    if (ended || policy) return;
+    if (!_notificationCurrent || policy) return;
     policy = true;
     _networkJoin = runtime.pauseNetwork();
     if (ready) data._observations.invalidate();
   }
 
   void _requestStoragePause() {
-    if (ended || storage) return;
+    if (!_notificationCurrent || storage) return;
     storage = true;
     _networkJoin = runtime.pauseNetwork();
     if (ready) {
@@ -832,7 +844,7 @@ final class _SessionShared {
     }
     runtime.clearPending('watch-expiry');
     // Retired owners clear stopped queries without enqueueing a replacement.
-    if (value == null && !authorityCurrent()) return;
+    if (value == null && !_notificationCurrent) return;
     if (_watchExpiries.isNotEmpty) {
       final next = _watchExpiries.values.reduce(
         (a, b) => a.isBefore(b) ? a : b,
@@ -848,7 +860,7 @@ final class _SessionShared {
   }
 
   void _changed() {
-    if (!ready || ended) return;
+    if (!ready || !_notificationCurrent) return;
     incoming?.wake();
     if (!_policyAllowsNetwork) {
       runtime.enqueue(
@@ -924,7 +936,7 @@ final class _SessionShared {
         (due == null || credentialExpires!.isBefore(due))) {
       due = credentialExpires;
     }
-    if (due != null && !ended) {
+    if (due != null && _notificationCurrent) {
       runtime.enqueue(
         'maintenance',
         OfflineSessionLane.local,

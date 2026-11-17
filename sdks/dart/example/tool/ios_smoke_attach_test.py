@@ -77,7 +77,10 @@ class CleanupTests(unittest.TestCase):
                     if sig == denied_signal:
                         raise PermissionError("denied")
 
-                with patch.object(smoke.os, "killpg", side_effect=group_signal):
+                with (
+                    patch.object(smoke.os, "killpg", side_effect=group_signal),
+                    patch.object(smoke.time, "monotonic", side_effect=[0, 2]),
+                ):
                     with self.assertRaises(smoke.CleanupError):
                         smoke.stop_process(process)
                 process.send_signal.assert_called_once_with(denied_signal)
@@ -107,7 +110,10 @@ class CleanupTests(unittest.TestCase):
                     if outcome is not None:
                         raise outcome
 
-                with patch.object(smoke.os, "killpg", side_effect=group_signal) as group:
+                with (
+                    patch.object(smoke.os, "killpg", side_effect=group_signal) as group,
+                    patch.object(smoke.time, "monotonic", side_effect=[0, 2]),
+                ):
                     with self.assertRaisesRegex(smoke.CleanupError, reason):
                         smoke.stop_process(process)
                 self.assertEqual(
@@ -115,6 +121,97 @@ class CleanupTests(unittest.TestCase):
                     [call(123, signal.SIGTERM), call(123, signal.SIGKILL), call(123, 0)],
                 )
                 process.send_signal.assert_called_once_with(signal.SIGTERM)
+
+    def test_reaped_child_waits_for_actual_group_absence_within_same_budget(self):
+        process = Mock(pid=123, returncode=0)
+        process.wait.return_value = 0
+        now = [0.0]
+        signals = []
+
+        def group_signal(pid, sig):
+            self.assertEqual(pid, 123)
+            signals.append(sig)
+            if sig == signal.SIGTERM:
+                raise PermissionError(errno.EPERM, "private command detail")
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+            self.assertEqual(sig, 0)
+            if now[0] < 0.1:
+                raise PermissionError(errno.EPERM, "private command detail")
+            raise ProcessLookupError
+
+        def advance(delay):
+            now[0] += delay
+
+        with (
+            patch.object(smoke.os, "killpg", side_effect=group_signal),
+            patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]),
+            patch.object(smoke.time, "sleep", side_effect=advance),
+        ):
+            smoke.stop_process(process)
+        self.assertAlmostEqual(now[0], 0.1)
+        self.assertEqual(
+            [sig for sig in signals if sig], [signal.SIGTERM, signal.SIGKILL],
+        )
+        self.assertEqual(signals[-1], 0)
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        self.assertEqual(process.wait.call_args_list, [call(timeout=2)] * 2)
+
+    def test_absence_refusals_and_consumed_reap_budget_remain_bounded(self):
+        for outcome, consumed, reason, number in [
+            ("denied", 0, "group absence check was denied", errno.EPERM),
+            ("live", 0, "group still exists", "unknown"),
+            ("other", 0, "group absence check failed", errno.EIO),
+            ("denied", 2, "group absence check was denied", errno.EPERM),
+        ]:
+            with self.subTest(outcome=outcome, consumed=consumed):
+                process = Mock(pid=123, returncode=0)
+                now = [0.0]
+                waits = []
+                signals = []
+
+                def wait(timeout):
+                    waits.append(timeout)
+                    if len(waits) == 2:
+                        now[0] += consumed
+                    return 0
+
+                def group_signal(pid, sig):
+                    self.assertEqual(pid, 123)
+                    signals.append(sig)
+                    if sig == signal.SIGTERM:
+                        raise PermissionError(errno.EPERM, "private command detail")
+                    if sig == signal.SIGKILL:
+                        raise ProcessLookupError
+                    self.assertEqual(sig, 0)
+                    if outcome == "denied":
+                        raise PermissionError(errno.EPERM, "private command detail")
+                    if outcome == "other":
+                        raise OSError(errno.EIO, "private command detail")
+
+                def advance(delay):
+                    now[0] += delay
+
+                process.wait.side_effect = wait
+                with (
+                    patch.object(smoke.os, "killpg", side_effect=group_signal),
+                    patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]),
+                    patch.object(smoke.time, "sleep", side_effect=advance) as sleep,
+                ):
+                    with self.assertRaisesRegex(smoke.CleanupError, reason) as caught:
+                        smoke.stop_process(process)
+                self.assertLessEqual(now[0], 2)
+                self.assertEqual(
+                    [sig for sig in signals if sig], [signal.SIGTERM, signal.SIGKILL],
+                )
+                self.assertEqual(waits, [2, 2])
+                self.assertIn(f"pid=123 rc=0 errno={number}", str(caught.exception))
+                self.assertNotIn("private command detail", str(caught.exception))
+                if consumed or outcome == "other":
+                    sleep.assert_not_called()
+                    self.assertEqual(signals.count(0), 1)
+                else:
+                    self.assertAlmostEqual(now[0], 2)
 
     def test_unreaped_child_has_no_unbounded_wait(self):
         for denied in (False, True):

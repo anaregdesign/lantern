@@ -36,6 +36,16 @@ class CleanupError(RuntimeError):
 
 
 def stop_process(process, before_stop=None):
+    def refusal(message, error=None):
+        values = (
+            getattr(process, "pid", None), getattr(process, "returncode", None),
+            getattr(error, "errno", None),
+        )
+        pid, status, number = (
+            str(value) if type(value) is int else "unknown" for value in values
+        )
+        return CleanupError(f"{message} (pid={pid} rc={status} errno={number})")
+
     if before_stop:
         try:
             before_stop()
@@ -62,22 +72,31 @@ def stop_process(process, before_stop=None):
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+    deadline = time.monotonic() + 2
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired as error:
-        raise CleanupError("subprocess did not exit after bounded cleanup") from error
+        raise refusal("subprocess did not exit after bounded cleanup", error) from error
     if denied:
-        # An exited, unreaped child can race the signal. Reaping alone does not
-        # prove that its owned group (including descendants) has disappeared.
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return
-        except PermissionError as error:
-            raise CleanupError("subprocess group absence check was denied") from error
-        except OSError as error:
-            raise CleanupError("subprocess group absence check failed") from error
-        raise CleanupError("subprocess group cleanup was denied; group still exists")
+        # Reaping alone does not prove group absence. Use only the remainder
+        # of the same final reap budget, and require an actual ESRCH.
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError as error:
+                message = "subprocess group absence check was denied"
+                cause = error
+            except OSError as error:
+                raise refusal("subprocess group absence check failed", error) from error
+            else:
+                message = "subprocess group cleanup was denied; group still exists"
+                cause = None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise refusal(message, cause) from cause
+            time.sleep(min(0.05, remaining))
 
 
 def wait_bounded(process, deadline, before_stop=None):

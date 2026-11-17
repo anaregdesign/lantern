@@ -101,16 +101,24 @@ final class OfflineLanternDataClient
       onEndpointSuccess: _session?._endpointSuccess,
       controlFence: _session?._checkControlLifetime,
       onStorageBlocked: () {
+        if (!_notificationCurrent) return;
         _session?._requestStoragePause();
         _storageBlocked = true;
         _observations.invalidate();
       },
     );
     _changes = store.changes(partitionId).listen((c) {
+      if (_closed) return;
       if (c.generation != generation ||
           c.authorityBinding != binding.authorityBinding) {
+        if (_invalid) return;
         _invalid = true;
         _session?.endLifetime();
+        // Automatic close joins observations/completions. A standalone facade
+        // still invalidates once so its existing observers see the closed fence.
+        if (_session != null) return;
+      } else if (!_notificationCurrent) {
+        return;
       }
       _session?._changed();
       _completion.invalidate();
@@ -257,6 +265,11 @@ final class OfflineLanternDataClient
   /// Qualified automatic-owner delivery port, excluded from ordinary CRUD semantics.
   late final OfflineMutationDelivery _delivery;
   bool _closed = false, _invalid = false, _storageBlocked = false;
+  bool get _notificationCurrent =>
+      !_closed &&
+      !_invalid &&
+      !_client.isClosed &&
+      (_session?._notificationCurrent ?? authorityCurrent());
   Future<void>? _closing;
   int _sequence = 0;
   // Weak metadata travels with an immutable snapshot until the coordinator
