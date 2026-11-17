@@ -585,7 +585,7 @@ final class _InstalledFactoryRun {
     final client = LanternClient.connect(
       endpoint,
       tokenProvider: () {
-        if (credential == credentialB) expect(wiped, isTrue);
+        if (credential == credentialB) expectSync(wiped, isTrue);
         tokenReads++;
         return credential;
       },
@@ -817,9 +817,9 @@ final class _OwnedClient {
     client = LanternClient.connect(
       endpoint,
       tokenProvider: () {
-        expect(closes, 0, reason: 'Retired credentials cannot be reused');
+        final token = installedFactoryReadCredential(credential, closes);
         tokenReads++;
-        return credential;
+        return token;
       },
       httpClientFactory: relay.createHttpClient,
       retryPolicy: const RetryPolicy(maxAttempts: 1),
