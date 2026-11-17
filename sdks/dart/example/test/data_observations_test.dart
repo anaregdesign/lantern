@@ -50,9 +50,18 @@ void main() {
         final h = AppHarness(profile);
         await tester.runAsync(h.open);
         addTearDown(() => tester.runAsync(h.close));
+        final expiration = h.clock.now.add(const Duration(minutes: 5));
         h.wire.vertices.addAll({
-          'app:alice': {'key': 'app:alice', 'string': 'initial'},
-          'app:bob': {'key': 'app:bob', 'string': 'endpoint'},
+          'app:alice': {
+            'key': 'app:alice',
+            'string': 'initial',
+            'expiration': expiration.toIso8601String(),
+          },
+          'app:bob': {
+            'key': 'app:bob',
+            'string': 'endpoint',
+            'expiration': expiration.toIso8601String(),
+          },
         });
         h.wire.edges['app:alice\u0000app:bob'] = {
           'tail': 'app:alice',
@@ -65,6 +74,11 @@ void main() {
           h.data.watchVertex('app:alice'),
           events.add,
         );
+        final bobEvents = <LanternSnapshot<Vertex>>[];
+        final bobWatch = observations.listen(
+          h.data.watchVertex('app:bob'),
+          bobEvents.add,
+        );
         final traversals = <LanternTraversalSnapshot>[];
         final traversal = observations.listen(
           h.data.watchIlluminate(
@@ -75,6 +89,7 @@ void main() {
           traversals.add,
         );
         addTearDown(() => tester.runAsync(watch.cancel));
+        addTearDown(() => tester.runAsync(bobWatch.cancel));
         addTearDown(() => tester.runAsync(traversal.cancel));
         await tester.pumpWidget(
           MaterialApp(
@@ -103,7 +118,14 @@ void main() {
               tester
                   .widget<Text>(find.byKey(const Key('live-traversal')))
                   .data!
-                  .contains('1 edges')) {
+                  .contains('1 edges') &&
+              bobEvents.any(
+                (event) =>
+                    installedFactoryStringPayload(
+                      event.confirmed.value?.value,
+                    ) ==
+                    'endpoint',
+              )) {
             break;
           }
         }
@@ -119,6 +141,16 @@ void main() {
           tester.widget<Text>(find.byKey(const Key('live-traversal'))).data,
           contains('1 edges'),
         );
+        expect(events.last.confirmed.value?.expiration, expiration);
+        expect(
+          installedFactoryStringPayload(bobEvents.last.confirmed.value?.value),
+          'endpoint',
+        );
+        expect(bobEvents.last.confirmed.value?.expiration, expiration);
+        expect(
+          traversals.last.confirmed.value?.vertices['app:alice']?.expiration,
+          expiration,
+        );
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump(Duration.zero);
         await tester.runAsync(
@@ -129,9 +161,10 @@ void main() {
           }),
         );
         if (profile == AppDataProfile.direct) {
-          expect(observations.closedErrors, 2);
+          expect(observations.closedErrors, 3);
         }
         final eventCount = events.length,
+            bobEventCount = bobEvents.length,
             traversalCount = traversals.length,
             tokenReads = h.tokenReads,
             calls = h.wire.calls.length;
@@ -141,6 +174,7 @@ void main() {
         await tester.pump();
         observations.check();
         expect(events, hasLength(eventCount));
+        expect(bobEvents, hasLength(bobEventCount));
         expect(traversals, hasLength(traversalCount));
         expect(h.tokenReads, tokenReads);
         expect(h.wire.calls, hasLength(calls));
@@ -151,6 +185,7 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.runAsync(() async {
           await watch.cancel();
+          await bobWatch.cancel();
           await traversal.cancel();
         });
       }

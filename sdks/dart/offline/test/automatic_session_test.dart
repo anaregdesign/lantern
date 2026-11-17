@@ -82,6 +82,7 @@ final class Harness {
     bool parentRemote = false,
     bool transferAllowed = true,
     bool restoreHeld = false,
+    bool Function()? authorityCurrent,
   }) async {
     final handle = await OfflineLanternSession.openStore(
       client: client,
@@ -94,6 +95,7 @@ final class Harness {
       schedule: clock.schedule,
       transferAllowed: transferAllowed,
       restoreHeld: restoreHeld,
+      authorityCurrent: authorityCurrent,
       receiptRemote: receipt,
       mutationRemote: parentRemote ? null : remote,
     );
@@ -114,6 +116,82 @@ final class Harness {
 
 void main() {
   firstSendContract();
+  for (final revokeAuthority in [true, false]) {
+    test(
+      'S4 finite watch TTL ${revokeAuthority ? 'authority retirement closes' : 'live sibling survives handle close'}',
+      () async {
+        var current = true;
+        bool authority() => current;
+        final h = Harness();
+        addTearDown(h.close);
+        final first = await h.open(authorityCurrent: authority);
+        final sibling = revokeAuthority
+            ? null
+            : await h.open(authorityCurrent: authority);
+        await h.store.transaction((tx) async {
+          for (final key in ['first', 'second']) {
+            await tx.putCache(
+              h.identity.stableIdentity,
+              OfflineCacheRecord.value(
+                partitionId: h.identity.stableIdentity,
+                generation: 0,
+                key: OfflineEntityKey.vertex(key),
+                validatedAt: h.clock.now,
+                lastAccessAt: h.clock.now,
+                entity: Vertex(
+                  key: key,
+                  value: const StringValue('value'),
+                  expiration: h.clock.now.add(const Duration(seconds: 2)),
+                ),
+              ),
+            );
+          }
+        });
+        final firstEvents = <LanternSnapshot<Vertex>>[],
+            secondEvents = <LanternSnapshot<Vertex>>[],
+            siblingEvents = <LanternSnapshot<Vertex>>[];
+        const options = WatchOptions(
+          source: ReadSource.cacheOnly,
+          pollInterval: Duration(hours: 1),
+        );
+        final one = first
+            .watchVertex('first', options: options)
+            .listen(firstEvents.add);
+        final two = first
+            .watchVertex('second', options: options)
+            .listen(secondEvents.add);
+        final other = sibling
+            ?.watchVertex('second', options: options)
+            .listen(siblingEvents.add);
+        addTearDown(one.cancel);
+        addTearDown(two.cancel);
+        if (other != null) addTearDown(other.cancel);
+        await flush();
+        await h.tick();
+        expect(firstEvents.last.confirmed.state, ConfirmedState.present);
+        expect(secondEvents.last.confirmed.state, ConfirmedState.present);
+        expect(h.clock.active, 1);
+        if (revokeAuthority) current = false;
+        final closing = first.close();
+        expect(identical(closing, first.close()), isTrue);
+        await closing;
+        final counts = (firstEvents.length, secondEvents.length);
+        if (sibling != null) {
+          expect(h.client.isClosed, false);
+          expect(h.clock.active, 1);
+          await h.tick(2000);
+          expect(siblingEvents.last.confirmed.state, ConfirmedState.expired);
+          await sibling.close();
+        }
+        expect(h.client.isClosed, true);
+        expect(h.clock.active, 0);
+        await h.tick(10000);
+        expect((firstEvents.length, secondEvents.length), counts);
+        expect(h.remote.calls, 0);
+      },
+    );
+  }
+
   test(
     'R2 startup data-join failure never releases the provisional owner',
     () async {

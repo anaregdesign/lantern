@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
+import 'package:lantern_client/lantern_client.dart';
 
 import 'receipt_restart_journal.dart';
 
@@ -78,8 +79,46 @@ class ReceiptAttestationFailure implements Exception {
   final List<Object> errors;
 
   @override
-  String toString() => 'Receipt attestation failed during ${phases.join(', ')}';
+  String toString() {
+    // Keep inner failure categories visible without logging messages, response
+    // metadata, endpoints, credentials, graph values or filesystem paths.
+    String phase(int index) => switch (phases[index]) {
+      'body' || 'cleanup' || 'incomplete' || 'attestation' => phases[index],
+      _ => 'other',
+    };
+    final count = phases.length < 8 ? phases.length : 8;
+    final details = [
+      for (var i = 0; i < count; i++)
+        '${phase(i)}:${i < errors.length ? _failureCategory(errors[i]) : 'missing'}',
+      if (phases.length > count) 'more',
+    ];
+    return 'Receipt attestation failed during ${details.join(', ')}';
+  }
 }
+
+String _failureCategory(Object error) => switch (error) {
+  LanternRetryExhaustedException(:final cause) =>
+    'retry_${_failureCategory(cause)}',
+  LanternException(:final code, :final transportCode, :final cause) =>
+    'lantern_${code.name}/$transportCode/${_causeCategory(cause)}',
+  LanternDataException(:final reason) => 'data_${reason.name}',
+  TimeoutException() => 'timeout',
+  IOException() => _causeCategory(error),
+  StateError() => 'state',
+  ArgumentError() => 'argument',
+  AssertionError() => 'assertion',
+  _ => 'other',
+};
+
+String _causeCategory(Object? cause) => switch (cause) {
+  null => 'none',
+  SocketException() => 'socket',
+  HandshakeException() => 'tls',
+  HttpException() => 'http',
+  IOException() => 'io',
+  TimeoutException() => 'timeout',
+  _ => 'other',
+};
 
 /// Only an actual receipt target should invoke this runner; it is not a test.
 class ReceiptAttestation {
