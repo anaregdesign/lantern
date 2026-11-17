@@ -984,7 +984,9 @@ jobs:
     name: iOS simulator real-wire example
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: macos-15
+    runs-on: macos-15-intel
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     # Two bounded 14-minute attempts plus fresh-device creation must leave
     # enough margin for setup/build, diagnostics upload, and mandatory cleanup.
     timeout-minutes: 45
@@ -1007,7 +1009,7 @@ jobs:
         run: |
           set -euo pipefail
           device=$(xcrun simctl list devices available -j | \
-            jq -er '[.devices[][] | select((.name | startswith("iPhone")) and .state == "Shutdown")][0].udid')
+            jq -er '[(.devices["com.apple.CoreSimulator.SimRuntime.iOS-18-5"] // [])[] | select((.name | startswith("iPhone")) and .state == "Shutdown")][0].udid')
           test -n "$device"
           echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
 
