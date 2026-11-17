@@ -1001,6 +1001,9 @@ func TestDartWorkflowGate(t *testing.T) {
 	last := -1
 	for _, step := range []string{
 		"name: Select unbooted iOS simulator",
+		"name: Set up Go",
+		"name: Set up Flutter",
+		"name: Prepare iOS simulator data",
 		"name: Start Lantern",
 		"name: Check iOS example",
 		"name: Build production iOS example for release",
@@ -1021,7 +1024,9 @@ func TestDartWorkflowGate(t *testing.T) {
 		last = index
 	}
 	for _, contract := range []string{
-		"timeout-minutes: 45",
+		"timeout-minutes: 60",
+		"- name: Select unbooted iOS simulator\n        timeout-minutes: 5",
+		"- name: Prepare iOS simulator data\n        timeout-minutes: 10",
 		"- name: Build production iOS example for release\n        if: startsWith(github.ref, 'refs/tags/sdks/dart/v')",
 		"flutter build ios --debug --no-codesign --no-pub",
 		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
