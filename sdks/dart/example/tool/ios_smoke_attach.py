@@ -244,24 +244,42 @@ class RunnerOwnershipError(RuntimeError):
     """A fixed, content-free native identity refusal; never an app verdict."""
 
 
-def runner_identity_read(command, deadline, limit):
-    if time.monotonic() >= deadline:
-        raise RunnerOwnershipError("identity_deadline")
+def identity_refusal(stage, reason, status=None, timed_out=None, exceeded=None, expired=None):
+    """Keep only fixed stage/reason labels and observed numeric outcomes."""
+    if stage not in {"identity", "container", "prelaunch_ps", "returned_pid", "native_launch"} or reason not in {"identity_deadline", "identity_unavailable", "identity_incomplete", "identity_exit"}:
+        raise ValueError("invalid_identity_diagnostic_label")
+
+    def flag(value):
+        return str(int(value)) if type(value) is bool else "unknown"
+
+    code = str(status) if type(status) is int else "unknown"
+    return RunnerOwnershipError(
+        f"stage={stage} reason={reason} timed_out={flag(timed_out)} "
+        f"output_limit={flag(exceeded)} exit_code={code} deadline_expired={flag(expired)}"
+    )
+
+
+def runner_identity_read(command, deadline, limit, stage="identity"):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise identity_refusal(stage, "identity_deadline", expired=True)
     try:
         status, raw, timed_out, exceeded = read_process(
-            command, remaining(deadline, 10), limit, merge_stderr=True,
+            command, left, limit, merge_stderr=True,
         )
     except OSError as error:
-        raise RunnerOwnershipError("identity_unavailable") from error
-    if timed_out or exceeded or time.monotonic() >= deadline:
-        raise RunnerOwnershipError("identity_incomplete")
+        raise identity_refusal(stage, "identity_unavailable") from error
+    expired = time.monotonic() >= deadline
+    if timed_out or exceeded or expired or status:
+        reason = "identity_deadline" if expired else "identity_incomplete" if timed_out or exceeded else "identity_exit"
+        raise identity_refusal(stage, reason, status, timed_out, exceeded, expired)
     return status, raw
 
 
 def prepare_runner_launch(xcrun, device, deadline):
     status, raw = runner_identity_read(
         [xcrun, "simctl", "get_app_container", device, BUNDLE_ID, "app"],
-        deadline, 8192,
+        deadline, 8192, "container",
     )
     try:
         text = raw.decode("utf-8").strip()
@@ -281,7 +299,7 @@ def prepare_runner_launch(xcrun, device, deadline):
     executable = str(container / "Runner")
     status, raw = runner_identity_read(
         [os.environ.get("IOS_SMOKE_PS_BIN", "ps"), "-axo", "pid=,comm=", "-ww"],
-        deadline, MAX_FILE_BYTES,
+        deadline, MAX_FILE_BYTES, "prelaunch_ps",
     )
     try:
         rows = [line.split(None, 1) for line in raw.decode("utf-8").splitlines()]
@@ -309,7 +327,7 @@ def verify_runner_launch(pid, executable, deadline):
     status, raw = runner_identity_read(
         [os.environ.get("IOS_SMOKE_PS_BIN", "ps"), "-p", str(pid),
          "-o", "pid=,stat=,comm=", "-ww"],
-        deadline, 8192,
+        deadline, 8192, "returned_pid",
     )
     if status:
         raise RunnerOwnershipError("returned_process_unobserved")
@@ -521,8 +539,9 @@ def run_attempt(device, attempt, root):
             classification = "launch_failure"
             return 72
         operation = "prelaunch runner identity"
+        native_deadline = min(deadline, time.monotonic() + launch_limit)
         try:
-            executable = prepare_runner_launch(xcrun, device, deadline)
+            executable = prepare_runner_launch(xcrun, device, native_deadline)
         except RunnerOwnershipError as error:
             record_operation(phases, "native_launch_operation", f"refused prelaunch_identity={error}")
             classification = "launch_failure"
@@ -530,12 +549,18 @@ def run_attempt(device, attempt, root):
         # Match Flutter's plain launch protocol only after proving that this
         # selected Simulator has no old Runner whose PID/logs could be reused.
         operation = "native launch"
+        launch_remaining = native_deadline - time.monotonic()
+        if launch_remaining <= 0:
+            error = identity_refusal("native_launch", "identity_deadline", expired=True)
+            record_operation(phases, "native_launch_operation", f"refused prelaunch_identity={error}")
+            classification = "launch_failure"
+            return 72
         record_operation(phases, "native_launch_operation", "started")
         status, timed_out, output = run_logged(
             [xcrun, "simctl", "launch", device, BUNDLE_ID,
              "--enable-dart-profiling", "--disable-vm-service-publication",
              "--enable-checked-mode", "--verify-entry-points"],
-            flutter_log, remaining(deadline, launch_limit), console_budget, collect_pid=True,
+            flutter_log, launch_remaining, console_budget, collect_pid=True,
         )
         if timed_out:
             record_operation(
@@ -557,7 +582,7 @@ def run_attempt(device, attempt, root):
         )
         operation = "returned runner identity"
         try:
-            verify_runner_launch(pid, executable, deadline)
+            verify_runner_launch(pid, executable, native_deadline)
         except RunnerOwnershipError as error:
             record_operation(phases, "native_launch_operation", f"refused returned_identity={error}")
             classification = "launch_failure"

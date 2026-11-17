@@ -409,6 +409,53 @@ class CleanupTests(unittest.TestCase):
                 budgets, [("build", 360), ("boot", 180), ("bootstatus", 90), ("launch", 135)],
             )
 
+    def test_identity_launch_and_returned_pid_share_the_original_native_bound(self):
+        for total in (720, 40, 0.25):
+            with self.subTest(total=total), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                now = [100.0]
+                phase_deadline = min(100 + total, 280)
+                consumed = 12 if total >= 40 else 0
+                launches = []
+
+                def prepared(*args):
+                    self.assertEqual(args[2], phase_deadline)
+                    now[0] += consumed
+                    return "/owned/Runner.app/Runner"
+
+                def logged(command, path, timeout, budget, **kwargs):
+                    if "launch" in command:
+                        launches.append(timeout)
+                        return 0, False, (smoke.BUNDLE_ID + ": 42\n").encode()
+                    return 0, False, b""
+
+                with patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]), patch.object(smoke, "prepare_runner_launch", side_effect=prepared), patch.object(smoke, "verify_runner_launch", side_effect=smoke.RunnerOwnershipError("stop_after_identity")) as verify, patch.object(smoke, "run_logged", side_effect=logged), patch.object(smoke, "read_process", return_value=(0, b"", False, False)), patch.object(smoke, "capture_diagnostics"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output"), "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": str(total), "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS": "180"}):
+                    if total == 0.25:
+                        # The whole attempt remains an integer setting; model
+                        # its final fractional slice after successful install.
+                        os.environ["IOS_SMOKE_TOTAL_TIMEOUT_SECONDS"] = "40"
+                        with patch.object(smoke, "read_process", side_effect=lambda *a, **k: (now.__setitem__(0, 139.75) or (0, b"", False, False))):
+                            phase_deadline = 140
+                            self.assertEqual(smoke.run_attempt("SOURCE-DEVICE", "initial", root), 72)
+                    else:
+                        self.assertEqual(smoke.run_attempt("SOURCE-DEVICE", "initial", root), 72)
+                self.assertEqual(launches, [0.25 if total == 0.25 else min(total, 180) - consumed])
+                verify.assert_called_once_with(42, "/owned/Runner.app/Runner", phase_deadline)
+
+    def test_exhausted_native_or_whole_bound_never_dispatches_launch(self):
+        for total in (720, 40):
+            with self.subTest(total=total), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                now = [100.0]
+
+                def prepared(*args):
+                    now[0] = min(100 + total, 280)
+                    return "/owned/Runner.app/Runner"
+
+                with patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]), patch.object(smoke, "prepare_runner_launch", side_effect=prepared), patch.object(smoke, "run_logged", return_value=(0, False, b"")) as logged, patch.object(smoke, "read_process", return_value=(0, b"", False, False)), patch.object(smoke, "capture_diagnostics"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output"), "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": str(total), "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS": "180"}):
+                    self.assertEqual(smoke.run_attempt("SOURCE-DEVICE", "initial", root), 72)
+                self.assertFalse(any("launch" in call.args[0] for call in logged.call_args_list))
+
     def test_operation_metadata_is_closed_and_reset_before_failed_build(self):
         for name in (
             "install_operation", "native_launch_operation",
@@ -603,14 +650,29 @@ class RunnerOwnershipTests(unittest.TestCase):
     device = "OWNED-DEVICE"
     container = str(Path("/tmp/Devices/OWNED-DEVICE/data/Containers/Bundle/Application/INSTALL/Runner.app").resolve())
 
+    def test_valid_identity_read_can_finish_beyond_ten_seconds(self):
+        now = [100.0]
+        budgets = []
+
+        def read(command, timeout, limit, **kwargs):
+            budgets.append(timeout)
+            if "get_app_container" in command:
+                now[0] += 12
+                return 0, (self.container + "\n").encode(), timeout < 12, False
+            return 0, b"1 /sbin/launchd\n", False, False
+
+        with patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]), patch.object(smoke, "read_process", side_effect=read):
+            self.assertEqual(smoke.prepare_runner_launch("xcrun", self.device, 280), self.container + "/Runner")
+        self.assertEqual(budgets, [180, 168])
+
     def test_identity_deadline_refuses_before_or_after_the_owned_read(self):
         for before in (True, False):
             with (
                 self.subTest(before=before),
-                patch.object(smoke.time, "monotonic", side_effect=[110] if before else [100, 100, 110]),
+                patch.object(smoke.time, "monotonic", side_effect=[110] if before else [100, 110]),
                 patch.object(smoke, "read_process", return_value=(0, b"42 S /owned/Runner\n", False, False)) as read,
             ):
-                with self.assertRaisesRegex(smoke.RunnerOwnershipError, "identity_deadline" if before else "identity_incomplete"):
+                with self.assertRaisesRegex(smoke.RunnerOwnershipError, "identity_deadline"):
                     smoke.runner_identity_read(["owned-query"], 110, 8192)
                 if before:
                     read.assert_not_called()
@@ -627,8 +689,24 @@ class RunnerOwnershipTests(unittest.TestCase):
         self.assertEqual(executable, self.container + "/Runner")
         self.assertEqual(read.call_args_list[0].args[0], ["xcrun", "simctl", "get_app_container", self.device, smoke.BUNDLE_ID, "app"])
         self.assertEqual(read.call_args_list[1].args[0], ["ps", "-axo", "pid=,comm=", "-ww"])
-        self.assertEqual(read.call_args_list[0].args[1:3], (10, 8192))
-        self.assertEqual(read.call_args_list[1].args[1:3], (10, smoke.MAX_FILE_BYTES))
+        self.assertEqual(read.call_args_list[0].args[1:3], (100, 8192))
+        self.assertEqual(read.call_args_list[1].args[1:3], (100, smoke.MAX_FILE_BYTES))
+
+    def test_identity_refusal_retains_stage_and_actual_outcome_without_private_content(self):
+        for status, timed_out, exceeded, reason in [
+            (0, True, False, "identity_incomplete"),
+            (0, False, True, "identity_incomplete"),
+            (7, False, False, "identity_exit"),
+        ]:
+            with self.subTest(status=status, timed_out=timed_out, exceeded=exceeded), patch.object(smoke.time, "monotonic", return_value=100), patch.object(smoke, "read_process", return_value=(status, b"private response", timed_out, exceeded)):
+                with self.assertRaises(smoke.RunnerOwnershipError) as caught:
+                    smoke.runner_identity_read(["private-command-path"], 200, 8192, "prelaunch_ps")
+            self.assertEqual(str(caught.exception), f"stage=prelaunch_ps reason={reason} timed_out={int(timed_out)} output_limit={int(exceeded)} exit_code={status} deadline_expired=0")
+            self.assertNotIn("private", str(caught.exception))
+        with patch.object(smoke.time, "monotonic", return_value=100), patch.object(smoke, "read_process", side_effect=OSError("private path")):
+            with self.assertRaises(smoke.RunnerOwnershipError) as caught:
+                smoke.runner_identity_read(["private-command-path"], 200, 8192, "container")
+        self.assertEqual(str(caught.exception), "stage=container reason=identity_unavailable timed_out=unknown output_limit=unknown exit_code=unknown deadline_expired=unknown")
 
     def test_preexisting_runner_unknown_or_incomplete_identity_is_refused(self):
         container = (0, (self.container + "\n").encode(), False, False)
