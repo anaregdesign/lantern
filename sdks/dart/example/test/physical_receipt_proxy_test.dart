@@ -263,11 +263,21 @@ void main() {
   test(
     'the proxy drops committed responses and seals a restart trace',
     () async {
-      var committed = 0;
+      const mutations = [
+        'PutVertices',
+        'DeleteVertices',
+        'DeleteEdges',
+        'AddEdges',
+        'DeleteEdgeContributions',
+      ];
+      final committed = <String, int>{};
       final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       upstream.listen((request) async {
         await request.drain<void>();
-        if (request.uri.path.endsWith('/AddEdges')) committed++;
+        final rpc = request.uri.pathSegments.last;
+        if (mutations.contains(rpc)) {
+          committed.update(rpc, (count) => count + 1, ifAbsent: () => 1);
+        }
         request.response.headers.contentType = ContentType.binary;
         request.response.add([1, 2, 3]);
         await request.response.close();
@@ -302,18 +312,26 @@ void main() {
         );
       }
 
-      const mutations = [
-        'PutVertices',
-        'DeleteVertices',
-        'DeleteEdges',
-        'AddEdges',
-        'DeleteEdgeContributions',
-      ];
+      Future<ReceiptProxyTrace> readTrace() async {
+        final control = await http.getUrl(
+          base.resolve('/_receipt_matrix_status'),
+        );
+        control.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer synthetic-test-token',
+        );
+        final response = await control.close();
+        expect(response.statusCode, HttpStatus.ok);
+        return ReceiptProxyTrace.parse(
+          jsonDecode(await utf8.decodeStream(response)),
+        );
+      }
+
       for (final mutation in mutations) {
-        await send('GetReceiptStatuses');
         await expectLater(send(mutation), throwsA(isA<Exception>()));
       }
-      expect(committed, 1);
+      expect(committed, {for (final mutation in mutations) mutation: 1});
+      (await readTrace()).assertInitialLoss();
       final barrier = await http.postUrl(
         base.resolve('/_receipt_matrix_status'),
       );
@@ -326,28 +344,16 @@ void main() {
         await send('GetReceiptStatuses');
       }
 
-      final control = await http.getUrl(
-        base.resolve('/_receipt_matrix_status'),
-      );
-      control.headers.set(
-        HttpHeaders.authorizationHeader,
-        'Bearer synthetic-test-token',
-      );
-      final response = await control.close();
-      expect(response.statusCode, HttpStatus.ok);
-      final status =
-          jsonDecode(await utf8.decodeStream(response)) as Map<String, dynamic>;
-      expect(status['schema'], 1);
-      expect(status['failures'], 0);
-      expect(status['dropped'], {
+      final status = await readTrace();
+      status.assertRecoveredWithoutResend();
+      expect(status.failures, 0);
+      expect(status.dropped, {for (final mutation in mutations) mutation: 1});
+      expect(status.forwarded, {
+        'GetReceiptStatuses': 5,
         for (final mutation in mutations) mutation: 1,
       });
-      expect(status['forwarded'], {
-        'GetReceiptStatuses': 10,
-        for (final mutation in mutations) mutation: 1,
-      });
-      expect(status['trace'], [
-        for (final mutation in mutations) ...['GetReceiptStatuses', mutation],
+      expect(status.trace, [
+        ...mutations,
         'AwaitingSigkill',
         'GetReceiptStatuses',
         'GetReceiptStatuses',
@@ -367,7 +373,84 @@ void main() {
 
       final noAuth = await http.getUrl(base.resolve('/_receipt_matrix_status'));
       expect((await noAuth.close()).statusCode, HttpStatus.unauthorized);
-      expect(committed, 1);
+      expect(committed, {for (final mutation in mutations) mutation: 1});
+    },
+  );
+
+  test(
+    'the proxy refuses legacy status reads before the handoff boundary',
+    () async {
+      const mutations = [
+        'PutVertices',
+        'DeleteVertices',
+        'DeleteEdges',
+        'AddEdges',
+        'DeleteEdgeContributions',
+      ];
+      final committed = <String, int>{};
+      final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      upstream.listen((request) async {
+        await request.drain<void>();
+        final rpc = request.uri.pathSegments.last;
+        if (mutations.contains(rpc)) {
+          committed.update(rpc, (count) => count + 1, ifAbsent: () => 1);
+        }
+        request.response.add([1]);
+        await request.response.close();
+      });
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final proxy = ReceiptResponseDropProxy(
+        server,
+        Uri.parse('http://127.0.0.1:${upstream.port}'),
+        'synthetic-test-token',
+      );
+      final http = HttpClient();
+      addTearDown(() async {
+        http.close(force: true);
+        await proxy.close();
+        await upstream.close(force: true);
+      });
+      final base = Uri.parse('http://127.0.0.1:${server.port}');
+      Future<void> send(String rpc) async {
+        final request = await http.postUrl(
+          base.resolve('/graph.v1.LanternService/$rpc'),
+        );
+        await (await request.close()).drain<void>();
+      }
+
+      for (var i = 0; i < mutations.length; i++) {
+        await send('GetReceiptStatuses');
+      }
+      for (final mutation in mutations) {
+        await expectLater(send(mutation), throwsA(isA<Exception>()));
+      }
+      final barrier = await http.postUrl(
+        base.resolve('/_receipt_matrix_status'),
+      );
+      barrier.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer synthetic-test-token',
+      );
+      expect((await barrier.close()).statusCode, HttpStatus.conflict);
+      final control = await http.getUrl(
+        base.resolve('/_receipt_matrix_status'),
+      );
+      control.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer synthetic-test-token',
+      );
+      final trace = ReceiptProxyTrace.parse(
+        jsonDecode(await utf8.decodeStream(await control.close())),
+      );
+      expect(trace.trace, isNot(contains('AwaitingSigkill')));
+      expect(trace.failures, 0);
+      expect(trace.forwarded, {
+        'GetReceiptStatuses': 5,
+        for (final mutation in mutations) mutation: 1,
+      });
+      expect(trace.dropped, {for (final mutation in mutations) mutation: 1});
+      expect(() => trace.assertInitialLoss(), throwsStateError);
+      expect(committed, {for (final mutation in mutations) mutation: 1});
     },
   );
 

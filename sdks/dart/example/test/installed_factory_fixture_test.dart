@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_example/app_data_session.dart';
 
 import '../integration_test/support/installed_factory_fixture.dart';
@@ -11,6 +12,29 @@ void main() {
   late _RelayTlsMaterial tls;
   setUpAll(() async => tls = await _RelayTlsMaterial.create());
   tearDownAll(() => tls.directory.delete(recursive: true));
+
+  test(
+    'T18 compares independently allocated string payloads with exact kinds',
+    () {
+      final decoded = StringValue(String.fromCharCodes('initial'.codeUnits));
+      expect(identical(decoded, const StringValue('initial')), isFalse);
+      expect(installedFactoryStringPayload(decoded), 'initial');
+      expect(installedFactoryStringPayload(const StringValue('')), '');
+      expect(
+        installedFactoryStringPayload(const StringValue('different')),
+        isNot('initial'),
+      );
+      for (final value in <VertexValue?>[
+        null,
+        const NilValue(),
+        const UnsetValue(),
+        const BoolValue(false),
+        Int32Value(0),
+      ]) {
+        expect(installedFactoryStringPayload(value), isNull);
+      }
+    },
+  );
 
   test('T18 scenario inventory includes each current profile exactly once', () {
     expect(installedFactoryProfileScenarios.keys.toSet(), {

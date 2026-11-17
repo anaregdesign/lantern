@@ -316,8 +316,8 @@ final class _InstalledFactoryRun {
     if (profile == AppDataProfile.direct) {
       await _pause(const Duration(seconds: 1));
       expect(
-        (await observerA.getVertex(alice)).value,
-        const StringValue('initial'),
+        installedFactoryStringPayload((await observerA.getVertex(alice)).value),
+        'initial',
       );
       await ui.tap(find.text('Put'));
     } else {
@@ -333,19 +333,22 @@ final class _InstalledFactoryRun {
           traversals.any(
             (event) =>
                 event.confirmed.value?.edge(alice, bob)?.weight == 2 &&
-                event.confirmed.value?.vertices[alice]?.value ==
-                    const StringValue('Hello Lantern'),
+                installedFactoryStringPayload(
+                      event.confirmed.value?.vertices[alice]?.value,
+                    ) ==
+                    'Hello Lantern',
           ) &&
           events.any(
             (event) =>
                 event.pending.count == 0 &&
                 event.confirmed.state == ConfirmedState.present &&
-                event.view?.value == const StringValue('Hello Lantern'),
+                installedFactoryStringPayload(event.view?.value) ==
+                    'Hello Lantern',
           ),
     );
     expect(
-      (await observerA.getVertex(alice)).value,
-      const StringValue('Hello Lantern'),
+      installedFactoryStringPayload((await observerA.getVertex(alice)).value),
+      'Hello Lantern',
     );
     expect(relay.cutConnections, greaterThan(cut));
 
@@ -363,8 +366,8 @@ final class _InstalledFactoryRun {
       );
       await _pause(const Duration(milliseconds: 150));
       expect(
-        (await observerA.getVertex(alice)).value,
-        const StringValue('Hello Lantern'),
+        installedFactoryStringPayload((await observerA.getVertex(alice)).value),
+        'Hello Lantern',
       );
       await owner.resume();
       _applied(await _pumping(data.mutations.reobserve(ticket.reference)));
@@ -535,7 +538,7 @@ final class _InstalledFactoryRun {
           .timeout(const Duration(seconds: 45)),
     );
     final retained = await observerA.getVertex(key);
-    expect(retained.value, const StringValue('account-a'));
+    expect(installedFactoryStringPayload(retained.value), 'account-a');
     expect(retained.expiration, expires);
     await expectLater(
       Future.sync(() => a.dataSession!.data!.getVertex(key)),
@@ -593,8 +596,8 @@ final class _InstalledFactoryRun {
     expect(await repository.drain('shared-b'), 1);
     expect(tokenReads, greaterThan(0));
     expect(
-      (await observerB.getVertex(newKey)).value,
-      const StringValue('new-owner'),
+      installedFactoryStringPayload((await observerB.getVertex(newKey)).value),
+      'new-owner',
     );
     await expectLater(
       observerA.getVertex(oldKey),
@@ -701,8 +704,8 @@ final class _InstalledFactoryRun {
       return status!.isTerminal;
     });
     expect(
-      (await observerA.getVertex(key)).value,
-      const StringValue('original-intent'),
+      installedFactoryStringPayload((await observerA.getVertex(key)).value),
+      'original-intent',
     );
     await closeAccountData(reopened, reopenedClient.client);
 
