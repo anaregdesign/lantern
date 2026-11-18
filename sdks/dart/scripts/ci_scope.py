@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify the Dart package and native mobile gates for one git change range."""
+"""Select the Dart workflow jobs that consume a change."""
 
 from __future__ import annotations
 
@@ -9,157 +9,138 @@ import re
 import subprocess
 import sys
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".github/scripts"))
-import evidence_only_pr
 import ci_docs
+import evidence_only_pr
+import validation_scope
 
 
-PACKAGE_ONLY = {
-    "go.mod",
-    "go.sum",
-    "go.work",
-    "go.work.sum",
-    "tests/integration/dart_offline_sqlite_test.dart",
-    "tests/integration/dart_identity_offline_sqlite_test.dart",
-    "tests/integration/dart_contribution_delete_test.dart",
-    "tests/integration/dart_data_client_test.dart",
-    "testbed/scripts/dart_identity_fixture.sh",
-    "testbed/scripts/native_head_fixture.sh",
-    "AGENTS.md",
-    "README.md",
-    "CONTRIBUTING.md",
+JOBS = {"parent", "offline", "sqlite", "mobile", "full"}
+DART_WORKFLOW = ".github/workflows/dart-sdk.yml"
+WIRE = {"parent", "offline", "sqlite"}
+# These are live shell and Go inputs of the hosted Dart jobs. A change under
+# another integration-test path is unclassified and keeps the broad fallback.
+HOST_FIXTURES = {
+    "tests/integration/dart_offline_sqlite_test.dart": {"sqlite"},
+    "tests/integration/dart_identity_offline_sqlite_test.dart": {"sqlite"},
+    "tests/integration/dart_data_client_test.dart": {"parent"},
+    "tests/integration/dart_contribution_delete_test.dart": {"parent"},
+    "testbed/scripts/dart_identity_fixture.sh": {"sqlite"},
+    "testbed/scripts/native_head_fixture.sh": {"sqlite"},
+    "testbed/scripts/dart_receipt_fixture.sh": WIRE,
+    "testbed/scripts/native_receipt_fixture.sh": WIRE,
+    "tests/integration/auth_test.go": WIRE,
+    "tests/integration/auth_authority_helpers_test.go": WIRE,
+    ".github/scripts/configured_time_input.py": WIRE,
 }
-MOBILE_EXACT = {
-    "buf.yaml",
-    "buf.gen.yaml",
-    "generate.go",
-    ".github/workflows/dart-sdk.yml",
-    ".github/scripts/ci_docs.py",
-    ".github/scripts/test_ci_docs.py",
-}
-GO_DIRECTIVE = re.compile(r"^\s*(go|toolchain)\s+(\S+)\s*(?://.*)?$", re.MULTILINE)
 
 
-def go_directives(content: str) -> tuple[tuple[str, str], ...]:
-    """Only Go language/toolchain directives require a native toolchain rerun."""
-    return tuple(sorted(GO_DIRECTIVE.findall(content)))
+def selected_jobs(changes, impact):
+    if not changes or impact["reason"].startswith("classification unavailable"):
+        return JOBS.copy(), "unavailable change range"
+    paths = {path for path in changes if not ci_docs.is_document(path)}
+    if not paths:
+        return set(), "documentation"
+    semantics = impact.get("semantic", {})
+    jobs = WIRE.copy() if impact.get("backend_dependencies") else set()
+    if "release-host" in impact.get("fixture_contracts", ()):
+        jobs.add("release_host")
+        paths.difference_update(path for path in validation_scope.RELEASE_HOST if changes.get(path) == "M")
+    if semantics.get(DART_WORKFLOW) == "setup-dart":
+        # The standard Dart, minimum-version and hosted-archive jobs invoke
+        # this action. Flutter-owned jobs use a separate installation.
+        jobs.update(("parent", "offline", "full"))
+    paths.difference_update(path for path, kind in semantics.items() if kind != "package-dependency")
+    if not paths:
+        reason = "release host contracts" if "release_host" in jobs else "verified dependency and Action consumers"
+        return jobs, reason
 
-
-def is_go_toolchain_file(path: str) -> bool:
-    return path == "go.work" or path == "go.mod" or path.endswith("/go.mod")
-
-
-def is_dart_mobile_path(path: str) -> bool:
-    if not path.startswith("sdks/dart/"):
-        return False
-    if ci_docs.is_document(path) or "/evidence/" in path:
-        return False
-    if path in {
-        "sdks/dart/.pubignore",
-        "sdks/dart/scripts/release.py",
-        "sdks/dart/scripts/release_test.py",
-    }:
-        return False
-    if path.rsplit("/", 1)[-1].upper() in {"LICENSE", "NOTICE"}:
-        return False
-    return True
-
-
-def classify(
-    paths: list[str], *, release_tag: bool = False, toolchain_changed: bool = False
-) -> tuple[bool, bool]:
-    """Return (full package-quality gate, Android/iOS native gate)."""
-    if release_tag:
-        return True, True
-    if not toolchain_changed and ci_docs.documentation_only(paths):
-        return False, False
-    mobile = toolchain_changed or any(
-        is_dart_mobile_path(path) or path.startswith("proto/") or path in MOBILE_EXACT
-        for path in paths
+    # Keep exact-source physical evidence, distribution tools and isolated
+    # package tests separate from app-source changes selected for simulators.
+    for path in sorted(paths.copy()):
+        if path.startswith("sdks/dart/example/evidence/"):
+            jobs.update(WIRE | {"full"})
+        elif path == "sdks/dart/.pubignore" or path in validation_scope.RELEASE_ARCHIVE:
+            jobs.update({"parent", "offline", "full"})
+        elif "/test/support/" in path or path.endswith("/test/real_wire_test.dart"):
+            # Host integration and multiple packages import these fixtures.
+            # Keep their normal package closure, including SQLite and example.
+            continue
+        elif path.startswith("sdks/dart/test/"):
+            jobs.update({"parent", "full"})
+        elif path.startswith("sdks/dart/offline/test/"):
+            jobs.update({"offline", "full"})
+        elif path.startswith("sdks/dart/offline_sqlite/test/"):
+            jobs.add("sqlite")
+        else:
+            continue
+        paths.remove(path)
+    for path in sorted(paths.intersection(HOST_FIXTURES)):
+        jobs.update(HOST_FIXTURES[path])
+        paths.remove(path)
+    if not paths:
+        return jobs, "package tests, archive or fixture consumers"
+    # Release tools, tests, fixtures and action pins above have more precise
+    # consumers. Apply the shared module map to the remaining inputs so that
+    # adding an unrelated file cannot broaden a known test-only change.
+    residual = validation_scope.affected(
+        {p: changes[p] for p in paths}, {p: semantics[p] for p in paths if p in semantics}
     )
-    full = mobile or any(
-        path.startswith("sdks/dart/") or path in PACKAGE_ONLY for path in paths
-    )
-    return full, mobile
+    if residual["full"]:
+        return jobs | JOBS, "shared or unclassified inputs"
+
+    if "server" in residual["go_modules"] or "controlled-native-provider" in residual["fixture_contracts"]:
+        jobs.update(WIRE)
+    for family in residual["families"]:
+        if family in {"dart", "offline", "sqlite", "example"}:
+            jobs.add({"dart": "parent", "example": "mobile"}.get(family, family))
+            jobs.add("full")
+    if "example" in residual["families"] and any(path.startswith("sdks/dart/example/") for path in paths):
+        # The SQLite real-wire job also runs the maintained example application.
+        jobs.add("sqlite")
+    return jobs, "affected modules and SDK consumers"
 
 
-def git(*args: str) -> bytes:
-    return subprocess.run(["git", *args], check=True, capture_output=True).stdout
-
-
-def file_at(revision: str, path: str) -> str:
-    result = subprocess.run(["git", "show", f"{revision}:{path}"], capture_output=True)
-    if result.returncode:
-        # Adding or removing a Go module is itself a toolchain-surface change.
-        return ""
-    return result.stdout.decode("utf-8")
-
-
-def classify_range(base: str, head: str) -> tuple[bool, bool]:
-    paths = [
-        path.decode("utf-8")
-        for path in git("diff", "--name-only", "--no-renames", "-z", base, head).split(
-            b"\0"
-        )
-        if path
-    ]
-    toolchain_changed = any(
-        go_directives(file_at(base, path)) != go_directives(file_at(head, path))
-        for path in paths
-        if is_go_toolchain_file(path)
-    )
-    return classify(paths, toolchain_changed=toolchain_changed)
-
-
-def resource_profile(event: str, ref: str) -> str:
-    """Only an immutable parent publication push omits pure child envelopes."""
+def resource_profile(event, ref):
     if event == "push" and re.fullmatch(r"refs/tags/sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+", ref):
         return "parent-contracts"
-    return "full"
+    if event == "push" and re.fullmatch(r"refs/tags/sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+", ref):
+        return "full"
+    return "unit-contracts"
 
 
-def main() -> None:
-    github_ref = os.environ["GITHUB_REF"]
-    evidence_only = False
-    docs_only, revisions = ci_docs.classify(dict(os.environ))
+def main():
+    env = dict(os.environ)
+    jobs, reason = JOBS.copy(), "release, manual run, or unavailable change range"
+    docs_only = evidence_only = False
+    try:
+        revisions = ci_docs.change_range(env)
+        if revisions is not None:
+            paths = evidence_only_pr.changed_files(*revisions)
+            docs_only = ci_docs.documentation_only(list(paths))
+            evidence_only = env["GITHUB_EVENT_NAME"] == "pull_request" and evidence_only_pr.is_candidate(paths)
+            if docs_only or evidence_only:
+                jobs, reason = set(), "documentation or physical evidence"
+            else:
+                impact = validation_scope.classify_revisions(Path.cwd(), *revisions)
+                jobs, reason = selected_jobs(paths, impact)
+    except (KeyError, UnicodeError, ValueError, OSError, subprocess.CalledProcessError):
+        jobs, reason = JOBS.copy(), "unavailable change range"
+        docs_only = evidence_only = False
     if docs_only:
-        assert revisions is not None
         ci_docs.validate(revisions)
-    if github_ref.startswith("refs/tags/"):
-        full, mobile = classify([], release_tag=True)
-    elif os.environ["GITHUB_EVENT_NAME"] == "pull_request":
-        base = os.environ["PR_BASE_SHA"]
-        head = os.environ["PR_HEAD_SHA"]
-        full, mobile = classify_range(
-            git("merge-base", base, head).decode().strip(), head
-        )
-        evidence_only = evidence_only_pr.classify_range(base, head)
-        if evidence_only:
-            full, mobile = False, False
-    elif os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
-        full, mobile = True, True
-    else:
-        base = os.environ["PUSH_BEFORE_SHA"]
-        head = os.environ["GITHUB_SHA"]
-        if re.fullmatch(r"0+", base):
-            full, mobile = classify([], release_tag=True)
-        else:
-            full, mobile = classify_range(base, head)
 
-    output = (
-        f"resource_profile={resource_profile(os.environ['GITHUB_EVENT_NAME'], github_ref)}\n"
-        f"full={str(full).lower()}\nmobile={str(mobile).lower()}\n"
-        f"evidence_only={str(evidence_only).lower()}\n"
-        f"docs_only={str(docs_only).lower()}\n"
+    profile = resource_profile(env["GITHUB_EVENT_NAME"], env["GITHUB_REF"])
+    flags = {name: name in jobs for name in sorted(JOBS | {"release_host"})}
+    flags.update(evidence_only=evidence_only, docs_only=docs_only)
+    output = f"resource_profile={profile}\n" + "".join(
+        f"{name}={str(selected).lower()}\n" for name, selected in flags.items()
     )
-    with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+    with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
         stream.write(output)
-    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
-        stream.write(
-            f"Full Dart package matrix: {full}; Android/iOS native matrix: {mobile}; "
-            f"evidence-only PR: {evidence_only}; docs-only changes: {docs_only}\n"
-        )
+    with Path(env["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+        print(f"Dart jobs ({reason}): {', '.join(sorted(jobs)) or 'none'}. "
+              f"Resource profile: {profile}.", file=stream)
     print(output, end="")
 
 

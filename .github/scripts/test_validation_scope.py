@@ -16,7 +16,7 @@ class ValidationScopeTest(unittest.TestCase):
         selection = scope.affected({path: "M"})
         return {s.name for s in affected_steps(steps(Path("/tmp/evidence")), selection)}
 
-    def test_go_dependency_closure_and_install_before_go(self):
+    def test_go_units_follow_dependency_closure_without_foreign_tools(self):
         for owner, expected in scope.GO_CONSUMERS.items():
             path = "cli/example.go" if owner == "." else owner + "/example.go"
             with self.subTest(path=path):
@@ -24,7 +24,12 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertEqual(set(result["go_modules"]), expected)
                 plan = affected_steps(steps(Path("/tmp/evidence")), result)
                 names = [s.name for s in plan]
-                self.assertLess(names.index("admin-frozen-install"), names.index("go-test-."))
+                self.assertIn("go-test-cli", names)
+                foreign = {"admin-frozen-install", "node-prebuild", "example-frozen-preflight"}
+                if owner == "pb":
+                    self.assertTrue(foreign <= set(names))
+                else:
+                    self.assertFalse(foreign & set(names))
 
     def test_language_consumers_and_fresh_development_boundaries(self):
         cases = {"admin/app/a.tsx": {"admin"}, "sdks/node/src/a.ts": {"node", "admin"},
@@ -41,8 +46,8 @@ class ValidationScopeTest(unittest.TestCase):
                 names = self.names(path)
                 self.assertTrue({"final-diff", "final-clean"} <= names)
                 self.assertFalse({"rust-real-wire", "current-functional-wire", "sqlite-performance-probe"} & names)
-        self.assertIn("sqlite-crash-probe", self.names("sdks/dart/offline_sqlite/lib/a.dart"))
-        self.assertNotIn("go-test-.", self.names("admin/app/a.tsx"))
+        self.assertIn("sqlite-test", self.names("sdks/dart/offline_sqlite/lib/a.dart"))
+        self.assertNotIn("go-test-cli", self.names("admin/app/a.tsx"))
         self.assertNotIn("node-generate", self.names("sdks/node/src/a.ts"))
 
     def test_shared_native_generic_files_and_portable_computation(self):
@@ -69,12 +74,12 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertEqual(set(result["go_modules"]), {"server", "."})
                 self.assertTrue(result["windows_required"])
                 self.assertIn("go-test-server", self.names(path))
-                self.assertIn("go-test-.", self.names(path))
+                self.assertIn("go-test-cli", self.names(path))
         self.assertTrue(scope.affected({"server/internal/dataruntime/runtime.go": "M",
                                        ".github/scripts/windows_native.py": "M"})["full"])
 
     def test_unknown_policy_fixtures_and_bad_diffs_keep_full(self):
-        self.assertTrue(scope.affected({"docs/oidc-operations.md": "M"})["full"])
+        self.assertEqual(scope.affected({"docs/oidc-operations.md": "M"})["families"], ["docs"])
         for path in ("unknown.file", "tests/fixture.md", ".github/scripts/validation_scope.py",
                      "go.mod", "sdks/node/package.json", "sdks/rust/Cargo.lock", "sdks/rust/xtask/src/main.rs", "sdks/node/src/generated/api.ts", "server/config.yaml", "../core/a.go", "/core/a.go"):
             self.assertTrue(scope.affected({path: "M"})["full"], path)
@@ -84,7 +89,9 @@ class ValidationScopeTest(unittest.TestCase):
             self.assertTrue(scope.affected({"core/privatefile/file.go": status})["windows_required"])
         self.assertTrue(scope.local_scope(Path("/nonexistent"), "missing")["full"])
         full = steps(Path("/tmp/evidence"))
-        self.assertEqual(affected_steps(full, scope.full("unknown")), full)
+        fallback = {s.name for s in affected_steps(full, scope.full("unknown"))}
+        self.assertTrue({"go-test-cli", "go-test-server", "dart-test", "admin-test", "rust-test"} <= fallback)
+        self.assertFalse({"sqlite-performance-probe", "admin-playwright", "current-functional-wire"} & fallback)
         self.assertEqual(len(full), 79)
 
     def test_operational_settings_keep_provider_native_coverage_after_extraction(self):
@@ -98,7 +105,7 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertTrue(result["windows_required"])
                 self.assertTrue(result["windows_rust_required"])
                 self.assertIn("go-test-server", self.names(path))
-                self.assertIn("go-test-.", self.names(path))
+                self.assertIn("go-test-cli", self.names(path))
         for path in ("server/internal/config/config.go", "server/internal/config/security_config.go",
                      "server/internal/config/new.yaml", "server/internal/config/unknown.file"):
             self.assertTrue(scope.affected({path: "M"})["full"], path)
@@ -139,7 +146,7 @@ class ValidationScopeTest(unittest.TestCase):
         result = scope.affected({".github/scripts/git_test_fixture.py": "M", "docs/ci-inventory.md": "M"})
         self.assertFalse(result["full"])
         names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
-        self.assertEqual(names, {"harness-contracts", "docs-tests", "final-diff", "final-clean"})
+        self.assertEqual(names, {"harness-contracts", "docs-text-links", "final-diff", "final-clean"})
 
     def test_product_fixture_mapping_keeps_owned_checks_and_production_modules(self):
         full = steps(Path("/tmp/evidence"))
@@ -156,12 +163,12 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertTrue(result["windows_rust_required"])
                 plan = affected_steps(full, result)
                 names = [s.name for s in plan]
-                self.assertEqual(len(plan), 16 if production else 5)
+                self.assertEqual(len(plan), 7 if production else 5)
                 self.assertEqual(names[0], "controlled-native-python-contracts")
                 self.assertEqual(names[-2:], ["final-diff", "final-clean"])
                 self.assertTrue({"server-controlled-native-contracts",
                                  "server-controlled-native-capture-contracts"} <= set(names))
-                module_checks = {"go-test-server", "go-test-.", "server-vet", "go-lint"}
+                module_checks = {"go-test-server", "go-test-cli"}
                 if production:
                     self.assertTrue(module_checks <= set(names))
                     self.assertEqual(next(s.command for s in plan if s.name == "go-test-server"),
@@ -174,7 +181,7 @@ class ValidationScopeTest(unittest.TestCase):
                 for status in ("A", "D", "T", "R100", "U", ""):
                     self.assertTrue(scope.affected({path: status})["full"], status)
         self.assertEqual(len(full), 79)
-        self.assertIs(affected_steps(full, scope.full("policy")), full)
+        self.assertNotIn("sqlite-performance-probe", {s.name for s in affected_steps(full, scope.full("policy"))})
 
     def test_fixture_union_deduplicates_python_and_preserves_unknown_policy(self):
         fixture = ".github/scripts/controlled_native_provider_fixture.py"
@@ -182,9 +189,9 @@ class ValidationScopeTest(unittest.TestCase):
         result = scope.affected(changes)
         plan = affected_steps(steps(Path("/tmp/evidence")), result)
         names = [s.name for s in plan]
-        self.assertEqual(len(plan), 5)
-        self.assertIn("docs-tests", names)
-        self.assertNotIn("controlled-native-python-contracts", names)
+        self.assertEqual(len(plan), 6)
+        self.assertIn("docs-text-links", names)
+        self.assertIn("controlled-native-python-contracts", names)
         result = scope.affected({fixture: "M", "core/collection/map.go": "M",
                                  ".github/scripts/bench_time_profile.py": "M", "admin/app/a.tsx": "M"})
         self.assertEqual(set(result["go_modules"]), {"core", "server", "."})
@@ -196,7 +203,7 @@ class ValidationScopeTest(unittest.TestCase):
             mixed = scope.affected({fixture: "M", path: "M"})
             mixed_plan = affected_steps(steps(Path("/tmp/evidence")), mixed)
             self.assertEqual(set(mixed["go_modules"]), {"server", "."}, path)
-            self.assertEqual(len(mixed_plan), 16, path)
+            self.assertEqual(len(mixed_plan), 7, path)
             self.assertIn("go-test-server", {s.name for s in mixed_plan}, path)
         for path in (".github/scripts/unknown_fixture.py", ".github/workflows/go.yml",
                      ".github/scripts/validation_scope.py", ".github/scripts/local_gate_plan.py",
@@ -298,9 +305,9 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertFalse(scope.harness_required(result))
                 names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
                 self.assertEqual({name for name in names if name.startswith("go-test-")},
-                                 {"go-test-" + module.replace("/", "-") for module in modules})
-                self.assertTrue({"docs-tests", "gofmt", "go-build", "go-lint",
-                                 "node-prebuild", "admin-frozen-install"} <= names)
+                                 {"go-test-cli" if module == "." else "go-test-" + module.replace("/", "-") for module in modules})
+                self.assertIn("docs-text-links", names)
+                self.assertFalse({"docs-tests", "go-lint", "node-prebuild", "admin-frozen-install"} & names)
                 self.assertFalse({"current-functional-wire", "native-login-wire", "admin-playwright",
                                   "rust-real-wire", "dart-test", "sqlite-performance-probe"} & names)
 
@@ -311,6 +318,15 @@ class ValidationScopeTest(unittest.TestCase):
                      "testbed/bench/local_time.sh", ".github/scripts/unknown.py"):
             self.assertTrue(scope.harness_required(scope.affected({path: "M"})), path)
         self.assertTrue(scope.harness_required(scope.full("classification error")))
+
+    def test_shared_cli_grammar_fixture_selects_go_and_admin_consumers(self):
+        path = "admin/test/cli-grammar/verbs.json"
+        for status in ("A", "M", "D"):
+            changes = {path: status}
+            scope_result = scope.affected(changes)
+            self.assertEqual(scope_result["families"], ["admin"])
+            self.assertEqual(scope_result["go_modules"], ["."])
+            self.assertTrue(scope.hosted(scope_result, changes)["admin_required"])
 
     def test_mixed_paths_union_including_rename_sides(self):
         result = scope.affected({"sdks/rust/src/value.rs": "D", "admin/app/a.tsx": "A"})

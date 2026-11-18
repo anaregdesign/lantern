@@ -12,8 +12,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'sdks/dart/offline/tool'))
 from physical_receipt_attestation import (  # noqa: E402
-    CONTRIBUTION_TARGET, validate_archived_receipt_evidence,
+    CONTRIBUTION_TARGET, load_receipt_record, validate_archived_receipt_evidence,
 )
+
+from physical_release_source import check_capture_source  # noqa: E402
 
 EVIDENCE = 'sdks/dart/example/evidence/contribution-delete'
 EXPECTED = {f'{EVIDENCE}/{platform}{suffix}.json'
@@ -47,7 +49,9 @@ def source_identity(root=ROOT):
 
 
 def validate_release(root=ROOT, now=None):
-    source, head = source_identity(root)
+    candidate, head = source_identity(root)
+    source = load_receipt_record(Path(root, EVIDENCE, 'android.json')).get('testedCommit')
+    check_capture_source(source, candidate, root)
     checked_at = now or datetime.now(timezone.utc)
     run_ids = set()
     for platform in ('android', 'ios'):

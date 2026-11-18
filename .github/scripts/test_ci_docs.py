@@ -14,42 +14,11 @@ import unittest
 from unittest.mock import patch
 
 import ci_docs
+import validation_scope
 from git_test_fixture import synchronous_git_maintenance
 
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def workflow_paths(name, event):
-    text = (ROOT / f".github/workflows/{name}.yml").read_text()
-    body = re.search(rf"(?ms)^  {event}:\n(.*?)(?=^  \w|^\w|\Z)", text).group(1)
-    lines = body.splitlines()
-    start = lines.index("    paths:") + 1
-    result = []
-    for line in lines[start:]:
-        if not line.startswith("      - "):
-            break
-        result.append(line[8:].strip().strip("\"'"))
-    return result
-
-
-def matches(pattern, path):
-    # Patterns used here have only *, ** and literal path segments. Match
-    # GitHub's distinction between a single segment and recursive globs.
-    regex = re.escape(pattern).replace(r"\*\*/", "(?:.*/)?")
-    regex = regex.replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
-    return re.fullmatch(regex, path) is not None
-
-
-def triggers(patterns, paths):
-    for path in paths:
-        included = False
-        for pattern in patterns:
-            if matches(pattern.lstrip("!"), path):
-                included = not pattern.startswith("!")
-        if included:
-            return True
-    return False
 
 
 class DocumentationTest(unittest.TestCase):
@@ -177,41 +146,33 @@ class DocumentationTest(unittest.TestCase):
 
 
 class WorkflowRoutingTest(unittest.TestCase):
-    def test_nonrequired_workflows_do_not_start_for_ordinary_prose(self):
-        cases = {
-            "codeql": (["README.md", "docs/ha-runbook.md"], ["server/service/service.go"]),
-            "dart-sdk": (["README.md", "sdks/dart/CHANGELOG.md", "sdks/dart/example/physical-device-smoke.md"], ["sdks/dart/lib/src/client.dart"]),
-            "node-sdk": (["sdks/node/README.md", "server/README.md"], ["sdks/node/src/client.ts"]),
-            "rust-sdk": (["sdks/rust/RELEASING.md", "core/README.md"], ["sdks/rust/src/lib.rs"]),
-            "admin": (["admin/README.md", "sdks/node/README.md"], ["admin/app/root.tsx"]),
+    def test_docs_and_mixed_changes_route_only_to_consuming_jobs(self):
+        routes = {
+            "admin": ("admin_required", ["admin/README.md"], "admin/app/root.tsx"),
+            "rust-sdk": ("rust_required", ["sdks/rust/RELEASING.md"], "sdks/rust/src/lib.rs"),
+            "node-sdk": ("node_required", ["sdks/node/README.md"], "sdks/node/src/client.ts"),
+            "codeql": ("codeql_languages", ["docs/ha-runbook.md"], "server/service/service.go"),
         }
-        for name, (docs, source) in cases.items():
-            for event in ["push", "pull_request"]:
-                patterns = workflow_paths(name, event)
-                with self.subTest(name=name, event=event):
-                    self.assertFalse(triggers(patterns, docs))
-                    self.assertTrue(triggers(patterns, docs + source))
-                    self.assertTrue(triggers(patterns, [f".github/workflows/{name}.yml"]))
-        for name, paths in {
-            "dart-sdk": [".github/scripts/ci_docs.py", "docs/decisions/0001-dart-mobile-transport.md", "docs/decisions/0002-dart-offline-repository-contract.md", "sdks/dart/test/fixture.md", "sdks/dart/offline/pubspec.yaml"],
-            "rust-sdk": ["sdks/rust/Cargo.toml"],
-            "codeql": list(ci_docs.CONTRACT_DOCS),
-        }.items():
-            for path in paths:
-                self.assertTrue(triggers(workflow_paths(name, "pull_request"), [path]), (name, path))
+        for name, (output, docs, source) in routes.items():
+            workflow = (ROOT / f".github/workflows/{name}.yml").read_text()
+            self.assertIn("uses: ./.github/workflows/validation-scope.yml", workflow)
+            self.assertIn("outputs." + output, workflow)
+            for paths, expected in [(docs, False), (docs + [source], True),
+                                    ([f".github/workflows/{name}.yml"], True)]:
+                changes = dict.fromkeys(paths, "M")
+                selection = validation_scope.hosted(validation_scope.affected(changes), changes)
+                with self.subTest(name=name, paths=paths):
+                    self.assertEqual(bool(selection[output]), expected)
 
-    def test_sdk_design_prose_uses_lightweight_go_and_dart_contracts(self):
-        rust_docs = ["docs/decisions/0011-native-rust-sdk.md", "docs/rust-sdk-v0.1-contract.md"]
-        dart_docs = ["docs/decisions/0001-dart-mobile-transport.md", "docs/decisions/0002-dart-offline-repository-contract.md"]
-        for event in ("pull_request", "push"):
-            for path in rust_docs + dart_docs:
-                self.assertTrue(ci_docs.documentation_only([path]))
-                self.assertFalse(triggers(workflow_paths("codeql", event), [path]))
-                self.assertFalse(triggers(workflow_paths("rust-sdk", event), [path]))
-            for path in dart_docs:
-                self.assertTrue(triggers(workflow_paths("dart-sdk", event), [path]))
-            self.assertTrue(triggers(workflow_paths("rust-sdk", event), rust_docs + ["sdks/rust/src/lib.rs"]))
-            self.assertTrue(triggers(workflow_paths("codeql", event), dart_docs + ["server/service/service.go"]))
+    def test_sdk_design_prose_keeps_document_contracts(self):
+        for path in ("docs/decisions/0011-native-rust-sdk.md", "docs/rust-sdk-v0.1-contract.md",
+                     "docs/decisions/0001-dart-mobile-transport.md",
+                     "docs/decisions/0002-dart-offline-repository-contract.md"):
+            changes = {path: "M"}
+            self.assertTrue(ci_docs.documentation_only([path]))
+            selection = validation_scope.hosted(validation_scope.affected(changes), changes)
+            self.assertEqual(selection["codeql_languages"], [])
+            self.assertFalse(selection["rust_required"])
 
     def test_required_workflow_is_unfiltered_and_failure_remains_blocking(self):
         text = (ROOT / ".github/workflows/go.yml").read_text()
@@ -223,18 +184,19 @@ class WorkflowRoutingTest(unittest.TestCase):
         build = text.split("  build:\n")[1].split("  receipt-backup-windows:")[0]
         self.assertIn("    if: always()\n", build)
         self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
-        for job in ("lint", "proto", "govulncheck", "receipt-backup-windows", "fuzz"):
-            body = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
-            condition = next(line for line in body.splitlines() if line.startswith("    if:"))
-            self.assertIn("needs.scope.outputs.docs_only != 'true'", condition)
+        for name in ("lint", "proto", "govulncheck"):
+            body = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
+            self.assertIn("    if: always()\n", body)
+            self.assertIn("needs.scope.result", body)
+        for name in ("receipt-backup-windows", "fuzz"):
+            body = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
+            self.assertIn("needs.scope.outputs.docs_only != 'true'", body)
 
-    def test_extracted_operational_settings_retain_admin_workflow_coverage(self):
-        for event in ("push", "pull_request"):
-            paths = workflow_paths("admin", event)
-            for path in ("server/provider/provider.go", "server/internal/config/network.go",
-                         "server/internal/config/observability.go"):
-                self.assertTrue(triggers(paths, [path]), (event, path))
-            self.assertFalse(triggers(paths, ["server/README.md"]))
+    def test_extracted_operational_settings_retain_admin_coverage(self):
+        for path in ("server/provider/provider.go", "server/internal/config/network.go",
+                     "server/internal/config/observability.go"):
+            changes = {path: "M"}
+            self.assertTrue(validation_scope.hosted(validation_scope.affected(changes), changes)["admin_required"])
 
 
 class AdminCaddyGateTest(unittest.TestCase):

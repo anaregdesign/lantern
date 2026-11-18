@@ -85,9 +85,9 @@ git fetch origin main
 git switch --detach <full-main-code-SHA>
 test -z "$(git status --porcelain)"
 git rev-parse HEAD
+python3 -B sdks/dart/scripts/release_host_checks.py
 flutter --version --machine
 flutter devices --machine
-(cd sdks/dart/example && flutter pub get --enforce-lockfile)
 ```
 
 Verify that Flutter lists a physical Android and a physical iPhone. Record the
@@ -148,6 +148,25 @@ Create a private JSON file for Flutter's `--dart-define-from-file` option:
 
 Use the same file for both devices. Do not set `LANTERN_ALLOW_INSECURE` for
 these trusted HTTPS runs.
+
+## Decide what needs another physical run
+
+Run the host release checks once before signing or booking the phones. They
+exercise the release job conditions, exact marker bytes and restart journal.
+Keep each capture's original commit, signed binary hash, platform, fixture,
+scenario and timing. Recheck the original bytes if only the offline host-side
+validator or its unit fixture changed. The release verifier compares Git trees
+and accepts only modifications to its enumerated post-capture reader files.
+Package bytes, the recorder, device code, server, fixtures and toolchains stay
+bound. The evidence commit itself contains the required records.
+
+For a failure on one platform, keep passing captures on the same frozen source
+and retry only the affected target after diagnosis. A shared executable change
+requires fresh matching captures on each affected platform. Apply the original
+custody, freshness, tag-manifest and published-archive checks. Record source
+preparation, device availability, repeated checks and their cause, parent
+publication, approval handoff and tag-to-registry times in the release Issue.
+Use timestamps from the existing runs; label unknown intervals and overlaps.
 
 ## Run and observe both physical columns
 
@@ -252,7 +271,7 @@ older smoke/CDC evidence nor host or simulator probes qualify these receipt
 paths.
 
 Commit **only** those eight content-free records/markers (and an optional
-adjacent README) as the immediate child of the exact tested code commit.
+adjacent README) as the immediate child of the candidate; the original tested commit must pass the device retry rules above.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
 manifests, and absence of changed code. Parent `lantern_client 0.5.1` has its

@@ -9,45 +9,7 @@ on:
         default: false
   push:
     branches: [main]
-    paths:
-      - 'sdks/rust/**'
-      - 'proto/**'
-      - 'pb/**'
-      - 'server/**'
-      - 'core/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'go.work'
-      - 'go.work.sum'
-      - 'tests/integration/auth_test.go'
-      - '.github/workflows/rust-sdk.yml'
-      - '.github/scripts/configured_time_input.py'
-      - '.github/scripts/rust_wire.py'
-      - '.github/workflows/rust-release.yml'
-      - "!core/*.md"
-      - "!pb/*.md"
-      - "!sdks/rust/*.md"
-      - "!server/*.md"
   pull_request:
-    paths:
-      - 'sdks/rust/**'
-      - 'proto/**'
-      - 'pb/**'
-      - 'server/**'
-      - 'core/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'go.work'
-      - 'go.work.sum'
-      - 'tests/integration/auth_test.go'
-      - '.github/workflows/rust-sdk.yml'
-      - '.github/scripts/configured_time_input.py'
-      - '.github/scripts/rust_wire.py'
-      - '.github/workflows/rust-release.yml'
-      - "!core/*.md"
-      - "!pb/*.md"
-      - "!sdks/rust/*.md"
-      - "!server/*.md"
 
 # Retire superseded PR work; main, manual and release runs remain independent.
 concurrency:
@@ -62,8 +24,12 @@ defaults:
     working-directory: sdks/rust
 
 jobs:
+  scope:
+    uses: ./.github/workflows/validation-scope.yml
+
   test:
-    if: ${{ !inputs.native_time_diagnostic }}
+    needs: scope
+    if: ${{ !inputs.native_time_diagnostic && needs.scope.outputs.rust_required == 'true' }}
     name: Test (${{ matrix.os }}, Rust ${{ matrix.rust }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -213,3 +179,19 @@ jobs:
           name: native-time-singleflight-${{ github.sha }}
           path: ${{ runner.temp }}/lantern-native-time-result.json
           if-no-files-found: error
+
+
+  selection-failure:
+    name: Check selected jobs
+    needs: [scope, test]
+    if: >-
+      always() && (needs.scope.result != 'success' ||
+      ((needs.scope.outputs.rust_required == 'true' && !inputs.native_time_diagnostic) && needs.test.result != 'success') ||
+      (!(needs.scope.outputs.rust_required == 'true' && !inputs.native_time_diagnostic) && needs.test.result != 'skipped'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report missing or unsuccessful selected job
+        working-directory: .
+        run: |
+          echo "::error::The changed-file selection or a selected job did not complete successfully"
+          exit 1

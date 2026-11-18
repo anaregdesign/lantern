@@ -21,13 +21,13 @@ go run ./cli                     # start the CLI
 ```
 
 **Pre-push quality gate**: after fetching target main and freezing the candidate,
-run fresh affected local checks; unknown/policy/dependency inputs fall back to full:
+run the affected unit tests. The default base is the fetched `origin/main`:
 
 ```sh
-python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new --affected-base origin/main
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new
 ```
 
-The complete 77-step plan remains available without `--affected-base`; policy
+Use `--full` for the complete 79-step plan. Policy
 adoption must use the previous full contract on its own final source. Eligible
 pure prose retains its explicit path. Omitted families are NOT_SELECTED, never
 passed or carried. Hosted exact-merge functional-validation/module coverage/boundary configured-source-integration remain blocking.

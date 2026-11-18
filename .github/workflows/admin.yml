@@ -3,29 +3,7 @@ name: Admin
 on:
   push:
     branches: [main]
-    paths:
-      - 'admin/**'
-      - 'sdks/node/**'
-      - 'proto/**'
-      - '.github/workflows/admin.yml'
-      - 'server/provider/**'
-      - 'server/internal/config/**'
-      - 'deploy/helm/**'
-      - 'deploy/compose/**'
-      - "!admin/*.md"
-      - "!sdks/node/*.md"
   pull_request:
-    paths:
-      - 'admin/**'
-      - 'sdks/node/**'
-      - 'proto/**'
-      - '.github/workflows/admin.yml'
-      - 'server/provider/**'
-      - 'server/internal/config/**'
-      - 'deploy/helm/**'
-      - 'deploy/compose/**'
-      - "!admin/*.md"
-      - "!sdks/node/*.md"
 
 # Retire superseded PR work; main, manual and release runs remain independent.
 concurrency:
@@ -43,7 +21,12 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    uses: ./.github/workflows/validation-scope.yml
+
   build:
+    needs: scope
+    if: needs.scope.outputs.admin_required == 'true'
     name: Build
     # The locked Playwright release supports Ubuntu 24.04.
     runs-on: ubuntu-24.04
@@ -121,3 +104,16 @@ jobs:
           name: playwright-report
           path: admin/playwright-report
           retention-days: 7
+
+  selection-failure:
+    name: Check selected Admin build
+    needs: [scope, build]
+    if: >-
+      always() && (needs.scope.result != 'success' ||
+      (needs.scope.outputs.admin_required == 'true' && needs.build.result != 'success') ||
+      (needs.scope.outputs.admin_required != 'true' && needs.build.result != 'skipped'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report missing or unsuccessful selected job
+        working-directory: .
+        run: exit 1

@@ -3,39 +3,9 @@ name: Node SDK
 on:
   push:
     branches: [main]
-    paths:
-      - 'sdks/node/**'
-      - 'proto/**'
-      - 'buf.yaml'
-      - 'core/search/**'
-      - 'core/graphcache/**'
-      - 'server/**'
-      - 'testdata/search/**'
-      - '.github/workflows/node-sdk.yml'
-      - 'testbed/scripts/native_receipt_fixture.sh'
-      - '.github/scripts/configured_time_input.py'
-      - 'tests/integration/auth_test.go'
-      - 'sdks/go/**'
-      - "!sdks/node/*.md"
-      - "!server/*.md"
     tags:
       - 'sdks/node/v*'
   pull_request:
-    paths:
-      - 'sdks/node/**'
-      - 'proto/**'
-      - 'buf.yaml'
-      - 'core/search/**'
-      - 'core/graphcache/**'
-      - 'server/**'
-      - 'testdata/search/**'
-      - '.github/workflows/node-sdk.yml'
-      - 'testbed/scripts/native_receipt_fixture.sh'
-      - '.github/scripts/configured_time_input.py'
-      - 'tests/integration/auth_test.go'
-      - 'sdks/go/**'
-      - "!sdks/node/*.md"
-      - "!server/*.md"
   workflow_dispatch:
     inputs:
       release_inventory:
@@ -61,6 +31,9 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    uses: ./.github/workflows/validation-scope.yml
+
   registry-inventory:
     name: Registry inventory (manual)
     if: github.event_name == 'workflow_dispatch' && inputs.release_inventory
@@ -90,6 +63,8 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/node/v')
     uses: ./.github/workflows/current-source-release.yml
   test:
+    needs: scope
+    if: needs.scope.outputs.node_required == 'true'
     name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -278,3 +253,19 @@ jobs:
         # short-lived publish token via the trusted-publisher binding on
         # npmjs.com. Provenance is attached automatically when publishing
         # via OIDC.
+
+
+  selection-failure:
+    name: Check selected jobs
+    needs: [scope, test]
+    if: >-
+      always() && (needs.scope.result != 'success' ||
+      ((needs.scope.outputs.node_required == 'true') && needs.test.result != 'success') ||
+      (!(needs.scope.outputs.node_required == 'true') && needs.test.result != 'skipped'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report missing or unsuccessful selected job
+        working-directory: .
+        run: |
+          echo "::error::The changed-file selection or a selected job did not complete successfully"
+          exit 1

@@ -35,19 +35,9 @@ verification. The conventions below are the load-bearing subset.
 - `app/styles/` is reserved for `FluentProvider` host wiring only; feature styles live
   with their components.
 
-## Quality gate (before pushing admin changes)
+## Development checks
 
-Run from `admin/`:
-
-```bash
-bun run format
-bun run lint
-bun run typecheck      # react-router typegen, then tsc -b
-bun run test           # unit tests (do NOT use bare `bun test`)
-bun run build
-bun run test:e2e       # Playwright; free the server ports first
-```
-
-Use the package scripts, not bare `bun test` — the `test` script scopes Bun's runner to
-the right paths. The Playwright suite needs a running server, so stop any local compose
-stack that holds the ports before starting it.
+Run `bun run test` from `admin/` for Admin unit tests. The repository
+pre-push command selects that script and prepares its local Node SDK dependency.
+Admin CI runs format, lint, typecheck, build and Playwright for affected changes.
+Use `bun run test:e2e` to reproduce a browser failure on available local ports.

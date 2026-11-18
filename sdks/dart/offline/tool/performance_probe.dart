@@ -13,6 +13,23 @@ Future<void> main(List<String> arguments) async {
   arguments = [...arguments];
   final profile = ResourceProfile.parse(arguments);
   final outputPath = _outputPath(arguments);
+  final result = await referenceStoreContracts(profile);
+  final encoded = const JsonEncoder.withIndent('  ').convert(result);
+  if (outputPath == null) {
+    stdout.writeln(encoded);
+  } else {
+    await File(outputPath).writeAsString('$encoded\n', flush: true);
+  }
+}
+
+/// The unit fixture crosses the 32-send concurrency limit with 33 items.
+/// Release qualification uses the original 1001-item batch and sample counts.
+Future<Map<String, Object?>> referenceStoreContracts(
+  ResourceProfile profile,
+) async {
+  final unit = profile == ResourceProfile.unitContracts;
+  final itemCount = unit ? 33 : 1001;
+  final itemsPerScope = unit ? [5, 6] : [500, 501];
   final baseline =
       jsonDecode(await File('tool/performance_baseline.json').readAsString())
           as Map<String, Object?>;
@@ -41,7 +58,7 @@ Future<void> main(List<String> arguments) async {
     partitionId: 'performance',
     operationId: 'performance-operation',
     inputs: List<VertexInput>.generate(
-      1001,
+      itemCount,
       (index) => VertexInput(
         key: 'key-$index',
         value: VertexValue.int32(index),
@@ -92,7 +109,7 @@ Future<void> main(List<String> arguments) async {
   });
   recoveryWatch.stop();
 
-  const changeControllerCycles = 512;
+  final changeControllerCycles = unit ? 2 : 512;
   for (var index = 0; index < changeControllerCycles; index++) {
     final subscription = store
         .changes('resource-controller-$index')
@@ -100,7 +117,7 @@ Future<void> main(List<String> arguments) async {
     await subscription.cancel();
   }
 
-  const terminalStatusWatchCycles = 256;
+  final terminalStatusWatchCycles = unit ? 2 : 256;
   for (var index = 0; index < terminalStatusWatchCycles; index++) {
     final events = await repository
         .watchWrite('performance', operation.operationId)
@@ -132,7 +149,7 @@ Future<void> main(List<String> arguments) async {
     config: OfflineConfig(clock: () => now, jitter: (_) => Duration.zero),
   );
   final readMicros = <int>[];
-  for (var index = 0; index < 500; index++) {
+  for (var index = 0; index < (unit ? 1 : 500); index++) {
     final watch = Stopwatch()..start();
     await readRepository.readVertex(
       'read',
@@ -144,7 +161,7 @@ Future<void> main(List<String> arguments) async {
   }
   readMicros.sort();
 
-  const entityWatchCycles = 128;
+  final entityWatchCycles = unit ? 2 : 128;
   final entityWatchMicros = <int>[];
   for (var index = 0; index < entityWatchCycles; index++) {
     final watch = Stopwatch()..start();
@@ -171,7 +188,7 @@ Future<void> main(List<String> arguments) async {
   final boundAdmission = await _boundAdmissionBaseline(now, limits, profile);
   final automatic = await automaticBaseline(
     profile: profile,
-    itemsPerScope: [500, 501],
+    itemsPerScope: itemsPerScope,
     open: (index, client, binding, schedule) async {
       final store = MemoryOfflineStore(
         limits: const OfflineStoreLimits(
@@ -206,7 +223,7 @@ Future<void> main(List<String> arguments) async {
           ];
           if (rows.isEmpty) {
             for (final key in [
-              for (var i = 0; i < (index == 0 ? 500 : 501); i++) 'put-$i',
+              for (var i = 0; i < itemsPerScope[index]; i++) 'put-$i',
               for (var i = 0; i < 64; i++) 'v$i',
             ]) {
               final row = await tx.getCache(
@@ -291,10 +308,10 @@ Future<void> main(List<String> arguments) async {
       'terminalStatusWatches': terminalStatusWatchCycles,
     },
   };
-  _require(confirmed == 1001, 'confirmed_count');
-  _require(status?.confirmedCount == 1001, 'durable_status');
+  _require(confirmed == itemCount, 'confirmed_count');
+  _require(status?.confirmedCount == itemCount, 'durable_status');
   _require(
-    remote.putVertexCalls + remote.putEdgeCalls == 1001,
+    remote.putVertexCalls + remote.putEdgeCalls == itemCount,
     'one_send_per_item',
   );
   _require(
@@ -309,7 +326,10 @@ Future<void> main(List<String> arguments) async {
         durableCounts.leases == 0,
     'bounded_terminal_state',
   );
-  _require(decodedStatusObjects == 1002, 'bounded_decoded_status_objects');
+  _require(
+    decodedStatusObjects == itemCount + 1,
+    'bounded_decoded_status_objects',
+  );
   _require(
     reopenedSnapshot == await store.exportSnapshot(),
     'canonical_reopen',
@@ -356,12 +376,7 @@ Future<void> main(List<String> arguments) async {
   );
   _within(snapshotBytes, limits['snapshotBytes'], 'snapshot_bytes');
 
-  final encoded = const JsonEncoder.withIndent('  ').convert(metrics);
-  if (outputPath == null) {
-    stdout.writeln(encoded);
-  } else {
-    await File(outputPath).writeAsString('$encoded\n', flush: true);
-  }
+  return metrics;
 }
 
 Map<String, int> _contributionDeleteCodec(
@@ -612,7 +627,8 @@ Future<Map<String, Object?>> _boundAdmissionBaseline(
   );
   admission.stop();
   final reads = <int>[];
-  for (var i = 0; i < 50; i++) {
+  final readCount = profile == ResourceProfile.unitContracts ? 1 : 50;
+  for (var i = 0; i < readCount; i++) {
     final watch = Stopwatch()..start();
     final value = await data.getVertex(
       'bound-$i',
@@ -657,7 +673,7 @@ Future<Map<String, Object?>> _boundAdmissionBaseline(
   );
   return {
     'itemCount': 1001,
-    'sampleCount': 50,
+    'sampleCount': readCount,
     'enqueueMillis': admission.elapsedMilliseconds,
     'pendingReadP99Micros': _percentile(reads, .99),
     'disposeMillis': close.elapsedMilliseconds,

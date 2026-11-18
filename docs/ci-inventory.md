@@ -1,35 +1,26 @@
-# Beta validation workflow — #1822
+# Development and release validation
 
-Ordinary development uses fresh affected local checks from the small explicit
-`.github/scripts/validation_scope.py` map, then hosted exact synthetic-merge functional-validation,
-all-six-module coverage and classified configured-source-integration. Unknown/policy/configuration inputs
-select full. The complete local plan remains available and the previous full contract is
-required once on a policy adoption candidate. No persistent evidence cache or new permissions
-are introduced; NOT_SELECTED never means PASS.
+The local pre-push runner selects affected unit tests and their own prerequisite
+tools. For example, a change isolated to the Go CLI runs CLI tests, and an
+Offline release status edit checks text and links. An unknown change expands
+local unit coverage and hosted integration coverage. Explicit full qualification
+and the one-time policy adoption procedure are documented in
+[CONTRIBUTING](../CONTRIBUTING.md#before-every-git-push--local-quality-gate).
 
-Go retains all 18 vet/build/race-shuffle-coverage outcomes and every floor, using
-two module workers with separate logs/profiles. Required contexts stay Build &
-Test, Lint, Proto (buf), govulncheck. Selected native Windows Go and Rust commands
-run inside the existing Windows job and block Build & Test; missing, skipped or
-failed selected tests fail. Broad Windows Rust source compatibility moves to
-manual/release; ordinary Rust retains Linux MSRV and stable Linux/macOS. Existing
-Dart docs/backend-only mobile routing is reused, not replaced.
+On pull requests and main, inspect the change selection in the Actions summary.
+Go modules retain their vet/build/race/coverage requirements when selected.
+The four required contexts are Build & Test, Lint, Proto (buf) and govulncheck.
+Native, SDK wire, Admin, dependency and security checks follow their consumers.
+The full Root benchmark runs once on the frozen Root release candidate. The Dart
+Offline latency/RSS campaign belongs to its own release; routine CI exercises
+short correctness and cleanup tests. An SDK tag never starts the Root benchmark.
 
-Beta coverage emphasizes the server/SDK integration and current development/app
-surfaces. Every ordinary build does not promise all OS/device/distribution or
-long performance/stability qualification. Exact release/environment configured-source-integration, archive
-identity and explicitly promised native/physical evidence remain at those actual
-milestones. Runtime authorization, revocation, quorum/custody and durability
-checks remain. Normal scoped main runs remain; no extra manual full-main campaign.
-
-The routing change also includes the exact #1821 backup tombstone fixture repair
-from `89e963a53895d4bd14110ad3e03d964864d8f889`: its baseline file is identical
-on main, and the prior Windows failure demonstrated the setup-speed assumption.
-No failing result is rewritten. Rust's scoped-wire fixture now routes its source
-workflow; full release lanes receive their authfixture and separate scoped gate.
-
-Measured timings for the new policy belong to #1822 after qualification. The
-historical inventory below records #1753's earlier change, not new savings.
+The [development-flow Issue](https://github.com/anaregdesign/lantern/issues/2236)
+records historical PR and release baselines. Compare local elapsed time, time to
+required PR checks, sum of completed job durations and unrelated native jobs.
+Keep queue time, overlapping jobs and release approval/device waits separate.
+The first comparable PR and next Dart release can be recorded from existing
+Actions and registry timestamps without launching a comparison campaign.
 
 ## Claims, inputs and invalidation — #1974
 
@@ -42,13 +33,13 @@ interpreting reader versions.
 
 | Stage and consumer | Claim and relevant inputs | Fresh execution or bounded reuse |
 | --- | --- | --- |
-| Local iteration; author before push | Frozen-checkout affected tests. Changed source, consumer closure, test fixtures, tools/dependencies and the reviewed path map. | Execute selected checks. Known tools use their explicit closure; mixed edits union obligations. Unknown, policy, shared-fixture, dependency and build inputs retain full fallback. Omitted checks are NOT_SELECTED. The live runner's existing carry contract is separate. |
+| Local iteration; author before push | Frozen-checkout affected tests. Changed source, consumer closure, test fixtures, tools/dependencies and the reviewed path map. | Execute selected checks. Run owning unit tests and their required setup. Mixed changes select their combined consumers; broad local selection uses unit suites. Omitted checks are NOT_SELECTED. The live runner's existing carry contract is separate. |
 | PR and main; merge gate | Exact synthetic merge and actual integrated source respectively: module coverage, security, durability, native checks, controlled functional-validation and classified configured-source-integration. Source, toolchains, dependencies, protocol, fixtures and configuration. | Existing required checks and same-run receipt verification remain. Main proves its distinct commit; no additional manual full-main campaign. A local result or a different run's receipt cannot become this run's PASS. |
 | Explicit broad qualification; release owner | Normal-image performance, natural steady memory and goroutines, plus separately identified same-source retained-memory pairs. Source/build inputs, immutable images, scenario/load, GC/timing protocol, topology, CPU/memory budgets, observers/relay, time profile, platform and host conditions. | Keep normal12/retained4 and their thresholds. Material changes or missing/invalid observations require fresh affected cases. A corrected reader may assess sufficient unchanged saved observations offline, with a separately hashed result and original verdicts retained; image equality alone is insufficient. See the [benchmark contract](../testbed/bench/README.md#local-pre-tag-qualification). |
 | Release; artifact consumers | Exact tag and actual distributables: normal configured-source receipt, short Search qualification, image/signature/provenance, archive/checksum closure and ten-target binary verification. | Preserve tag/artifact-specific checks. Source qualification can establish only its declared source claim; it does not prove downloaded bytes or another architecture. No release, tag or asset change is part of #1974. |
 | Selected environment; explicitly named acceptance owner | Actual public artifact, host/platform, provider, native storage/backup/restart/fresh restore and OFF/OIDC/MCP lifecycle as selected. | Qualify that environment when required. Hosted Linux x64 does not prove an ARM64 host. A separately selected host's dependency failure blocks its own claim and is a publication prerequisite only when explicitly required. Do not bypass organizational controls. |
 | Optional broad diagnostics; investigator | Compatibility/statistical/stability observations under the chosen declared protocol. | `bench-nightly.yml` remains manual-only and diagnostic. No new periodic schedule or replacement for required qualification is introduced. |
-| Dart parent/child gates; package consumers | Existing probes mix performance with logical, retention, permit, watchdog, ownership and cleanup assertions. | Keep the probes and qualifying envelopes intact until #1902 extracts and preserves each assertion through its separate reviewed design. A benchmark name is not permission to skip correctness. |
+| Dart parent/child gates; package consumers | Existing probes mix performance with logical, retention, permit, watchdog, ownership and cleanup assertions. | Keep short correctness and cleanup cases on affected source. Run the full statistical workload for an owning package release or an explicit performance investigation. |
 
 Record outcomes by claim: product regression, harness/reader rejection,
 environmental availability, invalid or incomplete observation, and artifact

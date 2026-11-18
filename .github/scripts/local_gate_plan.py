@@ -88,48 +88,69 @@ def steps(evidence: Path) -> tuple[Step, ...]:
     return tuple(plan)
 
 
-def affected_steps(plan, scope):
-    """Select fresh development checks; full fallback retains the exact old plan."""
-    if scope["full"]:
-        return plan
-    families, modules = set(scope["families"]), set(scope["go_modules"])
-    names = {"final-diff", "final-clean"}
-    if modules:
-        # Go root integration consumes the built Node SDK. Complete installation
-        # before Go traverses node_modules; never mutate it concurrently (#1646).
-        names |= {"node-frozen-install", "node-prebuild", "admin-frozen-install",
-                  "example-frozen-preflight", "gofmt", "go-build", "go-lint"}
-        names |= {"go-test-" + module.replace("/", "-") for module in modules}
-        if "server" in modules:
-            names |= {"server-vet", "server-bench-heap-tests"}
-    prefixes = {"node": "node-", "admin": "admin-", "dart": "dart-",
-                "offline": "offline-", "sqlite": "sqlite-", "example": "example-",
-                "rust": "rust-"}
-    # Affected development checks defer distribution/current functional/native
-    # wire/performance qualification to the existing hosted/milestone gates.
-    deferred = {"node-verify-package", "dart-publish-dry-run", "sqlite-performance-probe",
-                "rust-server-build", "rust-authfixture-build", "rust-real-wire",
-                "current-functional-wire", "rust-audit"}
-    generation = {s.name for s in plan if s.name.endswith("-generate")} | {"go-generate", "generated-drift", "probe-generated-drift"}
-    for family, prefix in prefixes.items():
-        if family in families:
-            names |= {s.name for s in plan if s.name.startswith(prefix)} - deferred - generation
-    if "admin" in families:
-        names |= {"node-frozen-install", "node-prebuild"}
-    if "example" in families:
-        names.add("example-frozen-preflight")
-    if "docs" in families:
-        names.add("docs-tests")
+def affected_steps(plan, scope, base="origin/main"):
+    """Select unit suites, their actual prerequisites and cheap host contracts."""
+    families = set(scope["families"])
+    modules = set(scope["go_modules"])
     groups = scope.get("harness_contracts", [])
-    if groups:
+    fixtures = set(scope.get("fixture_contracts", []))
+    names = {"final-diff", "final-clean"}
+    extra = []
+    if "release-host" in fixtures or scope["full"]:
+        extra.append(Step("dart-release-host-contracts", ".", (
+            "python3", "-B", "sdks/dart/scripts/release_host_checks.py", "--python-only")))
+    elif "setup-dart" in scope.get("semantic", {}).values():
+        extra.append(Step("dart-workflow-conditions", "sdks/dart/scripts", (
+            "python3", "-B", "-m", "unittest", "ci_scope_test")))
+    if "." in modules:
+        # Root's ./... includes cross-SDK wire tests. Those belong to CI.
+        extra.append(Step("go-test-cli", ".", ("go", "test", "./cli/...")))
+    names.update("go-test-" + m.replace("/", "-") for m in modules - {"."})
+    if scope["full"] or "bench-heap-observer" in fixtures:
+        names.add("server-bench-heap-tests")
+    if scope["full"]:
+        # Unmapped inputs select broad unit coverage, never release workloads.
+        extra.append(Step("go-test-tools", ".", ("go", "test", "./testbed/...", "./deploy/...")))
+        names.add("docs-tests")
+    if families & {"node", "admin"}:
+        names.update(("node-frozen-install", "node-prebuild"))
+    if "node" in families:
+        names.add("node-test")
+    if "admin" in families:
+        names.update(("admin-frozen-install", "admin-test"))
+    if "dart" in families:
+        names.update(("dart-get", "dart-test"))
+    if "offline" in families:
+        # The offline-test wrapper already resolves its frozen paired dependencies.
+        names.add("offline-test")
+    if "sqlite" in families:
+        names.update(("sqlite-get", "sqlite-test"))
+    if "example" in families:
+        names.update(("example-frozen-preflight", "example-test"))
+    if "rust" in families:
+        names.add("rust-test")
+    if "docs" in families:
+        extra.append(Step("docs-text-links", ".", (
+            "python3", "-B", ".github/scripts/local_prose_gate.py", "documents", base, "HEAD")))
+    if groups or scope["full"]:
         names.add("harness-contracts")
-    if scope["generation"]:
-        names |= generation
-    selected = tuple(Step(s.name, s.cwd, s.command + tuple(
-        arg for group in groups for arg in ("--group", group)), s.empty,
-        s.glob_args, s.reject_line_prefixes) if s.name == "harness-contracts" else s
-        for s in plan if s.name in names)
-    if "controlled-native-provider" not in scope.get("fixture_contracts", []):
+    final = {"final-diff", "final-clean"}
+    selected = []
+    for step in plan:
+        if step.name not in names or step.name in final:
+            continue
+        if step.name == "harness-contracts" and groups:
+            step = Step(step.name, step.cwd, step.command + tuple(
+                arg for group in groups for arg in ("--group", group)))
+        selected.append(step)
+    # Check workflow conditions and release fixtures before slower unit suites.
+    selected = tuple(extra) + tuple(selected)
+    for step in plan:
+        if step.name == "final-diff" and scope.get("base_sha"):
+            selected += (Step(step.name, ".", ("git", "diff", "--check", base, "HEAD")),)
+        elif step.name in final:
+            selected += (step,)
+    if "controlled-native-provider" not in fixtures:
         return selected
     # These are affected-only product contracts. The canonical full79 commands
     # stay unchanged, and no provider/serving child is selected by these patterns.

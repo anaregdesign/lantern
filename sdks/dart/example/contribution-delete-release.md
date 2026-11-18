@@ -22,6 +22,11 @@ permit a blind cross-endpoint resend.
 
 ## Source and device contract
 
+Run `python3 -B sdks/dart/scripts/release_host_checks.py` from the repository
+root before signing the first app. Keep original capture bytes and source
+identity when rechecking a post-capture validator. See the
+[device retry rules](offline-release-resume.md#decide-what-needs-another-physical-run).
+
 Merge source, tests and release preparation first. Freeze one clean exact
 `main` commit and use it for physical Android and iPhone. The dedicated signed
 profile target is `integration_test/physical_contribution_delete_test.dart`.
@@ -86,7 +91,7 @@ with the same unchanged gates.
 
 After both captures pass, commit only `android.json`, `android-marker.json`,
 `ios.json` and `ios-marker.json` under `example/evidence/contribution-delete/`
-as the immediate evidence-only child of the tested source. Before pushing
+as the immediate evidence-only child of the candidate whose device inputs match the tested source. Before pushing
 its unused `sdks/dart/v0.5.0` tag, run the complete local quality gate and
 `scripts/physical_contribution_release_gate.py --tag sdks/dart/v0.5.0`.
 The tag's full Dart/native Gate and read-only parent preflight enforce the

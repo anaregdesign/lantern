@@ -1,92 +1,16 @@
 version: 2
 updates:
-  # gomod — one entry per Go module in the workspace (6 total).
+  # One weekly version PR per dependency used by compatible workspace modules.
   - package-ecosystem: gomod
-    directory: /
+    directories: ["/", "/core", "/mcp", "/pb", "/sdks/go", "/server"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
     groups:
-      grpc-protobuf:
-        patterns:
-          - "google.golang.org/grpc*"
-          - "google.golang.org/protobuf*"
-          - "google.golang.org/genproto*"
-      x-deps:
-        patterns:
-          - "golang.org/x/*"
-
-  - package-ecosystem: gomod
-    directory: /core
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      x-deps:
-        patterns:
-          - "golang.org/x/*"
-
-  - package-ecosystem: gomod
-    directory: /mcp
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      mcp-sdk:
-        patterns:
-          - "github.com/modelcontextprotocol/*"
-      grpc-protobuf:
-        patterns:
-          - "google.golang.org/grpc*"
-          - "google.golang.org/protobuf*"
-
-  - package-ecosystem: gomod
-    directory: /pb
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      grpc-protobuf:
-        patterns:
-          - "google.golang.org/grpc*"
-          - "google.golang.org/protobuf*"
-          - "google.golang.org/genproto*"
-
-  - package-ecosystem: gomod
-    directory: /sdks/go
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      grpc-protobuf:
-        patterns:
-          - "google.golang.org/grpc*"
-          - "google.golang.org/protobuf*"
-          - "google.golang.org/genproto*"
-      otel:
-        patterns:
-          - "go.opentelemetry.io/*"
-
-  - package-ecosystem: gomod
-    directory: /server
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
-    groups:
-      grpc-protobuf:
-        patterns:
-          - "google.golang.org/grpc*"
-          - "google.golang.org/protobuf*"
-          - "google.golang.org/genproto*"
-      x-deps:
-        patterns:
-          - "golang.org/x/*"
-      otel:
-        patterns:
-          - "go.opentelemetry.io/*"
-      prometheus:
-        patterns:
-          - "github.com/prometheus/*"
+      workspace-dependency:
+        applies-to: version-updates
+        patterns: ["*"]
+        group-by: dependency-name
 
   # Pub updates remain PR-reviewed. Major runtime bumps are intentionally
   # blocked because Connect-Dart 1.x requires Protobuf 4.x; generator/runtime

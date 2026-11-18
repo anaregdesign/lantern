@@ -1,0 +1,36 @@
+name: Select affected components
+
+on:
+  workflow_call:
+    outputs:
+      admin_required:
+        value: ${{ jobs.select.outputs.admin_required }}
+      node_required:
+        value: ${{ jobs.select.outputs.node_required }}
+      rust_required:
+        value: ${{ jobs.select.outputs.rust_required }}
+      codeql_languages:
+        value: ${{ jobs.select.outputs.codeql_languages }}
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      admin_required: ${{ steps.scope.outputs.admin_required }}
+      node_required: ${{ steps.scope.outputs.node_required }}
+      rust_required: ${{ steps.scope.outputs.rust_required }}
+      codeql_languages: ${{ steps.scope.outputs.codeql_languages }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: python3 -B .github/scripts/validation_scope.py

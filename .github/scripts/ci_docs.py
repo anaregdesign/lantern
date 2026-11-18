@@ -68,10 +68,10 @@ def classify(environ: dict[str, str]) -> tuple[bool, tuple[str, str] | None]:
     return documentation_only(list(changes)), revisions
 
 
-def validate(revisions: tuple[str, str]) -> None:
+def validate(revisions: tuple[str, str], *, documents_only: bool = False) -> None:
     subprocess.run(["git", "diff", "--check", *revisions], check=True)
     for path, status in evidence_only_pr.changed_files(*revisions).items():
-        if status == "D":
+        if status == "D" or (documents_only and not is_document(path)):
             continue
         mode = evidence_only_pr.git("ls-tree", revisions[1], "--", path).split()[0]
         if mode != "100644":
@@ -101,7 +101,11 @@ def validate_links(path: str, before: str, after: str, head: str) -> None:
 
 
 def main() -> None:
-    docs_only, revisions = classify(dict(os.environ))
+    try:
+        docs_only, revisions = classify(dict(os.environ))
+    except (KeyError, ValueError, OSError, subprocess.CalledProcessError) as error:
+        docs_only, revisions = False, None
+        print(f"Cannot classify the documentation diff ({type(error).__name__}); selecting source CI.")
     if docs_only:
         assert revisions is not None
         validate(revisions)

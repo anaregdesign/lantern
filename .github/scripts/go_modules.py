@@ -12,7 +12,7 @@ import time
 MODULES = (".", "core", "mcp", "pb", "sdks/go", "server")
 
 
-def collect(root: Path) -> list[dict]:
+def collect(root: Path, modules=MODULES) -> list[dict]:
     coverage = root / "coverage"
     coverage.mkdir(exist_ok=True)
     # Never consume a profile left by an earlier attempt.
@@ -47,9 +47,9 @@ def collect(root: Path) -> list[dict]:
     # Install/generate shared inputs before this collector. Each module owns its
     # log/profile; collect all phases even if another worker or phase fails.
     with ThreadPoolExecutor(max_workers=2) as workers:
-        collected = list(workers.map(module_phases, MODULES))
+        collected = list(workers.map(module_phases, modules))
     by_key = {(item["phase"], item["module"]): item for group in collected for item in group}
-    results = [by_key[phase, module] for phase in ("vet", "build", "test") for module in MODULES]
+    results = [by_key[phase, module] for phase in ("vet", "build", "test") for module in modules]
     for item in results:
         print(f"::group::go {item['phase']} ({item['module']})", flush=True)
         print(Path(item["log"]).read_text(errors="replace"), end="", flush=True)
@@ -63,7 +63,11 @@ def collect(root: Path) -> list[dict]:
 
 def main() -> int:
     root = Path.cwd().resolve()
-    results = collect(root)
+    selected = os.environ.get("GO_MODULES")
+    modules = MODULES if selected is None else selected.split()
+    if not modules or not set(modules) <= set(MODULES) or len(modules) != len(set(modules)):
+        raise ValueError("invalid affected Go module selection")
+    results = collect(root, modules)
     (root / "coverage/modules.json").write_text(json.dumps(results, indent=2) + "\n")
     summary = "| Module | Phase | Exit |\n| --- | --- | --- |\n" + "".join(
         f"| {item['module']} | {item['phase']} | {item['exit']} |\n" for item in results)

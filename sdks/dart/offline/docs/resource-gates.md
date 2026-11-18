@@ -1,16 +1,27 @@
 # Parent and child resource qualification (#1902)
 
-The probes contain contracts, not just performance measurements. They still run
-in both offline jobs and remain direct prerequisites of Gate. No job, workload,
-iteration, timeout, numerical limit, archive check or device gate is removed.
+## When checks run
 
-`--profile full` is the default. Only a parent `push` tag exactly matching
-`sdks/dart/vX.Y.Z` selects `--profile parent-contracts`. Child tags, normal source
-and changed-artifact checks, manual dispatch (including tags), unknown events
-and malformed refs retain full envelopes. Missing/unknown explicit profiles fail.
-The parent profile is qualifying for the parent dependency contract only; its
-reported profile must never be cited as full child performance qualification.
-Diagnostic SQLite runs remain nonqualifying and reject parent-contracts.
+Routine local development, PRs and main use affected unit tests. The Memory
+fixture replays 33 items across the 32-send limit, reads one cached value, and
+checks two automatic scopes with five and six items. The SQLite fixture checks
+eight writes, replay, WAL bounds and reopen. Each automatic fixture exercises
+one server read and all three traversal families. Both check cleanup and the
+same mandatory retention and settlement bounds. The network-free admission
+and contribution codec still check 1001 items. The resource unit fixtures use in-process or host SQLite adapters.
+
+The exact Offline publication tag owns the full reference-store and SQLite
+measurements in its existing hosted jobs. It runs the original workloads and
+latency/RSS envelopes once. The parent publication tag checks the original
+child dependency contracts using `--profile parent-contracts`. Both tag
+workflows retain their package, physical evidence, hosted-archive and
+publication checks. A manual Dart workflow run uses the unit contracts
+unless the separate SQLite diagnostic was explicitly selected.
+
+For an explicit performance investigation, run `dart run tool/performance_probe.dart`
+from the resolved Offline or SQLite package. The default CLI profile is
+`full`; the unit fixture is only callable by tests. The manual SQLite
+diagnostic remains available and refuses a partial profile.
 
 ## Assertion inventory and separation
 
@@ -67,7 +78,6 @@ pending is refused; source/parent pending remains explicit. Normal current-sdk4
 authority proof is unchanged. Physical evidence and publication remain separate,
 held work; this change neither executes nor authorizes them.
 
-Profile parser/envelope tests, source assertion boundary tests and the existing
-workflow-condition/hosted contract truth tables cover this separation. Fresh full
-qualification is still required on ordinary child changes; parent-contract results
-cannot be reused as full-envelope results or release/device evidence.
+Profile parser and assertion tests, scoped Gate tests, and hosted archive tests
+exercise these boundaries. Full-envelope release evidence names the child tag,
+workload and profile that produced it.

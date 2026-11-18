@@ -9,66 +9,8 @@ on:
   workflow_dispatch:
   push:
     branches: ["main"]
-    paths:
-      - "**"
-      - "!.github/*.md"
-      - "!AGENTS.md"
-      - "!CLAUDE.md"
-      - "!CONTRIBUTING.md"
-      - "!README.md"
-      - "!docs/**/*.md"
-      - "!admin/*.md"
-      - "!core/*.md"
-      - "!deploy/compose/*.md"
-      - "!deploy/helm/lantern/*.md"
-      - "!mcp/*.md"
-      - "!mcp/examples/*.md"
-      - "!pb/*.md"
-      - "!sdks/dart/*.md"
-      - "!sdks/dart/example/*.md"
-      - "!sdks/dart/offline/*.md"
-      - "!sdks/dart/offline_sqlite/*.md"
-      - "!sdks/go/*.md"
-      - "!sdks/node/*.md"
-      - "!sdks/python.archived/*.md"
-      - "!sdks/rust/*.md"
-      - "!server/*.md"
-      - "!testbed/*.md"
-      - "!testbed/bench/*.md"
-      - "!testbed/dart-transport-probe/*.md"
-      - "docs/env.md"
-      - "!sdks/dart/example/evidence/offline-release/*.json"
   pull_request:
     branches: ["main"]
-    paths:
-      - "**"
-      - "!.github/*.md"
-      - "!AGENTS.md"
-      - "!CLAUDE.md"
-      - "!CONTRIBUTING.md"
-      - "!README.md"
-      - "!docs/**/*.md"
-      - "!admin/*.md"
-      - "!core/*.md"
-      - "!deploy/compose/*.md"
-      - "!deploy/helm/lantern/*.md"
-      - "!mcp/*.md"
-      - "!mcp/examples/*.md"
-      - "!pb/*.md"
-      - "!sdks/dart/*.md"
-      - "!sdks/dart/example/*.md"
-      - "!sdks/dart/offline/*.md"
-      - "!sdks/dart/offline_sqlite/*.md"
-      - "!sdks/go/*.md"
-      - "!sdks/node/*.md"
-      - "!sdks/python.archived/*.md"
-      - "!sdks/rust/*.md"
-      - "!server/*.md"
-      - "!testbed/*.md"
-      - "!testbed/bench/*.md"
-      - "!testbed/dart-transport-probe/*.md"
-      - "docs/env.md"
-      - "!sdks/dart/example/evidence/offline-release/*.json"
   schedule:
     # Weekly Monday 06:00 UTC sweep so a stale main still gets a fresh
     # baseline even when no PRs land.
@@ -79,7 +21,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    uses: ./.github/workflows/validation-scope.yml
+
   analyze:
+    needs: scope
+    if: needs.scope.outputs.codeql_languages != '[]'
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -91,11 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - language: go
-            build-mode: autobuild
-          - language: actions
-            build-mode: none
+        include: ${{ fromJSON(needs.scope.outputs.codeql_languages) }}
 
     steps:
       - name: Checkout
@@ -122,3 +65,19 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
+
+
+  selection-failure:
+    name: Check selected jobs
+    needs: [scope, analyze]
+    if: >-
+      always() && (needs.scope.result != 'success' ||
+      ((needs.scope.outputs.codeql_languages != '[]') && needs.analyze.result != 'success') ||
+      (!(needs.scope.outputs.codeql_languages != '[]') && needs.analyze.result != 'skipped'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report missing or unsuccessful selected job
+        working-directory: .
+        run: |
+          echo "::error::The changed-file selection or a selected job did not complete successfully"
+          exit 1

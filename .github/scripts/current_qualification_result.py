@@ -9,24 +9,20 @@ def accepted(values):
     if values.get("SCOPE_RESULT") != "success" or values.get("MODULE_RESULT") != "success":
         return False
     exempt = values.get("DOCS_ONLY") == "true" or values.get("EVIDENCE_ONLY") == "true"
-    windows = values.get("WINDOWS_RESULT")
-    if exempt or values.get("WINDOWS_REQUIRED") == "false":
-        if windows != "skipped":
+    for flag, outcome in (
+        ("WINDOWS_REQUIRED", "WINDOWS_RESULT"),
+        ("FUNCTIONAL_REQUIRED", "FUNCTIONAL_VALIDATION_RESULT"),
+        ("CONFIGURED_SOURCE_INTEGRATION_REQUIRED", "CONFIGURED_SOURCE_INTEGRATION_RESULT"),
+        ("FUZZ_REQUIRED", "FUZZ_RESULT"),
+        ("DEPLOYMENT_REQUIRED", "DEPLOYMENT_RESULT"),
+    ):
+        selected = values.get(flag)
+        if selected not in {"true", "false"}:
             return False
-    elif values.get("WINDOWS_REQUIRED") != "true" or windows != "success":
-        return False
-    if exempt:
-        return (
-            values.get("FUNCTIONAL_VALIDATION_RESULT") == "skipped"
-            and values.get("CONFIGURED_SOURCE_INTEGRATION_RESULT") == "skipped"
-        )
-    if values.get("FUNCTIONAL_VALIDATION_RESULT") != "success":
-        return False
-    source_integration = values.get("CONFIGURED_SOURCE_INTEGRATION_RESULT")
-    return source_integration == "success" or (
-        values.get("CONFIGURED_SOURCE_INTEGRATION_REQUIRED") == "false"
-        and source_integration == "skipped"
-    )
+        expected = "success" if selected == "true" and not exempt else "skipped"
+        if values.get(outcome) != expected:
+            return False
+    return True
 
 
 def main():
@@ -35,7 +31,8 @@ def main():
     statuses = {key: values.get(key, "UNKNOWN") for key in (
         "SCOPE_RESULT", "MODULE_RESULT", "FUNCTIONAL_VALIDATION_RESULT",
         "CONFIGURED_SOURCE_INTEGRATION_RESULT", "CONFIGURED_SOURCE_INTEGRATION_REQUIRED",
-        "WINDOWS_REQUIRED", "WINDOWS_RESULT",
+        "WINDOWS_REQUIRED", "WINDOWS_RESULT", "FUNCTIONAL_REQUIRED",
+        "FUZZ_REQUIRED", "FUZZ_RESULT", "DEPLOYMENT_REQUIRED", "DEPLOYMENT_RESULT",
     )}
     line = (
         f"Current authority result: {statuses}; accepted={result}. "

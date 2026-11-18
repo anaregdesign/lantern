@@ -52,8 +52,7 @@ def validate(head: str) -> None:
     sys.path.insert(0, str(ROOT / "sdks/dart/offline/tool"))
     import physical_release_gate
 
-    tested = git("rev-parse", f"{head}^")
-    physical_release_gate.validate_pr_evidence(head, tested)
+    physical_release_gate.validate_pr_evidence(head)
 
 
 def main() -> None:
@@ -65,7 +64,11 @@ def main() -> None:
     head = args.head or os.environ.get("PR_HEAD_SHA", "")
     if args.mode == "classify":
         base = args.base or os.environ.get("PR_BASE_SHA", "")
-        candidate = bool(base and head and classify_range(base, head))
+        try:
+            candidate = bool(base and head and classify_range(base, head))
+        except (ValueError, OSError, subprocess.CalledProcessError) as error:
+            candidate = False
+            print(f"Cannot classify the evidence diff ({type(error).__name__}); selecting source CI.")
         print(f"evidence_only={str(candidate).lower()}")
         if output := os.environ.get("GITHUB_OUTPUT"):
             with Path(output).open("a", encoding="utf-8") as stream:

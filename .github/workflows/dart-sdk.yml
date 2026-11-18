@@ -6,105 +6,7 @@ on:
     tags:
       - "sdks/dart/v*.*.*"
       - "sdks/dart/offline/v*.*.*"
-    paths:
-      - "sdks/dart/**"
-      - "proto/**"
-      - "buf.yaml"
-      - "buf.gen.yaml"
-      - "generate.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "core/go.mod"
-      - "core/go.sum"
-      - "pb/go.mod"
-      - "pb/go.sum"
-      - "sdks/go/go.mod"
-      - "sdks/go/go.sum"
-      - "mcp/go.mod"
-      - "mcp/go.sum"
-      - "core/search/**"
-      - "core/graphcache/**"
-      - "server/**"
-      - "testdata/search/**"
-      - "tests/integration/dart_offline_sqlite_test.dart"
-      - "tests/integration/dart_identity_offline_sqlite_test.dart"
-      - "tests/integration/dart_contribution_delete_test.dart"
-      - "tests/integration/dart_data_client_test.dart"
-      - "testbed/scripts/dart_identity_fixture.sh"
-      - "testbed/scripts/native_receipt_fixture.sh"
-      - ".github/scripts/configured_time_input.py"
-      - "testbed/scripts/native_head_fixture.sh"
-      - "testbed/scripts/dart_receipt_fixture.sh"
-      - "tests/integration/auth_test.go"
-      - "tests/integration/auth_authority_helpers_test.go"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "docs/decisions/0002-dart-offline-repository-contract.md"
-      - "AGENTS.md"
-      - "README.md"
-      - "CONTRIBUTING.md"
-      - ".github/workflows/dart-sdk.yml"
-      - ".github/scripts/**"
-      - "!.github/*.md"
-      - "!README.md"
-      - "!sdks/dart/*.md"
-      - "!sdks/dart/example/*.md"
-      - "!sdks/dart/offline/*.md"
-      - "!sdks/dart/offline_sqlite/*.md"
-      - "!server/*.md"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "docs/decisions/0002-dart-offline-repository-contract.md"
   pull_request:
-    paths:
-      - "sdks/dart/**"
-      - "proto/**"
-      - "buf.yaml"
-      - "buf.gen.yaml"
-      - "generate.go"
-      - "go.mod"
-      - "go.sum"
-      - "go.work"
-      - "go.work.sum"
-      - "core/go.mod"
-      - "core/go.sum"
-      - "pb/go.mod"
-      - "pb/go.sum"
-      - "sdks/go/go.mod"
-      - "sdks/go/go.sum"
-      - "mcp/go.mod"
-      - "mcp/go.sum"
-      - "core/search/**"
-      - "core/graphcache/**"
-      - "server/**"
-      - "testdata/search/**"
-      - "tests/integration/dart_offline_sqlite_test.dart"
-      - "tests/integration/dart_identity_offline_sqlite_test.dart"
-      - "tests/integration/dart_contribution_delete_test.dart"
-      - "tests/integration/dart_data_client_test.dart"
-      - "testbed/scripts/dart_identity_fixture.sh"
-      - "testbed/scripts/native_receipt_fixture.sh"
-      - ".github/scripts/configured_time_input.py"
-      - "testbed/scripts/native_head_fixture.sh"
-      - "testbed/scripts/dart_receipt_fixture.sh"
-      - "tests/integration/auth_test.go"
-      - "tests/integration/auth_authority_helpers_test.go"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "docs/decisions/0002-dart-offline-repository-contract.md"
-      - "AGENTS.md"
-      - "README.md"
-      - "CONTRIBUTING.md"
-      - ".github/workflows/dart-sdk.yml"
-      - ".github/scripts/**"
-      - "!.github/*.md"
-      - "!README.md"
-      - "!sdks/dart/*.md"
-      - "!sdks/dart/example/*.md"
-      - "!sdks/dart/offline/*.md"
-      - "!sdks/dart/offline_sqlite/*.md"
-      - "!server/*.md"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "docs/decisions/0002-dart-offline-repository-contract.md"
   workflow_dispatch:
     inputs:
       sqlite_diagnostic:
@@ -128,6 +30,9 @@ jobs:
     name: Classify changes
     runs-on: ubuntu-latest
     outputs:
+      parent: ${{ steps.scope.outputs.parent }}
+      offline: ${{ steps.scope.outputs.offline }}
+      sqlite: ${{ steps.scope.outputs.sqlite }}
       full: ${{ steps.scope.outputs.full }}
       resource_profile: ${{ steps.scope.outputs.resource_profile }}
       mobile: ${{ steps.scope.outputs.mobile }}
@@ -144,7 +49,6 @@ jobs:
       - name: Test gate scope classifier
         run: |
           python3 -B -m unittest discover -s sdks/dart/scripts -p ci_scope_test.py
-          python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Select required gate scope
         id: scope
@@ -153,6 +57,10 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B sdks/dart/scripts/ci_scope.py
+
+      - name: Check changed release tools with local fixtures
+        if: steps.scope.outputs.release_host == 'true'
+        run: python3 -B sdks/dart/scripts/release_host_checks.py --python-only
 
   documentation:
     name: Validate documentation contracts
@@ -183,7 +91,7 @@ jobs:
   test:
     name: Generate, analyze, and test
     needs: changes
-    if: needs.changes.outputs.evidence_only != 'true' && needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.parent == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -416,7 +324,7 @@ jobs:
   minimum-dart:
     name: Minimum Dart 3.11
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.parent == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -442,7 +350,7 @@ jobs:
   offline-test:
     name: Offline package and real-wire replay
     needs: changes
-    if: needs.changes.outputs.evidence_only != 'true' && needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.offline == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -530,6 +438,7 @@ jobs:
               test/real_wire_test.dart
 
       - name: Check reference-store resource baseline
+        if: needs.changes.outputs.resource_profile == 'full' || needs.changes.outputs.resource_profile == 'parent-contracts'
         env:
           RESOURCE_PROFILE: ${{ needs.changes.outputs.resource_profile }}
         run: >-
@@ -537,6 +446,7 @@ jobs:
           --output "$RUNNER_TEMP/lantern-offline-performance.json"
 
       - name: Upload sanitized offline performance evidence
+        if: needs.changes.outputs.resource_profile == 'full' || needs.changes.outputs.resource_profile == 'parent-contracts'
         uses: actions/upload-artifact@v7
         with:
           name: lantern-offline-performance-${{ github.sha }}-${{ github.run_attempt }}
@@ -582,7 +492,7 @@ jobs:
   offline-minimum-dart:
     name: Offline package minimum Dart 3.11
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.offline == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -644,7 +554,7 @@ jobs:
   offline-sqlite:
     name: SQLite adapter persistence and real-wire replay
     needs: changes
-    if: needs.changes.outputs.evidence_only != 'true' && needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.sqlite == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -724,6 +634,7 @@ jobs:
             dart run tool/crash_probe.dart --receipt
 
       - name: Check SQLite host resource baseline
+        if: needs.changes.outputs.resource_profile == 'full' || needs.changes.outputs.resource_profile == 'parent-contracts'
         env:
           RESOURCE_PROFILE: ${{ needs.changes.outputs.resource_profile }}
         run: >-
@@ -731,6 +642,7 @@ jobs:
           > "$RUNNER_TEMP/lantern-sqlite-baseline.json"
 
       - name: Upload sanitized SQLite host baseline
+        if: needs.changes.outputs.resource_profile == 'full' || needs.changes.outputs.resource_profile == 'parent-contracts'
         uses: actions/upload-artifact@v7
         with:
           name: lantern-sqlite-host-baseline-${{ github.sha }}-${{ github.run_attempt }}
@@ -1327,6 +1239,9 @@ jobs:
       - name: Verify required jobs
         shell: bash
         env:
+          PARENT: ${{ needs.changes.outputs.parent }}
+          OFFLINE: ${{ needs.changes.outputs.offline }}
+          SQLITE: ${{ needs.changes.outputs.sqlite }}
           FULL: ${{ needs.changes.outputs.full }}
           MOBILE: ${{ needs.changes.outputs.mobile }}
           EVIDENCE_ONLY: ${{ needs.changes.outputs.evidence_only }}
@@ -1375,25 +1290,32 @@ jobs:
             exit 0
           fi
           require_result evidence-only "$EVIDENCE_RESULT" skipped
-          require_result test "$TEST_RESULT" success
-          require_result offline-test "$OFFLINE_TEST_RESULT" success
-          require_result offline-sqlite "$OFFLINE_SQLITE_RESULT" success
+          case "$FULL" in
+            true|false) ;;
+            *) echo "::error::missing full package scope"; exit 1 ;;
+          esac
+          require_selected() {
+            local job=$1 actual=$2 selected=$3
+            case "$selected" in
+              true) require_result "$job" "$actual" success ;;
+              false) require_result "$job" "$actual" skipped ;;
+              *) echo "::error::missing selection for $job"; exit 1 ;;
+            esac
+          }
+
+          require_selected test "$TEST_RESULT" "$PARENT"
+          require_selected offline-test "$OFFLINE_TEST_RESULT" "$OFFLINE"
+          require_selected offline-sqlite "$OFFLINE_SQLITE_RESULT" "$SQLITE"
           if [[ "$FULL" == true ]]; then
-            require_result minimum-dart "$MINIMUM_DART_RESULT" success
-            require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" success
+            require_selected minimum-dart "$MINIMUM_DART_RESULT" "$PARENT"
+            require_selected offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" "$OFFLINE"
           else
             require_result minimum-dart "$MINIMUM_DART_RESULT" skipped
             require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" skipped
           fi
-          if [[ "$MOBILE" == true ]]; then
-            require_result android "$ANDROID_RESULT" success
-            require_result ios "$IOS_RESULT" success
-          else
-            require_result android "$ANDROID_RESULT" skipped
-            require_result ios "$IOS_RESULT" skipped
-          fi
-
-          echo "Full Dart package matrix: $FULL; Android/iOS native matrix: $MOBILE" >> "$GITHUB_STEP_SUMMARY"
+          require_selected android "$ANDROID_RESULT" "$MOBILE"
+          require_selected ios "$IOS_RESULT" "$MOBILE"
+          echo "Parent=$PARENT Offline=$OFFLINE SQLite=$SQLITE Mobile=$MOBILE Full=$FULL" >> "$GITHUB_STEP_SUMMARY"
 
   release-preflight:
     name: Verify parent release candidate
@@ -1488,6 +1410,15 @@ jobs:
           path: ${{ runner.temp }}/lantern-client-release/lantern_client.tar.gz
           if-no-files-found: error
           retention-days: 7
+
+      - name: Report the protected publication handoff
+        if: steps.state.outputs.publish_required == 'true'
+        env:
+          ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+          ARTIFACT_URL: ${{ steps.archive.outputs.artifact-url }}
+        run: |
+          echo "Ready for pub.dev environment review at $(date -u +%FT%TZ)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified [candidate archive]($ARTIFACT_URL), SHA-256 $ARCHIVE_SHA256." >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: Publish lantern_client
@@ -1606,7 +1537,7 @@ jobs:
     name: Qualify offline archive against verified hosted parent
     needs: [changes, gate, verify-published]
     if: >-
-      ${{ !cancelled() && needs.gate.result == 'success' && needs.changes.outputs.full == 'true' &&
+      ${{ !cancelled() && needs.gate.result == 'success' && needs.changes.outputs.full == 'true' && needs.changes.outputs.offline == 'true' &&
           (needs.verify-published.result == 'success' ||
            (needs.verify-published.result == 'skipped' &&
             (github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/sdks/dart/v')))) }}
@@ -1780,6 +1711,15 @@ jobs:
           path: ${{ runner.temp }}/lantern-client-offline-release/lantern_client_offline.tar.gz
           if-no-files-found: error
           retention-days: 7
+
+      - name: Report the protected publication handoff
+        if: steps.state.outputs.publish_required == 'true'
+        env:
+          ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+          ARTIFACT_URL: ${{ steps.archive.outputs.artifact-url }}
+        run: |
+          echo "Ready for pub.dev environment review at $(date -u +%FT%TZ)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified [candidate archive]($ARTIFACT_URL), SHA-256 $ARCHIVE_SHA256." >> "$GITHUB_STEP_SUMMARY"
 
   publish-offline:
     name: Publish lantern_client_offline

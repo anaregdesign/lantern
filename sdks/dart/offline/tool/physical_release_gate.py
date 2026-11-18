@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from physical_release_source import check_capture_source
 from physical_receipt_attestation import (
     RECEIPT_TARGET,
     load_receipt_record,
@@ -96,11 +97,13 @@ def git(*args):
 
 
 def source_identity(tag_sha, tested_sha):
-    if not HEX40.fullmatch(tag_sha) or not HEX40.fullmatch(tested_sha):
+    if not isinstance(tag_sha, str) or not HEX40.fullmatch(tag_sha):
         raise ValueError("release and tested commit must be full Git SHAs")
-    if git("rev-parse", f"{tag_sha}^") != tested_sha:
+    parents = git("show", "-s", "--format=%P", tag_sha).split()
+    if len(parents) != 1:
         raise ValueError("tag must point to the evidence-only child of the tested code commit")
-    changed = set(git("diff", "--name-only", "--no-renames", tested_sha, tag_sha).splitlines())
+    check_capture_source(tested_sha, parents[0])
+    changed = set(git("diff", "--name-only", "--no-renames", parents[0], tag_sha).splitlines())
     required = {
         str(EVIDENCE_DIR / f"{platform}{suite['suffix']}.json")
         for platform in ("android", "ios") for suite in SUITES.values()
@@ -201,8 +204,10 @@ def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
         raise ValueError(f"{platform} tag CI manifest is invalid")
 
 
-def validate_pr_evidence(head_sha, tested_sha, evidence_dir=EVIDENCE_DIR):
+def validate_pr_evidence(head_sha, tested_sha=None, evidence_dir=EVIDENCE_DIR):
     """Check an evidence-only PR before its same-source release tag exists."""
+    if tested_sha is None:
+        tested_sha = load_receipt_record(evidence_dir / "android.json").get("testedCommit")
     source_identity(head_sha, tested_sha)
     records = {}
     for platform in ("android", "ios"):

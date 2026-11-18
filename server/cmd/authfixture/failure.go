@@ -165,7 +165,7 @@ func fixtureServerLogCategory(path string) string {
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
 			continue
 		}
-		if event.Message != "server exited with error" {
+		if event.Message != "server exited with error" && event.Message != "functional server exited with error" {
 			continue
 		}
 		category = "server_exit"

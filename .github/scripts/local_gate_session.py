@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local, live-process validation carry. No receipt import or resume interface."""
+"""Run affected development checks by default, or request explicit full qualification."""
 
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ import tempfile
 import time
 
 import ci_docs
+import dependency_scope
+import evidence_only_pr
 import local_prose_gate
 import local_gate_preflight
 import validation_scope
@@ -41,7 +43,8 @@ ROOT_INPUTS = {"go.mod", "go.sum", "go.work", "go.work.sum", "generate.go",
 ELIGIBLE = {"go-test-core", "go-test-mcp", "go-test-pb", "go-test-sdks-go",
             "go-test-server", "server-vet"}
 # Fresh affected-only commands share committed-source guards, never carry/export.
-FRESH_GO_STEPS = {"server-controlled-native-contracts", "server-controlled-native-capture-contracts"}
+FRESH_GO_STEPS = {"go-test-cli", "go-test-tools", "server-controlled-native-contracts",
+                  "server-controlled-native-capture-contracts"}
 # Outputs of the fixed installation/build steps. These are never exported into
 # eligible execution inputs; their owning unsupported gates still execute.
 BUILD_OUTPUT_DIRS = (".github/scripts/__pycache__/", "sdks/node/node_modules/", "admin/node_modules/",
@@ -65,7 +68,7 @@ QUALIFICATION_ENV_KEYS = frozenset({"LANTERN_TEST_CONFIGURED_TIME_UPSTREAM", "LA
                                    "LANTERN_AUTH_FIXTURE_COMPOSE", "LANTERN_MEMBERSHIP_PUBLISHER",
                                    "LANTERN_TEST_LAUNCH_SERVER", "LANTERN_RUST_TEST_SERVER",
                                    "LANTERN_RUST_TEST_AUTH_FIXTURE", "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD",
-                                   "LANTERN_FIXTURE_STOP_CHILD", "LANTERN_QUERY_CLI_TEST",
+                                   "LANTERN_FIXTURE_STOP_CHILD", "LANTERN_FIXTURE_REPORT_TEST", "LANTERN_QUERY_CLI_TEST",
                                    "LANTERN_QUERY_CLI_ARGS", "LANTERN_TEST_BENCH_HEAP_DIR",
                                    "LANTERN_BENCH_RETAINED_HEAP", "RUN_BENCH_LOCAL_TIME_GATE",
                                    "LANTERN_BENCH_LOCAL_TIME_MECHANISM", "LANTERN_BENCH_LOCAL_TIME_RESULT"})
@@ -156,7 +159,7 @@ class Session:
         self.evidence = evidence.resolve()
         if self.evidence == self.root or self.root in self.evidence.parents:
             raise ValueError("evidence must be outside the checkout")
-        self.evidence.mkdir(parents=True, exist_ok=False)
+        self.evidence.mkdir(mode=0o700, parents=True, exist_ok=False)
         self.env = ordinary_environment(os.environ)
         self.env["RUSTDOCFLAGS"] = "-D warnings"
         self.plan = steps(self.evidence)
@@ -172,7 +175,8 @@ class Session:
         self.attempt = 0
         self.runner_hashes = {p: digest(p.read_bytes()) for p in (
             Path(__file__).resolve(), Path(__file__).with_name("local_gate_plan.py").resolve(),
-            Path(ci_docs.__file__).resolve(), Path(local_prose_gate.__file__).resolve(),
+            Path(ci_docs.__file__).resolve(), Path(dependency_scope.__file__).resolve(),
+            Path(evidence_only_pr.__file__).resolve(), Path(local_prose_gate.__file__).resolve(),
             Path(validation_scope.__file__).resolve(), Path(local_gate_preflight.__file__).resolve())}
 
     def preflight(self, plan):
@@ -402,30 +406,30 @@ class Session:
         self.receipts.clear()
         self.baseline_logs.clear()
         self.prior_tree = None
-        scope = validation_scope.local_scope(self.root, base)
-        if scope["full"]:
-            print("Full fallback: " + scope["reason"], flush=True)
-            return self.qualify()
-        selected = affected_steps(self.plan, scope)
-        selected_names = {s.name for s in selected}
-        omitted = [s.name for s in self.plan if s.name not in selected_names]
-        result = {"kind": "local-affected", "base": base, "scope": scope,
-                  "not_selected": omitted, "steps": [], "passed": False}
+        omitted = []
+        result = {"kind": "local-affected", "base": base, "steps": [], "passed": False}
         started = time.monotonic()
         # This path creates no carry receipts and trusts no previous manifest.
         # Like the existing fresh SDK steps, it executes in the frozen checkout.
         try:
             if any(digest(p.read_bytes()) != h for p, h in self.runner_hashes.items()):
                 raise ValueError("runner/classifier changed; restart")
-            result["preflight"] = self.preflight(selected)
             head, tree, snapshot = self.snapshot()
-            result.update(head=head, tree=tree)
+            scope = validation_scope.local_scope(self.root, base)
+            selected = affected_steps(self.plan, scope, scope.get("base_sha", base))
+            selected_names = {s.name for s in selected}
+            omitted = [s.name for s in self.plan if s.name not in selected_names]
+            result.update(head=head, tree=tree, scope=scope, not_selected=omitted)
+            print("Local development selection: " + scope["reason"], flush=True)
+            result["preflight"] = self.preflight(selected)
             self.eligible_root = self.root
             for index, step in enumerate(selected):
                 log = self.evidence / f"affected-{index + 1:02}-{step.name}.log"
                 print(f"EXECUTE {index + 1}/{len(selected)} {step.name}", flush=True)
+                step_started = time.monotonic()
                 code, passed = self.run(step, log)
                 result["steps"].append(dict(name=step.name, mode="executed", exit=code,
+                    command=list(step.command), cwd=step.cwd, seconds=round(time.monotonic() - step_started, 3),
                     passed=passed, log=str(log), sha256=digest(log.read_bytes())))
                 if not passed:
                     raise ValueError("required step failed: " + step.name)
@@ -441,7 +445,8 @@ class Session:
                       seconds=round(time.monotonic() - started, 3))
         (self.evidence / "affected-manifest.json").write_bytes(encoded(result))
         print(f"{'PASS' if result['passed'] else 'FAIL'} executed={result['executed']} "
-              f"NOT_SELECTED={len(omitted)} seconds={result['seconds']}", flush=True)
+              f"NOT_SELECTED={len(omitted)} seconds={result['seconds']} "
+              f"{self.evidence / 'affected-manifest.json'}", flush=True)
         return result
 
     def qualify(self) -> dict:
@@ -537,19 +542,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path)
     parser.add_argument("evidence", type=Path, help="new directory outside the checkout")
-    parser.add_argument("--session", action="store_true", help="accept qualify/quit on stdin; no receipt import")
-    parser.add_argument("--prose-base", help="try fresh prose-only eligibility against fetched origin/main; otherwise run full")
-    parser.add_argument("--affected-base", help="fresh affected development checks against fetched target main; unknown inputs run full")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--full", action="store_true", help="explicit one-shot full qualification")
+    modes.add_argument("--session", action="store_true", help="full qualification with live component carry")
+    modes.add_argument("--prose-base", help="try the strict prose report, then affected development tests")
+    modes.add_argument("--affected-base", help="affected development tests against fetched main (default: origin/main)")
     args = parser.parse_args()
-    if (args.prose_base and args.affected_base) or (args.session and (args.prose_base or args.affected_base)):
-        parser.error("prose/affected modes are one-shot paths, separate from component carry")
     session = Session(args.checkout, args.evidence)
-    if args.affected_base:
-        return int(not session.qualify_affected(args.affected_base)["passed"])
     if args.prose_base:
         result = local_prose_gate.qualify(session, args.prose_base)
         if result is not None:
             return int(not result["passed"])
+    if not (args.full or args.session):
+        return int(not session.qualify_affected(args.affected_base or args.prose_base or "origin/main")["passed"])
     result = session.qualify()
     if args.session:
         print("Session ready: commit review fixes, then enter qualify; quit ends all carry eligibility.", flush=True)
