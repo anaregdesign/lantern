@@ -275,7 +275,7 @@ class IOSBackendObservationTest(unittest.TestCase):
         for attempt in (initial, retry):
             for unchanged in (
                 "continue-on-error: true", "timeout-minutes: 14",
-                "IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
+                "IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 540",
                 "IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180",
                 "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
                 "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720",

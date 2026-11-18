@@ -398,7 +398,7 @@ class CleanupTests(unittest.TestCase):
                     "IOS_SMOKE_FLUTTER_BIN": "flutter",
                     "IOS_SMOKE_XCRUN_BIN": "xcrun",
                     "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": "720",
-                    "IOS_SMOKE_BUILD_TIMEOUT_SECONDS": "360",
+                    "IOS_SMOKE_BUILD_TIMEOUT_SECONDS": "540",
                     "IOS_SMOKE_BOOT_TIMEOUT_SECONDS": "180",
                     "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS": "180",
                 }),
@@ -406,7 +406,7 @@ class CleanupTests(unittest.TestCase):
                 status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
             self.assertEqual(status, 70)
             self.assertEqual(
-                budgets, [("build", 360), ("boot", 180), ("bootstatus", 90), ("launch", 135)],
+                budgets, [("build", 540), ("boot", 180), ("bootstatus", 90), ("launch", 135)],
             )
 
     def test_identity_launch_and_returned_pid_share_the_original_native_bound(self):

@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"io"
 	"log/slog"
@@ -134,6 +135,10 @@ func logPolicyRuntimeCommittedFixture(t *testing.T, level LogLevel) (*s3aTestNet
 		t.Fatal(err)
 	}
 	result, err := authority.Apply(ctx, review, producer, [32]byte{})
+	result, err = operationalPolicyCompleteFixture(ctx, review, result, err, authority.Lookup,
+		operationalPolicyRetainedFixture(authority, review), func(ctx context.Context) bool {
+			return s3aPause(ctx, authority.origin.network.limits.Backoff)
+		})
 	if err != nil || result.Progress != CurrentApplied || result.Original == nil || result.Original.Disposition() != S1Applied {
 		t.Fatal("runtime fixture policy did not commit through reviewed native Apply", result.Progress, err)
 	}
