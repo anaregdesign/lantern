@@ -1285,22 +1285,24 @@ manual `dart pub publish`. Immediately before tagging, check
 `https://pub.dev/api/packages/lantern_client` and confirm the target version does not
 already exist. Never force-move a published Dart tag/version—bump patch.
 
-**Offline receipt release preparation (#1586).** Published offline 0.4.0
+**Offline receipt releases (#1586/#1766).** Published offline 0.4.0
 uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
 targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
-its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
+its frozen-source, physical and publication gates. Published 0.6.0 binds
 typed undisclosed acceptance to parent `^0.5.1`. That parent is published with
-verified archive equality, and the source candidate's generated hosted lock selects
-`0.5.1` with its actual registry archive checksum. Independent final-main
-FULL+MOBILE hosted qualification, final-source, device/provider and Offline
-publication exits remain pending (#2133). A generated lock alone does not qualify
-the independent 0.6.0 archive, physical or publication exits. Review
+verified archive equality, and the 0.6.0 generated hosted lock selects
+`0.5.1` with its actual registry archive checksum. Offline 0.6.0 completed
+independent final-main FULL+MOBILE hosted qualification, final-source and physical
+acceptance, protected publication and published-archive equality
+([Release](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/offline/v0.6.0); #1766).
+A generated lock alone does not qualify a new candidate's archive, physical or
+publication exits. For later candidates, review
 hosted-lock preparation through the ordinary PR/main gates and require the
 separate hosted archive qualification before freezing the offline device candidate. The bounded commands are in the
 [lock-refresh procedure](sdks/dart/example/offline-release-resume.md#parent-publication-and-hosted-lock-refresh).
 `paired_source_gate.py --refresh-lock` updates only the paired-source lock; it
 cannot refresh or qualify the hosted lock. Its source, hosted archive, final-source,
-physical and publication exits are independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
+physical and publication exits are independent; previous release evidence does not qualify a new candidate. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
 a path override. Before tagging, confirm the target version and tag are
