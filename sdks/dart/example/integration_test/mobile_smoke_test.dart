@@ -13,8 +13,27 @@ import 'support/direct_launch_binding.dart';
 import 'support/head_edge_fixture.dart';
 import 'support/physical_result_marker.dart';
 
-void main() {
-  directLaunchIntegrationTest('native mobile real-wire smoke', () async {
+void main() => registerMobileSmoke(
+  directLaunchIntegrationTest,
+  iosDirectLaunch: const bool.fromEnvironment('LANTERN_IOS_DIRECT_LAUNCH'),
+);
+
+void registerMobileSmoke(
+  void Function(String, Future<void> Function(), {Timeout? timeout}) register, {
+  required bool iosDirectLaunch,
+}) {
+  // The simulator launches the built app directly, bypassing flutter test --timeout=3m.
+  final timeout = iosDirectLaunch ? const Timeout(Duration(minutes: 3)) : null;
+  if (iosDirectLaunch) {
+    // ignore: avoid_print
+    print('MOBILE_SMOKE_REGISTERING');
+  }
+  register('native mobile real-wire smoke', () async {
+    if (iosDirectLaunch) {
+      // The binding has entered the body. The next marker follows the setup write.
+      // ignore: avoid_print
+      print('MOBILE_SMOKE_BODY_ENTERED');
+    }
     final result = PhysicalResultMarker(
       'lantern-mobile-smoke-result.json',
       kind: 'physical_mobile_smoke_on_device_result',
@@ -423,5 +442,5 @@ void main() {
     );
     await result.recordPhase('cleanup');
     bodyPassed = true;
-  });
+  }, timeout: timeout);
 }

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import '../integration_test/mobile_smoke_test.dart' as smoke;
 import '../integration_test/support/direct_launch_binding.dart';
 
 void main() {
@@ -17,6 +18,22 @@ void main() {
         expect(results[description], 'success');
         return null;
       });
+
+  test('only the direct-launch simulator supplies a mobile smoke timeout', () {
+    final timeouts = <Timeout?>[];
+    void capture(
+      String name,
+      Future<void> Function() body, {
+      Timeout? timeout,
+    }) {
+      expect(name, 'native mobile real-wire smoke');
+      timeouts.add(timeout);
+    }
+
+    smoke.registerMobileSmoke(capture, iosDirectLaunch: true);
+    smoke.registerMobileSmoke(capture, iosDirectLaunch: false);
+    expect(timeouts, [const Timeout(Duration(minutes: 3)), null]);
+  });
 
   directLaunchIntegrationTest(description, () async {
     expect(binding.inTest, isTrue);

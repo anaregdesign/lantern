@@ -1,7 +1,9 @@
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from git_test_fixture import synchronous_git_maintenance
 import validation_scope
@@ -81,6 +83,55 @@ class DependencyRoutingTest(unittest.TestCase):
         self.assertTrue(mixed["functional_required"])
         self.assertFalse(mixed["windows_required"])
         self.assertEqual([item["language"] for item in mixed["codeql_languages"]], ["go", "actions"])
+
+    @unittest.skipUnless(shutil.which("yq"), "workflow node positions require yq")
+    def test_only_the_linux_host_steps_are_local_to_the_workflow(self):
+        for path, job in validation_scope.dependency_scope.HOST_JOBS.items():
+            with self.subTest(path=path):
+                # Keep similar step names in another job and in a shell literal.
+                source = (f"name: workflow\non: pull_request\njobs:\n  {job}:\n"
+                          "    runs-on: ubuntu-latest\n    outputs: {scope: value}\n    steps:\n"
+                          "      - run: echo host\n  ios:\n    runs-on: macos-latest\n    steps:\n"
+                          "      - run: |\n          jobs:\n            changes:\n              steps:\n")
+                self.write(path, source)
+                self.base = self.commit()
+                updated = source.replace("echo host", "echo preflight")
+                self.write(path, updated)
+                result = self.select()
+                self.assertFalse(result["full"] or result["functional_required"])
+                self.assertEqual(result["fixture_contracts"], ["ci-routing"] if job == "changes" else [])
+                self.assertEqual(result["codeql_languages"], [{"language": "actions", "build-mode": "none"}])
+                if job == "changes":
+                    # Dart maps this shared fixture to SQLite even though the
+                    # Go-side fixture fallback is broad. Keep the verified YAML.
+                    fixture = "tests/integration/dart_identity_offline_sqlite_test.dart"
+                    self.write(fixture, "// fixture")
+                    mixed = self.select()
+                    self.assertTrue(mixed["full"])
+                    self.assertEqual(mixed["semantic"], {path: "ci-routing"})
+                    (self.root / fixture).unlink()
+                for before, after in (
+                    ("macos-latest", "macos-15"), ("outputs: {scope: value}", "outputs: {scope: other}"),
+                    ("ubuntu-latest", "windows-latest"), ("on: pull_request", "on: push"),
+                    ("              steps:", "              different:"),
+                    ("- run: echo preflight", "- run: &shared echo preflight"),
+                    ("- run: echo preflight", "- run: first\n        run: echo preflight"),
+                    ("    steps:\n      - run: echo preflight", "    steps: [{run: other}]"),
+                ):
+                    with self.subTest(change=(before, after)):
+                        self.write(path, updated.replace(before, after))
+                        self.assertTrue(self.select()["full"])
+                # An alias in an unchanged job could import steps from the host.
+                anchored = source.replace("echo host", "&shared host").replace(
+                    "      - run: |", "      - run: *shared\n      - run: |")
+                self.write(path, anchored)
+                self.base = self.commit()
+                self.write(path, anchored.replace("&shared host", "&shared new-host"))
+                self.assertTrue(self.select()["full"])
+
+    def test_missing_workflow_parser_keeps_full_scope(self):
+        with patch.object(subprocess, "check_output", side_effect=FileNotFoundError):
+            self.assertIsNone(validation_scope.dependency_scope.outside_host_steps(b"jobs: {}", "changes"))
 
     def test_a_changed_nested_checksum_ledger_selects_its_owner(self):
         self.write("server/go.sum", (self.root / "go.sum").read_text())

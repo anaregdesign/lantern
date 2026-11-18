@@ -203,6 +203,28 @@ class ScopeTest(unittest.TestCase):
             jobs, _ = ci_scope.selected_jobs(changes, scope)
             self.assertEqual(jobs, {"release_host", "offline", "sqlite", "mobile", "full"})
 
+    def test_routing_contracts_do_not_schedule_native_jobs_or_hide_native_inputs(self):
+        routing = dict.fromkeys(ci_scope.validation_scope.CI_ROUTING | {ci_scope.DART_WORKFLOW}, "M")
+        kinds = {ci_scope.DART_WORKFLOW: "ci-routing"}
+        for extra, expected in (
+            ({}, set()),
+            ({"docs/ci-inventory.md": "M"}, set()),
+            ({"sdks/dart/example/integration_test/mobile_smoke_test.dart": "M",
+              "sdks/dart/example/test/direct_launch_test.dart": "M"}, {"mobile"}),
+            ({"sdks/dart/example/lib/main.dart": "M"}, {"mobile", "sqlite", "full"}),
+            ({"sdks/dart/lib/src/gen/graph.pb.dart": "M"}, ci_scope.JOBS),
+            ({"tests/integration/dart_identity_offline_sqlite_test.dart": "M"}, {"sqlite"}),
+            ({".github/workflows/unmapped.yml": "M"}, ci_scope.JOBS),
+        ):
+            with self.subTest(extra=extra):
+                changes = {**routing, **extra}
+                impact = ci_scope.validation_scope.affected(changes, kinds)
+                # classify_revisions retains verified semantics on a shared fallback.
+                self.assertEqual(ci_scope.selected_jobs(changes, {**impact, "semantic": kinds})[0], expected)
+        # With no verified two-revision workflow classification, its other jobs can be affected.
+        impact = ci_scope.validation_scope.affected(routing)
+        self.assertEqual(ci_scope.selected_jobs(routing, impact)[0], ci_scope.JOBS)
+
     def test_routing_selects_only_the_owning_jobs(self):
         action = ci_scope.DART_WORKFLOW
         reused = ".github/workflows/current-sdk4.yml"
@@ -335,6 +357,22 @@ class ScopeTest(unittest.TestCase):
                                ("TEST_RESULT", "cancelled"), ("OFFLINE_SQLITE_RESULT", "failure")):
                 with self.subTest(job=job):
                     self.assertNotEqual(subprocess.run(["bash", "-c", script], env={**env, job: wrong},
+                                                       capture_output=True).returncode, 0)
+
+            # Host-only and mobile-only selections both require a successful
+            # Linux classifier and reject any unexpected package execution.
+            for mobile in (False, True):
+                native_result = "success" if mobile else "skipped"
+                selected = dict(env, FULL="false", PARENT="false", OFFLINE="false",
+                                MOBILE=str(mobile).lower(), TEST_RESULT="skipped",
+                                MINIMUM_DART_RESULT="skipped", OFFLINE_TEST_RESULT="skipped",
+                                OFFLINE_MINIMUM_DART_RESULT="skipped", ANDROID_RESULT=native_result,
+                                IOS_RESULT=native_result)
+                self.assertEqual(subprocess.run(["bash", "-c", script], env=selected,
+                                                capture_output=True).returncode, 0)
+                for wrong in ({"CHANGES_RESULT": "failure"}, {"OFFLINE_SQLITE_RESULT": "success"},
+                              {"IOS_RESULT": "skipped" if mobile else "success"}):
+                    self.assertNotEqual(subprocess.run(["bash", "-c", script], env=selected | wrong,
                                                        capture_output=True).returncode, 0)
 
     def test_event_routing_manual_tag_evidence_and_unavailable_base(self):

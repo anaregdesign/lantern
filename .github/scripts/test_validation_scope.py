@@ -110,7 +110,7 @@ class ValidationScopeTest(unittest.TestCase):
 
     def test_unknown_policy_fixtures_and_bad_diffs_keep_full(self):
         self.assertEqual(scope.affected({"docs/oidc-operations.md": "M"})["families"], ["docs"])
-        for path in ("unknown.file", "tests/fixture.md", ".github/scripts/validation_scope.py",
+        for path in ("unknown.file", "tests/fixture.md", ".github/scripts/unmapped.py",
                      "go.mod", "sdks/node/package.json", "sdks/rust/Cargo.lock", "sdks/rust/xtask/src/main.rs", "sdks/node/src/generated/api.ts", "server/config.yaml", "../core/a.go", "/core/a.go"):
             self.assertTrue(scope.affected({path: "M"})["full"], path)
         for status in ("T", "R100", "U", ""):
@@ -123,6 +123,20 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertTrue({"go-test-cli", "go-test-server", "dart-test", "admin-test", "rust-test"} <= fallback)
         self.assertFalse({"sqlite-performance-probe", "admin-playwright", "current-functional-wire"} & fallback)
         self.assertEqual(len(full), 79)
+
+    def test_host_routing_changes_run_only_their_contracts(self):
+        routing = dict.fromkeys(scope.CI_ROUTING, "M")
+        impact = scope.affected(routing)
+        self.assertEqual(impact["fixture_contracts"], ["ci-routing"])
+        self.assertEqual({s.name for s in affected_steps(steps(Path("/tmp/evidence")), impact)},
+                         {"ci-routing-contracts", "dart-workflow-conditions", "final-diff", "final-clean"})
+        self.assertFalse(any(value is True for value in scope.hosted(impact, routing).values()))
+        for path in scope.CI_ROUTING:
+            for status in ("A", "D"):
+                self.assertTrue(scope.affected({path: status})["full"], (path, status))
+        mixed = scope.affected({**routing, "server/service/connect.go": "M"})
+        self.assertEqual(set(mixed["go_modules"]), {"server", "."})
+        self.assertEqual(mixed["fixture_contracts"], ["ci-routing"])
 
     def test_operational_settings_keep_provider_native_coverage_after_extraction(self):
         for path in ("server/internal/config/network.go", "server/internal/config/search_test.go",
@@ -236,7 +250,6 @@ class ValidationScopeTest(unittest.TestCase):
             self.assertEqual(len(mixed_plan), 7, path)
             self.assertIn("go-test-server", {s.name for s in mixed_plan}, path)
         for path in (".github/scripts/unknown_fixture.py", ".github/workflows/go.yml",
-                     ".github/scripts/validation_scope.py", ".github/scripts/local_gate_plan.py",
                      ".github/scripts/local_gate_session.py", ".github/scripts/current_qualification_scope.py",
                      "CONTRIBUTING.md", "server/go.mod", "sdks/dart/pubspec.lock"):
             self.assertTrue(scope.affected({fixture: "M", path: "M"})["full"], path)
