@@ -7,9 +7,12 @@ published `0.3.0` identity CDC release added a dedicated CDC test and
 evidence record on each physical platform; it remains legacy Put-only. The
 receipt-bearing `0.4.0` release completed the distinct two-launch receipt
 target and paired on-device markers in #1399 and is hosted on pub.dev. The
-`0.5.0` contribution Delete release completed #1586. The current `0.6.0`
-candidate requires fresh smoke, CDC and receipt records on its own final
-source; earlier-release evidence cannot qualify it.
+`0.5.0` contribution Delete release completed #1586. Published
+[`0.6.0`](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/offline/v0.6.0) completed its separate source, physical and publication exits in #1766.
+Its tested code is `975486d864c4900f7da3741c7ca27f8fa7fa7ab2`; the tag points
+to the exact eight-file evidence child `779982cf75e1eb702fb7568a89f7e526c502cade`.
+Later releases require their own final-source records; earlier-release evidence
+cannot qualify a new candidate.
 
 The existing [physical-device smoke guide](physical-device-smoke.md) defines the
 evidence schema and historical observations. Earlier h2c or simulator results
@@ -18,14 +21,16 @@ both physical platforms pass this matrix on one exact clean code commit.
 
 ## Parent publication and hosted lock refresh
 
-The 0.6.0 offline candidate requires parent `lantern_client ^0.5.1`. Parent
+The published 0.6.0 offline release requires parent `lantern_client ^0.5.1`. Parent
 `0.5.1` is published with verified archive equality ([Release](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/v0.5.1); #2142);
-the published `0.5.0` tag/archive remains immutable. The source candidate's generated
+the published `0.5.0` tag/archive remains immutable. The 0.6.0 generated
 hosted lock selects `0.5.1`. Source CI still uses the separately generated
 paired-source lock and restores the hosted lock afterwards. Neither a generated
 lock nor a path override qualifies the independent offline archive or publication
-exit. Final-main FULL+MOBILE hosted qualification and final-source, device/provider
-and Offline publication exits remain pending (#2133).
+exit. Offline 0.6.0 completed final-main FULL+MOBILE hosted qualification,
+final-source and physical acceptance, protected publication and published-archive
+equality (#1766). Provider/signup evidence retains its own source and scope in
+#1750/#1758. Each later candidate must qualify its separate release exits.
 
 When a parent release is separately authorized, pass paired-source offline,
 isolated parent archive, package and native gates first. Publish the parent
@@ -251,12 +256,13 @@ adjacent README) as the immediate child of the exact tested code commit.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
 manifests, and absence of changed code. Parent `lantern_client 0.5.1` has its
-verified published archive and the source candidate's generated hosted lock selects
-that version; independent hosted/final-source/device/provider/publication gates
-remain pending (#2133). Published Offline `0.5.0`
-evidence retains its original source and cannot qualify this `0.6.0`
-candidate. The example's offline `^0.6.0` dependency and local path lock
-describe that source candidate. Each platform must pass
+verified published archive and the 0.6.0 generated hosted lock selects
+that version. The independent 0.6.0 hosted, final-source, physical and publication
+exits are complete as linked above; future candidates require fresh qualification.
+Published Offline `0.5.0` evidence retains its original source and does not qualify
+0.6.0. The example's offline `^0.6.0` dependency and local path lock describe its
+development composition, not a hosted archive proof. For each later candidate,
+each platform must pass
 15 smoke, 11 CDC, and 14 receipt scenarios. Do not tag or publish until both
 actual physical receipt runs,
 verified local copies held through tag CI and hosted archive equality, and

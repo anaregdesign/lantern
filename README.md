@@ -272,14 +272,17 @@ Android/iOS-first SDK with immutable values, TTL-preserving Graph results,
 CRUD, scans, search, typed traversal, degree ranking, and explicit status.
 Its transport owns secure endpoints, token providers, deadlines, cancellation,
 bounded retry, typed failures, and auth-exempt Health probing. Published
-**0.5.0** includes opt-in receipts and targeted contribution Delete. Start with
+**0.5.1** includes opt-in receipts and targeted contribution Delete. Start with
 the [SDK guide and maintained Flutter example](sdks/dart/README.md).
 
 [`lantern_client_offline`](https://pub.dev/packages/lantern_client_offline) is
 an experimental, opt-in Repository layer for cached snapshots, pending
 overlays, and foreground replay. Published **0.5.0** adds targeted contribution
 Delete to receipt-backed conditional Vertex Put, exact Vertex/Edge Delete,
-and explicit-ID Edge Add. It injects a transactional store, keeps credentials
+and explicit-ID Edge Add. Published
+[**0.6.0**](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/offline/v0.6.0)
+adds the common bound data client and automatic foreground synchronization with
+hosted parent 0.5.1. It injects a transactional store, keeps credentials
 application-owned, respects TTL, and reconciles possibly dispatched writes
 status-first. See the [offline guide](sdks/dart/offline/README.md) for the
 qualified release contract. The in-memory reference store is test
