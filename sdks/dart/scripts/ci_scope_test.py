@@ -257,6 +257,19 @@ class ScopeTest(unittest.TestCase):
         unknown = ci_scope.validation_scope.full("classification unavailable: ValueError")
         self.assertEqual(ci_scope.selected_jobs({"go.sum": "M"}, unknown)[0], ci_scope.JOBS)
 
+    def test_example_lock_preflight_precedes_all_consumers(self):
+        workflow = (Path(__file__).resolve().parents[3] / ci_scope.DART_WORKFLOW).read_text()
+        changes = workflow.split("  changes:\n", 1)[1].split("  documentation:\n", 1)[0]
+        condition = "if: steps.scope.outputs.example_lock == 'true'"
+        setup, resolve = changes.split("      - name: Check frozen example dependencies", 1)
+        self.assertIn(condition, setup.split("      - name: Set up Flutter for example", 1)[1])
+        self.assertIn(condition, resolve.split("      - name:", 1)[0])
+        self.assertIn("working-directory: sdks/dart/example\n        run: flutter pub get --enforce-lockfile", resolve)
+        for name, flag in (("android", "mobile"), ("ios", "mobile"), ("offline-sqlite", "sqlite")):
+            consumer = workflow.split(f"  {name}:\n", 1)[1].split("    steps:\n", 1)[0]
+            self.assertIn("    needs: changes\n", consumer)
+            self.assertEqual(release_condition(name), f"needs.changes.outputs.{flag} == 'true'")
+
     def test_documentation_gate_checks_actual_results_and_classification_failure(self):
         workflow = Path(__file__).resolve().parents[3] / '.github/workflows/dart-sdk.yml'
         gate = workflow.read_text().split('  gate:\n')[1].split('  release-preflight:\n')[0]
@@ -325,7 +338,16 @@ class ScopeTest(unittest.TestCase):
                                                        capture_output=True).returncode, 0)
 
     def test_event_routing_manual_tag_evidence_and_unavailable_base(self):
+        example = dict.fromkeys(ci_scope.EXAMPLE_DEPENDENCIES, "M")
+        semantic = dict.fromkeys(example, "package-dependency")
+        consumers = {"mobile", "sqlite", "full"}
         for event, ref, ranges, paths, evidence, expected, profile in (
+            ("pull_request", "refs/pull/1/merge", ("a", "b"), example, False,
+             consumers | {"example_lock"}, "unit-contracts"),
+            ("push", "refs/heads/main", ("a", "b"), {**example, "README.md": "M"}, False,
+             consumers | {"example_lock"}, "unit-contracts"),
+            ("push", "refs/heads/main", ("a", "b"), {**example, "sdks/dart/example/lib/view.dart": "M"},
+             False, consumers, "unit-contracts"),
             ("workflow_dispatch", "refs/heads/main", None, {}, False, ci_scope.JOBS, "unit-contracts"),
             ("push", "refs/tags/sdks/dart/offline/v0.6.0", None, {}, False, ci_scope.JOBS, "full"),
             ("pull_request", "refs/pull/1/merge", ("a", "b"),
@@ -337,10 +359,12 @@ class ScopeTest(unittest.TestCase):
                 with patch.dict(os.environ, GITHUB_REF=ref, GITHUB_EVENT_NAME=event,
                                 GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(Path(directory) / "summary")), \
                      patch.object(ci_scope.ci_docs, "change_range", return_value=ranges), \
-                     patch.object(ci_scope.evidence_only_pr, "changed_files", return_value=paths):
+                     patch.object(ci_scope.evidence_only_pr, "changed_files", return_value=paths), \
+                     patch.object(ci_scope.validation_scope, "classify_revisions",
+                                  return_value=ci_scope.validation_scope.affected(paths, semantic)):
                     ci_scope.main()
                 flags = dict(line.split("=") for line in output.read_text().splitlines())
-                self.assertEqual({k for k in ci_scope.JOBS if flags[k] == "true"}, expected)
+                self.assertEqual({k for k in ci_scope.JOBS | {"example_lock"} if flags[k] == "true"}, expected)
                 self.assertEqual(flags["resource_profile"], profile)
                 self.assertEqual(flags["evidence_only"], str(evidence).lower())
 

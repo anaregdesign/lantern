@@ -145,6 +145,57 @@ class DependencyRoutingTest(unittest.TestCase):
         unknown = validation_scope.classify_revisions(self.root, "missing-revision", "HEAD")
         self.assertTrue(unknown["full"] and unknown["rust_required"] and unknown["functional_required"])
 
+    def test_2238_2239_example_dependency_updates_skip_sdk4_but_mixed_changes_select_it(self):
+        manifest = "sdks/dart/example/pubspec.yaml"
+        lock = "sdks/dart/example/pubspec.lock"
+        for dependency, section, old_constraint, new_constraint, old_version, new_version in (
+            ("sqflite_common_ffi", "dev_dependencies", "^2.4.0", "^2.4.7", "2.4.3", "2.4.7"),
+            ("crypto", "dependencies", "3.0.7", "3.0.8", "3.0.7", "3.0.8"),
+        ):
+            with self.subTest(dependency=dependency):
+                self.write(manifest, f"{section}:\n  {dependency}: {old_constraint}\n")
+                self.write(lock, f'packages:\n  {dependency}:\n    version: "{old_version}"\n')
+                self.base = self.commit()
+                self.write(manifest, f"{section}:\n  {dependency}: {new_constraint}\n")
+                self.write(lock, f'packages:\n  {dependency}:\n    version: "{new_version}"\n')
+                result = self.select()
+                self.assertEqual(result["semantic"], dict.fromkeys((manifest, lock), "package-dependency"))
+                self.assertEqual(result["families"], ["example"])
+                self.assertFalse(result["functional_required"])
+
+        # Mix the same dependency diff with each separate wire consumer.
+        dependency_head = self.git("rev-parse", "HEAD")
+        for path, required in (
+            ("sdks/dart/lib/client.dart", True),
+            ("sdks/dart/integration_test/current_security_test.dart", True),
+            ("sdks/dart/integration_test/scoped_changes_test.dart", True),
+            ("admin/app/lib/client/usecase/security/security-management.ts", True),
+            ("admin/app/lib/client/usecase/security/security-draft-recovery.ts", True),
+            ("admin/app/lib/client/usecase/security/security-management.test.ts", False),
+        ):
+            with self.subTest(path=path):
+                self.git("reset", "--hard", dependency_head)
+                self.write(path, "// change\n")
+                self.assertEqual(self.select()["functional_required"], required)
+
+    def test_only_locks_in_sdk4_working_directories_select_authority(self):
+        for path, required in (
+            ("sdks/dart/pubspec.lock", True),
+            ("sdks/node/bun.lock", True),
+            ("sdks/rust/Cargo.lock", True),
+            ("admin/bun.lock", True),
+            ("sdks/dart/offline/pubspec.lock", False),
+            ("sdks/dart/offline/tool/paired_source.pubspec.lock", False),
+            ("sdks/dart/offline_sqlite/pubspec.lock", False),
+        ):
+            with self.subTest(path=path):
+                self.write(path, "previous resolution\n")
+                self.base = self.commit()
+                self.write(path, "updated resolution\n")
+                result = self.select()
+                self.assertEqual(result["semantic"], {path: "package-dependency"})
+                self.assertEqual(result["functional_required"], required)
+
     def test_package_lock_and_manifest_belong_to_package_toolchain_is_broad(self):
         self.write("admin/bun.lock", "lock before")
         self.write("admin/package.json", '{"dependencies":{"example":"1.0"},"packageManager":"bun@1"}')
@@ -152,7 +203,7 @@ class DependencyRoutingTest(unittest.TestCase):
         self.write("admin/bun.lock", "lock after")
         self.write("admin/package.json", '{"dependencies":{"example":"1.1"},"packageManager":"bun@1"}')
         result = self.select()
-        self.assertTrue(result["admin_required"])
+        self.assertTrue(result["admin_required"] and result["functional_required"])
         self.assertFalse(result["go_required"] or result["windows_required"] or result["rust_required"])
         self.write("admin/package.json", '{"dependencies":{"example":"1.1"},"packageManager":"bun@2"}')
         self.assertTrue(self.select()["full"])

@@ -19,8 +19,22 @@ The [development-flow Issue](https://github.com/anaregdesign/lantern/issues/2236
 records historical PR and release baselines. Compare local elapsed time, time to
 required PR checks, sum of completed job durations and unrelated native jobs.
 Keep queue time, overlapping jobs and release approval/device waits separate.
-The first comparable PR and next Dart release can be recorded from existing
-Actions and registry timestamps without launching a comparison campaign.
+The first two Flutter example dependency PRs after #2237 exposed a repeated
+lockfile failure. The four required checks passed while Dart correctly rejected
+each update. Times below are from the first Actions attempt. Runner time sums
+started jobs across workflows and includes jobs that ran concurrently.
+
+| Example dependency PR | PR opened to final required check | Total runner time | Four-SDK authority jobs | Android, iOS and SQLite jobs |
+| --- | ---: | ---: | ---: | ---: |
+| [#2238](https://github.com/anaregdesign/lantern/pull/2238) | 11m 56s | 30.03 min | 8m 21s | 19m 27s |
+| [#2239](https://github.com/anaregdesign/lantern/pull/2239) | 10m 47s | 35.40 min | 9m 22s | 23m 44s |
+
+For an ordinary example-only dependency update, Dart now resolves the frozen
+example lockfile on Linux before starting Android, iOS or SQLite. Successful
+updates still run all three consumers. The four-SDK authority jobs resolve the
+parent Dart package with `--no-example` and skip example-only dependencies.
+Measure actual runner savings on a subsequent comparable PR. The next Dart
+release can be measured using existing Actions and registry timestamps.
 
 ## Claims, inputs and invalidation — #1974
 

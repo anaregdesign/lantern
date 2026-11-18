@@ -12,6 +12,36 @@ from windows_native import GO_PACKAGES, GO_TESTS, RUST_TESTS, require_go, requir
 
 
 class ValidationScopeTest(unittest.TestCase):
+    def test_single_raw_diff_preserves_paths_and_regular_modes(self):
+        raw = (b":000000 100755 0000000 abc1234 A\0cli/added\tfile.go\0"
+               b":100644 100644 abc1234 def5678 M\0cli/line\nbreak.go\0"
+               b":100755 100755 abc1234 def5678 M\0cli/script\0"
+               b":100755 000000 abc1234 0000000 D\0cli/old name.go\0")
+        with patch.object(scope.subprocess, "check_output", return_value=raw) as git:
+            self.assertEqual(scope.changed(Path("."), "base", "head"), {
+                "cli/added\tfile.go": "A", "cli/line\nbreak.go": "M",
+                "cli/script": "M", "cli/old name.go": "D",
+            })
+            git.assert_called_once_with(
+                ["git", "diff", "--raw", "--no-renames", "-z", "base", "head", "--"], cwd=Path("."))
+        with patch.object(scope.subprocess, "check_output", return_value=b""):
+            self.assertEqual(scope.changed(Path("."), "base"), {})
+
+    def test_unsafe_modes_and_malformed_records_take_the_broad_path(self):
+        regular = b":100644 100644 abc1234 def5678 M\0cli/file.go\0"
+        for raw in (
+            b":000000 120000 0000000 abc1234 A\0symlink\0",
+            b":160000 000000 abc1234 0000000 D\0submodule\0",
+            b":100644 100755 abc1234 abc1234 M\0script\0",
+            b":100644 120000 abc1234 def5678 T\0replaced\0",
+            b":100644 100644 abc1234 def5678 R100\0old\0new\0",
+            b":100644 100644 abc1234 def5678 A\0file\0",
+            regular[:-1], regular.split(b"\0")[0] + b"\0", regular + regular,
+            regular.replace(b"cli/file.go", b""), regular.replace(b"cli/file.go", b"cli/\xff.go"),
+        ):
+            with self.subTest(raw=raw), patch.object(scope.subprocess, "check_output", return_value=raw):
+                self.assertTrue(scope.classify_revisions(Path("."), "base", "head")["full"])
+
     def names(self, path):
         selection = scope.affected({path: "M"})
         return {s.name for s in affected_steps(steps(Path("/tmp/evidence")), selection)}
