@@ -36,12 +36,16 @@ class ProseTest(unittest.TestCase):
         self.commit()
         self.base = self.git("rev-parse", "HEAD")
         self.git("update-ref", "refs/remotes/origin/main", self.base)
-        self.session = gate.Session(self.root, Path(self.temp.name) / "evidence")
-        self.session.env.pop("GITHUB_ACTIONS", None)
+        self.session = self.local_session("evidence")
         self.session.context = lambda: "fixture-context"
         self.session.plan = (Step("fixture-full", ".", (sys.executable, "-c", "print('full fixture')")),)
         self.write("README.md", "Clear explanation with `stable` literal.\n\n```sh\ngo test ./...\n```\n")
         self.commit()
+
+    def local_session(self, evidence):
+        session = gate.Session(self.root, Path(self.temp.name) / evidence)
+        session.env.pop("GITHUB_ACTIONS", None)
+        return session
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, text=True, stderr=subprocess.DEVNULL).strip()
@@ -164,7 +168,7 @@ class ProseTest(unittest.TestCase):
                 self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "HEAD"))
                 self.write("README.md", after)
                 self.commit()
-                self.session = gate.Session(self.root, Path(self.temp.name) / ("html-" + str(hash(before))))
+                self.session = self.local_session("html-" + str(hash(before)))
                 with patch.object(sys, "argv", ["gate", str(self.root), str(self.session.evidence), "--prose-base", "origin/main"]), \
                      patch.object(gate, "Session", return_value=self.session), redirect_stdout(io.StringIO()) as output:
                     self.assertEqual(gate.main(), 0)

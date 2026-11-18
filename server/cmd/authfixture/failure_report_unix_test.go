@@ -10,16 +10,16 @@ import (
 )
 
 func TestFixtureReportDescriptorIsPrivateToSupervisor(t *testing.T) {
-	const role = "LANTERN_FIXTURE_REPORT_ROLE"
-	const expectedPath = "LANTERN_FIXTURE_TEST_REPORT"
+	const childRole = "authfixture-report-test-child"
+	const supervisorRole = "authfixture-report-test-supervisor"
 	binary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"-test.run=^TestFixtureReportDescriptorIsPrivateToSupervisor$"}
-	switch os.Getenv(role) {
-	case "child":
-		original, err := os.Stat(os.Getenv(expectedPath))
+	switch os.Args[0] {
+	case childRole:
+		original, err := os.Stat("report")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -27,14 +27,14 @@ func TestFixtureReportDescriptorIsPrivateToSupervisor(t *testing.T) {
 		if err == nil && os.SameFile(original, inherited) {
 			t.Fatal("supervised child inherited the failure descriptor")
 		}
-	case "supervisor":
+	case supervisorRole:
 		report, err := openFixtureFailureReport()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = report.Close() }()
 		child := exec.CommandContext(t.Context(), binary, args...)
-		child.Env = append(os.Environ(), role+"=child")
+		child.Args[0] = childRole
 		if output, err := child.CombinedOutput(); err != nil {
 			t.Fatalf("child descriptor check: %v: %s", err, output)
 		}
@@ -48,7 +48,8 @@ func TestFixtureReportDescriptorIsPrivateToSupervisor(t *testing.T) {
 		defer func() { _ = report.Close() }()
 		supervisor := exec.CommandContext(t.Context(), binary, args...)
 		supervisor.ExtraFiles = []*os.File{report}
-		supervisor.Env = append(os.Environ(), role+"=supervisor", expectedPath+"="+path)
+		supervisor.Args[0] = supervisorRole
+		supervisor.Dir = filepath.Dir(path)
 		if output, err := supervisor.CombinedOutput(); err != nil {
 			t.Fatalf("supervisor descriptor check: %v: %s", err, output)
 		}
