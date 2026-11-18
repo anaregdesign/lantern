@@ -1088,8 +1088,8 @@ func TestDartWorkflowGate(t *testing.T) {
 
 	for _, contract := range []string{
 		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
-		"stable `Gate` job",
-		"both decisions independently",
+		"A CLI-only Go dependency update skips Dart",
+		"The stable `Gate` checks each selected",
 		"separate production/device iOS",
 		"Only `launch_stall` or `attach_stall` may retry",
 		"full attempt 720 seconds",
