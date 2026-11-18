@@ -58,6 +58,19 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B sdks/dart/scripts/ci_scope.py
 
+      - name: Set up Flutter for example dependency changes
+        if: steps.scope.outputs.example_lock == 'true'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Check frozen example dependencies before native jobs
+        if: steps.scope.outputs.example_lock == 'true'
+        working-directory: sdks/dart/example
+        run: flutter pub get --enforce-lockfile
+
       - name: Check changed release tools with local fixtures
         if: steps.scope.outputs.release_host == 'true'
         run: python3 -B sdks/dart/scripts/release_host_checks.py --python-only

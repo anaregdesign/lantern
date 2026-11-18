@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 
 import ci_docs
@@ -18,6 +19,30 @@ GO_CONSUMERS = {
     "mcp": {"mcp", "."}, "server": {"server", "."}, ".": {"."},
 }
 LANGUAGES = {"node", "admin", "dart", "offline", "sqlite", "example", "rust"}
+# Frozen package installs in current-sdk4.yml. Its Dart tests run from the
+# parent with --no-example, and its Bun tests also import the Admin application.
+SDK4_PACKAGE_DIRS = {"admin", "sdks/node", "sdks/dart", "sdks/rust"}
+# Public native and retained scoped-wire tests in current_security_gate_test.go
+# and auth_test.go execute these Dart entry points and Admin runtime imports.
+SDK4_APP_INPUTS = {
+    "sdks/dart/integration_test/current_security_test.dart",
+    "sdks/dart/integration_test/scoped_changes_test.dart",
+    "admin/app/lib/client/infrastructure/api/add-recovery.ts",
+    "admin/app/lib/client/infrastructure/api/count-vertices-by-prefix.ts",
+    "admin/app/lib/client/infrastructure/api/error.ts",
+    "admin/app/lib/client/infrastructure/api/scan-vertices.ts",
+    "admin/app/lib/client/infrastructure/api/to-flat.ts",
+    "admin/app/lib/client/usecase/add-recovery/add-recovery.ts",
+    "admin/app/lib/client/usecase/browse-vertices/handlers.ts",
+    "admin/app/lib/client/usecase/browse-vertices/reducer.ts",
+    "admin/app/lib/client/usecase/browse-vertices/state.ts",
+    "admin/app/lib/client/usecase/connection/base-url.ts",
+    "admin/app/lib/client/usecase/current-change/current-change.ts",
+    "admin/app/lib/client/usecase/data-scope/scope-options.ts",
+    "admin/app/lib/client/usecase/security/security-change-recovery.ts",
+    "admin/app/lib/client/usecase/security/security-draft-recovery.ts",
+    "admin/app/lib/client/usecase/security/security-management.ts",
+}
 NATIVE_GO = ("core/privatefile/", "core/mutationlog/", "core/mutationreceipt/",
              "core/hlc/", "server/backup/", "server/provider/", "server/cmd/",
              "server/internal/security/", "server/internal/authn/",
@@ -206,19 +231,23 @@ def affected(changes, semantic=None, dependency_owners=()):
 
 
 def changed(root, base, head="HEAD"):
-    def git(*args):
-        return subprocess.check_output(["git", *args], cwd=root)
-    fields = git("diff", "--name-status", "--no-renames", "-z", base, head).decode().split("\0")
+    # Raw records include both tree modes, even when a path exists on only one side.
+    raw = subprocess.check_output(["git", "diff", "--raw", "--no-renames", "-z", base, head, "--"], cwd=root)
+    fields = raw.decode().split("\0")
     if fields.pop() != "" or len(fields) % 2:
         raise ValueError("invalid Git diff")
-    changes = dict(zip(fields[1::2], fields[0::2]))
-    for path, status in changes.items():
-        modes = set()
-        for revision in ([head] if status == "A" else [base] if status == "D" else [base, head]):
-            mode = git("ls-tree", revision, "--", path).split()[0]
-            modes.add(mode)
-            if mode not in {b"100644", b"100755"} or len(modes) > 1:
-                raise ValueError("nonregular input")
+    changes = {}
+    regular = {"100644", "100755"}
+    for header, path in zip(fields[::2], fields[1::2]):
+        match = re.fullmatch(r":([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([AMD])", header)
+        if not match or not path or path in changes:
+            raise ValueError("invalid Git diff")
+        before, after, status = match.groups()
+        if not ((status == "A" and before == "000000" and after in regular)
+                or (status == "D" and before in regular and after == "000000")
+                or (status == "M" and before == after and after in regular)):
+            raise ValueError("nonregular input")
+        changes[path] = status
     return changes
 
 
@@ -243,10 +272,10 @@ def hosted(result, changes):
     go = bool(result["go_modules"])
     fixture = "controlled-native-provider" in result["fixture_contracts"]
     wire_dependency = (bool(set(result.get("dependency_owners", ())) & {"sdks/go", "mcp"}) or
-                       any(p.startswith(("sdks/node/", "sdks/dart/", "sdks/rust/")) for p in semantic
-                           if semantic[p] == "package-dependency"))
+                       any(str(PurePosixPath(path).parent) in SDK4_PACKAGE_DIRS
+                           for path, kind in semantic.items() if kind == "package-dependency"))
     authority = (broad or backend or fixture or wire_dependency or ".github/workflows/current-sdk4.yml" in semantic
-                 or any(p.startswith(("sdks/go/", "sdks/node/src/", "sdks/rust/src/",
+                 or any(p in SDK4_APP_INPUTS or p.startswith(("sdks/go/", "sdks/node/src/", "sdks/rust/src/",
                                       "sdks/dart/lib/")) for p in production))
     languages = []
     if broad or go:
