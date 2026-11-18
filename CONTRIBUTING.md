@@ -175,63 +175,30 @@ OS, firewall, DNS, routing or clock configuration is changed.
 
 ## Before every `git push` — local quality gate
 
-Lantern is a pre-production beta. During edits run focused tests, resolve meaningful
-review findings, then freeze one coherent candidate. Before pushing, use fresh
-**affected local checks** against the fetched target main:
+During edits, run unit tests for the package you changed, for example
+`go test ./cli/...` for the CLI. Before pushing a clean committed candidate,
+fetch main and run the affected unit tests:
 
 ```sh
-python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new --affected-base origin/main
+git fetch origin main
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new
 ```
 
-The small [path/dependency map](.github/scripts/validation_scope.py) selects module
-owners and consumers. Mixed changes union obligations; unknown paths, unusable
-bases, policy/configuration/dependency changes and unsupported input types select
-the complete gate. Go source selects its module DAG and root integration; Node
-feeds Admin, Dart parent feeds Offline/SQLite/example, and native file/process/TLS
-inputs select their owning checks. Selected steps execute freshly; omitted steps
-are reported as **NOT_SELECTED**, never carried or passed. The affected mode
-accepts no prior receipts and does not require the carry session's toolchain
-fingerprinting. Its results describe the frozen local checkout, not hosted or
-release qualification. Use the existing explicit [pure-prose path](#local-prose-eligibility)
-for eligible explanation-only edits.
+The default base is `origin/main`; `--affected-base origin/main` is equivalent.
+The [selector](.github/scripts/validation_scope.py) and
+[command plan](.github/scripts/local_gate_plan.py) identify package owners,
+dependencies and test tooling. A CLI-only change uses Go. A release status edit
+checks text and new local links. Unknown inputs broaden the unit suites locally and
+select broad CI. Results record the selected commands and elapsed time. Package
+installation, native fixtures and integration tests belong to their actual consumers.
 
-The finite `HARNESS_INPUTS` table in that same map selects actual consumers
-for modified existing benchmark time-profile readers, root binary verifiers and
-the shared Git test helper (#1975). Their paired/consumer Python suites, actual
-owned-shell contracts and pinned-Go raw/effective environment check run through
-`harness_contracts.py`; missing tools, skipped or empty selected tests fail.
-Mixed product edits retain their module/native obligations. New/deleted tools,
-workflows, classifier/policy code, unmapped executable fixtures, protocol/scenario/resource
-configuration and unknown paths remain conservative. A focused reader check is
-not permission to reuse a measurement: apply the [claim/input/invalidation
-map](docs/ci-inventory.md#claims-inputs-and-invalidation--1974), preserve original
-verdicts and execute fresh affected cases when their required inputs changed or
-are missing. Hosted functional, module, coverage and security checks remain
-independent; only the reviewed unrelated configured-source/native obligation is
-omitted for a known reader-only edit.
-
-The separate finite `PRODUCT_FIXTURE_INPUTS` table selects the existing
-controlled-native provider controller/test, its four Go fixture owners, the
-test-only clock constructor pair and the production membership publisher.
-Only regular modified files use this closure; additions/deletions, unknown
-controllers and mixed policy/dependency changes retain full fallback. These
-are executable product inputs, never reader exemptions. A pure fixture change
-selects five local checks: its Python contracts, two tagged Go contracts and
-final diff/clean checks. It does not change upstream production dependencies.
-The production publisher or mixed ordinary Go edits retain their usual module
-closure; server/root changes therefore select sixteen checks, including normal
-publisher tests and dependency preparation. Selected native Windows Go/Rust
-coverage and configured-source integration stay required in either case.
-Affected-only contracts cover controller admission/cleanup, lease capture and
-clock/renewal behavior. Existing broad Python contracts cover the fixture once
-when docs also change. Full maximum-horizon transcript replay and exact-source linker
-checks remain in required PR/main CI; local capture checks select its bounded
-subtests. No provider, serving child or external time acquisition is enabled.
-Unrelated SDK docs, package dry-runs and distribution/performance matrices are
-NOT_SELECTED locally. Functional-validation, mandatory PR/main configured-source
-integration and final release/selected-environment qualifications are unchanged.
-Dependency lock matching uses actual lock filenames, so a `clock` or `block`
-Go source name does not become gate policy merely by containing `lock`.
+PR and main CI select builds, lint, module coverage, vulnerability checks, code
+generation, real-wire, security and platform jobs using changed inputs. Mixed
+changes select their combined consumers. A workflow change that consists only of
+a setup Action pin selects jobs that use that Action. Dependency changes affecting
+shared code, toolchains or unresolved consumers get broader coverage. Refer to
+the [CI inventory](docs/ci-inventory.md) for release checks. For a reproduction
+use the corresponding test directly; for complete local qualification pass `--full`.
 
 Before either local mode starts its selected commands, a bounded passive preflight
 checks selected executable paths and existing authoritative tool pins, including
@@ -249,7 +216,7 @@ must retain their owned bounded lifecycle; do not disable host idle controls or
 adopt receipts from an earlier boot. Platforms without exposed mount flags report
 that limitation rather than claiming executable-scratch qualification.
 
-The complete 79-step plan remains available by omitting `--affected-base`.
+The complete 79-step plan is available with `--full`.
 It runs bounded harness contracts before dependency setup and product work.
 The Go workflow requires early real-tool contracts for known harness changes,
 generation and full/unknown scope, before dependent product jobs. Unrelated
@@ -284,7 +251,7 @@ custody, exact-source pre-tag checks and chosen-environment qualification remain
 mandatory. Measurement-only controls are absent from the normal production
 binary; OIDC profiling restrictions are unchanged.
 
-Complete frozen Bun dependency installation in Node and Admin before Go walks
+During full qualification complete frozen Bun dependency installation in Node and Admin before Go walks
 the root workspace. Installation can mutate dependency directories containing
 Go files; those operations must not run concurrently (#1646). Independent tests
 may run in parallel after installation completes.
@@ -295,8 +262,8 @@ incremental tools reuse binaries from the previous source (#1648). Bind results
 to the candidate tree, check generation/content drift, and verify that explicitly
 selected wire tests actually ran; an empty selection is not acceptance.
 
-Run from the repo root; this matches the required CI checks (Build & Test, Lint,
-Proto (buf), govulncheck):
+The explicit full plan runs the commands below from the repository root. For an
+ordinary push, use the affected-unit command above.
 
 ```bash
 gofmt -l .                       # must print nothing (covers every Go module)
@@ -371,17 +338,16 @@ truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirro
 decision and also runs the package at its declared minimum Dart floor. The workflow
 routes backend/search-only changes through the current-Dart unit and real-wire gates.
 The [Dart resource profile contract](sdks/dart/offline/docs/resource-gates.md)
-keeps child correctness, retention, watchdog, permit and cleanup checks on parent
-tag pushes while separating only pure latency/RSS envelopes. Source checks and
-child tags retain the default full profile; diagnostic results never qualify it.
+keeps short child correctness, retention, permit, watchdog and cleanup assertions in
+affected CI. The owning release runs the full performance suite once; manual runs
+remain available for diagnostics.
 
-The separately tested `full` scope adds minimum Dart and package-quality checks for
-Dart SDK, proto, codegen/toolchain, workflow, release-tag and root Go dependency
-changes. The `mobile` scope requires Android and iOS for Dart/Flutter source
-and fixtures, proto/codegen and workflow inputs, release tags, and Go
-language/toolchain directive changes; ordinary Go dependency
-changes skip native jobs. Ordinary prose-only changes skip package and native jobs. The stable `Gate` job checks
-both decisions independently. The experimental
+The Dart selector routes package tests, archive rules and external Action pins
+to the jobs that consume them. A CLI-only Go dependency update skips Dart.
+A verified `setup-dart` pin runs the Dart jobs using that Action. Flutter source,
+mobile fixtures, proto/codegen, unclassified policy changes and release tags
+select the affected platform jobs. The stable `Gate` checks each selected
+job's outcome. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
 Dart, including locked paired-source resolution, fresh-process canonical snapshot
 tests and real-server committed-response-loss replay. These checks and the isolated parent archive precede
@@ -409,9 +375,9 @@ unpacks the resulting tarball outside the checkout, resolves every included
 `pubspec.yaml` with an isolated cache, then runs analysis, tests, and `pana`
 against the unpacked artifact.
 
-For exact-main source qualification after a change misses the Dart or Node SDK
-path filters, dispatch `dart-sdk.yml` and `node-sdk.yml` on `main` and record
-each run ID and `headSha`; rerunning an older run does not test the final SHA.
+Use normal main CI for affected source qualification. When a release specifically
+requires wider manual SDK qualification, dispatch the owning SDK workflow on the
+frozen main revision and record its run ID and `headSha`.
 Manual Dart dispatch selects the full package and Android/iOS matrix, and Node
 still tests both supported runtimes. SDK publication and GitHub Releases require
 release-tag **push** events and their existing test/preflight gates; manual
@@ -482,68 +448,39 @@ artifact when logs are noisy.
 
 ## Documentation-only CI routing
 
-The Go workflow stays enabled on every PR/main push so required contexts never
-remain pending because of a workflow path filter. Its shared
-[prose classifier](.github/scripts/ci_docs.py) accepts root instructions,
-Markdown under `docs/`, and Markdown directly in known module/documentation
-directories. `Build & Test` validates text/whitespace and runs the inexpensive
-CI/release-contract tests; Lint, Proto, vulnerability, Windows and Fuzz jobs
-skip before a runner starts. A failed classifier still fails `Build & Test`.
-
-Dart, Node, Rust, Admin and CodeQL use conservative ordered
-path exclusions to avoid starting for ordinary README/CHANGELOG changes.
-Dart instruction/process-doc changes use a cheap contract check and `Gate`.
-Mixed source changes, fixtures, unknown paths, workflow/config changes,
-and generated `docs/env.md` retain their owning checks. The four canonical
-Dart/Rust design and SDK contract Markdown files use lightweight text, newly
-introduced local-link, SDK toolchain-document and release-contract checks.
-They are design prose, not compiled or embedded inputs. Rust and CodeQL do
-not start for those documents alone; Dart uses its documentation job and Gate.
-Markdown under source/fixture directories and unknown paths remains executable
-input for routing purposes, including native Dart fixture checks. Adding design
-prose to backend changes does not add a mobile matrix. Tags ignore path filters;
-release qualification, manual full sweeps and weekly CodeQL analysis are unchanged. The exact eight-file
-physical-evidence PR validation remains separate from prose classification.
-
-GitHub-managed Code Quality has no path-filter setting. Its automatic analysis
-is disabled for this repository; checked-in CodeQL security analysis and the
-language-specific Lint/static-analysis gates remain enabled. The repository's
-required contexts stay `Build & Test`, `Lint`, `Proto (buf)` and `govulncheck`;
-job-level skips satisfy GitHub's required-check contract. This hosted routing
-does not itself select local eligibility; the explicit local path below is narrower.
+PR/main workflows classify the diff before starting expensive jobs. The Go
+workflow reports Build & Test, Lint, Proto (buf) and govulncheck even for
+prose. Its [documentation check](.github/scripts/ci_docs.py) validates text,
+whitespace and new relative links. CI also exercises the applicable documentation
+contracts. Heavy package, code generation, platform and security steps skip
+when their inputs are absent. Mixed changes select their combined consumers.
+Workflow files, generated inputs, fixtures and executable policy keep their
+owning checks. Weekly CodeQL and exact tag qualification keep their own scope.
 
 The historical Connect/gRPC transport comparison is manual-only. Production
 Dart SDK, offline/SQLite and native Android/iOS conformance remain in
 `dart-sdk.yml`; dispatch the comparison when evaluating a fallback or changing
 the probe itself. Rust, Node and Admin cancel only superseded PR runs. Main
 qualification and release runs remain independent. See the
-[CI inventory and reduction rationale](docs/ci-inventory.md). These reductions
-add no local test obligation; the existing full local gate is unchanged.
+[CI inventory and reduction rationale](docs/ci-inventory.md).
 
 ## Local prose eligibility
 
-After fetching the target main and reviewing the complete diff, a clean committed
-local feature-branch candidate may request fresh prose checks:
+The default affected runner checks text, whitespace and new relative links for
+recognized documentation, including status-only release closeout. To request
+the additional document-contract suites for a clean README/CHANGELOG edit, use
+the strict prose mode:
 
 ```sh
 git fetch origin main
 python3 -B .github/scripts/local_gate_session.py "$PWD" ../prose-evidence-new --prose-base origin/main
 ```
 
-The selector reuses `ci_docs.py` and initially accepts **only modifications to
-existing README/CHANGELOG files in its ordinary module directories, plus root
-README**. It requires origin/main to match the requested base and be an ancestor
-of HEAD, and checks the entire base/head diff without rename inference. Empty or
-mixed changes, adds/deletes, unknown paths, missing/altered working inputs,
-nonregular/non-UTF-8 text and classifier errors retain full qualification.
-Changes to code examples or inline literals also retain full checks. A changed
-file containing `<` at either revision retains full checks, including HTML block
-bodies, ambiguous or unclosed markup and autolinks.
-All `docs/` contracts, instructions, workflows, fixtures, generated outputs,
-deployment/benchmark guidance, generators, locks, configuration and toolchain
-inputs remain outside this eligibility. Even in README, review must confirm that
-the change is explanation rather than a new runtime, platform, security, SDK or
-release requirement; use the full gate when that meaning is uncertain.
+The strict mode accepts edits to existing README/CHANGELOG files in its listed
+module directories and the root README. It checks the complete diff against the
+fetched main ancestor. Mixed changes, added/deleted files, code examples,
+inline literals and markup fall back to affected development selection. A dirty
+checkout or failed validation cannot produce a passing report.
 
 Eligible candidates execute text/whitespace and new local link-target checks plus
 the existing Python CI, Dart, offline and Rust document-contract suites. External
@@ -556,9 +493,7 @@ hashes, and writes a separate `local-prose-pre-push` base/head/tree verdict with
 fresh executed counts and **zero carried** results. It never establishes a carry
 baseline. It needs no language dependency installation or native host slot.
 
-If eligibility is refused, the same invocation runs the ordinary full gate;
-acquire the shared host slot and pinned tools before invoking an uncertain
-candidate. It is one-shot and cannot combine with `--session`. CI, main/detached
+If strict prose eligibility is refused, the same invocation runs affected development tests. It is one-shot and cannot combine with `--session`. CI, main/detached
 or tagged checkouts cannot select it. Hosted synthetic/main checks and independent
 release/archive, provider/device and performance qualifications are unchanged.
 
@@ -874,13 +809,13 @@ original failures; an empty selection is not acceptance.
 
 ## Coverage floor (ratchet)
 
-The `Build & Test` job collects vet, build and race/coverage test outcomes for all
-six modules before returning a blocking aggregate exit. A root/module failure
+The `Build & Test` job collects vet, build and race/coverage test outcomes for the
+selected modules before returning a blocking aggregate exit. A root/module failure
 does not hide later module results. Two independent module workers run vet/build/test sequentially within each module, with separate logs/profiles. The existing single job avoids matrix setup
 and new aggregation/check names. Its JSON outcomes and partial profiles survive
 failure in the coverage artifact. Coverage merging and floors still run after a
-collector failure; missing profiles or any lowered coverage fail the job.
-It measures `-covermode=atomic`, merges six profiles with `gocovmerge`, and enforces
+collector failure; a missing selected profile or coverage below its floor fails the job.
+It measures `-covermode=atomic`, merges the selected profiles with `gocovmerge`, and enforces
 the unchanged per-module floors in `Enforce coverage floors`. No failed module is
 converted to success.
 

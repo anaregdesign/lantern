@@ -25,9 +25,17 @@ jobs:
     outputs:
       evidence_only: ${{ steps.evidence.outputs.evidence_only }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
-      configured_source_integration_required: ${{ steps.qualification.outputs.configured_source_integration_required }}
+      configured_source_integration_required: ${{ steps.native.outputs.functional_required == 'true' && steps.qualification.outputs.configured_source_integration_required == 'true' }}
       windows_required: ${{ steps.native.outputs.windows_required }}
       windows_rust_required: ${{ steps.native.outputs.windows_rust_required }}
+      functional_required: ${{ steps.native.outputs.functional_required }}
+      go_required: ${{ steps.native.outputs.go_required }}
+      go_modules: ${{ steps.native.outputs.go_modules }}
+      verify_dependencies: ${{ steps.native.outputs.verify_dependencies }}
+      generation_required: ${{ steps.native.outputs.generation_required }}
+      server_checks_required: ${{ steps.native.outputs.server_checks_required }}
+      fuzz_required: ${{ steps.native.outputs.fuzz_required }}
+      deployment_required: ${{ steps.native.outputs.deployment_required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,7 +56,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B .github/scripts/current_qualification_scope.py
-      - name: Select native Windows coverage
+      - name: Select affected components and native Windows coverage
         id: native
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -83,7 +91,7 @@ jobs:
 
   functional-validation:
     needs: scope
-    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.functional_required == 'true'
     uses: ./.github/workflows/current-sdk4.yml
     with:
       proof_kind: functional-validation
@@ -100,6 +108,8 @@ jobs:
     needs: scope
     if: always()
     runs-on: ubuntu-latest
+    env:
+      GO_MODULES: ${{ needs.scope.outputs.go_modules }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -126,14 +136,25 @@ jobs:
 
       - name: Set up Go
         id: toolchain
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && (needs.scope.outputs.go_required == 'true' || needs.scope.outputs.server_checks_required == 'true')
         uses: actions/setup-go@v7
         with:
           go-version: '1.27.4'
           check-latest: true
 
+      - name: Verify affected module dependencies and checksums
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.verify_dependencies == 'true'
+        env:
+          GOFLAGS: -mod=readonly
+        run: |
+          set -eu
+          for mod in $GO_MODULES; do
+            (cd "$mod" && GOWORK=off go mod tidy -diff && GOWORK=off go mod verify && go list -deps -test ./... >/dev/null)
+          done
+          git diff --exit-code -- go.work.sum '**/go.sum' go.sum '**/go.mod' go.mod
+
       - name: Verify formatting
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.go_required == 'true'
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -144,17 +165,17 @@ jobs:
 
       # Independent of functional-validation/configured-source-integration: collect every phase/module even after a failure.
       # The final required Build & Test aggregates this blocking result.
-      - name: Vet, build and test (all modules)
+      - name: Vet, build and test affected Go modules
         id: modules
-        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.go_required == 'true' }}
         run: python3 -B .github/scripts/go_modules.py
 
       - name: Verify tagged heap observer and normal binary exclusion
-        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.server_checks_required == 'true' }}
         run: python3 -B .github/scripts/verify_bench_heap.py
 
       - name: Controlled Google profile input and lifecycle contracts
-        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.server_checks_required == 'true' }}
         working-directory: server
         env:
           CONTROLLED_GOOGLE_EXPECTED_REVISION: ${{ github.sha }}
@@ -165,7 +186,7 @@ jobs:
           go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledGoogleRevision=$CONTROLLED_GOOGLE_EXPECTED_REVISION" -run '^TestControlledGoogle(BuildRevision|Counters|ExactDefaultGenesis|CaptureFailureFinalizes|InputFailsBeforeComposition|ReadinessContracts)$' -count=1 ./cmd
 
       - name: Controlled real-native provider input and lifecycle contracts
-        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.server_checks_required == 'true' }}
         working-directory: server
         env:
           CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION: ${{ github.sha }}
@@ -176,17 +197,17 @@ jobs:
           go test -tags=lantern_test_time -ldflags "-X github.com/anaregdesign/lantern/server/cmd.controlledNativeProviderRevision=$CONTROLLED_NATIVE_PROVIDER_EXPECTED_REVISION" -run '^(TestControlledNativeProvider(BuildRevision|Contracts|InputBoundaries|CohortContracts|CaptureFailureFinalizes|WindowContracts|OwnerWindowContracts|SignedRenewalTranscript|WholeOwnerCapacity|PublisherRenewal|NativeBoundsLeaseVerification|NativeLeaseMonitor|OwnerStopAcknowledgement|MonitorUsesOwnedNativeBounds)|TestControlledNativeWindowBounds(RefusesUnavailableWithoutHostFallback|IndependentOfManagementReadiness)|TestInheritedProfileControlsNeutralized)$' -count=1 ./cmd ./provider
 
       - name: Controlled membership publisher fixture clock contracts
-        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.server_checks_required == 'true' }}
         working-directory: server
         # Pure injected-clock cases; no child, description, provider or time-source startup.
         run: go test -race -shuffle=on -tags=lantern_test_time -run '^TestControlledFixtureClock(OwnsAdmissionPublicationAndObservations|PreservesFiniteBudgetAndModes)$' -count=1 ./internal/membershippublisher
 
       - name: Native provider session wire fixture
-        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.server_checks_required == 'true' }}
         run: python3 -B .github/scripts/native_login_gate.py --evidence "$RUNNER_TEMP/native-login"
 
       - name: Upload native session fixture evidence
-        if: always() && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: always() && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.server_checks_required == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: native-login-fixture
@@ -198,7 +219,7 @@ jobs:
       # coverpkg=./... instruments only this module, including calls crossing
       # its package boundaries (e.g. generated Connect -> protobuf messages).
       # It does not instrument another workspace module or exclude generated code.
-      # Merge the six per-module coverage profiles into a single workspace-wide
+      # Merge the selected per-module coverage profiles into a single workspace-wide
       # profile. `go test -coverprofile` only sees one module's packages, so
       # merging is the only way to get a unified view across the workspace.
       # gocovmerge is the standard tool — see https://github.com/wadey/gocovmerge.
@@ -230,6 +251,15 @@ jobs:
           for entry in $floors; do
             slug=${entry%%:*}
             floor=${entry##*:}
+            case "$slug" in
+              root) selected_mod=. ;;
+              sdks-go) selected_mod=sdks/go ;;
+              *) selected_mod=$slug ;;
+            esac
+            case " $GO_MODULES " in
+              *" $selected_mod "*) ;;
+              *) continue ;;
+            esac
             prof="coverage/${slug}.out"
             if [ ! -f "$prof" ]; then
               echo "::error::coverage profile $prof is missing"
@@ -253,7 +283,7 @@ jobs:
       # failure that still produced partial profiles) -- it is the primary
       # debugging aid when the gate trips.
       - name: Upload coverage artifact
-        if: always() && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: always() && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.go_required == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage
@@ -264,7 +294,7 @@ jobs:
 
   build:
     name: Build & Test
-    needs: [scope, modules, functional-validation, configured-source-integration, receipt-backup-windows]
+    needs: [scope, modules, functional-validation, configured-source-integration, fuzz, native-deployment, receipt-backup-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -275,6 +305,11 @@ jobs:
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
           MODULE_RESULT: ${{ needs.modules.result }}
+          FUNCTIONAL_REQUIRED: ${{ needs.scope.outputs.functional_required }}
+          FUZZ_REQUIRED: ${{ needs.scope.outputs.fuzz_required }}
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+          DEPLOYMENT_REQUIRED: ${{ needs.scope.outputs.deployment_required }}
+          DEPLOYMENT_RESULT: ${{ needs.native-deployment.result }}
           FUNCTIONAL_VALIDATION_RESULT: ${{ needs.functional-validation.result }}
           CONFIGURED_SOURCE_INTEGRATION_RESULT: ${{ needs.configured-source-integration.result }}
           CONFIGURED_SOURCE_INTEGRATION_REQUIRED: ${{ needs.scope.outputs.configured_source_integration_required }}
@@ -284,12 +319,12 @@ jobs:
           EVIDENCE_ONLY: ${{ needs.scope.outputs.evidence_only }}
         run: python3 -B .github/scripts/current_qualification_result.py
       - uses: actions/download-artifact@v8
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: needs.functional-validation.result == 'success'
         with:
           artifact-ids: ${{ needs.functional-validation.outputs.artifact_id }}
           path: ${{ runner.temp }}/current-sdk4-functional-validation
       - name: Verify same-run functional-validation receipt
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: needs.functional-validation.result == 'success'
         env:
           FUNCTIONAL_VALIDATION_RECEIPT_SHA256: ${{ needs.functional-validation.outputs.receipt_sha256 }}
         run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind functional-validation --trusted-receipt-sha256 "$FUNCTIONAL_VALIDATION_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-functional-validation"
@@ -334,19 +369,22 @@ jobs:
   lint:
     name: Lint
     needs: scope
-    if: always() && needs.scope.result == 'success' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
       - name: Require change classification
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
         run: test "$SCOPE_RESULT" = success
       - uses: actions/setup-go@v7
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
         with:
           go-version: '1.27.4'
           check-latest: true
       - name: golangci-lint
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
         uses: golangci/golangci-lint-action@v9
         with:
           # Pin to a concrete release so a fresh golangci-lint can't silently
@@ -358,28 +396,34 @@ jobs:
   proto:
     name: Proto (buf)
     needs: scope
-    if: always() && needs.scope.result == 'success' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.generation_required == 'true'
       - name: Require change classification
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
         run: test "$SCOPE_RESULT" = success
       - uses: actions/setup-go@v7
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.generation_required == 'true'
         with:
           go-version: '1.27.4'
           check-latest: true
       - uses: bufbuild/buf-setup-action@v1
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.generation_required == 'true'
         with:
           # Match generate.go and Makefile; formatter output varies by version.
           version: '1.70.0'
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: buf format
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.generation_required == 'true'
         run: buf format -d --exit-code
       - name: buf lint
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.generation_required == 'true'
         run: buf lint
       - name: Generated code is up to date (wire + buf + envdoc)
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.generation_required == 'true'
         env:
           GOWORK: 'off'
         run: |
@@ -396,27 +440,33 @@ jobs:
   govulncheck:
     name: govulncheck
     needs: scope
-    if: always() && needs.scope.result == 'success' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
       - name: Require change classification
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
         run: test "$SCOPE_RESULT" = success
       - uses: actions/setup-go@v7
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
         with:
           go-version: '1.27.4'
           check-latest: true
       - name: Install govulncheck
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
         # v1.8.0 uses x/tools v0.50.0, which supports Go 1.27 and passes
         # analysis for all six workspace modules. The former v1.3.0 build
         # cannot parse Go 1.27 source, including standard-library code.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-      - name: Run govulncheck (all modules)
+      - name: Run govulncheck (affected modules)
+        env:
+          GO_MODULES: ${{ needs.scope.outputs.go_modules }}
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.go_required == 'true'
         run: |
           set -e
-          for mod in . core mcp pb sdks/go server; do
+          for mod in $GO_MODULES; do
             echo "::group::govulncheck ($mod)"
             (cd "$mod" && govulncheck ./...)
             echo "::endgroup::"
@@ -425,7 +475,7 @@ jobs:
   fuzz:
     name: Fuzz (smoke)
     needs: scope
-    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.fuzz_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -441,9 +491,11 @@ jobs:
       # testdata/fuzz/ and fails the job. Per-module + per-target because
       # `-fuzz` only accepts a single target in a single package. Refs #714.
       - name: Fuzz each target (per module)
+        env:
+          GO_MODULES: ${{ needs.scope.outputs.go_modules }}
         run: |
           set -e
-          for mod in . core mcp pb sdks/go server; do
+          for mod in $GO_MODULES; do
             (cd "$mod"
              # `go list ./...` is module-scoped: it never descends into a nested
              # module (core/, mcp/, pb/, sdks/go/, server/ each carry their own
@@ -472,7 +524,7 @@ jobs:
   native-deployment:
     name: Native deployment and private Secret files
     needs: scope
-    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.deployment_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

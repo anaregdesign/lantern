@@ -10,10 +10,15 @@ case "${1:-}" in
     peer_ports="${6:-}"
     umask 077
     mkdir -m 700 "$directory"
+    # Keep independent offsets for the supervisor and the failing caller.
+    # The Server never gets the report path or either descriptor.
+    exec 3>"$directory/failure-report" 4<"$directory/failure-report"
+    rm "$directory/failure-report"
     "$fixture_binary" -directory "$directory/trust" -public-ports "$public_ports" \
-      -peer-ports "$peer_ports" -receipt -serve "$binary" \
-      </dev/null > "$directory/metadata.json" 2> "$directory/supervisor.log" &
+      -peer-ports "$peer_ports" -receipt -serve "$binary" -failure-report-fd3 \
+      </dev/null > "$directory/metadata.json" 2> "$directory/supervisor.log" 4<&- &
     echo $! > "$directory/supervisor.pid"
+    exec 3>&-
     for _ in $(seq 1 75); do
       if [[ -s "$directory/metadata.json" ]]; then
         python3 - "$directory" <<'PY'
@@ -28,30 +33,23 @@ PY
       sleep 1
     done
     echo 'native receipt fixture failed certified readiness; inspect private diagnostics' >&2
-    # The complete private diagnostics may contain credentials. Export only
-    # exact fixed categories from the supervisor's bounded failure records.
-    python3 - "$directory/supervisor.log" <<'PYDIAGNOSTIC' || true
-import json,pathlib,sys
-stages={'configuration','generation','spawn','readiness','publication','exit','private_input'}
-logs={'unavailable','none','initialization','bind_address_in_use','server_exit','source_input_missing','authority_time'}
-try:
-    with pathlib.Path(sys.argv[1]).open('rb') as source:
-        raw=source.read(65536).decode('utf-8',errors='replace')
-except OSError:
-    raw=''
-    print('authfixture_diagnostics:unavailable',file=sys.stderr)
-for line in raw.splitlines():
-    if line.startswith('authfixture_failure:') and line[20:] in stages:
-        print(line,file=sys.stderr)
-    if line.startswith('authfixture_readiness:'):
-        try:
-            record=json.loads(line[22:])
-        except (ValueError,TypeError,RecursionError):
-            continue
-        category=record.get('server_log') if isinstance(record,dict) else None
-        if isinstance(category,str) and category in logs:
-            print('authfixture_server_log:'+category,file=sys.stderr)
-PYDIAGNOSTIC
+    # Only the supervisor's typed writer owns this channel. Publish complete
+    # records within the limit or a fixed diagnostic when capture is incomplete.
+    python3 -c '
+import json, sys
+raw = sys.stdin.buffer.read(16385)
+lines = raw.splitlines()
+stages = (b"configuration", b"generation", b"spawn", b"readiness", b"publication", b"exit", b"private_input")
+valid = (len(raw) <= 16384 and raw.endswith(b"\n") and len(lines) in (1, 2)
+         and lines[0] in {b"authfixture_failure:" + stage for stage in stages})
+if valid and len(lines) == 2:
+    prefix = b"authfixture_readiness:"
+    try:
+        valid = lines[1].startswith(prefix) and isinstance(json.loads(lines[1][len(prefix):]), dict)
+    except (ValueError, RecursionError, UnicodeError):
+        valid = False
+sys.stderr.buffer.write(raw if valid else b"authfixture_diagnostics:unavailable\n")
+' <&4 4<&-
     "$0" stop "$directory"
     exit 1
     ;;

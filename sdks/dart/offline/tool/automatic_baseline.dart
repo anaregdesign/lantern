@@ -155,7 +155,11 @@ Future<Map<String, Object?>> automaticBaseline({
     ready.add(vertexReady.future);
     await Future.wait(ready).timeout(const Duration(seconds: 5));
     final entitySamples = <int>[];
-    for (var i = 0; i < 32; i++) {
+    for (
+      var i = 0;
+      i < (profile == ResourceProfile.unitContracts ? 1 : 32);
+      i++
+    ) {
       final watch = Stopwatch()..start();
       final read = await data.getVertex(
         'v0',
@@ -174,7 +178,10 @@ Future<Map<String, Object?>> automaticBaseline({
     final queryPhase = Stopwatch()..start();
     // The approved phase has 32 total samples, drawn in fixed round-robin
     // order across the three families (11/11/10), not 32 per family.
-    for (var i = 0; i < 32; i++) {
+    final samples = profile == ResourceProfile.unitContracts
+        ? options.length
+        : 32;
+    for (var i = 0; i < samples; i++) {
       final family = i % options.length;
       final watch = Stopwatch()..start();
       final read = await data.illuminate(

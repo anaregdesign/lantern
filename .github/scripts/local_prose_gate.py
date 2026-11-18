@@ -134,7 +134,7 @@ def qualify(session, base):
     try:
         base, snapshot, changes = select(session, base)
     except Exception as error:
-        print(f"FULL REQUIRED: prose eligibility refused: {error}", flush=True)
+        print(f"Strict prose report unavailable: {error}", flush=True)
         return None
     head, tree, _ = snapshot
     # -B avoids writes; the fresh prefix also prevents reading stale local pyc.
@@ -180,6 +180,8 @@ def qualify(session, base):
 if __name__ == "__main__":
     if sys.argv[1] == "validate":
         validate(*sys.argv[2:])
+    elif sys.argv[1] == "documents":
+        ci_docs.validate(tuple(sys.argv[2:]), documents_only=True)
     elif sys.argv[1] == "tests" and tuple(sys.argv[2:]) in TEST_SUITES:
         suite = unittest.defaultTestLoader.discover(sys.argv[2], pattern=sys.argv[3])
         result = unittest.TextTestRunner(verbosity=2).run(suite)

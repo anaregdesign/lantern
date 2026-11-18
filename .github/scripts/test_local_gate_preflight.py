@@ -21,6 +21,22 @@ class PreflightTest(unittest.TestCase):
         bun = preflight.exact_pin(ROOT, ".github/workflows/node-sdk.yml", r"^\s+bun-version: (\d+\.\d+\.\d+)\s*$")
         self.assertIn('bun-version: ' + bun, (ROOT / ".github/workflows/current-sdk4.yml").read_text())
 
+    def test_document_plan_needs_no_compiler_or_compiler_scratch(self):
+        plan = [Step("docs-text-links", ".", ("python3", "-B", "validate.py")),
+                Step("final-clean", ".", ("git", "status"))]
+        with patch.object(preflight, "scratch_environment", side_effect=AssertionError("compiler scratch")), \
+                patch.object(preflight, "command", side_effect=AssertionError("compiler")), \
+                patch.object(preflight, "executable", side_effect=lambda name, env: name):
+            self.assertEqual(preflight.check(ROOT, {"GOTMPDIR": "/missing"}, plan)["tools"], [])
+
+    def test_rust_unit_plan_requires_only_its_compiler_and_package_manager(self):
+        with patch.object(preflight, "scratch_environment", return_value={}), \
+                patch.object(preflight, "executable", side_effect=lambda tool, env: "/selected/" + tool), \
+                patch.object(preflight, "command", return_value="test version") as inspect:
+            result = preflight.check(ROOT, {}, [Step("rust-test", "sdks/rust", ("cargo", "test"))])
+        self.assertEqual({tool["name"] for tool in result["tools"]}, {"rustc", "cargo"})
+        self.assertEqual(inspect.call_count, 2)
+
     def test_missing_ambiguous_and_changed_pin(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

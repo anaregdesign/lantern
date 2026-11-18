@@ -4,6 +4,7 @@ import unittest
 
 import verify_bench_heap as gate
 from local_gate_plan import affected_steps, steps
+import validation_scope
 
 
 class BenchHeapVerificationTest(unittest.TestCase):
@@ -83,9 +84,14 @@ class BenchHeapVerificationTest(unittest.TestCase):
         self.assertEqual(step.cwd, ".")
         self.assertEqual(step.command, ("python3", "-B", ".github/scripts/verify_bench_heap.py"))
         self.assertEqual(len(plan), 79)
-        for modules, selected in ((["server", "."], True), (["core", "."], False)):
-            scope = dict(full=False, families=[], go_modules=modules, generation=False)
-            self.assertEqual(step in affected_steps(plan, scope), selected)
+        for path, selected in (("server/benchheap/observe.go", True),
+                               ("server/cmd/bench_heap_disabled.go", True),
+                               (".github/scripts/verify_bench_heap.py", True),
+                               ("server/service/connect.go", False),
+                               ("core/search/index.go", False)):
+            with self.subTest(path=path):
+                scope = validation_scope.affected({path: "M"})
+                self.assertEqual(step in affected_steps(plan, scope), selected)
         root = Path(__file__).resolve().parents[1]
         for workflow in ("go.yml", "_verify.yml"):
             text = (root / "workflows" / workflow).read_text()

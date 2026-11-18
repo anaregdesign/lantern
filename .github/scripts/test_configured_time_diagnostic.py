@@ -81,7 +81,10 @@ class ConfiguredTimeDiagnosticTest(unittest.TestCase):
     def test_manual_diagnostic_keeps_ordinary_jobs_and_has_no_raw_artifact(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/rust-sdk.yml").read_text()
-        self.assertIn("if: ${{ !inputs.native_time_diagnostic }}", workflow)
+        ordinary = workflow.split("  test:\n", 1)[1].split("\n  native-time-diagnostic:", 1)[0]
+        self.assertIn("if: ${{ !inputs.native_time_diagnostic && needs.scope.outputs.rust_required == 'true' }}",
+                      ordinary)
+        self.assertIn("uses: ./.github/workflows/validation-scope.yml", workflow)
         job = workflow.split("  native-time-diagnostic:\n", 1)[1]
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.native_time_diagnostic", job)
         self.assertIn("timeout-minutes: 4", job)

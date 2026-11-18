@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import local_gate_session as gate
 import local_prose_gate as prose
-from local_gate_plan import Step
+from local_gate_plan import Step, steps
 from git_test_fixture import synchronous_git_maintenance
 
 
@@ -36,12 +36,16 @@ class ProseTest(unittest.TestCase):
         self.commit()
         self.base = self.git("rev-parse", "HEAD")
         self.git("update-ref", "refs/remotes/origin/main", self.base)
-        self.session = gate.Session(self.root, Path(self.temp.name) / "evidence")
-        self.session.env.pop("GITHUB_ACTIONS", None)
+        self.session = self.local_session("evidence")
         self.session.context = lambda: "fixture-context"
         self.session.plan = (Step("fixture-full", ".", (sys.executable, "-c", "print('full fixture')")),)
         self.write("README.md", "Clear explanation with `stable` literal.\n\n```sh\ngo test ./...\n```\n")
         self.commit()
+
+    def local_session(self, evidence):
+        session = gate.Session(self.root, Path(self.temp.name) / evidence)
+        session.env.pop("GITHUB_ACTIONS", None)
+        return session
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, text=True, stderr=subprocess.DEVNULL).strip()
@@ -58,6 +62,28 @@ class ProseTest(unittest.TestCase):
     def qualify(self):
         with redirect_stdout(io.StringIO()):
             return prose.qualify(self.session, "origin/main")
+
+    def test_offline_release_closeout_selects_only_document_checks_by_default(self):
+        # PR #2231 recorded the completed #2230 release in these five paths.
+        paths = ("AGENTS.md", "CONTRIBUTING.md", "README.md",
+                 "sdks/dart/example/offline-release-resume.md", "sdks/dart/offline/README.md")
+        for path in paths:
+            self.write(path, "Release pending.\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "HEAD"))
+        for path in paths:
+            self.write(path, "Release completed.\n")
+        self.write("README.md", "Release completed. See [guide](sdks/dart/example/offline-release-resume.md).\n")
+        self.commit()
+        self.session.plan = steps(self.session.evidence)
+        with patch.object(gate, "Session", return_value=self.session), \
+                patch.object(sys, "argv", ["gate", str(self.root), str(self.session.evidence)]), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(gate.main(), 0)
+        report = __import__("json").loads((self.session.evidence / "affected-manifest.json").read_bytes())
+        self.assertEqual([step["name"] for step in report["steps"]], ["docs-text-links", "final-diff", "final-clean"])
+        self.assertEqual(report["preflight"]["tools"], [])
+        self.assertFalse(report["scope"]["go_modules"])
 
     def test_fresh_prose_path_runs_all_suites_and_never_touches_go_or_carry(self):
         with patch.object(self.session, "context", side_effect=AssertionError("must not inspect Go")):
@@ -127,7 +153,7 @@ class ProseTest(unittest.TestCase):
                 self.assertIsNone(self.qualify())
         self.assertNotEqual(prose.literals("``a`b``\n"), prose.literals("``a`c``\n"))
 
-    def test_html_block_bodies_and_ambiguous_markup_route_to_full(self):
+    def test_html_block_bodies_use_ordinary_document_validation(self):
         for before, after in (
             ("<pre>\nLANTERN_AUTH_MODE=oidc\n</pre>\n", "<pre>\nLANTERN_AUTH_MODE=off\n</pre>\n"),
             ("<pre\n class='example'>\noidc\n</pre>\n", "<pre\n class='example'>\noff\n</pre>\n"),
@@ -142,15 +168,16 @@ class ProseTest(unittest.TestCase):
                 self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "HEAD"))
                 self.write("README.md", after)
                 self.commit()
+                self.session = self.local_session("html-" + str(hash(before)))
                 with patch.object(sys, "argv", ["gate", str(self.root), str(self.session.evidence), "--prose-base", "origin/main"]), \
                      patch.object(gate, "Session", return_value=self.session), redirect_stdout(io.StringIO()) as output:
                     self.assertEqual(gate.main(), 0)
-                self.assertIn("FULL REQUIRED: prose eligibility refused: HTML or angle markup", output.getvalue())
+                self.assertIn("Strict prose report unavailable: HTML or angle markup", output.getvalue())
                 result = __import__("json").loads(sorted(self.session.evidence.glob("*-manifest.json"))[-1].read_text())
-                self.assertEqual([item["name"] for item in result["steps"]], ["fixture-full"])
-                self.assertEqual((result["executed"], result["carried"]), (1, 0))
+                self.assertEqual([item["name"] for item in result["steps"]], ["docs-text-links", "final-diff", "final-clean"])
+                self.assertEqual((result["executed"], result["carried"]), (3, 0))
 
-    def test_classifier_error_routes_to_actual_full_control(self):
+    def test_classifier_error_routes_to_broad_fresh_units(self):
         # This synthetic Python command borrows an eligible Go step label to
         # exercise receipts/fallback, but has no Go manifests or toolchain.
         # Real tool/environment admission is covered by the preflight suite.
@@ -161,10 +188,12 @@ class ProseTest(unittest.TestCase):
             self.assertTrue(baseline["passed"], baseline)
         self.assertTrue(self.session.receipts)
         with patch.object(prose.ci_docs, "documentation_only", side_effect=RuntimeError("broken classifier")), \
+             patch.object(gate, "affected_steps", return_value=self.session.plan), \
              patch.object(sys, "argv", ["gate", str(self.root), str(self.session.evidence), "--prose-base", "origin/main"]), \
              patch.object(gate, "Session", return_value=self.session), redirect_stdout(io.StringIO()):
             self.assertEqual(gate.main(), 0)
-        result = __import__("json").loads((self.session.evidence / "002-manifest.json").read_text())
+        result = __import__("json").loads((self.session.evidence / "affected-manifest.json").read_text())
+        self.assertTrue(result["scope"]["full"])
         self.assertEqual([r["name"] for r in result["steps"]], ["go-test-core"])
         self.assertEqual(result["carried"], 0)
         self.assertEqual(result["executed"], 1)

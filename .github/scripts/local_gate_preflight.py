@@ -63,8 +63,11 @@ def check(root, environment, plan):
     result = {"tools": []}
     names = {step.name for step in plan}
     # Go is also launched by harness contracts and SDK/browser children.
-    needs_go = any(name.startswith(("go-", "server-", "harness-", "rust-", "admin-playwright"))
-                   or name.endswith("-generate") or "wire" in name for name in names)
+    needs_go = any(step.command[0] == "go" or step.name.startswith(("go-", "server-"))
+                   or step.name.endswith("-generate") or "wire" in step.name
+                   or step.name == "admin-playwright"
+                   or (step.name == "harness-contracts" and step.command[-2:] != ("--group", "git-fixture"))
+                   for step in plan)
     if needs_go:
         pin = exact_pin(root, "go.mod", r"^go (\d+\.\d+\.\d+)$")
         path = executable("go", environment)
@@ -95,8 +98,11 @@ def check(root, environment, plan):
             raise ValueError("preflight: parent GOTOOLCHAIN differs from source pin; use task-local GOTOOLCHAIN=local")
         result["tools"].append({"name": "go", "path": path, "resolved_path": str(Path(path).resolve()),
                                 "version": pin, "goroot": settings["GOROOT"]})
-    if not needs_go:
-        result["environment"] = scratch_environment(environment)
+    if not needs_go and any(step.command[0] in {"bun", "cargo", "dart", "flutter"}
+                            or step.name == "offline-test" for step in plan):
+        # Pure Git/Python checks need no executable compiler scratch. A Go
+        # scratch override also does not select another package's temp space.
+        result["environment"] = scratch_environment({k: v for k, v in environment.items() if k != "GOTMPDIR"})
     if "go-lint" in names:
         pin = exact_pin(root, ".github/workflows/go.yml", r"^\s+version: v(2\.\d+\.\d+)\s*$")
         path = executable("golangci-lint", environment)
@@ -122,7 +128,12 @@ def check(root, environment, plan):
     if any(step.command[0] == "cargo" for step in plan):
         # Native SDK4 owns the exact current-toolchain pin. Ordinary Rust gates
         # otherwise retain their existing MSRV/stable policy, not a new pin.
-        for tool in ("cargo", "rustc", "cargo-clippy", "rustfmt"):
+        rust_tools = ["cargo", "rustc"]
+        if "rust-clippy" in names:
+            rust_tools.append("cargo-clippy")
+        if "rust-format" in names:
+            rust_tools.append("rustfmt")
+        for tool in rust_tools:
             path = executable(tool, environment)
             version = command([path, "--version"], root / "sdks/rust", environment)
             if "current-functional-wire" in names and tool in {"cargo", "rustc"}:
@@ -136,7 +147,7 @@ def check(root, environment, plan):
             actual = command([path, "--version"], root / "sdks/rust", environment)
             require_version("cargo-audit", path, actual.removeprefix("cargo-audit "), pin)
             result["tools"].append({"name": "cargo-audit", "path": path, "version": pin})
-    if any(step.command[0] in {"dart", "flutter"} for step in plan):
+    if any(step.command[0] in {"dart", "flutter"} or step.name == "offline-test" for step in plan):
         pin = exact_pin(root, ".github/workflows/current-sdk4.yml", r"^\s+sdk: (\d+\.\d+\.\d+)\s*$")
         selected = Path(executable("dart", environment)).resolve()
         # Flutter's shell launcher can bootstrap/download even for --version.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,39 @@ func TestProtectedQueryCLIRejectsOtherProfiles(t *testing.T) {
 		if !failed || exit.ExitCode() != 1 || (!strings.Contains(string(output), "authfixture:") && !strings.Contains(string(output), "authfixture_failure:configuration")) {
 			t.Fatalf("profile boundary accepted %q: %v %s", arguments, err, output)
 		}
+	}
+}
+
+// ExtraFiles models the dedicated descriptor installed by the POSIX SDK fixture.
+func TestSupervisedCLIWritesOnlyTypedFailureToReport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell descriptor")
+	}
+	if os.Getenv("LANTERN_FIXTURE_REPORT_TEST") == "1" {
+		flag.CommandLine = flag.NewFlagSet("authfixture", flag.ExitOnError)
+		os.Args = []string{"authfixture", "-serve", "/private/unused-binary", "-public-ports", "invalid", "-failure-report-fd3"}
+		main()
+		return
+	}
+	reportPath := filepath.Join(t.TempDir(), "report")
+	report, err := os.Create(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = report.Close() }()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestSupervisedCLIWritesOnlyTypedFailureToReport$")
+	cmd.Env = append(os.Environ(), "LANTERN_FIXTURE_REPORT_TEST=1")
+	cmd.ExtraFiles = []*os.File{report}
+	if err := cmd.Run(); err == nil || cmd.ProcessState.ExitCode() != 1 {
+		t.Fatalf("expected configuration failure: %v", err)
+	}
+	output, err := os.ReadFile(reportPath)
+	if err != nil || string(output) != "authfixture_failure:configuration\n" {
+		t.Fatalf("unexpected public failure record: %v %q", err, output)
 	}
 }
 

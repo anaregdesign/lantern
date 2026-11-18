@@ -766,9 +766,10 @@ class SDK4WiringTest(unittest.TestCase):
 
     def test_required_pr_main_build_checks_same_run_native_receipt(self):
         build = workflow_job("go", "build")
-        self.assertIn(
-            "needs: [scope, modules, functional-validation, configured-source-integration, receipt-backup-windows]", build
-        )
+        prerequisites = next(line for line in build.splitlines() if line.strip().startswith("needs: ["))
+        names = set(prerequisites.partition("[")[2].removesuffix("]").split(", "))
+        self.assertTrue({"scope", "modules", "functional-validation", "configured-source-integration",
+                         "receipt-backup-windows", "fuzz", "native-deployment"} <= names)
         self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
         self.assertIn("needs.configured-source-integration.outputs.artifact_id", build)
         self.assertIn("needs.configured-source-integration.outputs.receipt_sha256", build)

@@ -564,7 +564,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"offline-hosted": {
 			needs:       []string{"changes", "gate", "verify-published"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.changes.outputs.full == 'true' && (needs.verify-published.result == 'success' || (needs.verify-published.result == 'skipped' && (github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/sdks/dart/v')))) }}",
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.changes.outputs.full == 'true' && needs.changes.outputs.offline == 'true' && (needs.verify-published.result == 'success' || (needs.verify-published.result == 'skipped' && (github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/sdks/dart/v')))) }}",
 			contracts: []string{
 				"python3 sdks/dart/offline/tool/release_contract.py --check-parent",
 				`--parent-candidate "$archive"`,
@@ -788,10 +788,11 @@ func TestSDKManualDispatchGate(t *testing.T) {
 				t.Fatalf("read SDK workflow: %v", err)
 			}
 			var workflow struct {
-				On map[string]struct {
-					Branches []string `yaml:"branches"`
-					Paths    []string `yaml:"paths"`
-					Tags     []string `yaml:"tags"`
+				On map[string]*struct {
+					Branches     []string `yaml:"branches"`
+					Paths        []string `yaml:"paths"`
+					IgnoredPaths []string `yaml:"paths-ignore"`
+					Tags         []string `yaml:"tags"`
 				} `yaml:"on"`
 				Jobs map[string]struct {
 					If    string    `yaml:"if"`
@@ -805,12 +806,13 @@ func TestSDKManualDispatchGate(t *testing.T) {
 				t.Error("SDK workflow cannot be dispatched on the final main SHA")
 			}
 			push, ok := workflow.On["push"]
-			if !ok || !reflect.DeepEqual(push.Branches, []string{"main"}) || !reflect.DeepEqual(push.Tags, test.tags) {
+			if !ok || push == nil || !reflect.DeepEqual(push.Branches, []string{"main"}) || !reflect.DeepEqual(push.Tags, test.tags) {
 				t.Errorf("push ref filters = %+v; want main and %v", push, test.tags)
 			}
 			pr, ok := workflow.On["pull_request"]
-			if !ok || len(push.Paths) == 0 || !reflect.DeepEqual(push.Paths, pr.Paths) {
-				t.Error("push and pull_request path filters must remain in place and match")
+			if !ok || push == nil || len(push.Paths)+len(push.IgnoredPaths) != 0 ||
+				pr != nil && len(pr.Paths)+len(pr.IgnoredPaths) != 0 {
+				t.Error("every PR and main diff must reach the SDK job selector")
 			}
 			for name, guard := range test.releaseGuards {
 				job, ok := workflow.Jobs[name]
@@ -853,30 +855,6 @@ func TestDartWorkflowGate(t *testing.T) {
 		"name: Test gate scope classifier",
 		"python3 -B -m unittest discover -s sdks/dart/scripts -p ci_scope_test.py",
 		"run: python3 -B sdks/dart/scripts/ci_scope.py",
-		`"sdks/dart/**"`,
-		`"tests/integration/dart_offline_sqlite_test.dart"`,
-		`"proto/**"`,
-		`"buf.yaml"`,
-		`"buf.gen.yaml"`,
-		`"generate.go"`,
-		`"go.mod"`,
-		`"go.sum"`,
-		`"go.work"`,
-		`"go.work.sum"`,
-		`"core/go.mod"`,
-		`"pb/go.mod"`,
-		`"sdks/go/go.mod"`,
-		`"mcp/go.mod"`,
-		`"core/search/**"`,
-		`"core/graphcache/**"`,
-		`"server/**"`,
-		`"testdata/search/**"`,
-		"docs/decisions/0001-dart-mobile-transport.md",
-		"docs/decisions/0002-dart-offline-repository-contract.md",
-		`"AGENTS.md"`,
-		`"README.md"`,
-		"CONTRIBUTING.md",
-		`".github/workflows/dart-sdk.yml"`,
 		"name: Generate, analyze, and test",
 		"dart pub get --enforce-lockfile --no-example",
 		"dart analyze lib test",
@@ -921,16 +899,13 @@ func TestDartWorkflowGate(t *testing.T) {
 		"name: Validate physical evidence PR",
 		"require_result evidence-only \"$EVIDENCE_RESULT\" success",
 		"require_result evidence-only \"$EVIDENCE_RESULT\" skipped",
-		"require_result offline-test \"$OFFLINE_TEST_RESULT\" success",
-		"require_result offline-minimum-dart \"$OFFLINE_MINIMUM_DART_RESULT\" success",
-		"require_result offline-sqlite \"$OFFLINE_SQLITE_RESULT\" success",
-		"require_result minimum-dart \"$MINIMUM_DART_RESULT\" success",
-		"require_result android \"$ANDROID_RESULT\" success",
-		"require_result ios \"$IOS_RESULT\" success",
+		"require_selected offline-test \"$OFFLINE_TEST_RESULT\" \"$OFFLINE\"",
+		"require_selected offline-minimum-dart \"$OFFLINE_MINIMUM_DART_RESULT\" \"$OFFLINE\"",
+		"require_selected offline-sqlite \"$OFFLINE_SQLITE_RESULT\" \"$SQLITE\"",
+		"require_selected minimum-dart \"$MINIMUM_DART_RESULT\" \"$PARENT\"",
+		"require_selected android \"$ANDROID_RESULT\" \"$MOBILE\"",
+		"require_selected ios \"$IOS_RESULT\" \"$MOBILE\"",
 		"MOBILE: ${{ needs.changes.outputs.mobile }}",
-		"if [[ \"$MOBILE\" == true ]]; then",
-		"require_result android \"$ANDROID_RESULT\" skipped",
-		"require_result ios \"$IOS_RESULT\" skipped",
 		"needs: [gate, configured-source-integration]",
 	} {
 		if !strings.Contains(text, contract) {
@@ -982,10 +957,10 @@ func TestDartWorkflowGate(t *testing.T) {
 	}
 	gate := text[gateStart:releaseStart]
 	fullBranch := strings.Index(gate, `if [[ "$FULL" == true ]]; then`)
-	mobileBranch := strings.Index(gate, `if [[ "$MOBILE" == true ]]; then`)
-	minimumResult := strings.Index(gate, `require_result minimum-dart "$MINIMUM_DART_RESULT" success`)
-	androidResult := strings.Index(gate, `require_result android "$ANDROID_RESULT" success`)
-	if fullBranch < 0 || minimumResult <= fullBranch || mobileBranch <= minimumResult || androidResult <= mobileBranch {
+	minimumResult := strings.Index(gate, `require_selected minimum-dart "$MINIMUM_DART_RESULT" "$PARENT"`)
+	androidResult := strings.Index(gate, `require_selected android "$ANDROID_RESULT" "$MOBILE"`)
+	endFullBranch := strings.Index(gate[max(0, minimumResult):], "\n          fi")
+	if fullBranch < 0 || minimumResult <= fullBranch || endFullBranch < 0 || androidResult <= minimumResult+endFullBranch {
 		t.Error("aggregate gate does not enforce package and native-mobile results independently")
 	}
 
@@ -1113,8 +1088,8 @@ func TestDartWorkflowGate(t *testing.T) {
 
 	for _, contract := range []string{
 		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
-		"stable `Gate` job",
-		"both decisions independently",
+		"A CLI-only Go dependency update skips Dart",
+		"The stable `Gate` checks each selected",
 		"separate production/device iOS",
 		"Only `launch_stall` or `attach_stall` may retry",
 		"full attempt 720 seconds",

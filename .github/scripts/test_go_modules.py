@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class GoModulesTest(unittest.TestCase):
-    def execute(self, failure: str):
+    def execute(self, failure: str, modules=go_modules.MODULES):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             for module in go_modules.MODULES:
@@ -41,19 +41,24 @@ sys.exit(1 if f"{module}:{args[0]}" in os.environ['FAILURES'].split(',') else 0)
                                     cwd=root, capture_output=True, text=True,
                                     env=os.environ | {"PATH": f"{root}:{os.environ['PATH']}",
                                                       "FIXTURE_ROOT": str(root), "FAILURES": failure,
+                                                      "GO_MODULES": " ".join(modules),
                                                       "GITHUB_STEP_SUMMARY": str(root / "summary.md")})
             calls = [json.loads(s) for s in (root / "calls.jsonl").read_text().splitlines()]
             records = json.loads((root / "coverage/modules.json").read_text())
-            self.assertEqual(len(calls), 18)
-            self.assertEqual(len(records), 18)
+            self.assertEqual(len(calls), 3 * len(modules))
+            self.assertEqual(len(records), 3 * len(modules))
             self.assertEqual([(r["phase"], r["module"]) for r in records],
-                             [(p, m) for p in ("vet", "build", "test") for m in go_modules.MODULES])
+                             [(p, m) for p in ("vet", "build", "test") for m in modules])
             for module, args in calls:
                 self.assertEqual(args[-1], "./...")
                 if args[0] == "test":
                     self.assertEqual(args[1:5], ["-race", "-shuffle=on", "-coverpkg=./...", "-covermode=atomic"])
-            self.assertEqual((root / "coverage.out").read_bytes(), (root / "coverage/root.out").read_bytes())
-            self.assertIn("| server | test |", (root / "summary.md").read_text())
+            if "." in modules:
+                self.assertEqual((root / "coverage.out").read_bytes(), (root / "coverage/root.out").read_bytes())
+            summary = (root / "summary.md").read_text()
+            for module in go_modules.MODULES:
+                self.assertEqual(f"| {module} | test |" in summary, module in modules)
+
             return result, records
 
     def test_root_and_middle_failures_do_not_hide_later_modules_or_phases(self):
@@ -83,6 +88,11 @@ sys.exit(1 if f"{module}:{args[0]}" in os.environ['FAILURES'].split(',') else 0)
             records = go_modules.collect(root)
         self.assertEqual(maximum, 2)
         self.assertEqual(len(records), 18)
+
+    def test_selected_go_modules_run_once_with_independent_coverage(self):
+        result, records = self.execute("", (".",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([r["phase"] for r in records], ["vet", "build", "test"])
 
     def test_all_success(self):
         result, records = self.execute("")

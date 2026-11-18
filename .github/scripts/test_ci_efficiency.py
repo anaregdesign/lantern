@@ -204,21 +204,49 @@ sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
         self.assertIn("get_status", off)
         self.assertNotIn("token_provider", off)
 
-    def test_receipt_startup_log_exports_only_fixed_categories(self):
-        source = (ROOT / "testbed/scripts/native_receipt_fixture.sh").read_text()
-        code = source.split("<<'PYDIAGNOSTIC' || true\n", 1)[1].split("\nPYDIAGNOSTIC", 1)[0]
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "private-log"
-            path.write_text('private-token-key-body\nauthfixture_failure:spawn\nauthfixture_failure:private-token\nauthfixture_readiness:{"server_log":"source_input_missing","err":"private-token"}\nauthfixture_readiness:{"server_log":[]}\nauthfixture_readiness:{"server_log":"private-token"}\n')
-            import contextlib
-            import io
-            with patch.object(sys, "argv", ["diagnostic", str(path)]), contextlib.redirect_stderr(io.StringIO()) as output:
-                exec(compile(code, "<receipt-startup-diagnostic>", "exec"), {})
-            self.assertEqual(output.getvalue(), "authfixture_failure:spawn\nauthfixture_server_log:source_input_missing\n")
-            path.unlink()
-            with patch.object(sys, "argv", ["diagnostic", str(path)]), contextlib.redirect_stderr(io.StringIO()) as output:
-                exec(compile(code, "<receipt-startup-diagnostic>", "exec"), {})
-            self.assertEqual(output.getvalue(), "authfixture_diagnostics:unavailable\n")
+    def test_receipt_startup_uses_the_dedicated_typed_report(self):
+        script = ROOT / "testbed/scripts/native_receipt_fixture.sh"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / "fixture"
+            fixture.write_text("""#!/bin/sh
+case " $* " in *" -failure-report-fd3 "*) ;; *) exit 2 ;; esac
+echo 'authfixture_readiness:private-token-key-body' >&2
+echo 'authfixture_failure:readiness' >&3
+echo 'authfixture_readiness:{"reason":"child_exit","child_exit_code":23,"http_status":0,"observation":{"status":"not_observed"}}' >&3
+exit 1
+""")
+            fixture.chmod(0o700)
+            result = subprocess.run(["bash", str(script), "start", "unused", str(fixture),
+                                     str(root / "state"), "1234"], capture_output=True,
+                                    text=True, timeout=15)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("authfixture_failure:readiness", result.stderr)
+            self.assertIn('"child_exit_code":23', result.stderr)
+            self.assertIn('"status":"not_observed"', result.stderr)
+            self.assertNotIn("private-token-key-body", result.stderr)
+            self.assertIn("private-token-key-body", (root / "state/supervisor.log").read_text())
+            self.assertFalse((root / "state/supervisor.pid").exists())
+            self.assertFalse((root / "state/failure-report").exists())
+            for label, payload in (
+                ("oversize", b"authfixture_failure:readiness\nauthfixture_readiness:" +
+                 b'{"private":"' + b"x" * 16384 + b'"}\n'),
+                ("incomplete", b"authfixture_failure:readiness\nauthfixture_readiness:{"),
+                ("extra", b"authfixture_failure:readiness\nauthfixture_readiness:{}\nprivate body\n"),
+            ):
+                with self.subTest(label=label):
+                    packet = root / "input"
+                    packet.write_bytes(payload)
+                    fixture.write_text("#!/bin/sh\ncat \"$REPORT_INPUT\" >&3\nexit 1\n")
+                    result = subprocess.run(["bash", str(script), "start", "unused", str(fixture),
+                                             str(root / label), "1234"], env={**os.environ, "REPORT_INPUT": str(packet)},
+                                            capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("authfixture_diagnostics:unavailable", result.stderr)
+                    self.assertNotIn("authfixture_readiness:", result.stderr)
+                    self.assertNotIn("private body", result.stderr)
+                    self.assertFalse((root / label / "supervisor.pid").exists())
+
 
     def test_rust_source_and_release_cover_msrv_and_every_native_platform(self):
         manifest = tomllib.loads((ROOT / "sdks/rust/Cargo.toml").read_text())
@@ -238,7 +266,11 @@ sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
                     selected = expected - {("windows-latest", "stable")}
                     self.assertIn("github.event_name == 'workflow_dispatch'", matrix)
                     self.assertIn("  workflow_dispatch:", workflow(name))
-                    self.assertIn("'tests/integration/auth_test.go'", workflow(name))
+                    import validation_scope
+                    paths = {"tests/integration/auth_test.go": "M"}
+                    impact = validation_scope.hosted(validation_scope.affected(paths), paths)
+                    self.assertTrue(impact["rust_required"])
+                    self.assertIn("needs.scope.outputs.rust_required == 'true'", body)
                 else:
                     lanes = re.findall(r"- \{os: ([\w-]+), rust: '?([\w.]+)'?\}", matrix)
                     selected = expected
@@ -297,7 +329,8 @@ sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
             for records in variants:
                 with self.subTest(records=records), self.assertRaises(SystemExit):
                     verify(records)
-        self.assertIn('"tests/integration/auth_authority_helpers_test.go"', workflow("dart-sdk"))
+        self.assertIn('"tests/integration/auth_authority_helpers_test.go": WIRE',
+                      (ROOT / "sdks/dart/scripts/ci_scope.py").read_text())
         self.assertNotIn("TestAuth_OIDCNodeScopedChangesFacadeRealConnect", workflow("node-sdk"))
         self.assertNotIn("TestAuth_OIDCRustScopedChangesFacadeRealConnect", workflow("rust-sdk"))
 

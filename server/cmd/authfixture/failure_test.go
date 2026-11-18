@@ -90,6 +90,9 @@ func TestFixtureServerLogClassificationIsBounded(t *testing.T) {
 		{`{"msg":"server exited with error","err":"initialize app: unusable current-authority time measurement; private-token"}`, "authority_time"},
 		{`{"msg":"server exited with error","err":"initialize app: listen tcp :1234: bind: address already in use; private-token"}`, "bind_address_in_use"},
 		{`{"msg":"server exited with error","err":"run: unusable current-authority time measurement; private-token"}`, "server_exit"},
+		{`{"msg":"functional server exited with error","err":"initialize app: unusable current-authority time measurement; private-token"}`, "authority_time"},
+		{`{"msg":"functional server exited with error","err":"private-token"}`, "server_exit"},
+		{`{"msg":"ignored functional server exited with error","err":"private-token"}`, "none"},
 		{"private-token-key-body", "none"},
 		{strings.Repeat("x", 64<<10) + "\n" + `{"msg":"server exited with error","err":"initialize app: bind: address already in use"}`, "none"},
 	} {

@@ -92,8 +92,19 @@ func main() {
 	authorityProvisioner := flag.String("authority-provisioner", "", "optional same-source security test binary for independent original provisioning; otherwise use this checkout")
 	protectedQuery := flag.Bool("protected-query", false, "opt-in standalone OFF/OIDC query preparation with matched verified TLS and a local JWT issuer")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
+	publicFailure := flag.Bool("failure-report-fd3", false, "also write the bounded supervision failure record to inherited descriptor 3")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
+	var report *os.File
+	if *publicFailure {
+		var err error
+		report, err = openFixtureFailureReport()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authfixture_failure:configuration")
+			os.Exit(1)
+		}
+		defer func() { _ = report.Close() }()
+	}
 	if *privateInput != "" {
 		valid := flag.NArg() == 0
 		flag.Visit(func(value *flag.Flag) {
@@ -271,6 +282,9 @@ func main() {
 		receiptLaunch.close()
 		if *serverBinary != "" {
 			writeFixtureFailure(os.Stderr, err)
+			if report != nil {
+				writeFixtureFailure(report, err)
+			}
 		} else {
 			fmt.Fprintln(os.Stderr, "authfixture:", err)
 		}

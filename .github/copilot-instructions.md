@@ -82,24 +82,18 @@ they must not conflict.
   Default to one bounded implementation Issue → one cohesive PR; include paired
   tests/docs/generated consumers and repair review/CI findings in the same PR.
   Continue within existing authorization and surface exact permission blockers.
-- **Iterate, review, then qualify**: focused tests during edits, review fixes before
-  the final coherent candidate gate. Explicit pure-prose eligibility in CONTRIBUTING
-  selects fresh text/docs-contract checks; otherwise use fresh affected local
-  `--affected-base origin/main` checks. The small dependency map unions mixed
-  changes and sends unknown/policy/config inputs to full. Omitted steps are
-  NOT_SELECTED, never passed or carried. Hosted merge/main/release/device/performance
-  proof remains independent. Policy changes use the previous full gate on themselves.
+- Run focused unit tests during edits. The pre-push runner defaults to affected units
+  against fetched `origin/main`; status-only prose selects text and link checks.
+  CI owns the selected integration, module/coverage, native and security jobs.
 - Review the immutable diff and affected boundaries, retain short generated
   head/tree/hash evidence and raw logs. Reserve Ultra for new safety/proof questions.
   Budget costly runs, pin final merged source and reuse one immutable image/setup;
   repeat only for relevant changes, invalid runs or declared stability checks.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
-- **Before every push**, satisfy the applicable gate in CONTRIBUTING.md. Only
-  affected local closure or explicit pure-prose checks may be selected. Full77
-  remains the fallback and policy bootstrap; it cannot relax itself. Hosted functional-validation and
-  boundary configured-source-integration remain blocking. Windows Rust full compatibility is manual/release;
-  selected native Go/Rust ACL/filesystem/TLS/process checks block Build & Test.
+- **Before every push**, satisfy the applicable gate in CONTRIBUTING.md.
+  Use `--full` for explicit local qualification. A validation policy change
+  uses the previous full contract once on its final adoption candidate.
 - **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
   `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus
   Android/iOS gates, publishes `lantern_client` through pub.dev OIDC, and only then

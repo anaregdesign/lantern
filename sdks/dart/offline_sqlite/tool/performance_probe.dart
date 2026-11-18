@@ -30,10 +30,12 @@ Future<void> main(List<String> arguments) async {
     'process': probeProcessCounters(),
   });
   if (diagnostics == null) {
-    await _runProbe(null, profile);
+    stdout.writeln(jsonEncode(await sqliteStoreContracts(null, profile)));
   } else {
     try {
-      await _runProbe(diagnostics, profile);
+      stdout.writeln(
+        jsonEncode(await sqliteStoreContracts(diagnostics, profile)),
+      );
     } catch (_) {
       // SQL exceptions can contain arguments. The sidecar has the bounded
       // phase evidence; never export raw errors or stack traces in this mode.
@@ -45,14 +47,14 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
-Future<void> _runProbe(
+Future<Map<String, Object?>> sqliteStoreContracts(
   AutomaticDiagnostics? diagnostics,
   ResourceProfile profile,
 ) async {
   sqfliteFfiInit();
   final directory = await Directory.systemTemp.createTemp('sqlite-baseline-');
   final path = '${directory.path}/store.db';
-  const count = 100;
+  final count = profile == ResourceProfile.unitContracts ? 8 : 100;
   final writes = <int>[];
   final reads = <int>[];
   var payloadBytes = 0;
@@ -170,7 +172,7 @@ Future<void> _runProbe(
       profile,
     );
     if (diagnostics != null) result['qualifies'] = false;
-    stdout.writeln(jsonEncode(result));
+    return result;
   } finally {
     if (diagnostics?.cleanupConfirmed ?? true) {
       await repository?.dispose();
@@ -274,7 +276,7 @@ Future<Map<String, Object?>> _automaticBaseline(
     diagnostics: diagnostics,
     profile: resourceProfile,
     stoppedSnapshot: () => _stoppedSnapshot(factory.database),
-    itemsPerScope: [100],
+    itemsPerScope: [resourceProfile == ResourceProfile.unitContracts ? 8 : 100],
     open: (_, client, binding, schedule) async {
       final session =
           (await SqliteOfflineStore.openSession(

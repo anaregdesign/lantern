@@ -175,6 +175,20 @@ class SessionTest(unittest.TestCase):
                          dict.fromkeys(retained, "retained"))
         self.assertEqual(gate.ordinary_environment(dict.fromkeys(names, "inherited")), {})
 
+    def test_entrypoint_selects_development_by_default_and_full_only_explicitly(self):
+        argv = ["local_gate_session.py", str(self.root), str(self.session.evidence)]
+        with patch.object(gate, "Session", return_value=self.session), \
+                patch.object(self.session, "qualify_affected", return_value={"passed": True}) as affected, \
+                patch.object(self.session, "qualify", return_value={"passed": True}) as full:
+            with patch.object(sys, "argv", argv):
+                self.assertEqual(gate.main(), 0)
+            affected.assert_called_once_with("origin/main")
+            full.assert_not_called()
+            with patch.object(sys, "argv", argv + ["--full"]):
+                self.assertEqual(gate.main(), 0)
+            full.assert_called_once_with()
+            self.assertEqual(affected.call_count, 1)
+
     def test_affected_checks_are_fresh_and_do_not_import_carry(self):
         self.qualify()
         self.write("admin/app/view.tsx", "changed UI\n")

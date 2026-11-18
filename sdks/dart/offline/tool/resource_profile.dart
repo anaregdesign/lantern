@@ -1,11 +1,16 @@
 /// Only pure latency/RSS envelopes vary. Retention and correctness never do.
 enum ResourceProfile {
   full,
-  parentContracts;
+  parentContracts,
+  unitContracts;
 
-  String get label => this == full ? 'full' : 'parent-contracts';
+  String get label => switch (this) {
+    full => 'full',
+    parentContracts => 'parent-contracts',
+    unitContracts => 'unit-contracts',
+  };
 
-  bool envelope(bool condition) => this == parentContracts || condition;
+  bool envelope(bool condition) => this != full || condition;
 
   static ResourceProfile parse(List<String> arguments) {
     if (!arguments.contains('--profile')) return full;

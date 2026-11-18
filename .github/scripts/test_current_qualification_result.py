@@ -6,13 +6,14 @@ from current_qualification_result import accepted
 class RequiredResultTest(unittest.TestCase):
     def setUp(self):
         self.good = dict(SCOPE_RESULT="success", MODULE_RESULT="success", FUNCTIONAL_VALIDATION_RESULT="success", CONFIGURED_SOURCE_INTEGRATION_RESULT="success", CONFIGURED_SOURCE_INTEGRATION_REQUIRED="true",
-                         WINDOWS_REQUIRED="true", WINDOWS_RESULT="success")
+                         WINDOWS_REQUIRED="true", WINDOWS_RESULT="success", FUNCTIONAL_REQUIRED="true",
+                         FUZZ_REQUIRED="true", FUZZ_RESULT="success", DEPLOYMENT_REQUIRED="true", DEPLOYMENT_RESULT="success")
 
     def test_all_required_pass(self):
         self.assertTrue(accepted(self.good))
 
     def test_failed_cancelled_missing_or_skipped_required_result_refuses(self):
-        for key in ("SCOPE_RESULT", "MODULE_RESULT", "FUNCTIONAL_VALIDATION_RESULT", "CONFIGURED_SOURCE_INTEGRATION_RESULT", "WINDOWS_RESULT"):
+        for key in ("SCOPE_RESULT", "MODULE_RESULT", "FUNCTIONAL_VALIDATION_RESULT", "CONFIGURED_SOURCE_INTEGRATION_RESULT", "WINDOWS_RESULT", "FUZZ_RESULT", "DEPLOYMENT_RESULT"):
             for value in ("failure", "cancelled", "skipped", "", "unknown"):
                 self.assertFalse(accepted(self.good | {key: value}), (key, value))
 
@@ -33,10 +34,17 @@ class RequiredResultTest(unittest.TestCase):
 
     def test_existing_docs_evidence_exemption_does_not_hide_executed_failure(self):
         for key in ("DOCS_ONLY", "EVIDENCE_ONLY"):
-            exempt = self.good | {key: "true", "FUNCTIONAL_VALIDATION_RESULT": "skipped", "CONFIGURED_SOURCE_INTEGRATION_RESULT": "skipped", "WINDOWS_RESULT": "skipped"}
+            exempt = self.good | {key: "true", "FUNCTIONAL_VALIDATION_RESULT": "skipped", "CONFIGURED_SOURCE_INTEGRATION_RESULT": "skipped", "WINDOWS_RESULT": "skipped", "FUZZ_RESULT": "skipped", "DEPLOYMENT_RESULT": "skipped"}
             self.assertTrue(accepted(exempt))
             self.assertFalse(accepted(exempt | {"CONFIGURED_SOURCE_INTEGRATION_RESULT": "failure"}))
             self.assertFalse(accepted(exempt | {"MODULE_RESULT": "skipped"}))
+
+    def test_functional_and_deployment_checks_omit_only_classified_work(self):
+        for flag, outcome in (("FUNCTIONAL_REQUIRED", "FUNCTIONAL_VALIDATION_RESULT"),
+                              ("FUZZ_REQUIRED", "FUZZ_RESULT"), ("DEPLOYMENT_REQUIRED", "DEPLOYMENT_RESULT")):
+            self.assertTrue(accepted(self.good | {flag: "false", outcome: "skipped"}))
+            for value in ("success", "cancelled", "failure", ""):
+                self.assertFalse(accepted(self.good | {flag: "false", outcome: value}))
 
     def test_windows_omission_is_explicit_and_never_hides_execution_failure(self):
         self.assertTrue(accepted(self.good | {"WINDOWS_REQUIRED": "false", "WINDOWS_RESULT": "skipped"}))
