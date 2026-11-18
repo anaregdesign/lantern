@@ -36,6 +36,16 @@ parent Dart package with `--no-example` and skip example-only dependencies.
 Measure actual runner savings on a subsequent comparable PR. The next Dart
 release can be measured using existing Actions and registry timestamps.
 
+[#2241](https://github.com/anaregdesign/lantern/pull/2241) changed CI selectors,
+their tests, documentation and the Linux classification steps of the Dart
+workflow. Its main run spent 26m 14s on iOS and 7m 42s on Android.
+Changes confined to those routing inputs now run their host contract tests.
+The same workflow comparison keeps PR title check steps on their Linux runner.
+It uses `yq` v4 to locate the steps and falls back to broad coverage when it
+cannot verify the scope. Edits to the shared mobile smoke select Android and
+iOS. On the iOS simulator the app test has a three-minute budget, matching Android. The
+simulator runner also bounds build, launch and the overall attempt.
+
 ## Claims, inputs and invalidation — #1974
 
 Use this bounded map with the existing [local gate](../CONTRIBUTING.md#before-every-git-push--local-quality-gate)

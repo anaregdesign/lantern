@@ -1,4 +1,4 @@
-"""Recognize package-owned dependency changes from checked-in source on both sides."""
+"""Recognize dependency and workflow changes from checked-in source on both sides."""
 
 import json
 from pathlib import PurePosixPath
@@ -11,6 +11,7 @@ VERSION = rb"v[0-9]+\.[0-9]+\.[0-9]+(?:[+~-][.\w+-]+)?"
 REQUIRE = re.compile(rb"(\t[\w./~+-]+ )(" + VERSION + rb")( // indirect)?")
 SUM = re.compile(rb"([\w./~+-]+) (" + VERSION + rb")(/go.mod)? h1:[A-Za-z0-9+/]{43}=")
 SETUP = {".github/workflows/dart-sdk.yml", ".github/workflows/current-sdk4.yml"}
+HOST_JOBS = {".github/workflows/dart-sdk.yml": "changes", ".github/workflows/commitlint.yml": "pr-title"}
 PIN = re.compile(rb"^( +(?:- )?uses: dart-lang/setup-dart@)[0-9a-f]{40}(?: # v[0-9]+(?:\.[0-9]+){2})?$", re.M)
 DART = ("sdks/dart", "sdks/dart/offline", "sdks/dart/offline_sqlite", "sdks/dart/example")
 JS = ("admin", "sdks/node")
@@ -146,15 +147,43 @@ def dependency_sections(path, raw):
     return normalized
 
 
+def outside_host_steps(raw, job):
+    """Use the YAML node position to compare everything outside one Linux job's steps byte-for-byte."""
+    query = (f'.jobs["{job}"] as $job | $job.steps as $s | '
+             '[$job."runs-on", ($s | kind), ($s | line), ($s | column), '
+             '([... | select(kind == "alias" or anchor != "")] | length), '
+             '([... | select(kind == "map") | keys | select(length != (unique | length))] | length)]')
+    try:
+        data = subprocess.check_output(["yq", "-o=json", query, "-"], input=raw, stderr=subprocess.DEVNULL)
+        runner, kind, line, column, anchors, duplicates = json.loads(data)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+    if (runner, kind, column, anchors, duplicates) != ("ubuntu-latest", "seq", 7, 0, 0):
+        return None
+    lines = raw.split(b"\n")
+    start = line - 1
+    if not (0 < start < len(lines) and lines[start].startswith(b"      - ")):
+        return None
+    # A block sequence ends at the next nonblank dedented line. Keep the
+    # steps key, all job metadata and every other job in the comparison.
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].strip() and not lines[i].startswith(b"      ")), len(lines))
+    return lines[:start], lines[end:]
+
+
 def classify(root, base, head, changes, modules):
     def blob(side, path):
         return subprocess.check_output(["git", "show", f"{(base,head)[side]}:{path}"], cwd=root)
     result, owners = go_dependencies(root, head, changes, blob, modules)
-    for path in SETUP.intersection(changes):
+    for path in (SETUP | HOST_JOBS.keys()).intersection(changes):
         if changes[path] == "M":
             old, new = blob(0, path), blob(1, path)
-            if old != new and PIN.search(old) and PIN.sub(rb"\1<pin>", old) == PIN.sub(rb"\1<pin>", new):
+            if path in SETUP and old != new and PIN.search(old) and PIN.sub(rb"\1<pin>", old) == PIN.sub(rb"\1<pin>", new):
                 result[path] = "setup-dart"
+            elif path in HOST_JOBS:
+                before = outside_host_steps(old, HOST_JOBS[path])
+                if before is not None and before == outside_host_steps(new, HOST_JOBS[path]):
+                    result[path] = "ci-routing" if HOST_JOBS[path] == "changes" else "workflow-steps"
     manifests = {*(f"{p}/pubspec.yaml" for p in DART), *(f"{p}/package.json" for p in JS),
                  "sdks/rust/Cargo.toml"}
     for path in (LOCKS | manifests).intersection(changes):

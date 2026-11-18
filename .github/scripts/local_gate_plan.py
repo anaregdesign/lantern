@@ -96,10 +96,14 @@ def affected_steps(plan, scope, base="origin/main"):
     fixtures = set(scope.get("fixture_contracts", []))
     names = {"final-diff", "final-clean"}
     extra = []
+    if "ci-routing" in fixtures and not scope["full"]:
+        extra.append(Step("ci-routing-contracts", ".github/scripts", (
+            "python3", "-B", "-m", "unittest", "test_validation_scope",
+            "test_dependency_scope", "test_local_gate_session.PlanTest")))
     if "release-host" in fixtures or scope["full"]:
         extra.append(Step("dart-release-host-contracts", ".", (
             "python3", "-B", "sdks/dart/scripts/release_host_checks.py", "--python-only")))
-    elif "setup-dart" in scope.get("semantic", {}).values():
+    elif "ci-routing" in fixtures or "setup-dart" in scope.get("semantic", {}).values():
         extra.append(Step("dart-workflow-conditions", "sdks/dart/scripts", (
             "python3", "-B", "-m", "unittest", "ci_scope_test")))
     if "." in modules:

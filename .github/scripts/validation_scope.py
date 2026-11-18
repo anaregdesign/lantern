@@ -53,6 +53,14 @@ NATIVE_GO = ("core/privatefile/", "core/mutationlog/", "core/mutationreceipt/",
 NATIVE_RUST = ("sdks/rust/src/transport", "sdks/rust/src/test_server.rs",
                "sdks/rust/src/value", "sdks/rust/src/smoke.rs")
 
+# Modified host routing inputs are exercised by the Linux classifier contracts.
+CI_ROUTING = {
+    ".github/scripts/dependency_scope.py", ".github/scripts/test_dependency_scope.py",
+    ".github/scripts/validation_scope.py", ".github/scripts/test_validation_scope.py",
+    ".github/scripts/local_gate_plan.py",
+    "sdks/dart/scripts/ci_scope.py", "sdks/dart/scripts/ci_scope_test.py",
+}
+
 # Finite read-only reader/preflight dependencies, not a blanket .github exemption.
 # Other executable fixtures, workflows, selectors, build/security/protocol policy
 # and new files stay full. These consumers still reject changed/missing measurement
@@ -146,6 +154,11 @@ def affected(changes, semantic=None, dependency_owners=()):
         if (path != value.as_posix() or value.is_absolute() or ".." in value.parts
                 or status not in {"A", "M", "D"}):
             return full("unknown path or change type")
+        if path in CI_ROUTING or semantic.get(path) == "ci-routing":
+            if status != "M":
+                return full("new or deleted CI routing input")
+            fixtures.add("ci-routing")
+            continue
         if path in semantic and semantic[path] != "package-dependency":
             continue
         if (path in RELEASE_HOST or path in RELEASE_ARCHIVE) and status == "M":
@@ -257,6 +270,12 @@ def classify_revisions(root, base, head):
         changes = changed(root, base, head)
         semantic, owners = dependency_scope.classify(root, base, head, changes, GO_CONSUMERS)
         result = affected(changes, semantic, owners)
+        # Dart knows the consumers of some shared integration fixtures. Keep
+        # verified host workflow edits independent of those fixtures. Dependency
+        # narrowing still needs the complete module decision from affected().
+        if result["full"]:
+            result["semantic"] = {p: kind for p, kind in semantic.items()
+                                  if kind in {"ci-routing", "workflow-steps"}}
         return result | hosted(result, changes) | {"evidence_candidate": evidence_only_pr.is_candidate(changes)}
     except (ValueError, OSError, AttributeError, IndexError, TypeError, subprocess.CalledProcessError) as error:
         result = full(f"classification unavailable: {type(error).__name__}")

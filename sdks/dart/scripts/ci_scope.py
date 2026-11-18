@@ -19,9 +19,11 @@ JOBS = {"parent", "offline", "sqlite", "mobile", "full"}
 DART_WORKFLOW = ".github/workflows/dart-sdk.yml"
 EXAMPLE_DEPENDENCIES = {"sdks/dart/example/pubspec.yaml", "sdks/dart/example/pubspec.lock"}
 WIRE = {"parent", "offline", "sqlite"}
-# These are live shell and Go inputs of the hosted Dart jobs. A change under
-# another integration-test path is unclassified and keeps the broad fallback.
+# Exact test entry points and fixtures consumed by the hosted Dart jobs.
+# Unmapped integration tests still use their package closure or the broad fallback.
 HOST_FIXTURES = {
+    "sdks/dart/example/integration_test/mobile_smoke_test.dart": {"mobile"},
+    "sdks/dart/example/test/direct_launch_test.dart": {"mobile"},
     "tests/integration/dart_offline_sqlite_test.dart": {"sqlite"},
     "tests/integration/dart_identity_offline_sqlite_test.dart": {"sqlite"},
     "tests/integration/dart_data_client_test.dart": {"parent"},
@@ -44,6 +46,10 @@ def selected_jobs(changes, impact):
         return set(), "documentation"
     semantics = impact.get("semantic", {})
     jobs = WIRE.copy() if impact.get("backend_dependencies") else set()
+    paths.difference_update(path for path in validation_scope.CI_ROUTING if changes.get(path) == "M")
+    paths.difference_update(path for path, kind in semantics.items() if kind in {"ci-routing", "workflow-steps"})
+    if not paths:
+        return jobs, "host workflow and routing contracts"
     if paths <= EXAMPLE_DEPENDENCIES and all(semantics.get(path) == "package-dependency" for path in paths):
         jobs.add("example_lock")
     if "release-host" in impact.get("fixture_contracts", ()):
