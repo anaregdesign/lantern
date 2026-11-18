@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -77,120 +78,123 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 					continue // Create has no distributed absence/arbitration contract.
 				}
 				t.Run(fmt.Sprintf("%s/%s/relay=%v", failure.name, operation, relay), func(t *testing.T) {
-					writes := 0
-					var attempted mutationlog.MutationOp
-					wal := receiptEdgeDeleteWALFunc(func(entry mutationlog.Entry) error {
-						writes++
-						attempted = entry.Op
-						if writes == 1 {
-							return failure.cause
+					// WAL classification is independent of elapsed Core admission budgets.
+					synctest.Test(t, func(t *testing.T) {
+						writes := 0
+						var attempted mutationlog.MutationOp
+						wal := receiptEdgeDeleteWALFunc(func(entry mutationlog.Entry) error {
+							writes++
+							attempted = entry.Op
+							if writes == 1 {
+								return failure.cause
+							}
+							return nil
+						})
+						f := newReceiptEdgeDeleteFixtureWithLimits(t, wal, hlc.NodeID{0x52}, 32, 1<<20)
+						var diagnostics bytes.Buffer
+						f.service.WithLogger(slog.New(slog.NewJSONHandler(&diagnostics,
+							&slog.HandlerOptions{Level: slog.LevelWarn})))
+						runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
+						invoke, id, graphRequest := stagedPublicationAdapterCall(t, f, runtime, operation)
+						var originalGraphRequest *pb.MutateGraphRequest
+						if graphRequest != nil {
+							originalGraphRequest = proto.Clone(graphRequest).(*pb.MutateGraphRequest)
 						}
-						return nil
+						originID := f.service.clock.NodeID()
+						if relay {
+							origin := newReceiptEdgeDeleteFixtureWithLimits(t, nil, hlc.NodeID{0x51}, 32, 1<<20)
+							originRuntime := bindPublicReceiptFixtureForConcurrencyTest(t, origin)
+							publish, originReceiptID, _ := stagedPublicationAdapterCall(t, origin, originRuntime, operation)
+							if err := publish(); err != nil {
+								t.Fatal(err)
+							}
+							entry := origin.log.RetainedEntries()[0]
+							wire, err := entry.Op.(interface{ ReplicationMutation() (*pb.Mutation, error) }).ReplicationMutation()
+							if err != nil {
+								t.Fatal(err)
+							}
+							invoke = func() error { return f.service.ApplyMutation(t.Context(), wire) }
+							id, originID = originReceiptID, origin.service.clock.NodeID()
+						}
+						err := invoke()
+						wantCode := connect.CodeUnavailable
+						if errors.Is(failure.cause, mutationlog.ErrSeqExhausted) && (operation != "graph mutation" || !failure.uncertain) {
+							wantCode = connect.CodeResourceExhausted
+						}
+						if writes != 1 || connect.CodeOf(err) != wantCode ||
+							errors.Is(err, mutationlog.ErrWALIndeterminate) != failure.uncertain {
+							t.Fatalf("WAL failure = %v, writes=%d", err, writes)
+						}
+						if f.service.receiptCommitFaulted != failure.uncertain ||
+							(f.service.publicationFaultCount != 0) != failure.uncertain {
+							t.Fatalf("service fault=%v count=%d", f.service.receiptCommitFaulted, f.service.publicationFaultCount)
+						}
+						if f.log.Len() != 0 || f.coordinator.store.Stats().Entries != 0 || f.service.LocalSeq(originID) != 0 {
+							t.Fatal("failed WAL attempt published Store/log/origin state")
+						}
+						for _, key := range []string{"tail", "head"} {
+							v, live := f.cache.GetVertex(key)
+							if !live || v.GetString_() != "before" {
+								t.Fatalf("Vertex rollback lost %s: %v", key, v)
+							}
+						}
+						if _, live := f.cache.GetVertex("created"); live {
+							t.Fatal("failed Put leaked a Vertex")
+						}
+						if weight, live := f.cache.GetWeight("tail", "head"); !live || weight != 3 {
+							t.Fatalf("Edge rollback = (%v, %v)", weight, live)
+						}
+						if _, live := f.cache.GetWeight("head", "tail"); live {
+							t.Fatal("failed Create leaked an Edge")
+						}
+						if relay {
+							pending := f.service.pendingMutations[originID][1]
+							if pending == nil || pending.receiptWAL != attempted {
+								t.Fatal("relay lost exact receiver-local WAL evidence")
+							}
+						}
+						if failure.uncertain {
+							assertStagedPublicationFaultViews(t, f, id)
+							if err := invoke(); connect.CodeOf(err) != connect.CodeFailedPrecondition || writes != 1 {
+								t.Fatalf("uncertain retry reached WAL or cleared fail-stop: %v, writes=%d", err, writes)
+							}
+							if _, err := f.log.CommitWithPostRingPublication("must reject", f.service.clock.Now(), nil); !errors.Is(err, mutationlog.ErrWALIndeterminate) {
+								t.Fatalf("Log did not retain poison: %v", err)
+							}
+						} else {
+							status, _, err := f.coordinator.Lookup(id, time.Now())
+							if err != nil || status != mutationreceipt.NotYetObserved {
+								t.Fatalf("definite abort lookup = %v, %v", status, err)
+							}
+							retained := attempted
+							retry := invoke
+							if operation == "graph mutation" && !relay {
+								retry = func() error {
+									return stagedPublicationDefiniteGraphRetry(t, t.Context(), f, runtime, graphRequest,
+										originalGraphRequest, func() int { return writes }, func() mutationlog.MutationOp { return attempted })
+								}
+							}
+							if err := retry(); err != nil || writes != 2 || f.log.Len() != 1 || f.service.LocalSeq(originID) != 1 {
+								t.Fatalf("definite retry failed to publish exactly once: %v, writes=%d", err, writes)
+							}
+							if relay && attempted != retained {
+								t.Fatal("definite relay retry replaced immutable evidence")
+							}
+							if operation != "create without receipt" {
+								metadata, ok := receiptWALEnvelopeInfo(attempted)
+								status, receipt, err := f.coordinator.Lookup(id, time.Now())
+								wantCount := 1
+								if operation == "graph mutation" {
+									wantCount = 2
+								}
+								if !ok || len(metadata.receipts) != wantCount || status != mutationreceipt.Confirmed || err != nil ||
+									!bytes.Equal(receipt.Result, metadata.receipts[0].Result) {
+									t.Fatalf("retry did not retain original receipt result: %v, %v", status, err)
+								}
+							}
+						}
+						assertReceiptCommitFaultDiagnostics(t, &diagnostics, failure.uncertain)
 					})
-					f := newReceiptEdgeDeleteFixtureWithLimits(t, wal, hlc.NodeID{0x52}, 32, 1<<20)
-					var diagnostics bytes.Buffer
-					f.service.WithLogger(slog.New(slog.NewJSONHandler(&diagnostics,
-						&slog.HandlerOptions{Level: slog.LevelWarn})))
-					runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
-					invoke, id, graphRequest := stagedPublicationAdapterCall(t, f, runtime, operation)
-					var originalGraphRequest *pb.MutateGraphRequest
-					if graphRequest != nil {
-						originalGraphRequest = proto.Clone(graphRequest).(*pb.MutateGraphRequest)
-					}
-					originID := f.service.clock.NodeID()
-					if relay {
-						origin := newReceiptEdgeDeleteFixtureWithLimits(t, nil, hlc.NodeID{0x51}, 32, 1<<20)
-						originRuntime := bindPublicReceiptFixtureForConcurrencyTest(t, origin)
-						publish, originReceiptID, _ := stagedPublicationAdapterCall(t, origin, originRuntime, operation)
-						if err := publish(); err != nil {
-							t.Fatal(err)
-						}
-						entry := origin.log.RetainedEntries()[0]
-						wire, err := entry.Op.(interface{ ReplicationMutation() (*pb.Mutation, error) }).ReplicationMutation()
-						if err != nil {
-							t.Fatal(err)
-						}
-						invoke = func() error { return f.service.ApplyMutation(t.Context(), wire) }
-						id, originID = originReceiptID, origin.service.clock.NodeID()
-					}
-					err := invoke()
-					wantCode := connect.CodeUnavailable
-					if errors.Is(failure.cause, mutationlog.ErrSeqExhausted) && (operation != "graph mutation" || !failure.uncertain) {
-						wantCode = connect.CodeResourceExhausted
-					}
-					if writes != 1 || connect.CodeOf(err) != wantCode ||
-						errors.Is(err, mutationlog.ErrWALIndeterminate) != failure.uncertain {
-						t.Fatalf("WAL failure = %v, writes=%d", err, writes)
-					}
-					if f.service.receiptCommitFaulted != failure.uncertain ||
-						(f.service.publicationFaultCount != 0) != failure.uncertain {
-						t.Fatalf("service fault=%v count=%d", f.service.receiptCommitFaulted, f.service.publicationFaultCount)
-					}
-					if f.log.Len() != 0 || f.coordinator.store.Stats().Entries != 0 || f.service.LocalSeq(originID) != 0 {
-						t.Fatal("failed WAL attempt published Store/log/origin state")
-					}
-					for _, key := range []string{"tail", "head"} {
-						v, live := f.cache.GetVertex(key)
-						if !live || v.GetString_() != "before" {
-							t.Fatalf("Vertex rollback lost %s: %v", key, v)
-						}
-					}
-					if _, live := f.cache.GetVertex("created"); live {
-						t.Fatal("failed Put leaked a Vertex")
-					}
-					if weight, live := f.cache.GetWeight("tail", "head"); !live || weight != 3 {
-						t.Fatalf("Edge rollback = (%v, %v)", weight, live)
-					}
-					if _, live := f.cache.GetWeight("head", "tail"); live {
-						t.Fatal("failed Create leaked an Edge")
-					}
-					if relay {
-						pending := f.service.pendingMutations[originID][1]
-						if pending == nil || pending.receiptWAL != attempted {
-							t.Fatal("relay lost exact receiver-local WAL evidence")
-						}
-					}
-					if failure.uncertain {
-						assertStagedPublicationFaultViews(t, f, id)
-						if err := invoke(); connect.CodeOf(err) != connect.CodeFailedPrecondition || writes != 1 {
-							t.Fatalf("uncertain retry reached WAL or cleared fail-stop: %v, writes=%d", err, writes)
-						}
-						if _, err := f.log.CommitWithPostRingPublication("must reject", f.service.clock.Now(), nil); !errors.Is(err, mutationlog.ErrWALIndeterminate) {
-							t.Fatalf("Log did not retain poison: %v", err)
-						}
-					} else {
-						status, _, err := f.coordinator.Lookup(id, time.Now())
-						if err != nil || status != mutationreceipt.NotYetObserved {
-							t.Fatalf("definite abort lookup = %v, %v", status, err)
-						}
-						retained := attempted
-						retry := invoke
-						if operation == "graph mutation" && !relay {
-							retry = func() error {
-								return stagedPublicationDefiniteGraphRetry(t, t.Context(), f, runtime, graphRequest,
-									originalGraphRequest, func() int { return writes }, func() mutationlog.MutationOp { return attempted })
-							}
-						}
-						if err := retry(); err != nil || writes != 2 || f.log.Len() != 1 || f.service.LocalSeq(originID) != 1 {
-							t.Fatalf("definite retry failed to publish exactly once: %v, writes=%d", err, writes)
-						}
-						if relay && attempted != retained {
-							t.Fatal("definite relay retry replaced immutable evidence")
-						}
-						if operation != "create without receipt" {
-							metadata, ok := receiptWALEnvelopeInfo(attempted)
-							status, receipt, err := f.coordinator.Lookup(id, time.Now())
-							wantCount := 1
-							if operation == "graph mutation" {
-								wantCount = 2
-							}
-							if !ok || len(metadata.receipts) != wantCount || status != mutationreceipt.Confirmed || err != nil ||
-								!bytes.Equal(receipt.Result, metadata.receipts[0].Result) {
-								t.Fatalf("retry did not retain original receipt result: %v, %v", status, err)
-							}
-						}
-					}
-					assertReceiptCommitFaultDiagnostics(t, &diagnostics, failure.uncertain)
 				})
 			}
 		}
