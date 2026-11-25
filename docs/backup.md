@@ -89,6 +89,42 @@ node must retain its assigned identity and join the configured native cluster
 through Lantern's authenticated replication path. See the
 [HA runbook](ha-runbook.md) and [replication contract](replication.md).
 
+## Compacting the node database
+
+Tarp cleans obsolete DATA records and repacks small segments while the node
+serves requests. A key-ordered checkpoint places related Vertex, Edge and
+contribution values together on disk for range reads. The ordered keys already
+determine scan and cursor order before the checkpoint. A checkpoint can raise
+foreground write latency while it copies records.
+
+Lantern samples write activity once a minute. The background checkpoint
+requires at least one target segment of live data (128 MiB), two quiet
+minutes, and a new application revision. It becomes eligible after a
+generation replacement, one segment of net growth, or enough written records
+to cover a quarter of the live key count since the last checkpoint. The
+worker lets retired generations, pinned readers and backup work drain first.
+It takes its initial baseline when serving starts. The
+`graphstore key-ordered compaction completed` log records the duration and
+bytes unlinked by a successful automatic pass.
+
+For a planned maintenance window after a bulk import, stop one node and run
+the following against its existing data directory. In HA, restart the node
+and let it catch up before moving to the next one.
+
+```sh
+lantern compact-graph-store --target "$LANTERN_DATA_DIR"
+```
+
+Use the node's configured data path. Tarp acquires exclusive ownership and
+performs normal open-time recovery before Lantern verifies the graph manifest.
+Opening a different Tarp directory after a crash can update its recovery files,
+even when Lantern rejects it. Allow disk space for replacement segments as well
+as the existing data. The command reports how many
+bytes Tarp unlinked. A zero-byte result can mean that all records were live.
+The engine preserves graph contents, relay positions and receipt decisions.
+See [Tarp’s key-ordered checkpoint contract](https://github.com/anaregdesign/tarp/blob/v0.15.0/docs/key-ordered-compaction.md)
+and [the Lantern workload measurements](https://github.com/anaregdesign/lantern/issues/2251#issuecomment-7175705919).
+
 ## Public graph export and import
 
 `lantern-cli dump` streams a logical point-in-time graph in protobuf or

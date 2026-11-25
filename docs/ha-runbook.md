@@ -54,6 +54,11 @@ Graph-only startup can restore a missing volume from a private point. Receipt
 restart requires the existing database or a witnessed final backup restored
 explicitly. Recover native security state through its own procedures.
 
+Tarp cleans segments online. Lantern schedules key-ordered compaction after
+substantial changes and a quiet interval. The operator command supports
+one-node-at-a-time maintenance after bulk imports. See
+[compacting the node database](backup.md#compacting-the-node-database).
+
 ### 2.2 HA mode (leaderless data replication)
 
 OFF configures the complete independent signed private peer plane explicitly.
