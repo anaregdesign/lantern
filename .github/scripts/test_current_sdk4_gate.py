@@ -769,7 +769,7 @@ class SDK4WiringTest(unittest.TestCase):
         prerequisites = next(line for line in build.splitlines() if line.strip().startswith("needs: ["))
         names = set(prerequisites.partition("[")[2].removesuffix("]").split(", "))
         self.assertTrue({"scope", "modules", "functional-validation", "configured-source-integration",
-                         "receipt-backup-windows", "fuzz", "native-deployment"} <= names)
+                         "rust-windows", "fuzz", "native-deployment"} <= names)
         self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
         self.assertIn("needs.configured-source-integration.outputs.artifact_id", build)
         self.assertIn("needs.configured-source-integration.outputs.receipt_sha256", build)

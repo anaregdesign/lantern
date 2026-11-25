@@ -181,14 +181,14 @@ class WorkflowRoutingTest(unittest.TestCase):
         self.assertNotIn("paths-ignore:", triggers_text)
         for name in ("Build & Test", "Lint", "Proto (buf)", "govulncheck"):
             self.assertIn(f"name: {name}\n", text)
-        build = text.split("  build:\n")[1].split("  receipt-backup-windows:")[0]
+        build = text.split("  build:\n")[1].split("  rust-windows:")[0]
         self.assertIn("    if: always()\n", build)
         self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
         for name in ("lint", "proto", "govulncheck"):
             body = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
             self.assertIn("    if: always()\n", body)
             self.assertIn("needs.scope.result", body)
-        for name in ("receipt-backup-windows", "fuzz"):
+        for name in ("rust-windows", "fuzz"):
             body = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
             self.assertIn("needs.scope.outputs.docs_only != 'true'", body)
 
