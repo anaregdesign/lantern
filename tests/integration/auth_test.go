@@ -965,10 +965,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 		config.Machines = json.RawMessage(raw)
 	})
 	for key, value := range map[string]string{"orders:public:1": "visible", "orders:private:1": "visible private", "archive:public:1": "archived"} {
-		physical := "data:" + key
-		if err := f.graph.PutVertex(physical, &pb.Vertex{Key: physical, Value: &pb.Vertex_String_{String_: value}}); err != nil {
-			t.Fatal(err)
-		}
+		f.seedVertex(t, key, value)
 	}
 	before := f.fetches.Load()
 	request := securityWireRequest(token, &pb.GetCurrentPrincipalRequest{})
@@ -1046,11 +1043,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	// authority fixture. Protocol-only receipt fixtures below do not establish
 	// authentication, even when their client sends an Authorization header.
 	largeValue := "current-compression:" + strings.Repeat("payload-", 1024)
-	if err := f.graph.PutVertex("data:orders:public:compressed", &pb.Vertex{
-		Key: "data:orders:public:compressed", Value: &pb.Vertex_String_{String_: largeValue},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	f.seedVertex(t, "orders:public:compressed", largeValue)
 	for _, test := range []struct {
 		name, key, credential, value string
 		status                       int
@@ -2023,11 +2016,9 @@ func TestAuth_OIDCScopedCollectionsRealConnect(t *testing.T) {
 	}
 	token := f.token(t, "scoped", nil)
 	for _, key := range []string{"users:1", "users:2", "users:private:1", "users:private:2", "users:z", "other:1"} {
-		if err := f.graph.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: key}}); err != nil {
-			t.Fatal(err)
-		}
+		f.seedVertex(t, key, key)
 	}
-	f.graph.AddEdgesWithExpiration([]graphcache.EdgeItem[string]{{Tail: "data:users:1", Head: "data:users:private:1", Weight: 100}, {Tail: "data:users:1", Head: "data:users:2", Weight: 2}, {Tail: "data:other:1", Head: "data:users:2", Weight: 3}, {Tail: "data:users:2", Head: "data:users:z", Weight: 4}})
+	f.seedEdges(t, []*pb.Edge{{Tail: "users:1", Head: "users:private:1", Weight: 100}, {Tail: "users:1", Head: "users:2", Weight: 2}, {Tail: "other:1", Head: "users:2", Weight: 3}, {Tail: "users:2", Head: "users:z", Weight: 4}})
 	for _, order := range []pb.ScanOrder{pb.ScanOrder_SCAN_ORDER_ASC, pb.ScanOrder_SCAN_ORDER_DESC} {
 		var cursor []byte
 		var keys []string
@@ -2120,10 +2111,7 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	token := f.token(t, "query1", nil)
 	put := func(key, text string) {
 		t.Helper()
-		physical := "data:" + key
-		if err := f.graph.PutVertex(physical, &pb.Vertex{Key: physical, Value: &pb.Vertex_String_{String_: text}}); err != nil {
-			t.Fatal(err)
-		}
+		f.seedVertex(t, key, text)
 	}
 	put("users:search:a", "needle launch")
 	put("users:search:b", "needle longer ordinary document")
@@ -2170,9 +2158,7 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	if _, err := f.data.SearchVertices(t.Context(), securityWireRequest(token, &pb.SearchVerticesRequest{Query: "needle", Prefix: "users:private:"})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("denied search prefix admitted", err)
 	}
-	for _, edge := range []graphcache.EdgeItem[string]{{Tail: "data:users:seed", Head: "data:users:a", Weight: 3}, {Tail: "data:users:a", Head: "data:users:seed", Weight: 1}, {Tail: "data:users:seed", Head: "data:users:private:bridge", Weight: 1000}, {Tail: "data:users:private:bridge", Head: "data:users:unreachable", Weight: 1000}, {Tail: "data:users:seed", Head: "data:users:blocked:a", Weight: 1000}, {Tail: "data:other:incoming", Head: "data:users:a", Weight: 100}} {
-		f.graph.AddEdgesWithExpiration([]graphcache.EdgeItem[string]{edge})
-	}
+	f.seedEdges(t, []*pb.Edge{{Tail: "users:seed", Head: "users:a", Weight: 3}, {Tail: "users:a", Head: "users:seed", Weight: 1}, {Tail: "users:seed", Head: "users:private:bridge", Weight: 1000}, {Tail: "users:private:bridge", Head: "users:unreachable", Weight: 1000}, {Tail: "users:seed", Head: "users:blocked:a", Weight: 1000}, {Tail: "other:incoming", Head: "users:a", Weight: 100}})
 	for _, weighting := range []pb.Weighting{pb.Weighting_WEIGHTING_RAW, pb.Weighting_WEIGHTING_TFIDF, pb.Weighting_WEIGHTING_BM25} {
 		request := &pb.IlluminateRequest{Seed: "users:seed", Weighting: weighting, Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 3, FanOut: 1}}}
 		result, err := f.data.Illuminate(t.Context(), securityWireRequest(token, request))
@@ -2230,9 +2216,12 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	}
 	// Resource limits count actual scan work, but public errors do not expose
 	// physical counters from denied adjacency rows.
-	for i := range 1100 {
-		f.graph.AddEdge("data:users:seed", fmt.Sprintf("data:users:private:wide:%d", i), 1)
+	wide := make([]*pb.Edge, 1100)
+	expiration := timestamppb.New(time.Now().Add(f.seedTTL))
+	for i := range wide {
+		wide[i] = &pb.Edge{Tail: "users:seed", Head: fmt.Sprintf("users:private:wide:%d", i), Weight: 1, Expiration: expiration}
 	}
+	f.seedEdges(t, wide)
 	for _, community := range []bool{false, true} {
 		request := &pb.IlluminateRequest{Seed: "users:seed", Weighting: pb.Weighting_WEIGHTING_BM25, Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 10}}}
 		if community {
@@ -2631,9 +2620,7 @@ func TestAuth_OIDCAdminVertexCountRealConnect(t *testing.T) {
 	if err != nil || len(principal.Msg.Roles) != 1 || principal.Msg.Roles[0].Id != "security_admin" || len(principal.Msg.Roles[0].Rules) != 4 || principal.Msg.Roles[0].Rules[0].ResourceKind != pb.SecurityResource_SECURITY_RESOURCE_SECURITY {
 		t.Fatal("bootstrap must have management authority without data grants", err)
 	}
-	if err := f.graph.PutVertex("data:tenant:a", &pb.Vertex{Key: "data:tenant:a", Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
-		t.Fatal(err)
-	}
+	f.seedVertex(t, "tenant:a", "visible")
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -2751,9 +2738,7 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 			}
 
 			for _, key := range []string{"orders:tail", "orders:head", "orders:private:hidden", "audit:read"} {
-				if err := f.graph.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
-					t.Fatal(err)
-				}
+				f.seedVertex(t, key, "visible")
 			}
 			root, err := filepath.Abs("../..")
 			if err != nil {
