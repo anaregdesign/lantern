@@ -448,6 +448,9 @@ func main() {
 func runMain() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == "compact-graph-store" {
+		return compactGraphStore(ctx, os.Args[2:], os.Stdout)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "restore-graph-store" {
 		return restoreGraphStore(ctx, os.Args[2:], os.Stdout)
 	}

@@ -1,11 +1,14 @@
 package main
 
-// Shared only by the ordinary source child and the tagged functional harness.
-// This file is compiled into tests, never the normal production executable.
 import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 )
 
 func neutralizeInheritedProfileControls() (restore func(), err error) {
@@ -87,4 +90,23 @@ func TestInheritedProfileControlsNeutralized(t *testing.T) {
 	if os.Getenv("UNIT_ORDINARY_ENV") != "UNIT_UPDATED_ORDINARY_VALUE" {
 		t.Fatal("UNIT restore reverted unrelated environment")
 	}
+}
+
+func durableRuntimeCut(t *testing.T, path string) dataruntime.TarpBackupWitness {
+	t.Helper()
+	db, err := graphstore.OpenExisting(t.Context(), path, hlc.NodeID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	view, err := db.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	cut, err := dataruntime.ReadTarpBackupWitness(db.NodeID(), view.Generation, view.Snapshot, keyspace.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cut
 }

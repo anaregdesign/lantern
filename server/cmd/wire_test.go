@@ -18,8 +18,6 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/internal/dataruntime"
-	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
@@ -120,25 +118,6 @@ func reserveRuntimeTestPort(t *testing.T) (net.Listener, int) {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	return listener, port
-}
-
-func durableRuntimeCut(t *testing.T, path string) dataruntime.TarpBackupWitness {
-	t.Helper()
-	db, err := graphstore.OpenExisting(t.Context(), path, hlc.NodeID{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	view, err := db.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer view.Close()
-	cut, err := dataruntime.ReadTarpBackupWitness(db.NodeID(), view.Generation, view.Snapshot, keyspace.Version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cut
 }
 
 func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
