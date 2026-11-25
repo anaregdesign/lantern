@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Regenerate the private replication bindings for the existing-endpoint Edge
+  Create receipt used in peer Snapshots.
+- Update the package description to reflect the Server's Tarp-backed storage.
+
 ## 0.5.1
 
 - Make the watch overflow/revalidation and sharing/cancellation regressions wait

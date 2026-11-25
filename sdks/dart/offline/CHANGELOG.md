@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Raise the minimum supported `lantern_client` version to `0.5.2` to match
+  the parent SDK used for paired-source validation.
+
 ## 0.6.0
 
 - Allow legacy receipt replay to make its first send without an absence-status
