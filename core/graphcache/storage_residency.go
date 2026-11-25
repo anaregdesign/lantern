@@ -15,7 +15,6 @@ type storageResidency[S comparable, T any] struct {
 	db          *graphstore.DB
 	fault       atomic.Pointer[error]
 	pending     storageSweep[S]
-	collecting  bool
 	maintenance func(func() error) error
 }
 
@@ -93,6 +92,7 @@ func (c *GraphCache[S, T]) StorageGenerationPublished() {
 	c.vertices.ReleaseValues()
 	c.storage.pending = storageSweep[S]{}
 	c.bindStorageGCHooks()
+	c.releaseStorageIndexes()
 	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
 		c.storage.bindWeight(graphstore.EdgeKey[S]{Tail: tail, Head: head}, w)
 		return true
@@ -113,5 +113,6 @@ func (c *GraphCache[S, T]) bindStorage(rows *graphstore.Rows[S, T], view *graphs
 	c.storage = &storageResidency[S, T]{rows: rows, db: view.Database()}
 	c.vertices.SetValueLoader(c.storage.vertex)
 	c.bindStorageGCHooks()
+	c.releaseStorageIndexes()
 	return nil
 }

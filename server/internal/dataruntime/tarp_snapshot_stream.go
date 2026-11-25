@@ -16,6 +16,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -96,21 +97,15 @@ func (s *Replication) streamTarpSnapshot(ctx context.Context, format pb.Snapshot
 	footer := &pb.SnapshotFooter{}
 	hdr := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Header{Header: &header}}
 	end := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: footer}}
-	preamble := []*pb.SnapshotResponse{hdr}
+	var ledger *tarpReceiptTable
 	if format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
-		_, active, retired, err := s.runtime.tarp.readReceiptState(reader.view.Snapshot, reader.view.Generation, s.receiptSnapshotPolicy)
+		ledger, err = openTarpReceiptTable(ctx, reader.view.Generation, reader.view.Snapshot, s.receiptSnapshotPolicy)
 		if err != nil {
 			return err
 		}
-		policy := s.receiptSnapshotPolicy
-		policy.ClockHighWater = active.ClockHighWater()
-		capture := ReceiptWholeStateCapture{Graph: []*pb.SnapshotResponse{hdr, end}, Receipts: active, Retired: retired, Origins: origins, Policy: policy}
-		frames, err := PrepareReceiptSnapshotFrames(capture, s.receiptSnapshotPolicy)
-		if err != nil {
+		if err = ledger.prepareFrames(ctx, &header, footer, origins); err != nil {
 			return err
 		}
-		preamble, end = frames[:len(frames)-1], frames[len(frames)-1]
-		footer = end.GetFooter()
 		reader.bounds.cutoff = hlcFromProto(header.CutoffHlc)
 		reader.bounds.originLast, err = validateReceiptSnapshotOrigins(&header, origins, reader.bounds.cutoff)
 		if err != nil {
@@ -122,11 +117,21 @@ func (s *Replication) streamTarpSnapshot(ctx context.Context, format pb.Snapshot
 			return err
 		}
 	}
-	for _, frame := range preamble {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := stream.Send(frame); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := stream.Send(hdr); err != nil {
+		return err
+	}
+	if ledger != nil {
+		_, err = ledger.scan(ctx, func(_ mutationreceipt.Epoch, rec mutationreceipt.Receipt) error {
+			f, err := ledger.frame(rec)
+			if err != nil {
+				return err
+			}
+			return stream.Send(f)
+		})
+		if err != nil {
 			return err
 		}
 	}

@@ -67,14 +67,9 @@ func (r *Rows[K, V]) Vertices(ctx context.Context, snap *tarp.Snapshot, gen uint
 				yield(zero, err)
 				return
 			}
-			k, err := vertexTupleCodec.Decode(row.Key)
+			key, err := r.decodeVertexKey(row.Key)
 			if err != nil {
-				yield(zero, fmt.Errorf("%w: decode vertex key: %w", ErrInvalidRow, err))
-				return
-			}
-			key, err := r.keys.Decode([]byte(k.Key))
-			if err != nil {
-				yield(zero, fmt.Errorf("%w: decode vertex identity: %w", ErrInvalidRow, err))
+				yield(zero, err)
 				return
 			}
 			value, err := r.decodeVertex(row.Value)
@@ -209,27 +204,12 @@ func (r *Rows[K, V]) Sources(ctx context.Context, snap *tarp.Snapshot, gen uint6
 			yield(SourceEntry{}, err)
 			return
 		}
-		for row, err := range snap.ScanRange(ctx, bounds.lower, bounds.upper) {
+		for row, err := range scanOrderedSources(ctx, snap, bounds) {
 			if err != nil {
 				yield(SourceEntry{}, err)
 				return
 			}
-			tuple, err := sourceTupleCodec.Decode(row.Key)
-			if err != nil {
-				yield(SourceEntry{}, fmt.Errorf("%w: decode source key: %w", ErrInvalidRow, err))
-				return
-			}
-			id, err := sourceIdentity(tuple)
-			if err != nil {
-				yield(SourceEntry{}, err)
-				return
-			}
-			source, err := decodeAdd(row.Value)
-			if err != nil {
-				yield(SourceEntry{}, err)
-				return
-			}
-			if !yield(SourceEntry{id, source}, nil) {
+			if !yield(row.entry, nil) {
 				return
 			}
 		}

@@ -60,8 +60,9 @@ type GraphCache[S comparable, T any] struct {
 	// sync with the vertex cache under c.mu so prefix scans return a
 	// view consistent with point reads. When nil the put / evict paths
 	// pay no extra cost beyond a single nil check.
-	prefixIndex   *radix
-	prefixExtract func(S) string
+	prefixIndex        *radix
+	storagePrefixOrder bool
+	prefixExtract      func(S) string
 
 	// headByTail is the per-tail head-side prefix index that backs the
 	// head dimension of ScanEdgesByPrefix (Issue #167). It is allocated
@@ -265,7 +266,7 @@ func (c *GraphCache[S, T]) EnablePrefixIndex(extract func(S) string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.prefixIndex != nil {
+	if c.prefixExtract != nil {
 		return // idempotent: re-enabling with the same intent is fine
 	}
 	if c.vertices.Count() != 0 {

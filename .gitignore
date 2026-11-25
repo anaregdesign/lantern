@@ -31,3 +31,6 @@ deploy/compose/backups/
 /sdks/dart/example/android/app/google-services.json
 /sdks/dart/example/ios/Runner/GoogleService-Info.plist
 /sdks/dart/example/ios/Runner/AuthKey_*.p8
+
+# Default Server database in the checkout root.
+/lantern-data/

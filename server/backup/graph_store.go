@@ -39,6 +39,19 @@ type graphStoreCut struct {
 	Rows            [32]byte
 }
 
+// Seal the application witness as well as the native image so that
+// retention cannot count a corrupted cut toward its minimum kept points.
+func marshalGraphCut(cut graphStoreCut) ([]byte, error) {
+	raw, err := json.Marshal(cut)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		graphStoreCut
+		CutChecksum [sha256.Size]byte
+	}{cut, sha256.Sum256(raw)})
+}
+
 // NewGraphStore uses Tarp's native backup for this certified node's periodic,
 // manual and shutdown backups. Public BackupSnapshot remains a graph export.
 func NewGraphStore(svc Service, db *graphstore.DB, cfg Config, reg prometheus.Registerer, logger *slog.Logger) *Backupper {
@@ -137,7 +150,7 @@ func (b *Backupper) backupGraphStore(ctx context.Context, source string, policy 
 		return stats, err
 	}
 	cut.DatabaseID, cut.StorageSequence = info.DatabaseID, info.LastUserSequence
-	raw, err := json.Marshal(cut)
+	raw, err := marshalGraphCut(cut)
 	if err != nil {
 		return stats, err
 	}
@@ -255,7 +268,7 @@ func loadGraphPoint(ctx context.Context, dir, instance string, id uint64, namesp
 	if err = json.Unmarshal(raw, &cut); err != nil {
 		return cut, nil, empty, err
 	}
-	match, err := json.Marshal(cut)
+	match, err := marshalGraphCut(cut)
 	if err != nil || !bytes.Equal(raw, match) || cut.Format != privateGraphBackupFormat || cut.Instance != instance || cut.ID != id || id == 0 || cut.Namespace != namespace || cut.Application.Generation == 0 || cut.Application.NodeID == (hlc.NodeID{}) || cut.Rows == ([32]byte{}) {
 		return cut, nil, empty, errors.New("backup: invalid private backup cut")
 	}

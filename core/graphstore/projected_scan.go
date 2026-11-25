@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"time"
+
+	"github.com/anaregdesign/lantern/core/cache"
 
 	"github.com/anaregdesign/tarp"
 )
@@ -20,6 +23,71 @@ func projectedBounds(prefix []byte, lower, upper string) scanBounds {
 		bounds.upper = append(append([]byte(nil), prefix...), tarp.EncodeOrderedStringPrefix(upper)...)
 	}
 	return bounds
+}
+
+// LiveVertexRange performs one ordered Tarp scan. Keys-only consumers inspect
+// the fixed expiration metadata and never decode the application value.
+func (r *Rows[K, V]) LiveVertexRange(ctx context.Context, snap *tarp.Snapshot, gen uint64, lower, upper string, after *K, reverse, keysOnly bool, now time.Time) iter.Seq2[VertexEntry[K, V], error] {
+	return func(yield func(VertexEntry[K, V], error) bool) {
+		var zero VertexEntry[K, V]
+		p, err := familyPrefix(gen, vertexFamily)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		bounds := projectedBounds(p, lower, upper)
+		if after != nil {
+			cursor, err := r.vertexKey(gen, vertexFamily, *after)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			bounds = bounds.after(cursor, reverse)
+		}
+		for row, err := range snap.ScanRange(ctx, bounds.lower, bounds.upper, scanOptions(reverse)...) {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			deadline, ts, err := parseMetadata(row.Value)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			if !cache.IsLiveAt(deadline, now) {
+				continue
+			}
+			k, err := r.decodeVertexKey(row.Key)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			v := Vertex[V]{Expiration: deadline, HLC: ts}
+			if !keysOnly {
+				v.Value, err = r.values.Decode(row.Value[metadataSize:])
+				if err != nil {
+					yield(zero, fmt.Errorf("%w: decode vertex: %w", ErrInvalidRow, err))
+					return
+				}
+			}
+			if !yield(VertexEntry[K, V]{k, v}, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (r *Rows[K, V]) decodeVertexKey(raw []byte) (K, error) {
+	var zero K
+	tuple, err := vertexTupleCodec.Decode(raw)
+	if err != nil {
+		return zero, fmt.Errorf("%w: decode vertex key: %w", ErrInvalidRow, err)
+	}
+	k, err := r.keys.Decode([]byte(tuple.Key))
+	if err != nil {
+		return zero, fmt.Errorf("%w: decode vertex identity: %w", ErrInvalidRow, err)
+	}
+	return k, nil
 }
 
 // VertexKeysRange visits keys only. A caller enforcing data policy can
@@ -46,14 +114,9 @@ func (r *Rows[K, V]) VertexKeysRange(ctx context.Context, snap *tarp.Snapshot, g
 				yield(zero, err)
 				return
 			}
-			tuple, err := vertexTupleCodec.Decode(key)
+			k, err := r.decodeVertexKey(key)
 			if err != nil {
-				yield(zero, fmt.Errorf("%w: decode vertex key: %w", ErrInvalidRow, err))
-				return
-			}
-			k, err := r.keys.Decode([]byte(tuple.Key))
-			if err != nil {
-				yield(zero, fmt.Errorf("%w: decode vertex identity: %w", ErrInvalidRow, err))
+				yield(zero, err)
 				return
 			}
 			if !yield(k, nil) {

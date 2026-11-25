@@ -3,6 +3,7 @@ package dataruntime
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -165,5 +166,44 @@ func TestTarpFailedGraphSnapshotReopensOldCut(t *testing.T) {
 	}
 	if _, ok := service.cache.GetVertex("before"); !ok {
 		t.Fatal("previous generation lost")
+	}
+}
+
+func TestTarpRemoteGapAndDuplicateAcrossRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "store")
+	rt, s := openTarpTestRuntime(t, dir, 4)
+	origin := hlc.NodeID{9}
+	mutation := func(seq uint64) *pb.Mutation {
+		return &pb.Mutation{Origin: origin[:], Seq: seq, Hlc: newHLC(int64(seq), origin), Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: fmt.Sprintf("remote-%d", seq)}}}}}
+	}
+	if err := s.ApplyMutation(t.Context(), mutation(2)); err != nil {
+		t.Fatal(err)
+	}
+	if s.LocalSeq(origin) != 0 || rt.log.Len() != 0 {
+		t.Fatal("future delivery advanced durable cursor")
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rt, s = openTarpTestRuntime(t, dir, 4)
+	for _, n := range []uint64{2, 1, 2} {
+		if err := s.ApplyMutation(t.Context(), mutation(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rt, s = openTarpTestRuntime(t, dir, 4)
+	if err := s.ApplyMutation(t.Context(), mutation(1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.LocalSeq(origin); got != 2 || rt.log.Len() != 2 {
+		t.Fatalf("duplicate changed cut %d/%d", got, rt.log.Len())
+	}
+	for _, k := range []string{"remote-1", "remote-2"} {
+		if _, err := s.GetVertex(t.Context(), &pb.GetVertexRequest{Key: k}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

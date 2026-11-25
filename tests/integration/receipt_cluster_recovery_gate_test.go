@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
+
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -36,9 +39,9 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	origin := newClusterRecoveryReceiptProtocolServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "origin.wal"), hlc.NodeID{0xa1}))
-	follower := newClusterRecoveryReceiptProtocolServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "follower.wal"), hlc.NodeID{0xb2}))
-	partitioned := newClusterRecoveryReceiptProtocolServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "partitioned.wal"), hlc.NodeID{0xe5}))
+	origin := newClusterRecoveryReceiptProtocolServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "origin"), hlc.NodeID{0xa1}))
+	follower := newClusterRecoveryReceiptProtocolServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "follower"), hlc.NodeID{0xb2}))
+	partitioned := newClusterRecoveryReceiptProtocolServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "partitioned"), hlc.NodeID{0xe5}))
 	stopFollower := startClusterRecoveryReceiptPump(t, ctx, "receipt backup follower", follower, origin, nil)
 	defer stopFollower()
 
@@ -196,108 +199,86 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	requireGraph("origin", origin)
 	requireGraph("backed-up follower", follower)
 
-	source, policy, err := follower.runtime.ReceiptWholeStateBackupSource(follower.server.svc, follower.server.rep)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Quiesce the origin and retain the terminal receipt/relay witness and
+	// the backup's cut digest outside the data and backup directories.
+	stopFollower()
+	followerCapability := receiptProtocolCapability(t, follower)
+	beforeBackup := clusterReceiptWitness(t, follower.runtime)
 	backupDir := t.TempDir()
 	const instance = "cluster-restore"
-	producer, err := backup.NewReceipt(follower.server.svc, source, policy, backup.Config{
-		Enabled: true, Dir: backupDir, Interval: time.Hour, Retain: 1, InstanceID: instance,
-	}, nil, nil)
-	if err != nil {
+	var audit bytes.Buffer
+	producer := backup.NewGraphStore(follower.server.svc, follower.runtime.GraphStore(), backup.Config{Enabled: true, Dir: backupDir, Interval: time.Hour, Retain: 1, InstanceID: instance, NamespaceFormat: follower.config.NamespaceFormat}, nil, slog.New(slog.NewJSONHandler(&audit, nil)))
+	stats, err := producer.BackupNow(ctx)
+	if err != nil || stats.Bytes <= 0 || stats.Members != 2 {
+		t.Fatalf("physical recovery point = %+v, %v", stats, err)
+	}
+	var event struct {
+		Point string
+		Cut   string `json:"cut_sha256"`
+	}
+	if err = json.Unmarshal(bytes.TrimSpace(audit.Bytes()), &event); err != nil {
 		t.Fatal(err)
 	}
-	stats, err := producer.BackupNow(ctx)
-	if err != nil || stats.Vertices != 3 || stats.Edges != 1 ||
-		stats.Receipts != len(operationIDs) || stats.Members != 3 {
-		t.Fatalf("converged follower backup = (%+v, %v)", stats, err)
+	hash, err := hex.DecodeString(event.Cut)
+	if err != nil || len(hash) != 32 || filepath.Base(event.Point) != event.Point {
+		t.Fatalf("missing independently retained backup cut %s", audit.Bytes())
 	}
-
-	stopFollower()
+	point, expected := filepath.Join(backupDir, event.Point), [32]byte(hash)
+	if afterBackup := clusterReceiptWitness(t, follower.runtime); afterBackup != beforeBackup {
+		t.Fatalf("source advanced while recording recovery point: %+v => %+v", beforeBackup, afterBackup)
+	}
 	for _, node := range []receiptProtocolWireServer{origin, follower, partitioned} {
 		node.server.srv.Close()
-		if err := node.runtime.Close(); err != nil {
-			t.Fatalf("close original cluster node: %v", err)
+		if err = node.runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.RemoveAll(node.config.Path); err != nil {
+			t.Fatalf("remove test node data directory: %v", err)
 		}
 	}
-	evidence, err := backup.LoadLatestReceiptBackupSet(backupDir, instance)
-	if err != nil || evidence.WALCut.Seq == 0 || evidence.Stats.Receipts != len(operationIDs) {
-		t.Fatalf("loaded receipt backup after total-cluster loss = (%+v, %v)", evidence, err)
+	restoredConfig := clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "restored"), follower.config.NodeID)
+	if err := backup.RestoreGraphStore(ctx, point, restoredConfig.Path, instance, hlc.NodeID{0xc3}, expected); err == nil {
+		t.Fatal("physical restore accepted different node")
 	}
-
-	restoredConfig := clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "restored.wal"), hlc.NodeID{0xc3})
-	restoredConfig.Receipt.Epoch = mutationreceipt.Epoch{0x73}
-	restore, err := backup.PrepareFreshReceiptStartupRestore(evidence, restoredConfig.Receipt, restoredConfig.Now)
-	if err != nil {
+	if err := backup.RestoreGraphStore(ctx, point, restoredConfig.Path, instance, restoredConfig.NodeID, [32]byte{1}); err == nil {
+		t.Fatal("physical restore accepted a different cut")
+	}
+	if err := backup.RestoreGraphStore(ctx, point, restoredConfig.Path, instance, restoredConfig.NodeID, expected); err != nil {
 		t.Fatal(err)
 	}
-	if len(restore.Capture.Receipts.Receipts) != 0 ||
-		len(restore.Capture.Retired.Epochs) != 1 ||
-		len(restore.Capture.Retired.Epochs[0].State.Receipts) != len(operationIDs) {
-		t.Fatalf("fresh restore did not rotate %d active receipts into retired evidence", len(operationIDs))
+	wrongEpoch := restoredConfig
+	wrongEpoch.Receipt.Epoch = mutationreceipt.Epoch{0x73}
+	if rejected, err := service.OpenReceiptDatabase(ctx, wrongEpoch, false); err == nil {
+		_ = rejected.Close()
+		t.Fatal("physical restore accepted a different receipt epoch")
 	}
-	restoredConfig.StartupRestore = &restore
-	restored := newClusterRecoveryReceiptProtocolServer(t, restoredConfig)
+	restoredConfig.Log.Capacity = 1 // force the joining node to use Snapshot
+	restored := openClusterRecoveryReceiptProtocolServer(t, restoredConfig)
 	restoredCapability := receiptProtocolCapability(t, restored)
-	if !bytes.Equal(restoredCapability.GetPolicy().GetDeploymentEpoch(), restoredConfig.Receipt.Epoch[:]) ||
-		bytes.Equal(restoredCapability.GetPolicy().GetDeploymentEpoch(), oldCapability.GetPolicy().GetDeploymentEpoch()) ||
-		restored.runtime.ReceiptStats().Entries != 0 {
-		t.Fatalf("fresh restore active receipt policy = %+v, Store = %+v", restoredCapability.GetPolicy(), restored.runtime.ReceiptStats())
+	if !proto.Equal(restoredCapability.GetEndpoint(), followerCapability.GetEndpoint()) || !proto.Equal(restoredCapability.GetPolicy(), followerCapability.GetPolicy()) {
+		t.Fatalf("restored receipt identity changed: %v", restoredCapability)
 	}
-	requireStatuses("fresh restored node (retired epoch)", restored)
-	requireGraph("fresh restored node", restored)
-
-	beforeStore := restored.runtime.ReceiptStats()
-	beforeWAL, err := os.Stat(restoredConfig.Path)
-	if err != nil {
-		t.Fatal(err)
+	witness := clusterReceiptWitness(t, restored.runtime)
+	if witness.highWater < beforeBackup.highWater {
+		t.Fatal("restored receipt clock regressed")
 	}
-	beforeCut := receiptOriginCut(waitForClusterRecoveryReceiptProtocolCut(t, ctx, "fresh restored origin cut", restored, originCut, 5*time.Second))
-	staleContext := receiptProtocolContext(t, oldCapability, 0xaf, 1, issued)
-	staleContext.Endpoint = proto.Clone(restoredCapability.GetEndpoint()).(*pb.ReceiptEndpoint)
-	if _, err := restored.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{
-		Vertex: &pb.Vertex{
-			Key: "cluster/stale", Value: &pb.Vertex_String_{String_: "must not land"},
-		},
-		ReceiptContext: staleContext,
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition ||
-		!strings.Contains(err.Error(), "outside the active receipt epoch") {
-		t.Fatalf("old-epoch PutVertex with current endpoint = %v, want epoch FailedPrecondition", err)
+	witness.highWater = beforeBackup.highWater
+	if witness != beforeBackup {
+		t.Fatalf("restored receipt history changed: %+v, want %+v", witness, beforeBackup)
 	}
-	afterWAL, err := os.Stat(restoredConfig.Path)
-	if err != nil {
-		t.Fatal(err)
+	requireStatuses("physical restore", restored)
+	requireGraph("physical restore", restored)
+	foreign := proto.Clone(restoredCapability).(*pb.GetReceiptCapabilityResponse)
+	foreign.Policy.DeploymentEpoch = wrongEpoch.Receipt.Epoch[:]
+	staleContext := receiptProtocolContext(t, foreign, 0xaf, 1, issued)
+	if _, err := restored.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "cluster/stale", Value: &pb.Vertex_String_{String_: "must not land"}}, ReceiptContext: staleContext})); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "outside the active receipt epoch") {
+		t.Fatalf("foreign receipt epoch was not refused: %v", err)
 	}
-	afterStatus, err := newReplicationRawClient(t, restored.server.url).PeerStatus(
-		ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	afterStore := restored.runtime.ReceiptStats()
-	if afterStore.Entries != beforeStore.Entries || afterStore.Bytes != beforeStore.Bytes ||
-		afterWAL.Size() != beforeWAL.Size() ||
-		!reflect.DeepEqual(receiptOriginCut(afterStatus.Msg), beforeCut) {
-		t.Fatalf("rejected old-epoch write changed Store/WAL/origin cut: before %+v/%d/%v, after %+v/%d/%v",
-			beforeStore, beforeWAL.Size(), beforeCut,
-			afterStore, afterWAL.Size(), receiptOriginCut(afterStatus.Msg))
-	}
-	if _, err := restored.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cluster/stale"})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("rejected old-epoch write changed graph: GetVertex = %v", err)
-	}
-	staleStatus := receiptProtocolStatuses(t, ctx, restored, staleContext.GetOperationIds())[0]
-	if staleStatus.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE ||
-		staleStatus.GetReceipt() != nil {
-		t.Fatalf("unknown retired-epoch ID = %+v, want NO_LONGER_PROVABLE without receipt", staleStatus)
-	}
-	requireStatuses("restored node after rejection", restored)
-	if length, _, evicted := restored.runtime.MutationLogStats(); length != 0 || evicted == 0 {
-		t.Fatalf("fresh restore replay log = len %d evicted %d, want a committed boundary with no retained tail",
-			length, evicted)
+	if now := clusterReceiptWitness(t, restored.runtime); now.seq != beforeBackup.seq || now.ledger != beforeBackup.ledger || now.tip != beforeBackup.tip {
+		t.Fatalf("rejected write changed the restored cut: %+v", now)
 	}
 
-	joinConfig := clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "joiner.wal"), hlc.NodeID{0xd4})
+	joinConfig := clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "joiner"), hlc.NodeID{0xd4})
 	joinConfig.Receipt.Epoch = restoredConfig.Receipt.Epoch
 	joiner := newClusterRecoveryReceiptProtocolServer(t, joinConfig)
 	snapshotMetrics := &clusterReceiptSnapshotMetrics{installed: make(chan struct{}, 1)}
@@ -311,7 +292,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatal("joiner did not install a RECEIPT Snapshot; WAL replay cannot prove recovery")
 	}
 	waitForClusterRecoveryReceiptProtocolCut(t, ctx, "new replica recovered", joiner, originCut, 5*time.Second)
-	requireStatuses("rejoined node (retired epoch)", joiner)
+	requireStatuses("rejoined node (restored receipts)", joiner)
 	requireGraph("rejoined node", joiner)
 
 	currentContext := receiptProtocolContext(t, restoredCapability, 0xc4, 1,
@@ -321,14 +302,14 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		ReceiptContext: currentContext,
 	}))
 	if err != nil || current.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-		t.Fatalf("new-epoch PutVertex = (%+v, %v)", current, err)
+		t.Fatalf("post-restore PutVertex = (%+v, %v)", current, err)
 	}
 	joinedCut := map[string]uint64{
 		hex.EncodeToString(origin.config.NodeID[:]):   6,
 		hex.EncodeToString(restored.config.NodeID[:]): 1,
 	}
-	joinedStatus := waitForClusterRecoveryReceiptProtocolCut(t, ctx, "new-epoch tail on joiner", joiner, joinedCut, 5*time.Second)
-	requireExactReceiptCut(t, "new-epoch tail on joiner", joinedStatus, joinedCut)
+	joinedStatus := waitForClusterRecoveryReceiptProtocolCut(t, ctx, "post-restore tail on joiner", joiner, joinedCut, 5*time.Second)
+	requireExactReceiptCut(t, "post-restore tail on joiner", joinedStatus, joinedCut)
 	for _, node := range []struct {
 		name string
 		wire receiptProtocolWireServer
@@ -343,7 +324,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		}
 		live, err := node.wire.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cluster/new"}))
 		if err != nil || live.Msg.GetVertex().GetString_() != "current" {
-			t.Fatalf("%s new-epoch graph = (%+v, %v)", node.name, live, err)
+			t.Fatalf("%s post-restore graph = (%+v, %v)", node.name, live, err)
 		}
 		requireStatuses(node.name+" after new epoch write", node.wire)
 	}
@@ -358,10 +339,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	for _, row := range joinedStatus.GetOrigins() {
 		beforeOrigins[hex.EncodeToString(row.GetOrigin())] = proto.Clone(row).(*pb.OriginState)
 	}
-	beforeGeneration, err := os.ReadFile(joinConfig.Path + ".generation")
-	if err != nil {
-		t.Fatal(err)
-	}
+	beforeGeneration := clusterReceiptWitness(t, joiner.runtime).endpoint
 
 	stopJoiner()
 	joiner.server.srv.Close()
@@ -379,10 +357,10 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatalf("restarted Snapshot log = %d/%d evicted %d, want %d/%d evicted %d",
 			length, capacity, evicted, beforeLength, beforeCapacity, beforeEvicted)
 	}
-	afterGeneration, err := os.ReadFile(joinConfig.Path + ".generation")
-	if err != nil || !bytes.Equal(afterGeneration, beforeGeneration) {
-		t.Fatalf("restarted receipt generation = %x, want %x: %v", afterGeneration, beforeGeneration, err)
+	if got := clusterReceiptWitness(t, restarted.runtime).endpoint; got != beforeGeneration {
+		t.Fatalf("restarted endpoint = %x, want %x", got, beforeGeneration)
 	}
+
 	restartedStatus := waitForClusterRecoveryReceiptProtocolCut(t, ctx, "restarted snapshot joiner", restarted, joinedCut, 5*time.Second)
 	requireExactReceiptCut(t, "restarted snapshot joiner", restartedStatus, joinedCut)
 	for _, row := range restartedStatus.GetOrigins() {
@@ -391,24 +369,24 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 			t.Fatalf("restarted origin %s = %+v, want %+v", key, row, beforeOrigins[key])
 		}
 	}
-	requireStatuses("restarted snapshot joiner (retired epoch)", restarted)
+	requireStatuses("restarted snapshot joiner (restored receipts)", restarted)
 	requireGraph("restarted snapshot joiner", restarted)
 	afterCurrent := receiptProtocolStatuses(t, ctx, restarted, currentContext.GetOperationIds())[0]
 	if afterCurrent.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
 		!proto.Equal(afterCurrent.GetReceipt(), beforeCurrent.GetReceipt()) {
-		t.Fatalf("restarted new-epoch receipt = %+v, want %+v", afterCurrent, beforeCurrent)
+		t.Fatalf("restarted post-restore receipt = %+v, want %+v", afterCurrent, beforeCurrent)
 	}
 	newVertex, err := restarted.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cluster/new"}))
 	if err != nil || newVertex.Msg.GetVertex().GetString_() != "current" {
-		t.Fatalf("restarted new-epoch graph = (%+v, %v)", newVertex, err)
+		t.Fatalf("restarted post-restore graph = (%+v, %v)", newVertex, err)
 	}
 	stale := receiptProtocolStatuses(t, ctx, restarted, staleContext.GetOperationIds())[0]
 	if stale.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE ||
 		stale.GetReceipt() != nil {
-		t.Fatalf("restarted unknown retired receipt = %+v", stale)
+		t.Fatalf("restarted unknown foreign-epoch receipt = %+v", stale)
 	}
 	if _, err := restarted.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cluster/stale"})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("restarted joiner admitted rejected old-epoch write: %v", err)
+		t.Fatalf("restarted joiner admitted rejected foreign-epoch write: %v", err)
 	}
 
 	restartCapability := receiptProtocolCapability(t, restarted)
@@ -419,16 +397,16 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		ReceiptContext: restartContext,
 	}))
 	if err != nil || restartPut.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-		t.Fatalf("post-restart new-epoch PutVertex = (%+v, %v)", restartPut, err)
+		t.Fatalf("post-restart post-restore PutVertex = (%+v, %v)", restartPut, err)
 	}
 	restartStatus := receiptProtocolStatuses(t, ctx, restarted, restartContext.GetOperationIds())[0]
 	if restartStatus.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
 		restartStatus.GetReceipt().GetOriginalResult().GetPutVertexOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-		t.Fatalf("post-restart new-epoch receipt = %+v", restartStatus)
+		t.Fatalf("post-restart post-restore receipt = %+v", restartStatus)
 	}
 	live, err := restarted.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cluster/restarted"}))
 	if err != nil || live.Msg.GetVertex().GetString_() != "live" {
-		t.Fatalf("post-restart new-epoch graph = (%+v, %v)", live, err)
+		t.Fatalf("post-restart post-restore graph = (%+v, %v)", live, err)
 	}
 	afterWrite, err := newReplicationRawClient(t, restarted.server.url).PeerStatus(
 		ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}),
@@ -447,6 +425,29 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		!bytes.Equal(local.GetLastHlc().GetNodeId(), joinConfig.NodeID[:]) {
 		t.Fatalf("post-restart local HLC did not advance past receipt clock %d: %+v", beforeClock, local)
 	}
+}
+
+type clusterReceiptCut struct {
+	node        hlc.NodeID
+	epoch       mutationreceipt.Epoch
+	endpoint    [16]byte
+	seq, count  uint64
+	highWater   int64
+	tip, ledger [32]byte
+}
+
+func clusterReceiptWitness(t *testing.T, runtime *service.ServingRuntime) clusterReceiptCut {
+	t.Helper()
+	view, err := runtime.GraphStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	w, err := runtime.TarpBackupWitness(view.Snapshot, view.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clusterReceiptCut{w.NodeID, w.ReceiptEpoch, w.ReceiptGeneration, w.LocalSeq, w.ReceiptCount, w.ReceiptHighWaterMillis, w.Digest, w.ReceiptDigest}
 }
 
 type clusterReceiptSnapshotMetrics struct{ installed chan struct{} }
@@ -468,7 +469,7 @@ func newClusterRecoveryReceiptProtocolServer(
 	config service.DurableReceiptWALRuntimeConfig,
 ) receiptProtocolWireServer {
 	t.Helper()
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +481,7 @@ func openClusterRecoveryReceiptProtocolServer(
 	config service.DurableReceiptWALRuntimeConfig,
 ) receiptProtocolWireServer {
 	t.Helper()
-	runtime, err := service.OpenDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,12 +517,12 @@ func mountClusterRecoveryReceiptProtocolServer(
 		t.Fatal(err)
 	}
 	receiptConfig := provider.ReceiptWALConfig{
-		Mode: mode,
+		Mode:  mode,
 		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
 		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
 	}
 	_, err = provider.NewBackupper(
-		backup.Config{}, receiptConfig, runtime, primary, certified, prometheus.NewRegistry(), nil,
+		backup.Config{NamespaceFormat: config.NamespaceFormat}, receiptConfig, runtime, primary, certified, prometheus.NewRegistry(), nil,
 	)
 	if err != nil {
 		t.Fatal(err)

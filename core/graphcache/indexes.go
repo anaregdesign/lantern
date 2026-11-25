@@ -16,9 +16,6 @@ func (c *GraphCache[S, T]) onVerticesEvicted(keys []S) {
 	if len(keys) == 0 {
 		return
 	}
-	if c.storage != nil && c.storage.collecting {
-		c.storage.pending.vertices = append(c.storage.pending.vertices, keys...)
-	}
 	if c.dict != nil {
 		c.dict.releaseKeys(keys)
 	}

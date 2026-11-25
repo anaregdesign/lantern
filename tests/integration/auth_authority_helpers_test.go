@@ -290,13 +290,13 @@ func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBoot
 		durable := durableReceiptWireConfig(filepath.Join(dir, "receipts.wal"), hlc.NodeID{8})
 		durable.NamespaceFormat = "namespaced-v1"
 		durable.ConfigureGraph = configureGraph
-		data, err = service.CreateDurableReceiptWALServingRuntime(durable)
+		data, err = service.OpenReceiptDatabase(t.Context(), durable, true)
 	} else {
 		graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 		if err := configureGraph(graph); err != nil {
 			t.Fatal(err)
 		}
-		data, err = service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{8}, hlc.Options{}), "namespaced-v1")
+		data, err = service.OpenGraphDatabase(t.Context(), filepath.Join(dir, "graph"), hlc.NodeID{8}, graph, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 	}
 	if err != nil {
 		t.Fatal(err)

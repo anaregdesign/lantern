@@ -378,8 +378,8 @@ func (s *Replication) Subscribe(ctx context.Context, req *pb.SubscribeRequest, s
 			}
 			fromLocalSeq = lastLocal + 1
 			for _, entry := range retained {
-				mutation, _ := graphMutationFromLog(entry.Op) // validated above
-				if mutation.GetSeq() >= cursorNext(cursor, hex.EncodeToString(mutation.GetOrigin())) {
+				id, seq, _ := retainedOrigin(entry) // validated above
+				if seq >= cursorNext(cursor, hex.EncodeToString(id[:])) {
 					fromLocalSeq = entry.Seq
 					break
 				}

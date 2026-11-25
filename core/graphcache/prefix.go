@@ -78,7 +78,7 @@ func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after s
 	enabled := func() bool {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
-		if c.prefixIndex == nil {
+		if c.prefixExtract == nil {
 			return false
 		}
 		// Collect (projected, key, value) under the read lock. We
@@ -108,7 +108,7 @@ func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after s
 			// same walk; the sentinel row is never replayed to fn.
 			return limit <= 0 || len(snapshot) <= limit
 		}
-		walkVisiblePrefix(ctx, c.prefixIndex, prefix, after, false, desc, false, collect)
+		c.walkVertexPrefix(ctx, prefix, after, false, desc, false, collect)
 		return true
 	}()
 	if !enabled {
@@ -148,11 +148,11 @@ func (c *GraphCache[S, T]) CountByPrefix(prefix string) int {
 func (c *GraphCache[S, T]) CountByPrefixContext(ctx context.Context, prefix string) int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.prefixIndex == nil {
+	if c.prefixExtract == nil {
 		return 0
 	}
 	count := 0
-	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
+	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -205,7 +205,7 @@ func (c *GraphCache[S, T]) DeleteByPrefixKeysWithPreflight(ctx context.Context, 
 func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string, limit int, preflight func([]S) error) ([]S, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.prefixIndex == nil {
+	if c.prefixExtract == nil {
 		if preflight != nil {
 			return nil, ctx.Err()
 		}
@@ -216,7 +216,7 @@ func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string
 	// write lock), and even if we could, the vertex-cache eviction
 	// callback already calls radix.deleteMany — which would deadlock.
 	var victims []S
-	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
+	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
 		if err := ctx.Err(); err != nil {
 			return false
 		}
@@ -230,6 +230,9 @@ func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string
 		victims = append(victims, key)
 		return true
 	})
+	if err := c.StorageError(); err != nil {
+		return nil, err
+	}
 	if preflight != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, err

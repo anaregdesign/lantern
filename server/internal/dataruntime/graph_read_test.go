@@ -41,7 +41,7 @@ func TestDiskGraphReadRPCs(t *testing.T) {
 		}
 		for _, head := range []string{"a", "b", "b\x00", "c", "d", "missing", "z"} {
 			k := graphstore.EdgeKey[string]{Tail: "a", Head: head}
-			if err := rows.PutEdge(b, g, k, graphstore.Edge{Base: &graphstore.Source{Weight: 1}}); err != nil {
+			if err := rows.PutEdge(b, g, k, graphstore.Edge{LastOrdinal: 2, Base: &graphstore.Source{Weight: 1}}); err != nil {
 				return err
 			}
 			w := float32(3)

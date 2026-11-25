@@ -66,7 +66,7 @@ func (s *Executor) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest)
 		vertices = vertices[:0]
 		lastKey = ""
 		var readErr error
-		more, readErr = read.vertexPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(key string, v *pb.Vertex) {
+		more, readErr = read.vertexPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, false, func(key string, v *pb.Vertex) {
 			// Normalise nil-valued vertices the same way GetVertex does so
 			// callers see a uniform shape.
 			if v == nil {
@@ -141,7 +141,7 @@ func (s *Executor) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKeysRequ
 		keys = keys[:0]
 		lastKey = ""
 		var readErr error
-		more, readErr = read.vertexPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(key string, _ *pb.Vertex) {
+		more, readErr = read.vertexPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, true, func(key string, _ *pb.Vertex) {
 			keys = append(keys, key)
 			lastKey = key
 		})

@@ -149,15 +149,8 @@ func (c *Cache[S, T]) GetAt(key S, now time.Time) (T, bool) {
 // lock and never evicts an entry or invokes an eviction callback. An absent key
 // returns the zero values of T and time.Time with physicallyPresent=false.
 func (c *Cache[S, T]) PeekWithExpiration(key S) (value T, expiration time.Time, physicallyPresent bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	entry, ok := c.cache[key]
-	if !ok {
-		return value, time.Time{}, false
-	}
-	value, err := c.valueLocked(key, entry)
-	return value, entry.expiration, err == nil
+	value, expiration, present, err := c.PeekWithExpirationChecked(key)
+	return value, expiration, present && err == nil
 }
 
 func (c *Cache[S, T]) PutWithExpiration(key S, value T, expiration time.Time) {
@@ -348,6 +341,11 @@ func (c *Cache[S, T]) RangeAt(now time.Time, fn func(key S, value T, expiration 
 // the batch hook with the whole expired set, else the per-key hook once per
 // key — so a layered cache cleans its side indexes in one pass (#738).
 func (c *Cache[S, T]) Flush() int {
+	return c.FlushAt(time.Now())
+}
+
+// FlushAt evicts entries at one logical instant across an entire GC pass.
+func (c *Cache[S, T]) FlushAt(now time.Time) int {
 	c.mu.Lock()
 	one, many := c.snapshotHooks()
 	if one != nil || many != nil {
@@ -356,7 +354,7 @@ func (c *Cache[S, T]) Flush() int {
 		// key but we need to defer the callback past Unlock.
 		var evicted []S
 		for k, v := range c.cache {
-			if v.IsExpired() {
+			if !IsLiveAt(v.expiration, now) {
 				evicted = append(evicted, k)
 			}
 		}
@@ -369,7 +367,7 @@ func (c *Cache[S, T]) Flush() int {
 	}
 	before := len(c.cache)
 	maps.DeleteFunc(c.cache, func(_ S, v volatile[T]) bool {
-		return v.IsExpired()
+		return !IsLiveAt(v.expiration, now)
 	})
 	removed := before - len(c.cache)
 	c.mu.Unlock()

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -122,7 +123,14 @@ func TestGraphStoreRecoveryPoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	tampered.Rows[0] ^= 1
-	bad, err := json.Marshal(tampered)
+	corrupt := bytes.Replace(raw, []byte(`"Revision":`), []byte(`"Revision":1`), 1)
+	if err := os.WriteFile(filepath.Join(newest, cutFile), corrupt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if preview, err := b.PreviewRetention(ctx, 1); err == nil && preview.PruneBackups > 0 {
+		t.Fatal("retention counted an accidentally corrupted cut")
+	}
+	bad, err := marshalGraphCut(tampered)
 	if err != nil {
 		t.Fatal(err)
 	}

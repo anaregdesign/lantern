@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"sync/atomic"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/graphstore"
@@ -30,14 +31,16 @@ const (
 // The log mutex serializes Write and publication. Keep no additional copy of
 // the graph, receipt outcomes, or relay payloads in this owner.
 type tarpRelay struct {
-	graph         *graphcache.GraphCache[string, *pb.Vertex]
-	receiptPolicy *mutationreceipt.Config
-	fingerprint   [32]byte
-	db            *graphstore.DB
-	clock         *hlc.Clock
-	stage         TarpGraphStager
-	namespace     string
-	capacity      uint64
+	lastReference   relayOrigin // writer and ring publication share the Log mutex
+	replayReadFault atomic.Pointer[error]
+	graph           *graphcache.GraphCache[string, *pb.Vertex]
+	receiptPolicy   *mutationreceipt.Config
+	fingerprint     [32]byte
+	db              *graphstore.DB
+	clock           *hlc.Clock
+	stage           TarpGraphStager
+	namespace       string
+	capacity        uint64
 }
 
 type tarpRelayCut struct {
@@ -142,6 +145,9 @@ func (r *tarpRelay) Write(entry mutationlog.Entry) error { return r.write(entry,
 
 func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowWriter[string, *pb.Vertex]) error {
 	abort := func(e error) error { return &mutationlog.DefiniteWALAbort{Cause: e} }
+	if fault := r.replayReadFault.Load(); fault != nil {
+		return *fault
+	}
 	raw, err := encodeReceiptWALUnion(entry.Op)
 	if err != nil {
 		return abort(err)
@@ -160,13 +166,16 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 		return abort(err)
 	}
 	id := hlc.NodeID(m.GetOrigin())
-	// Preserve the same live skew clamp on a relayed HLC that an in-memory
-	// node applies. A remote timestamp must never become an unrestricted
-	// local clock floor merely because the process restarted.
+	// Graph-only live relay applies the skew clamp. Receipt-certified
+	// publication instead restores the exact accepted HLC floor. Keep the
+	// same contract across process restart for each profile.
 	localFloor := entry.HLC
-	if id != r.db.NodeID() {
+	localFloor.NodeID = r.db.NodeID()
+	if id != r.db.NodeID() && r.receiptPolicy == nil {
 		localFloor = r.clock.Update(entry.HLC)
 	}
+
+	var committedDigest [32]byte
 	err = r.db.UpdateRows(context.Background(), func(gen uint64, snap *tarp.Snapshot, batch graphstore.Writer) error {
 		cut, err := r.readCut(snap, gen)
 		if err != nil {
@@ -209,6 +218,7 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 		record = append(record, raw...)
 		batch.Put(tarpEntryKey(gen, entry.Seq), record)
 		cut.digest = tarpEntryDigest(cut.digest, entry.Seq, raw)
+		committedDigest = cut.digest
 		cut.last = entry.Seq
 		if cut.last-cut.first+1 > r.capacity {
 			// Normal writes drop one row. A lowered runtime limit was already
@@ -220,13 +230,20 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 		return nil
 	})
 	if err == nil {
+		r.lastReference = relayOrigin{Origin: id, Seq: m.GetSeq(), Digest: committedDigest}
 		r.graph.StoragePublished(keys)
 		return nil
 	}
 	// A callback failure never published, but a storage read fault or an
 	// unhealthy/uncertain DB still requires recovery by the serving runtime.
 	var opErr *tarp.OpError
-	if errors.As(err, &opErr) && opErr.Outcome == tarp.NotApplied && !errors.Is(err, tarp.ErrUnhealthy) {
+	if errors.As(err, &opErr) {
+		if opErr.Outcome == tarp.NotApplied && !errors.Is(err, tarp.ErrUnhealthy) {
+			return abort(err)
+		}
+		return err
+	}
+	if errors.Is(err, tarp.ErrTooLarge) {
 		return abort(err)
 	}
 	return err

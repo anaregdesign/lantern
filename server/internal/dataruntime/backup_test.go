@@ -306,3 +306,46 @@ func TestLanternService_BackupSnapshotFoldedInfinityRestoresDirectly(t *testing.
 		})
 	}
 }
+
+func TestStoredBackupPinsReadCutAcrossConcurrentWrite(t *testing.T) {
+	_, s := openTarpTestRuntime(t, t.TempDir(), 16)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for _, key := range []string{"app/a", "app/b", "app/hidden", "other"} {
+		if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "original"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []string{"app/b", "app/hidden", "other"} {
+		if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "app/a", Head: key, Weight: 2}, {Tail: "app/a", Head: key, Weight: 3}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	intervals := []graphcache.KeyRange{{Lower: "app/a", Upper: "app/c"}}
+	scope, err := graphcache.NewQueryView(intervals, intervals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &recordingSender{}
+	sender.onSend = func(*pb.BackupSnapshotResponse) error {
+		sender.onSend = nil
+		written := make(chan error, 1)
+		go func() { _, err := s.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "app/b"}); written <- err }()
+		select {
+		case err := <-written:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := s.BackupSnapshot(graphcache.WithQueryView(ctx, scope), &pb.BackupSnapshotRequest{VertexPrefix: "app/"}, sender); err != nil {
+		t.Fatal(err)
+	}
+	vs, es := splitBackupSnapshotResponses(sender.records)
+	if len(vs) != 2 || vs["app/b"].GetString_() != "original" || len(es) != 1 || es["app/a->app/b"].GetWeight() != 5 {
+		t.Fatalf("wrong pinned or scoped snapshot: vertices=%v edges=%v", vs, es)
+	}
+	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "app/b"}); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("new cut still contains deleted vertex: %v", err)
+	}
+}

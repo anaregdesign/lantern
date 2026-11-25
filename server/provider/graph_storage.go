@@ -26,16 +26,19 @@ func newTarpServingRuntime(ctx context.Context, receipt ReceiptWALConfig, cacheC
 		expected = replication.NodeID
 	}
 	open := graphstore.Open
-	if receipt.Mode == ReceiptWALModeFresh {
+	switch receipt.Mode {
+	case ReceiptWALModeFresh:
 		if backups.RestoreRequired {
-			return nil, errors.New("receipt fresh mode creates a new database; select restart to restore a backup")
+			return nil, errors.New("receipt fresh mode cannot satisfy required restore")
 		}
-	} else {
+	case ReceiptWALModeRestart:
+		// A self-consistent old backup cannot prove that the same receipt
+		// epoch acknowledged no later writes. Operators restore a witnessed
+		// final cut explicitly before restarting a missing node.
+		open = graphstore.OpenExisting
+	case ReceiptWALModeGraphOnly:
 		if err := backup.RestoreGraphStoreOnStartup(ctx, dir, expected, backups); err != nil {
 			return nil, err
-		}
-		if receipt.Mode == ReceiptWALModeRestart {
-			open = graphstore.OpenExisting
 		}
 	}
 	db, err := open(ctx, dir, expected)

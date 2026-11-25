@@ -25,29 +25,39 @@ If a foreground commit lands between the two captures, the producer retries
 once with writes held during the native copy. Size the volume for the staged
 copy and the recovery points selected by the retention policy.
 
-Retain the logged `cut_sha256` independently when confirming a previously
-observed backup point matters. To recover that specific point into a new
-directory whose parent already exists, run the server binary locally:
+To preserve a receipt epoch across loss of its data volume, stop admitting
+mutations to that node, drain accepted operations and quiesce incoming
+replication. Keep writers fenced, take a final backup and record its
+`cut_sha256`, instance ID and node ID on independent storage. A scheduled
+backup taken before the last acknowledged mutation can omit an operation ID
+whose result a client already received. Starting that image under the same
+epoch could let a retry apply the operation twice.
+
+To recover the witnessed final point, run the server binary locally. The
+target must be a new directory under an existing parent.
 
 ```sh
 lantern restore-graph-store --source "$RECOVERY_POINT" \
-  --target /storage/recovered --instance "$INSTANCE_ID" --cut-sha256 "$CUT_SHA256"
+  --target /storage/recovered --instance "$INSTANCE_ID" \
+  --node-id "$NODE_ID" --cut-sha256 "$CUT_SHA256"
 ```
 
-An optional `--node-id <32 hex digits>` verifies the expected node. Restore
+The `--node-id` argument verifies the expected 32-hex-digit node ID. Restore
 validates the selected image, opens a private staging directory and compares
 the recovered application and graph state with the retained cut. It publishes
 the target directory atomically after verification. Point the same node's
 `LANTERN_DATA_DIR` at the restored directory. Restore native security material
-and state through their separate procedures.
+and state through their separate procedures. Start a recovered receipt node
+with `LANTERN_RECEIPT_WAL_MODE=restart` and its original configured epoch.
+If there is no independent evidence of the final cut, keep that epoch out
+of service.
 
-With `LANTERN_BACKUP_RESTORE_ON_START=true`, startup can select the newest
-private point for this instance when the configured target directory is
-missing. An already initialized directory takes precedence. A damaged newest
-point fails startup. `LANTERN_BACKUP_RESTORE_REQUIRED=true` also requires a
-recovery point when the target is missing. Startup discovery uses the
-available catalog. The explicit command checks continuity with an independently
-retained digest even if a volume was rolled back.
+In graph-only mode, `LANTERN_BACKUP_RESTORE_ON_START=true` allows startup
+to select the newest private point for this instance when the target directory
+is missing. An existing initialized directory takes precedence. A damaged
+newest point fails startup. `LANTERN_BACKUP_RESTORE_REQUIRED=true` requires
+a recovery point if the target is missing. Receipt restart requires an
+existing data directory, including one explicitly restored as described above.
 
 Public `BackupSnapshot` and `lantern-cli dump` export the authorized logical
 graph. Keep private graph storage recovery points accessible only to operators.
@@ -62,8 +72,8 @@ graph. Keep private graph storage recovery points accessible only to operators.
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Interval between scheduled backups. |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep this node's newest N valid points. Zero keeps all. |
 | `LANTERN_BACKUP_INSTANCE_ID` | hostname | Stable ownership scope for discovery and retention in a shared backup directory. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Allow graph-only or receipt restart to recover a missing directory from the configured backup destination. |
-| `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Fail startup if a required recovery point is absent. Explicit receipt `fresh` initializes a new database and rejects required restore. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | In graph-only mode, recover a missing directory from the configured backup destination. |
+| `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Require a recovery point for a missing graph-only directory. Explicit receipt `fresh` initializes a new database and rejects required restore. |
 
 Native management can adopt the production settings for enabled, interval and
 retention together. Destination, instance identity and startup restoration

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -322,14 +321,7 @@ func prepareComposeRestart(dir, service string) error {
 	}
 	if env["LANTERN_RECEIPT_WAL_MODE"] == "fresh" {
 		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"
-	} else {
-		// A retained workload identity does not prove ephemeral application log
-		// continuity. Give graph-only restart a new origin even with durable sys.
-		nodeID, err := randomID()
-		if err != nil {
-			return err
-		}
-		env["LANTERN_NODE_ID"] = hex.EncodeToString(nodeID[:])
+
 	}
 	if metadata.Nodes[index].StartupFile != "" {
 		raw, err := os.ReadFile(metadata.Nodes[index].StartupFile)

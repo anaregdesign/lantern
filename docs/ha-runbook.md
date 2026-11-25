@@ -31,16 +31,16 @@ Start here. Pick a row, then jump to the corresponding section.
 long-lived inbound gRPC streams between every pair of instances.
 Platforms that hide instance addresses behind a load balancer and
 recycle instances on the request lifecycle cannot satisfy these, so
-only single-instance mode works there — still genuinely useful as a
-fast in-memory KVS with public CDC via `WatchChanges`. See RFC
+use single-instance mode with a persistent volume and public CDC through
+`WatchChanges`. See RFC
 [D7](replication.md#3-binding-decisions-d1d7).
 
 ---
 
 ## 2. Replication topology and durability
 
-Replication has two topologies. Default graph-only versus opt-in durable
-receipt-WAL storage is an independent runtime choice in either topology.
+Both replication topologies store graph and relay records in one node-owned
+Tarp database. Enabling receipts adds their records to the same commit.
 
 ### 2.1 Single-instance mode (no HA)
 
@@ -49,9 +49,10 @@ OFF; explicit OIDC still requires original authority provisioning, qualified
 native time, current quorum admission and policy. Public CDC uses Role-scoped `WatchChanges`. Raw peer
 Subscribe/Snapshot is never mounted on this public listener.
 
-Graph-only cold start restores a configured graph backup or begins empty.
-Receipt-WAL restart certifies its owned durable bundle separately. Neither a
-public export nor a graph-only snapshot restores sys: security continuity.
+Restart reopens the node’s Tarp volume and resumes its committed relay position.
+Graph-only startup can restore a missing volume from a private point. Receipt
+restart requires the existing database or a witnessed final backup restored
+explicitly. Recover native security state through its own procedures.
 
 ### 2.2 HA mode (leaderless data replication)
 
@@ -84,10 +85,10 @@ cutover and final #1610 acceptance remain separate
 [#1609 S5](oidc-operations.md#leaderless-s5--remaining-contracts-and-qualification)
 exits; local native/Compose conformance does not qualify a production deployment.
 
-### 2.3 Opt-in durable receipt-WAL runtime
+### 2.3 Opt-in receipts
 
 `LANTERN_RECEIPT_WAL_MODE=graph-only` is the default; it offers no durable
-receipt proof. `fresh` and `restart` require an absolute WAL path, explicit
+receipt proof. `fresh` and `restart` require a persistent Tarp directory, explicit
 stable nonzero NodeID and deployment epoch, and immutable positive receipt
 retention/entry/byte policy (see [env.md](env.md)). Only a fully certified
 runtime with bearer authentication advertises `GetReceiptCapability` and
@@ -98,8 +99,8 @@ exact Edge Delete, and Edge Add with one explicit nonzero 24-byte
 Go/Node/Dart opt-in receipt APIs are merged in source. Merged offline
 0.4.0 source implements receipt reconciliation, but its publication and
 final #1399 release gates remain pending.
-Graph-only backups, zero/graph-only peer Snapshot formats, and
-obsolete receipt artifacts never certify this mode.
+Receipt startup verifies its stored node identity, epoch and policy. A
+receipt peer requires the receipt-preserving Snapshot format.
 
 ---
 
@@ -319,10 +320,9 @@ Two truisms:
 
 **Saturation guard (`LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES`, #848):**
 
-For an in-memory store the kernel OOM kill is the worst failure mode — it
-takes down *all* data on the pod (and forces a re-bootstrap from peers),
-instead of degrading the one misbehaving writer. Cap the entry counts so a
-write burst faster than TTL decay fails fast instead:
+A kernel OOM kill interrupts serving and requires the node to reopen its Tarp
+volume and catch up with peers. Set admission limits for the retained
+indexes and working data so that an oversized batch fails before an OOM.
 
 - Set both caps from the sizing estimate above: divide the memory budget
   allocated to graph data by measured per-entry heap cost and leave slack for
@@ -469,8 +469,8 @@ order of preference:
 3. After a long partition heals, [force re-snapshot](#9-recovery-procedures)
    from the side you trust.
 
-For a durable receipt peer, do not wipe its WAL to force that reset; the
-repair must preserve the exact `RECEIPT` cut or fail closed.
+Keep the receipt peer’s Tarp volume attached during repair. The peer
+requires an exact `RECEIPT` cut.
 
 If mixed edge weights differ after lag reaches zero, inspect whether a Delete
 floor expired during a long partition. Quiesce that identity and force a
@@ -507,7 +507,7 @@ existing cluster before changing its peer set. No mixed-version migration is
 qualified by this release.
 
 That graph-only Delete-field exception is **not** a receipt-format migration
-path. Private receipt WAL, Snapshot, baseline, and backup formats have one
+path. Private receipt storage, Snapshot and backup formats have one
 current shape each; old versions and mixed receipt peers fail closed, with no
 V1 downgrade, dual reader, or conversion during a rolling update.
 
@@ -575,10 +575,7 @@ of termination** before the listener stops accepting.
 
 **Single-instance** deploys (`replicaCount: 1`) have no peer to fail over
 to, so the drain still flips `/readyz` (the platform shifts traffic to the
-new instance). Graph-only durability across the rotation depends on
-snapshot backup/restore (`LANTERN_BACKUP_*`, #770); an opt-in durable
-`restart` instead proves its current WAL and uses receipt backup only for
-eligible committed-baseline sidecar repair. See [backup.md](backup.md).
+new instance). Reattach the same Tarp volume to retain the graph, relay positions and any enabled receipts across rotation. Recovery after volume loss is described in [backup.md](backup.md).
 
 **Wire compatibility.** The graph-only Delete deadline exception above
 applies to its own wire transition, not to receipt formats. A parseable new
@@ -604,8 +601,8 @@ Drain public traffic, publish and distribute signed membership revocation, then
 stop the workload and retire its identity/state according to operator policy.
 Existing admissions expire within their bounds. A disappearing DNS record alone
 is not revocation evidence. Preserve PDB and surviving current-policy capacity.
-Going to zero loses unbacked graph data; certified receipt and sys: continuity
-have separate restore requirements. See §9.4 and [OIDC operations](oidc-operations.md).
+Retain the per-node Tarp volumes while scaling to zero. Receipt and native
+security recovery each require their original continuity evidence. See §9.4 and [OIDC operations](oidc-operations.md).
 
 ## 9. Recovery procedures
 
@@ -623,7 +620,7 @@ kubectl delete pod lantern-2 -n <ns>
 
 The new pod starts in `NOT_SERVING` until snapshot+tail completes. In durable
 receipt-WAL mode, the pump automatically requests `RECEIPT` on a gap and a
-restart first proves its current WAL. Do not delete that WAL, force `fresh`
+restart first verifies its committed Tarp generation. Do not delete that database, force `fresh`
 under the old epoch, or substitute a graph-only Snapshot to bypass a failed
 receipt install; diagnose the proof failure before serving.
 
@@ -765,18 +762,12 @@ it does not publish a higher cutoff over the hole. Check the source's
 `PeerStatus` for the missing origin. If the gap persists, restart the affected
 replica to bootstrap from a healthy peer's Snapshot.
 
-If the relay WAL append fails **after** a remote graph apply, the responder
-marks its current publication generation `gapped`. Existing Subscribe streams
-close with `FailedPrecondition`; new Subscribe and Snapshot calls fail until
-the mutation is append-retried or a verified Snapshot repairs the replica.
-The peer pump normally reconnects and retries the same origin seq without
-reapplying the graph. If the fault persists, inspect the WAL error and the
-source peer, repair storage, or restart the affected in-memory replica and
-bootstrap it from a healthy peer. A new subscriber must take a fresh Snapshot
-after recovery; a pre-fault stream never resumes. Local graph-only Put/Delete
-append faults similarly keep CDC gapped until append-only repair; an
-indeterminate receipt WAL commit instead fails the certified runtime closed
-until exact recovery proves its frontier.
+Tarp commits an accepted graph change and its relay position together. A
+definite rejection leaves the prior committed cut in place. An indeterminate
+commit fences the affected runtime. Reopen its data directory, verify the
+recovered position, and let the peer pump request the missing suffix or
+Snapshot. Check the original operation’s status before retrying a receipt
+mutation.
 
 ### 9.3 Pod stuck `NOT_SERVING` after restart
 
@@ -791,24 +782,18 @@ authenticated boundary. Preserve content-free errors and private raw evidence.
 
 ### 9.4 Total-cluster loss
 
-The **replication** layer alone does not persist data. In default graph-only
-mode, re-ingest from an upstream source, or restore the newest `.lbk` from
-mounted snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) and
-reconcile peers. Writes after that dump are lost.
+Restart surviving nodes with their own existing Tarp volumes, node identities and
+configured receipt epochs. If a graph-only volume is lost, restore its private
+recovery point or rebuild from a healthy peer. If all volumes are lost,
+graph-only recovery can recover as far as the surviving backups.
 
-An opt-in durable deployment first attempts `restart` from its complete
-current, lease-owned WAL; backup fallback is limited to eligible damage to
-the newest committed baseline sidecar, not an ambiguous WAL or generation.
-If no complete current frontier survives total-cluster loss, explicitly
-configure `fresh` with a **new active epoch** and restore only the strict
-newest canonical three-member receipt backup set. The archived active
-receipts become bounded read-only retired evidence; the new epoch has no
-permission to execute an old unknown ID. Backups prove only their captured
-cut, not unbacked later commits. A graph-only `.lbk`, obsolete receipt set,
-or older set chosen after a newest-set failure cannot certify continuity.
-The pristine-joiner clock repair (#1448) is merged, but #1399's final
-all-family real-wire recovery gate, physical-device qualification, and other
-release gates remain outstanding.
+For receipt continuity, each node needs its current volume or a final backup
+taken after accepting traffic and incoming replication stopped. Recover that
+point explicitly using the independently retained node ID and cut SHA-256,
+then start the same node in `restart` mode. A previous scheduled backup can
+omit acknowledged operations. Keep any epoch whose final cut is unknown
+offline. Restore native authority and membership separately.
+See the [private recovery procedure](backup.md).
 
 ---
 
@@ -832,13 +817,13 @@ A short checklist to walk before opening an incident:
       `InvalidArgument`. Either lower the live TTL or raise the
       tombstone TTL.
 - [ ] **Durable mode assumed from backups alone.** `graph-only` remains the
-      default. `fresh`/`restart` require stable explicit NodeID, WAL path,
+      default. `fresh`/`restart` require stable explicit NodeID, data volume,
       epoch, positive immutable receipt limits/retention, and full startup
       certification. Without bearer auth, public capability remains disabled
       even when the private durable runtime starts.
 - [ ] **Graph-only Snapshot or obsolete receipt artifact used as repair.**
       A receipt-required peer must negotiate `RECEIPT`; unknown/zero and
-      graph-only formats and unsupported WAL/baseline/backup shapes fail
+      graph-only formats and unsupported private backup shapes fail
       closed. Do not remove artifacts or select an older backup to bypass
       the refusal.
 - [ ] **Scaling a single-instance deploy to > 1 replica expecting HA.**
@@ -870,11 +855,11 @@ operator actions.
 
 | Failure | Signal | What to do |
 |---|---|---|
-| Single pod crash | k8s probe / Compose healthcheck flips | Graph-only pod bootstraps from peers; durable `restart` first proves current WAL, then requires receipt-preserving peer recovery if gapped. Diagnose crashloops; never silently change epoch. |
+| Single pod crash | k8s probe / Compose healthcheck flips | Reattach the node’s Tarp volume. The node resumes its own relay position and requests its configured peer Snapshot format if gapped. Diagnose crashloops; never silently change epoch. |
 | Pod falls behind buffer | `subscribe_dropped_total{reason="gapped"}` increments | Pump auto re-snapshots; durable mode requires `RECEIPT`. Chronic = bump capacity. |
 | All peers unreachable on boot | Pod `NOT_SERVING`, no `replication_applied` increments | Check discovery env (§9.3). |
-| Total-cluster loss | Every pod down | Unbacked writes are lost. Graph-only re-ingests or restores `.lbk`; durable mode proves complete current WAL or restores the strict newest receipt set with a new epoch ([§9.4](#94-total-cluster-loss)). |
-| Receipt WAL ambiguity / runtime uncertified | Startup refuses the listener, or committed graph/status reads fail after an indeterminate WAL commit | Repair storage or restore a verifiable exact cut. Do not infer non-execution from `NOT_YET_OBSERVED`, restart in `fresh` under the old epoch, or retry on a different endpoint. Disabled capability alone may instead mean graph-only mode or missing auth. |
+| Total-cluster loss | Every pod down | Recover each node’s current Tarp volume or explicitly restore a verified final receipt cut ([§9.4](#94-total-cluster-loss)). |
+| Ambiguous storage commit / runtime uncertified | Startup refuses the listener, or committed graph/status reads fail after an indeterminate Tarp commit | Repair storage or restore a verifiable exact cut. Do not infer non-execution from `NOT_YET_OBSERVED`, restart in `fresh` under the old epoch, or retry on a different endpoint. Disabled capability alone may instead mean graph-only mode or missing auth. |
 | NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |

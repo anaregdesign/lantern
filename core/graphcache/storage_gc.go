@@ -3,6 +3,7 @@ package graphcache
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/tarp"
@@ -12,24 +13,34 @@ import (
 // durable transition. The active generation and current identities are read
 // again under the owner's publication gate before reclaiming anything.
 type storageSweep[S comparable] struct {
+	observed time.Time
 	vertices []S
 	edges    []EdgeKey[S]
 	floors   []graphstore.FloorKey[S]
+}
+
+// CompleteStorageRecovery makes expiry observed during a validated reopen
+// durable before serving starts. The pinned scan may have found a live
+// remainder and an expired source in the same bucket.
+func (c *GraphCache[S, T]) CompleteStorageRecovery(ctx context.Context) error {
+	if c.storage == nil {
+		return nil
+	}
+	return c.flushStorage(ctx, c.storage.pending.observed)
 }
 
 // SetStorageMaintenance installs the serving owner's mutation exclusion for
 // GC before starting Watch. Standalone users serialize mutations themselves.
 func (c *GraphCache[S, T]) SetStorageMaintenance(gate func(func() error) error) {
 	if c.storage != nil {
+		c.hookMu.Lock()
+		defer c.hookMu.Unlock()
 		c.storage.maintenance = gate
 	}
 }
 
 func (c *GraphCache[S, T]) bindStorageGCHooks() {
 	c.edges.onPruned = func(tailID, headID vertexID) {
-		if !c.storage.collecting {
-			return
-		}
 		tail, tok := c.edges.resolveID(tailID)
 		head, hok := c.edges.resolveID(headID)
 		if tok && hok {
@@ -38,7 +49,7 @@ func (c *GraphCache[S, T]) bindStorageGCHooks() {
 	}
 }
 
-func (c *GraphCache[S, T]) flushStorage(ctx context.Context) error {
+func (c *GraphCache[S, T]) flushStorage(ctx context.Context, now time.Time) error {
 	if err := c.StorageError(); err != nil {
 		return err
 	}
@@ -46,7 +57,6 @@ func (c *GraphCache[S, T]) flushStorage(ctx context.Context) error {
 	defer c.mu.Unlock()
 	work := c.storage.pending
 	apply := func(keys StorageKeys[S], floors []graphstore.FloorKey[S]) error {
-		now := c.applicationTime()
 		for _, key := range keys.Edges {
 			// Materialize just the affected bucket so expired sources are
 			// dropped from its postimage by the same fold as the live cache.

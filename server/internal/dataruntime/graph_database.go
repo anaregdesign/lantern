@@ -6,6 +6,8 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/graphstorage"
 	"github.com/anaregdesign/tarp"
@@ -62,6 +64,28 @@ func OpenReceiptDatabase(ctx context.Context, cfg DurableReceiptWALRuntimeConfig
 		return nil, errors.Join(err, db.Close())
 	}
 	rt, err := NewTarpReceiptServingRuntime(graph, db, stage, cfg, fresh)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	db.StartReclamation()
+	return rt, nil
+}
+
+// OpenGraphDatabase binds an embedded graph-only Server to its durable graph
+// and origin history. The caller supplies an empty graph with its query policy.
+func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *graphcache.GraphCache[string, *pb.Vertex], log mutationlog.Options, namespace string) (*ServingRuntime, error) {
+	if err := ensureRuntimeEdgeHistory(graph, namespace); err != nil {
+		return nil, err
+	}
+	db, err := graphstore.Open(ctx, dir, node)
+	if err != nil {
+		return nil, err
+	}
+	stage, err := RestoreGraphStorage(ctx, graph, db)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	rt, err := NewTarpGraphServingRuntime(graph, db, log, stage, namespace)
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}

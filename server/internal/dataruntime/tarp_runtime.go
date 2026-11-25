@@ -21,11 +21,21 @@ import (
 // matching origin and retained relay cut. On success the runtime owns db.
 // On failure the caller retains ownership and must discard the candidate.
 func NewTarpGraphServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, opts mutationlog.Options, stage TarpGraphStager, namespace string) (*ServingRuntime, error) {
-	return newTarpServingRuntime(graph, db, opts, stage, namespace, nil, [32]byte{})
+	r, err := newTarpServingRuntime(graph, db, opts, stage, namespace, nil, [32]byte{})
+	if err != nil {
+		return nil, err
+	}
+	if err = r.tarp.trimRelay(); err != nil {
+		return nil, errors.Join(err, r.log.Close())
+	}
+	if err = graph.CompleteStorageRecovery(context.Background()); err != nil {
+		return nil, errors.Join(err, r.log.Close())
+	}
+	return r, nil
 }
 
 func newTarpServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, opts mutationlog.Options, stage TarpGraphStager, namespace string, policy *mutationreceipt.Config, fingerprint [32]byte) (*ServingRuntime, error) {
-	if db == nil || graph == nil || stage == nil || opts.WAL != nil {
+	if db == nil || graph == nil || stage == nil || opts.WAL != nil || opts.Retained != nil {
 		return nil, errors.New("Tarp graph runtime requires an owned graph, database and graph stager")
 	}
 	if err := validateDataFormat(namespace); err != nil {
@@ -41,6 +51,7 @@ func newTarpServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db 
 		return nil, err
 	}
 	opts.WAL = relay
+	opts.Retained = relay
 	log, err := mutationlog.ResumeRetained(opts, cut.last, entries)
 	if err != nil {
 		return nil, err
@@ -138,11 +149,14 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 	}()
 	if view.Revision == 0 {
 		if err = r.db.Update(func(gen uint64, snap *tarp.Snapshot, b *tarp.WriteBatch) error {
-			for _, e := range snap.KeysPrefix(context.Background(), graphstore.ServicePrefix(gen)) {
-				if e != nil {
-					return e
+			for _, domain := range []byte{'G', 'S'} {
+				prefix := binary.BigEndian.AppendUint64([]byte{domain}, gen)
+				for _, e := range snap.KeysPrefix(context.Background(), prefix) {
+					if e != nil {
+						return e
+					}
+					return errors.New("uninitialized Tarp store contains application records")
 				}
-				return errors.New("uninitialized Tarp relay contains private records")
 			}
 			if r.receiptPolicy != nil {
 				endpoint, err := newReceiptRuntimeGeneration()
@@ -198,6 +212,9 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 		if e != nil {
 			return cut, nil, nil, e
 		}
+		if cut.receipts && row.LastHLC.NodeID != id {
+			return cut, nil, nil, errors.New("stored receipt origin HLC identity mismatch")
+		}
 		origins.m[id] = originRow{seq: row.LastSeq, hlc: row.LastHLC}
 	}
 	if uint64(len(origins.m)) != cut.origins {
@@ -247,6 +264,7 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 		}
 		seen[id] = m.GetSeq()
 		if cut.last-pos < r.capacity {
+			entry.Op = relayOrigin{Origin: id, Seq: m.GetSeq(), Digest: digest}
 			retained = append(retained, entry)
 		}
 	}
@@ -258,25 +276,38 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 			return cut, nil, nil, errors.New("Tarp relay ends before origin frontier")
 		}
 	}
-	// Validate the original full suffix before trimming any of it.
-	_ = view.Close()
-	for cut.last-cut.first+1 > r.capacity {
-		end := min(cut.last-r.capacity+1, cut.first+1024)
-		next := cut
-		next.first = end
-		err = r.db.Update(func(gen uint64, snap *tarp.Snapshot, b *tarp.WriteBatch) error {
-			for i := cut.first; i < end; i++ {
-				b.Delete(tarpEntryKey(gen, i))
+	return cut, retained, origins, nil
+}
+
+// Trim only after the entire startup cut passes graph, relay and receipt
+// validation. Failed validation never discards an existing relay suffix.
+func (r *tarpRelay) trimRelay() error {
+	for {
+		done := false
+		err := r.db.Update(func(gen uint64, snap *tarp.Snapshot, b *tarp.WriteBatch) error {
+			cut, err := r.readCut(snap, gen)
+			if err != nil {
+				return err
 			}
-			b.Put(tarpServiceKey(gen, tarpRelayManifest), next.encode(r.namespace))
+			count := cut.last - (cut.first - 1)
+			if count <= r.capacity {
+				done = true
+				return nil
+			}
+			drop := min(count-r.capacity, 1024)
+			end := cut.first + drop
+			for seq := cut.first; seq < end; seq++ {
+				b.Delete(tarpEntryKey(gen, seq))
+			}
+			cut.first = end
+			b.Put(tarpServiceKey(gen, tarpRelayManifest), cut.encode(r.namespace))
+			done = count-drop <= r.capacity
 			return nil
 		})
-		if err != nil {
-			return cut, nil, nil, err
+		if err != nil || done {
+			return err
 		}
-		cut = next
 	}
-	return cut, retained, origins, nil
 }
 
 // The historical Append path may retry an uncertain WAL append. A Tarp write

@@ -90,7 +90,7 @@ func (r graphRead) edges(ctx context.Context, keys []graphcache.EdgeKey[string])
 	return result, nil
 }
 
-func (r graphRead) vertexPage(ctx context.Context, prefix, after string, limit int, reverse bool, emit func(string, *pb.Vertex)) (bool, error) {
+func (r graphRead) vertexPage(ctx context.Context, prefix, after string, limit int, reverse, keysOnly bool, emit func(string, *pb.Vertex)) (bool, error) {
 	if r.cut == nil {
 		more, _ := r.backend.ScanByPrefixPage(ctx, prefix, after, limit, reverse, func(_ string, key string, v *pb.Vertex) bool { emit(key, v); return true })
 		return more, ctxToConnect(ctx.Err())
@@ -102,21 +102,14 @@ func (r graphRead) vertexPage(ctx context.Context, prefix, after string, limit i
 	}
 	n := 0
 	for interval := range scope.Ranges(prefix, false, reverse) {
-		for key, err := range r.rows.VertexKeysRange(ctx, r.cut.Snapshot, r.cut.Generation, interval.Lower, interval.Upper, cursor, reverse) {
+		for row, err := range r.rows.LiveVertexRange(ctx, r.cut.Snapshot, r.cut.Generation, interval.Lower, interval.Upper, cursor, reverse, keysOnly, r.now) {
 			if err != nil {
 				return false, graphReadError(err)
-			}
-			value, found, err := r.vertex(key)
-			if err != nil {
-				return false, err
-			}
-			if !found {
-				continue
 			}
 			if n == limit {
 				return true, nil
 			}
-			emit(key, value)
+			emit(row.Key, row.Vertex.Value)
 			n++
 		}
 	}
@@ -173,6 +166,11 @@ func (r graphRead) edgePage(ctx context.Context, tailPrefix, headPrefix, afterTa
 }
 
 func (s *Executor) storageFault() error {
+	if s.runtime != nil && s.runtime.tarp != nil {
+		if err := s.runtime.tarp.replayReadFault.Load(); err != nil {
+			return *err
+		}
+	}
 	if s.runtime != nil && s.runtime.graph != nil {
 		return s.runtime.graph.StorageError()
 	}

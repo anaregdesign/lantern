@@ -7,6 +7,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // RestoreStorage rebuilds the derived graph indexes from one pinned generation.
@@ -19,16 +20,14 @@ func (c *GraphCache[S, T]) RestoreStorage(ctx context.Context, rows *graphstore.
 		return err
 	}
 	c.BeginSearchIndexRecovery()
-	if err := c.restoreStorage(ctx, rows, view); err != nil {
-		return err
-	}
-	return c.CompleteSearchIndexRecovery()
+	return c.restoreStorage(ctx, rows, view)
 }
 
 func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.Rows[S, T], view *graphstore.ReadView) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	c.storage.pending.observed = now
 	for entry, err := range rows.Vertices(ctx, view.Snapshot, view.Generation, "", nil, false) {
 		if err != nil {
 			return err
@@ -91,7 +90,27 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 		}
 		c.restoreStorageFloor(entry.Key, entry.Floor, now)
 	}
-	return ctx.Err()
+	if c.searchIndex == nil {
+		return ctx.Err()
+	}
+	// Traverse the original pin once. Loading every recovered cold vertex
+	// individually would acquire a new Tarp snapshot for every document.
+	c.searchCommitMu.Lock()
+	defer c.searchCommitMu.Unlock()
+	return c.searchIndex.RebuildDocuments(func(yield func(S, search.Document, time.Time) error) error {
+		for entry, err := range rows.Vertices(ctx, view.Snapshot, view.Generation, "", nil, false) {
+			if err != nil {
+				return err
+			}
+			v := entry.Vertex
+			if cache.IsLiveAt(v.Expiration, now) {
+				if err := yield(entry.Key, c.searchExtract(entry.Key, v.Value), v.Expiration); err != nil {
+					return err
+				}
+			}
+		}
+		return ctx.Err()
+	})
 }
 
 func (c *GraphCache[S, T]) installRecoveredBucket(key graphstore.EdgeKey[S], bucket *weight) {

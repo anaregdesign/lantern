@@ -286,85 +286,21 @@ func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Verte
 	if cut.baselineDigest != ([32]byte{}) {
 		rt.receipt.committedBaseline = receiptBaselineReference{Format: ReceiptBaselineFormatCombined, Digest: cut.baselineDigest}
 	}
+	if err = rt.tarp.trimRelay(); err != nil {
+		return nil, errors.Join(err, rt.log.Close())
+	}
+	if err = graph.CompleteStorageRecovery(context.Background()); err != nil {
+		return nil, errors.Join(err, rt.log.Close())
+	}
 	return rt, nil
 }
 
 func (r *tarpRelay) readReceiptState(snap *tarp.Snapshot, gen uint64, policy mutationreceipt.Config) (tarpReceiptCut, mutationreceipt.Snapshot, mutationreceipt.RetiredCatalogSnapshot, error) {
-	var active mutationreceipt.Snapshot
-	var retired mutationreceipt.RetiredCatalogSnapshot
-	cut, err := readTarpReceiptCut(snap, gen)
+	ctx := context.Background()
+	t, err := openTarpReceiptTable(ctx, gen, snap, policy)
 	if err != nil {
-		return cut, active, retired, err
+		return tarpReceiptCut{}, mutationreceipt.Snapshot{}, mutationreceipt.RetiredCatalogSnapshot{}, err
 	}
-	active = mutationreceipt.Snapshot{Version: 1, Epoch: cut.epoch, PolicyFingerprint: cut.policy, ClockHighWaterMillis: cut.highWater}
-	retired = mutationreceipt.RetiredCatalogSnapshot{Version: 1, ClockHighWaterMillis: cut.highWater}
-	var check tarpReceiptCut
-	lo, hi := tarp.PrefixRange(tarpServiceKey(gen, tarpReceiptRow))
-	for row, e := range snap.ScanRange(context.Background(), lo, hi) {
-		if e != nil {
-			return cut, active, retired, e
-		}
-		rec, e := decodeTarpReceipt(row.Value, row.Key[len(lo):])
-		if e != nil {
-			return cut, active, retired, e
-		}
-		if receiptSnapshotReceiptEpoch(rec.ID) != cut.epoch {
-			return cut, active, retired, errors.New("stored receipt epoch mismatch")
-		}
-		check.count++
-		check.toggleRow(row.Value)
-		if rec.DeadlineMillis > cut.highWater {
-			if len(active.Receipts) >= policy.MaxEntries {
-				return cut, active, retired, mutationreceipt.ErrCapacity
-			}
-			active.Receipts = append(active.Receipts, rec)
-		}
-	}
-	if check.count != cut.count || check.digest != cut.digest {
-		return cut, active, retired, errors.New("active receipt ledger differs from committed witness")
-	}
-	lo, hi = tarp.PrefixRange(tarpServiceKey(gen, tarpRetiredPolicy))
-	for row, e := range snap.ScanRange(context.Background(), lo, hi) {
-		if e != nil {
-			return cut, active, retired, e
-		}
-		var wire pb.ReceiptPolicy
-		if e = proto.Unmarshal(row.Value, &wire); e != nil {
-			return cut, active, retired, e
-		}
-		cfg, state, e := receiptSnapshotStoreState(&wire, uint64(cut.highWater))
-		if e != nil {
-			return cut, active, retired, e
-		}
-		if !bytes.Equal(cfg.Epoch[:], row.Key[len(lo):]) || cfg.Epoch == cut.epoch {
-			return cut, active, retired, errors.New("stored retired receipt policy identity mismatch")
-		}
-		check.addRetired(tarpRetiredPolicy, cfg.Epoch[:], row.Value)
-		member := mutationreceipt.RetiredEpochSnapshot{Policy: mutationreceipt.RetiredEpochPolicy{Epoch: cfg.Epoch, Retention: cfg.Retention, MaxEntries: cfg.MaxEntries, MaxBytes: cfg.MaxBytes}, State: state}
-		prefix := append(tarpServiceKey(gen, tarpRetiredRow), cfg.Epoch[:]...)
-		lower, upper := tarp.PrefixRange(prefix)
-		for item, scanErr := range snap.ScanRange(context.Background(), lower, upper) {
-			if scanErr != nil {
-				return cut, active, retired, scanErr
-			}
-			rec, scanErr := decodeTarpReceipt(item.Value, item.Key[len(lower):])
-			if scanErr != nil || receiptSnapshotReceiptEpoch(rec.ID) != cfg.Epoch {
-				return cut, active, retired, fmt.Errorf("invalid stored retired receipt: %w", mutationreceipt.ErrInvalidSnapshot)
-			}
-			check.addRetired(tarpRetiredRow, item.Key[len(tarpServiceKey(gen, tarpRetiredRow)):], item.Value)
-			if rec.DeadlineMillis > cut.highWater {
-				if len(member.State.Receipts) >= cfg.MaxEntries {
-					return cut, active, retired, mutationreceipt.ErrCapacity
-				}
-				member.State.Receipts = append(member.State.Receipts, rec)
-			}
-		}
-		if len(member.State.Receipts) > 0 {
-			retired.Epochs = append(retired.Epochs, member)
-		}
-	}
-	if check.retiredCount != cut.retiredCount || check.retiredDigest != cut.retiredDigest {
-		return cut, active, retired, errors.New("retired receipt catalog differs from committed witness")
-	}
-	return cut, active, retired, nil
+	active, retired, err := t.capture(ctx)
+	return t.cut, active, retired, err
 }

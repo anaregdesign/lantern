@@ -451,14 +451,14 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLCCheckedKeysWithPreflight(ctx context
 func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, strict bool, preflight func([]S) error) ([]S, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.prefixIndex == nil {
+	if c.prefixExtract == nil {
 		if preflight != nil {
 			return nil, ctx.Err()
 		}
 		return nil, nil
 	}
 	var victims []S
-	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
+	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
 		if err := ctx.Err(); err != nil {
 			return false
 		}
@@ -472,6 +472,9 @@ func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string,
 		victims = append(victims, key)
 		return true
 	})
+	if err := c.StorageError(); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -526,7 +529,7 @@ func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string,
 func (c *GraphCache[S, T]) sweepExpiredTombstonesLocked(now time.Time) {
 	for k, t := range c.vertexTombstones {
 		if !t.expiration.IsZero() && !now.Before(t.expiration) {
-			if c.storage != nil && c.storage.collecting {
+			if c.storage != nil {
 				c.storage.pending.floors = append(c.storage.pending.floors, graphstore.FloorKey[S]{Kind: graphstore.VertexTombstone, Key: k})
 			}
 			c.clearVertexTombstoneLocked(k)
@@ -534,7 +537,7 @@ func (c *GraphCache[S, T]) sweepExpiredTombstonesLocked(now time.Time) {
 	}
 	for k, t := range c.edgeTombstones {
 		if !t.expiration.IsZero() && !now.Before(t.expiration) {
-			if c.storage != nil && c.storage.collecting {
+			if c.storage != nil {
 				c.storage.pending.floors = append(c.storage.pending.floors, graphstore.FloorKey[S]{Kind: graphstore.EdgeTombstone, Tail: k.Tail, Head: k.Head})
 			}
 			c.clearEdgeTombstoneLocked(k.Tail, k.Head)
@@ -542,7 +545,7 @@ func (c *GraphCache[S, T]) sweepExpiredTombstonesLocked(now time.Time) {
 	}
 	for k, t := range c.edgeContributionTombstones {
 		if !t.expiration.IsZero() && !now.Before(t.expiration) {
-			if c.storage != nil && c.storage.collecting {
+			if c.storage != nil {
 				c.storage.pending.floors = append(c.storage.pending.floors, graphstore.FloorKey[S]{Kind: graphstore.ContributionTombstone, Tail: k.Tail, Head: k.Head, ContribID: k.ContribID})
 			}
 			c.clearEdgeContributionTombstoneLocked(k)

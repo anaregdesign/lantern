@@ -34,7 +34,7 @@ func ConfigureGraphCache(gc *graphcache.GraphCache[string, *v1.Vertex], c CacheC
 	// Enabling the prefix index up-front (before any insert) is required
 	// by the cache contract — EnablePrefixIndex panics on a non-empty
 	// cache. Doing it here in the constructor guarantees that invariant.
-	gc.EnablePrefixIndex(func(s string) string { return s })
+	gc.EnableStorageKeyPrefixIndex(func(s string) string { return s })
 	// Content search (#624) is opt-out. EnableSearchIndex carries the same
 	// "before any insert" contract as EnablePrefixIndex, so it must also be
 	// called here; gating on sc.Enabled keeps the put hot path free of the

@@ -42,7 +42,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
-	"github.com/anaregdesign/lantern/server/backup"
+
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -241,7 +241,7 @@ func TestAuth_DataNamespaceCursorErrorsAndEquivalentOrderRealConnect(t *testing.
 func TestAuth_DataNamespaceReceiptReplayOverConnect(t *testing.T) {
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x49})
 	config.NamespaceFormat = "namespaced-v1"
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestAuth_ModePreflightAndAnonymousConnect(t *testing.T) {
 func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 	nodeID := hlc.NodeID{0x7a}
 	now := time.Now()
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(service.DurableReceiptWALRuntimeConfig{
+	runtime, err := service.OpenReceiptDatabase(t.Context(), service.DurableReceiptWALRuntimeConfig{
 		Path: filepath.Join(t.TempDir(), "receipts.wal"),
 		Receipt: mutationreceipt.Config{
 			Epoch: mutationreceipt.Epoch{0x7a}, Retention: time.Hour,
@@ -358,10 +358,9 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 			provider.ConfigureGraphCache(graph, provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
 			return nil
 		},
-		NodeID:        nodeID,
-		Now:           now,
-		BaselineCodec: backup.ReceiptBaselineCodec{},
-	})
+		NodeID: nodeID,
+		Now:    now,
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

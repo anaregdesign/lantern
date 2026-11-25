@@ -79,11 +79,15 @@ func (l *Log) SubscribeStream(fromSeq uint64, filter func(Entry) bool) (*Subscri
 	// Each replay window is copied under mu. A subsequent window may have
 	// been evicted while the previous one was delivered; detect that gap
 	// before sending any later entries.
-	replay := l.retainedFromLocked(fromSeq)
+	replay, err := l.replayWindowLocked(fromSeq)
+	if err != nil {
+		l.mu.Unlock()
+		return nil, err
+	}
 	next := fromSeq
 	exhausted := false
-	if len(replay) != 0 {
-		last := replay[len(replay)-1].Seq
+	if len(replay.entries) != 0 {
+		last := replay.entries[len(replay.entries)-1].Seq
 		exhausted = last == math.MaxUint64
 		if !exhausted {
 			next = last + 1
@@ -98,8 +102,9 @@ func (l *Log) SubscribeStream(fromSeq uint64, filter func(Entry) bool) (*Subscri
 	}
 	out := state.entries
 	done := state.done
-	registered := len(replay) == 0
-	if registered {
+	registered := len(replay.entries) == 0
+	if registered || l.retained != nil {
+		live.replaying = !registered
 		// Lock order is mu → subsMu. Register before releasing mu so
 		// no new entry can slip between an empty replay and the live tail.
 		l.subsMu.Lock()
@@ -112,8 +117,31 @@ func (l *Log) SubscribeStream(fromSeq uint64, filter func(Entry) bool) (*Subscri
 		defer close(state.stopped)
 		defer close(out)
 		defer state.finish(nil)
+		defer replay.close()
+		if l.retained != nil {
+			// A replay whose durable view fails is still registered for
+			// lifecycle notifications until this forwarder exits.
+			defer func() {
+				l.subsMu.Lock()
+				if _, ok := l.subscribers[live]; ok {
+					delete(l.subscribers, live)
+					close(live.ch)
+				}
+				l.subsMu.Unlock()
+			}()
+		}
 		for {
-			for _, e := range replay {
+			for _, ref := range replay.entries {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				e, err := replay.read(ref)
+				if err != nil {
+					state.finish(err)
+					return
+				}
 				if filter != nil && !filter(e) {
 					continue
 				}
@@ -123,6 +151,7 @@ func (l *Log) SubscribeStream(fromSeq uint64, filter func(Entry) bool) (*Subscri
 					return
 				}
 			}
+			replay.close()
 			if registered {
 				for {
 					select {
@@ -164,9 +193,14 @@ func (l *Log) SubscribeStream(fromSeq uint64, filter func(Entry) bool) (*Subscri
 				}
 				return
 			}
-			replay = l.retainedFromLocked(next)
-			if len(replay) != 0 {
-				last := replay[len(replay)-1].Seq
+			replay, err = l.replayWindowLocked(next)
+			if err != nil {
+				l.mu.Unlock()
+				state.finish(err)
+				return
+			}
+			if len(replay.entries) != 0 {
+				last := replay.entries[len(replay.entries)-1].Seq
 				exhausted = last == math.MaxUint64
 				if !exhausted {
 					next = last + 1
@@ -179,6 +213,7 @@ func (l *Log) SubscribeStream(fromSeq uint64, filter func(Entry) bool) (*Subscri
 					l.mu.Unlock()
 					return
 				default:
+					live.replaying = false
 					live.startSeq = l.lastSeq + 1
 					l.subscribers[live] = struct{}{}
 					registered = true

@@ -21,6 +21,20 @@ func (r *Rows[K, V]) VertexAt(snap *tarp.Snapshot, generation uint64, key K, now
 	return v.Value, true, nil
 }
 
+// HasVertexAt checks TTL from the row header without decoding the application
+// payload. It is used for keys-only scans and edge endpoint liveness.
+func (r *Rows[K, V]) HasVertexAt(snap *tarp.Snapshot, gen uint64, key K, now time.Time) (bool, error) {
+	physical, err := r.vertexKey(gen, vertexFamily, key)
+	if err != nil {
+		return false, err
+	}
+	expiry, found, err := readRow(snap, physical, func(data []byte) (time.Time, error) {
+		deadline, _, err := parseMetadata(data)
+		return deadline, err
+	})
+	return found && cache.IsLiveAt(expiry, now), err
+}
+
 type EdgeDetail struct {
 	Weight     float32
 	Expiration time.Time
@@ -36,7 +50,7 @@ func (r *Rows[K, V]) EdgeAt(ctx context.Context, snap *tarp.Snapshot, gen uint64
 		return result, err
 	}
 	for _, endpoint := range []K{key.Tail, key.Head} {
-		_, found, err := r.VertexAt(snap, gen, endpoint, now)
+		found, err := r.HasVertexAt(snap, gen, endpoint, now)
 		if err != nil || !found {
 			return result, err
 		}
@@ -45,18 +59,39 @@ func (r *Rows[K, V]) EdgeAt(ctx context.Context, snap *tarp.Snapshot, gen uint64
 	if err != nil || !found {
 		return result, err
 	}
-	var sources []SourceEntry
-	if edge.Base != nil && cache.IsLiveAt(edge.Base.Expiration, now) {
-		sources = append(sources, SourceEntry{Source: *edge.Base})
-	}
+	sources := liveBase(nil, edge, now)
 	for entry, err := range r.Sources(ctx, snap, gen, key) {
 		if err != nil {
 			return result, err
 		}
-		if cache.IsLiveAt(entry.Source.Expiration, now) {
-			sources = append(sources, entry)
+		sources, err = addLiveSource(sources, edge.LastOrdinal, entry, now)
+		if err != nil {
+			return result, err
 		}
 	}
+	return foldSources(sources), nil
+}
+
+func liveBase(scratch []SourceEntry, e Edge, now time.Time) []SourceEntry {
+	sources := scratch[:0]
+	if e.Base != nil && cache.IsLiveAt(e.Base.Expiration, now) {
+		sources = append(sources, SourceEntry{Source: *e.Base})
+	}
+	return sources
+}
+
+func addLiveSource(sources []SourceEntry, lastOrdinal uint64, entry SourceEntry, now time.Time) ([]SourceEntry, error) {
+	if entry.ID.Ordinal > lastOrdinal {
+		return nil, ErrInvalidRow
+	}
+	if cache.IsLiveAt(entry.Source.Expiration, now) {
+		sources = append(sources, entry)
+	}
+	return sources, nil
+}
+
+func foldSources(sources []SourceEntry) EdgeDetail {
+	var result EdgeDetail
 	slices.SortStableFunc(sources, func(a, b SourceEntry) int {
 		if a.Source.HLC.Less(b.Source.HLC) {
 			return -1
@@ -73,5 +108,5 @@ func (r *Rows[K, V]) EdgeAt(ctx context.Context, snap *tarp.Snapshot, gen uint64
 		}
 	}
 	result.Found = result.Weight != 0
-	return result, nil
+	return result
 }

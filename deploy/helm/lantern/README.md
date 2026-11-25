@@ -152,9 +152,11 @@ and scrape permissions scoped separately.
 ## Runtime and recovery
 
 The chart retains cache/capacity/backup settings, drain delay, startup budget,
-resource limits and `runtime.goMemoryLimit`. Graph backups and sys:/membership
-PVCs are separate. Receipt-WAL configuration is an additional certified runtime
-choice; graph snapshots never certify receipt or security continuity.
+resource limits and `runtime.goMemoryLimit`. Each replica keeps its Tarp
+database under its own runtime-state PVC. Keep that PVC attached to the same
+replica when restarting. A separate backup destination protects against loss
+of the data volume. [Private recovery](../../../docs/backup.md) describes
+receipt continuity. Native security and membership keep their own bindings.
 
 The optional MCP deployment is a separate application. Protected deployments
 must supply an approved machine Role, credential and verified public transport;

@@ -81,7 +81,7 @@ func (c *GraphCache[S, T]) BeginWholeStateInstall(candidate *GraphCache[S, T]) (
 	candidateRetainsEdgeHistory := candidate.retainDanglingEdgeHistory
 	candidateDefaultTTL := candidate.defaultTTL
 	candidateCausalLimits := candidate.causalLimits
-	candidateHasPrefixIndex := candidate.prefixIndex != nil
+	candidateHasPrefixIndex := candidate.prefixExtract != nil
 	candidateHasSearchIndex := candidate.searchIndex != nil
 	next := candidate.wholeStateLocked()
 	candidate.searchCommitMu.RUnlock()
@@ -93,7 +93,7 @@ func (c *GraphCache[S, T]) BeginWholeStateInstall(candidate *GraphCache[S, T]) (
 	if c.retainDanglingEdgeHistory != candidateRetainsEdgeHistory ||
 		c.defaultTTL != candidateDefaultTTL ||
 		c.causalLimits != candidateCausalLimits ||
-		(c.prefixIndex != nil) != candidateHasPrefixIndex ||
+		(c.prefixExtract != nil) != candidateHasPrefixIndex ||
 		(c.searchIndex != nil) != candidateHasSearchIndex {
 		c.searchCommitMu.Unlock()
 		c.publicationGate.Unlock()

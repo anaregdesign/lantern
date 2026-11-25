@@ -405,7 +405,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
             child_path = output / "inputs" / f"{index}-{label or mode}.json"
             new_file(child_path, child)
             values = {"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_CONFIG_JSON": config_raw, "LANTERN_PORT": "6380",
-                      "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false",
+                      "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_DATA_DIR": "/state/graph", "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false",
                       "LANTERN_DRAIN_DELAY_SECONDS": "0", "LANTERN_LOG_LEVEL": "warn", "CONTROLLED_GOOGLE_CHILD_INPUT": "/inputs/" + child_path.name,
                       "CONTROLLED_GOOGLE_CHILD_INPUT_SHA256": digest(child_path.read_bytes())}
             path = output / "inputs" / f"{index}-{label or mode}.env"

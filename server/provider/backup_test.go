@@ -1,17 +1,18 @@
 package provider
 
 import (
-	"github.com/anaregdesign/tarp"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/tarp"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -163,7 +164,8 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 			}
 			rt, primary, cert := certifiedSnapshotInstallerRuntime(t, cfg)
 			dir := t.TempDir()
-			owner, err := NewBackupper(backup.Config{Enabled: true, Dir: dir, Interval: time.Hour, Retain: 1, InstanceID: "owner", NamespaceFormat: rt.DataNamespaceFormat()}, cfg, rt, primary, cert, prometheus.NewRegistry(), nil)
+			points := backup.Config{Enabled: true, Dir: dir, Interval: time.Hour, Retain: 1, InstanceID: "owner", NamespaceFormat: rt.DataNamespaceFormat(), RestoreOnStart: true}
+			owner, err := NewBackupper(points, cfg, rt, primary, cert, prometheus.NewRegistry(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -177,6 +179,29 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 			}
 			if _, err := tarp.VerifyBackup(t.Context(), filepath.Join(dir, entries[0].Name(), "image")); err != nil {
 				t.Fatal(err)
+			}
+			if mode == ReceiptWALModeFresh {
+				if _, err := primary.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "acknowledged-after-backup"}}); err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(t.TempDir(), "lost")
+				if err := backup.RestoreGraphStoreOnStartup(t.Context(), target, rt.NodeID(), points); err == nil {
+					t.Fatal("automatic graph-only discovery accepted a private receipt image")
+				}
+				cfg.Mode = ReceiptWALModeRestart
+				_, cleanup, err := NewServingRuntime(cfg,
+					CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour, DataDir: target}},
+					SearchConfig{}, MutationLogConfig{Capacity: 8, SubscriberBuffer: 2},
+					ReplicationConfig{NodeID: rt.NodeID(), nodeIDExplicit: true}, points, nil)
+				if cleanup != nil {
+					cleanup()
+				}
+				if err == nil {
+					t.Fatal("receipt restart accepted a discoverable backup older than an acknowledged write")
+				}
+				if _, err := os.Lstat(target); !os.IsNotExist(err) {
+					t.Fatalf("receipt restart populated the missing target: %v", err)
+				}
 			}
 		})
 	}

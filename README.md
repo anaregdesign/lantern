@@ -132,7 +132,7 @@ Before choosing it, account for these boundaries:
 
 | Boundary | Deployment consequence |
 |---|---|
-| **In-memory by default** | A restart loses the graph unless you configure recovery. Graph-only snapshots lose writes since the last snapshot; opt-in durable receipt-WAL mode has a separate WAL/backup recovery contract. See [backup and restore](docs/backup.md). |
+| **Node-local storage** | Preserve each node’s Tarp data volume across restarts. Recover lost volumes through [backup and restore](docs/backup.md). |
 | **Full replicas, no sharding** | Every HA replica holds the entire graph. The working set must fit in one process's RAM. |
 | **Eventual consistency** | Leaderless replication provides HA, with asynchronous propagation between replicas. It is not linearizable; WAN replication is outside the supported scope. See the [replication contract](docs/replication.md). |
 | **Local graph queries** | Seed-local traversal and ranking are supported; whole-graph offline analytics are outside the intended workload. |
@@ -465,7 +465,7 @@ defines defaults, validation, limits, and recovery requirements. Common entries:
 | `LANTERN_AUTH_MODE` | `off` | `oidc` requires complete native security/Issuer configuration; retired static-token settings are rejected |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` | unset | TLS; `LANTERN_TLS_CLIENT_CA_FILE` enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | empty | Browser origin allow-list |
-| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Default volatile runtime, or configured `fresh` / `restart` durable receipt runtime |
+| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Select graph-only storage or enable receipts in the same Tarp database with `fresh` / `restart` |
 | `LANTERN_METRICS_ADDR` | `:9090` | Prometheus and HTTP health listener |
 | `LANTERN_STRICT_CONFIG` | `false` | Reject malformed/unknown config when enabled |
 

@@ -87,6 +87,9 @@ func restoreGraphPoint(ctx context.Context, source, target, instance string, id 
 	if expectedCut != ([32]byte{}) && sha256.Sum256(raw) != expectedCut {
 		return errors.New("backup: recovery point differs from independently retained cut digest")
 	}
+	if expectedCut == ([32]byte{}) && cut.Application.ReceiptEpoch != ([16]byte{}) {
+		return errors.New("backup: receipt recovery requires an explicit witnessed final cut")
+	}
 	if expected != (hlc.NodeID{}) && cut.Application.NodeID != expected {
 		return graphstore.ErrNodeMismatch
 	}

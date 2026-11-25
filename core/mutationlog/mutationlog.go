@@ -100,6 +100,8 @@ type Options struct {
 	// WAL receives every appended entry before it fans out to subscribers.
 	// Nil defaults to [NopWAL].
 	WAL WAL
+	// Retained optionally resolves retained replay off-heap from the WAL commit.
+	Retained RetainedStore
 	// OnDrop, when non-nil, is invoked synchronously from the dispatcher
 	// goroutine each time a live fan-out drops an entry to a subscriber.
 	// The cause argument is one of the DropCause* constants in this
@@ -154,10 +156,12 @@ const (
 // subsMu, and Append only takes mu (the channel send happens under mu to
 // preserve global Seq ordering), so the two paths cannot deadlock.
 type Log struct {
-	mu       sync.RWMutex
-	capacity int
-	subBuf   int
-	wal      WAL
+	mu         sync.RWMutex
+	capacity   int
+	subBuf     int
+	retained   RetainedStore
+	replayPins sync.WaitGroup
+	wal        WAL
 	// ring is a fixed-size circular buffer allocated once at construction.
 	// Valid entries occupy positions [head, head+size) modulo capacity.
 	// Append is O(1) at all fill levels; eviction is a single head bump.
@@ -224,6 +228,7 @@ func New(opts Options) *Log {
 		capacity:       capacity,
 		subBuf:         subBuf,
 		wal:            wal,
+		retained:       opts.Retained,
 		tailGeneration: new(byte),
 		ring:           make([]Entry, capacity),
 		subscribers:    make(map[*subscription]struct{}),
@@ -285,8 +290,9 @@ func (l *Log) Evicted() uint64 {
 }
 
 // RetainedEntries returns the ring's current entries in replica-local seq
-// order. The slice is owned by the caller; each Entry.Op remains the original
-// immutable payload. Subscribe admission uses this bounded view to determine
+// order. With RetainedStore, Op is its compact immutable reference. Use
+// VisitRetained or SubscribeStream for original payloads. The returned slice
+// belongs to the caller. Subscribe admission uses this bounded view to determine
 // whether a portable per-origin cursor needs an already-evicted mutation.
 func (l *Log) RetainedEntries() []Entry {
 	l.mu.RLock()
@@ -373,6 +379,9 @@ type SeqStamper func(seq uint64)
 //
 // The caller must hold l.mu.
 func (l *Log) storeLocked(entry Entry) {
+	if l.retained != nil {
+		entry.Op = l.retained.Reference(entry)
+	}
 	if l.size < l.capacity {
 		if l.size == 0 {
 			l.firstSeq = entry.Seq
@@ -405,7 +414,7 @@ func (l *Log) dispatcher() {
 	l.subsMu.Lock()
 	defer l.subsMu.Unlock()
 	for sub := range l.subscribers {
-		if sub.directTail {
+		if sub.directTail || sub.replaying {
 			sub.stream.finish(ErrClosed)
 		}
 		close(sub.ch)
@@ -555,5 +564,6 @@ func (l *Log) Close() error {
 	close(l.dispatch)
 	l.mu.Unlock()
 	<-l.dispatcherDone
+	l.replayPins.Wait()
 	return nil
 }

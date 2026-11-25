@@ -18,6 +18,7 @@ import (
 // consumers outside server's internal-package boundary. They add no state or
 // ownership; provider and backup consume dataruntime directly.
 type (
+	TarpBackupWitness               = dataruntime.TarpBackupWitness
 	LanternService                  = dataruntime.Executor
 	LanternReplicationService       = dataruntime.Replication
 	Backend                         = dataruntime.Backend
@@ -91,20 +92,12 @@ func NewGraphOnlyServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex]
 	return dataruntime.NewGraphOnlyServingRuntime(graph, log, clock, namespaceFormat...)
 }
 
+func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *graphcache.GraphCache[string, *pb.Vertex], log mutationlog.Options, namespace string) (*ServingRuntime, error) {
+	return dataruntime.OpenGraphDatabase(ctx, dir, node, graph, log, namespace)
+}
+
 func OpenReceiptDatabase(ctx context.Context, config DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, error) {
 	return dataruntime.OpenReceiptDatabase(ctx, config, fresh)
-}
-
-func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
-	return dataruntime.CreateDurableReceiptWALServingRuntime(config)
-}
-
-func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
-	return dataruntime.OpenDurableReceiptWALServingRuntime(config)
-}
-
-func OpenDurableReceiptWALServingRuntimeFromBackup(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
-	return dataruntime.OpenDurableReceiptWALServingRuntimeFromBackup(config)
 }
 
 func NewReceiptWholeStateSource(executor *LanternService, store *mutationreceipt.Store) (*ReceiptWholeStateSource, error) {

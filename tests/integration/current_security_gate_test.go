@@ -236,9 +236,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 					return nil
 				}
 			}
-			data, err = service.CreateDurableReceiptWALServingRuntime(config)
+			data, err = service.OpenReceiptDatabase(t.Context(), config, true)
 		} else {
-			data, err = service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 64}), hlc.New(hlc.NodeID{byte(id)}, hlc.Options{}), "namespaced-v1")
+			data, err = service.OpenGraphDatabase(t.Context(), filepath.Join(dir, fmt.Sprintf("graph-%d", id)), hlc.NodeID{byte(id)}, graph, mutationlog.Options{Capacity: 64}, "namespaced-v1")
 		}
 		if err != nil {
 			t.Fatal(err)
@@ -2710,7 +2710,7 @@ func TestCurrentPhysicalFixtureExpirationBounds(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x55})
 			config.Receipt.Retention = 6 * time.Hour
-			runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+			runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 			if err != nil {
 				t.Fatal(err)
 			}
