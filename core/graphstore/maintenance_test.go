@@ -3,6 +3,7 @@ package graphstore
 import (
 	"context"
 	"errors"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 func TestLayoutScheduleUsesMaterialChangeAndQuiet(t *testing.T) {
 	now := time.Unix(100, 0)
-	base := layoutSample{generation: 2, revision: 9, records: 100, liveBytes: 150, liveKeys: 24}
+	base := layoutSample{generation: 2, revision: 9, records: 100, liveBytes: 150, graphInput: 24}
 	for _, tc := range []struct {
 		name string
 		cut  layoutSample
@@ -22,9 +23,9 @@ func TestLayoutScheduleUsesMaterialChangeAndQuiet(t *testing.T) {
 		{"reopened existing store", base, false},
 		{"small replacement", layoutSample{3, 10, 101, 60, 24}, false},
 		{"aborted staging without a commit", layoutSample{2, 9, 180, 150, 24}, false},
-		{"few writes", layoutSample{2, 10, 105, 150, 24}, false},
-		{"quarter of rows", layoutSample{2, 10, 106, 150, 24}, true},
-		{"one segment of growth", layoutSample{2, 10, 102, 250, 24}, true},
+		{"metadata-only commits", layoutSample{2, 30, 500, 250, 24}, false},
+		{"small graph delta", layoutSample{2, 10, 105, 150, 30}, false},
+		{"bootstrap graph input", layoutSample{2, 10, 106, 150, 40}, true},
 		{"published generation", layoutSample{4, 10, 101, 110, 24}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,6 +41,108 @@ func TestLayoutScheduleUsesMaterialChangeAndQuiet(t *testing.T) {
 				t.Fatal("retry ignored backoff")
 			}
 		})
+	}
+}
+
+func TestLayoutScheduleAmortizesFollowupWork(t *testing.T) {
+	now := time.Unix(100, 0)
+	const manifestSegment = 128 << 20
+	initial := layoutSample{generation: 1, records: 100, liveBytes: 2 * manifestSegment}
+	s := newLayoutSchedule(initial, now, 2*time.Minute, manifestSegment)
+	cut := initial
+	cut.graphInput, cut.records = 16<<20, 110
+	if s.due(now, cut) || !s.due(now.Add(2*time.Minute), cut) {
+		t.Fatal("incorrect bootstrap boundary")
+	}
+	finished := now.Add(3 * time.Minute)
+	s.completed(cut, finished, time.Second, tarp.CompactResult{UnlinkedBytes: 64 << 20})
+	cut.graphInput += 4 << 20
+	cut.records++
+	if s.due(finished, cut) || !s.due(finished.Add(time.Minute), cut) {
+		t.Fatal("a cheap follow-up delta should use a shorter quiet window and smaller batch")
+	}
+	finished = finished.Add(2 * time.Minute)
+	s.completed(cut, finished, 5*time.Second, tarp.CompactResult{UnlinkedBytes: 3 * manifestSegment, PinnedRetiredDataBytes: manifestSegment})
+	if s.nextInput != 32<<20 {
+		t.Fatalf("missing amortization for spread changes: next batch %d", s.nextInput)
+	}
+	cut.graphInput += 4 << 20
+	cut.records++
+	if s.due(finished, cut) || s.due(finished.Add(4*time.Minute), cut) {
+		t.Fatal("small delta triggered another expensive pass")
+	}
+	if !s.due(finished.Add(time.Hour), cut) {
+		t.Fatal("quiet graph delta was never compacted")
+	}
+	s.completed(cut, finished.Add(time.Hour), time.Second, tarp.CompactResult{})
+	cut.revision++
+	cut.records++
+	if s.due(finished.Add(2*time.Hour), cut) || s.due(finished.Add(4*time.Hour), cut) {
+		t.Fatal("clock- or relay-only changes scheduled a pass")
+	}
+}
+
+func TestLayoutScheduleBoundsBootstrapAndChargesInitialSort(t *testing.T) {
+	now := time.Unix(100, 0)
+	initial := layoutSample{generation: 1, liveBytes: 196 << 20, graphInput: math.MaxUint64 - (1 << 20)}
+	s := newLayoutSchedule(initial, now, 2*time.Minute, 128<<20)
+	cut := initial
+	cut.records++
+	cut.graphInput++ // A trivial mutation after a long process idle.
+	if s.due(now.Add(24*time.Hour), cut) || s.due(now.Add(26*time.Hour), cut) {
+		t.Fatal("a single tiny mutation bootstrapped an unknown large layout")
+	}
+	cut.records++
+	cut.graphInput += 1 << 20 // Cross the process-lifetime counter boundary.
+	if s.due(now.Add(27*time.Hour), cut) || !s.due(now.Add(28*time.Hour), cut) {
+		t.Fatal("aged 1 MiB bootstrap graph input was lost at counter rollover")
+	}
+	finished := now.Add(29 * time.Hour)
+	s.completed(cut, finished, time.Second, tarp.CompactResult{UnlinkedBytes: 231 << 20})
+	if s.nextInput < 14<<20 {
+		t.Fatalf("initial full sort did not raise the next batch size: %d", s.nextInput)
+	}
+	cut.graphInput += 4 << 20
+	cut.records++
+	if s.due(finished.Add(24*time.Hour), cut) || s.due(finished.Add(24*time.Hour+time.Minute), cut) {
+		t.Fatal("activity after a long idle inherited the age of the previous sort")
+	}
+	if !s.due(finished.Add(25*time.Hour), cut) {
+		t.Fatal("genuinely aged graph work did not get a follow-up pass")
+	}
+	s.completed(cut, finished, time.Duration(math.MaxInt64), tarp.CompactResult{
+		UnlinkedBytes: math.MaxInt64, PinnedRetiredDataBytes: math.MaxInt64,
+	})
+	if s.nextInput != (uint64(math.MaxUint64)-1)/16 || s.retryAfter != finished.Add(time.Duration(math.MaxInt64)) {
+		t.Fatal("large observed duration or lengths overflowed the maintenance budget")
+	}
+}
+
+func TestLayoutDebtCountsCommittedGraphRows(t *testing.T) {
+	db, err := Open(t.Context(), t.TempDir(), hlc.NodeID{7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	put := func(domain byte, abort bool) error {
+		return db.UpdateRows(t.Context(), func(gen uint64, _ *tarp.Snapshot, w Writer) error {
+			key := append(ServicePrefix(gen), 'v')
+			key[0] = domain
+			w.Put(key, []byte("value"))
+			if abort {
+				return context.Canceled
+			}
+			return nil
+		})
+	}
+	if err := put('S', false); err != nil {
+		t.Fatal(err)
+	}
+	if err := put('G', true); !errors.Is(err, context.Canceled) || db.layoutSample().graphInput != 0 {
+		t.Fatalf("metadata or aborted graph mutation accrued work: %v", err)
+	}
+	if err := put('G', false); err != nil || db.layoutSample().graphInput != 10+5+48 {
+		t.Fatalf("graph input %d: %v", db.layoutSample().graphInput, err)
 	}
 }
 

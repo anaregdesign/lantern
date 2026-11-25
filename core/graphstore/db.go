@@ -75,6 +75,7 @@ type DB struct {
 	raw           *tarp.DB
 	node          hlc.NodeID
 	head          manifest
+	graphInput    uint64 // estimated bytes of committed graph-row mutations since Open
 	staging       *Generation
 	pinMu         sync.Mutex
 	pins          map[uint64]int
@@ -205,6 +206,8 @@ func (db *DB) commit(next manifest, batch *tarp.WriteBatch) error {
 // generation-scoped graph and service rows only. Returning an error discards
 // every queued operation; a committed or unknown Apply failure remains an
 // inspectable *tarp.OpError. The callback must not retain its borrowed inputs.
+// Use UpdateRows for graph changes that should contribute to automatic
+// key-ordered compaction. Update is used for service-only bookkeeping.
 func (db *DB) Update(prepare func(generation uint64, snapshot *tarp.Snapshot, batch *tarp.WriteBatch) error) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()

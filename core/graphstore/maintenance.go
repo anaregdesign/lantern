@@ -6,13 +6,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/anaregdesign/tarp"
 )
 
 type layoutSample struct {
-	generation, revision, records, liveBytes, liveKeys uint64
+	generation, revision, records, liveBytes, graphInput uint64
 }
 
 type layoutTask struct {
@@ -23,36 +24,63 @@ type layoutTask struct {
 // The caller holds db.mu so the graph generation and engine counters agree.
 func (db *DB) layoutSample() layoutSample {
 	stats := db.raw.Stats()
-	return layoutSample{db.head.active, db.head.revision, stats.WrittenRecords, stats.LiveRecordBytes, stats.LiveKeys}
+	return layoutSample{db.head.active, db.head.revision, stats.WrittenRecords, stats.LiveRecordBytes, db.graphInput}
 }
 
 type layoutSchedule struct {
 	base        layoutSample
 	lastRecords uint64
 	quietSince  time.Time
+	dirtySince  time.Time
 	retryAfter  time.Time
 	quiet       time.Duration
 	minBytes    uint64
+	ordered     bool
+	nextInput   uint64
 }
 
 func newLayoutSchedule(initial layoutSample, now time.Time, quiet time.Duration, minBytes uint64) layoutSchedule {
-	return layoutSchedule{base: initial, lastRecords: initial.records, quietSince: now, quiet: quiet, minBytes: minBytes}
+	return layoutSchedule{base: initial, lastRecords: initial.records, quietSince: now, quiet: quiet,
+		minBytes: minBytes, nextInput: max(1, minBytes/8)}
 }
 
 func (s *layoutSchedule) due(now time.Time, cut layoutSample) bool {
+	newGeneration := cut.generation != s.base.generation
+	// Unsigned subtraction also measures the interval across a counter wrap.
+	input := cut.graphInput - s.base.graphInput
+	if (newGeneration || input != 0) && s.dirtySince.IsZero() {
+		s.dirtySince = now
+	}
 	if cut.records != s.lastRecords {
 		s.lastRecords, s.quietSince = cut.records, now
 		return false
 	}
-	if now.Sub(s.quietSince) < s.quiet || now.Before(s.retryAfter) ||
-		cut.revision == s.base.revision || cut.liveBytes < s.minBytes {
-		return false
+	quiet := s.quiet
+	if s.ordered && !newGeneration {
+		quiet /= 4
 	}
-	// Target a published replacement, at least one segment of live growth,
-	// or enough new records to touch a quarter of the current index.
-	return cut.generation != s.base.generation ||
-		cut.liveBytes >= s.base.liveBytes && cut.liveBytes-s.base.liveBytes >= s.minBytes ||
-		cut.records-s.base.records >= max(1, (cut.liveKeys+3)/4)
+	// Revalidating a large database after Open can require a full scan.
+	// Small follow-ups get an age-based pass once this handle established order.
+	aged := now.Sub(s.dirtySince) >= time.Hour && (s.ordered || input >= max(1, s.minBytes/128))
+	return !s.dirtySince.IsZero() && cut.liveBytes >= s.minBytes && !now.Before(s.retryAfter) &&
+		now.Sub(s.quietSince) >= quiet && (newGeneration || input >= s.nextInput || aged)
+}
+
+func (s *layoutSchedule) completed(cut layoutSample, finished time.Time, elapsed time.Duration, result tarp.CompactResult) {
+	// A previously ordered base can merge a small suffix. Spread changes
+	// can still replace entire segments. Amortize the last delta's retired
+	// footprint, including the initial sort, over new graph input. This is
+	// a retrospective proxy, not a measurement or limit on device writes.
+	// Two non-negative int64 lengths fit in uint64 even at their maximum.
+	retired := uint64(max(0, result.UnlinkedBytes)) + uint64(max(0, result.PinnedRetiredDataBytes))
+	s.nextInput = max(1, s.minBytes/32, retired/16)
+	s.base, s.ordered = cut, true
+	s.dirtySince = time.Time{}
+	cooldown := time.Duration(math.MaxInt64)
+	if elapsed <= cooldown/32 {
+		cooldown = elapsed * 32
+	}
+	s.retryAfter = finished.Add(max(s.quiet/4, cooldown))
 }
 
 func (db *DB) maintainKeyOrder(ctx context.Context, now time.Time, schedule *layoutSchedule) {
@@ -72,14 +100,16 @@ func (db *DB) maintainKeyOrder(ctx context.Context, now time.Time, schedule *lay
 	switch {
 	case err == nil:
 		// Count any records written during the checkpoint toward the next one.
-		schedule.base = cut
+		input := cut.graphInput - schedule.base.graphInput
+		schedule.completed(cut, now.Add(elapsed), elapsed, result)
 		slog.Info("graphstore key-ordered compaction completed", "generation", cut.generation,
+			"revision", cut.revision, "graph_input_bytes", input, "next_input_bytes", schedule.nextInput,
 			"duration", elapsed, "unlinked_bytes", result.UnlinkedBytes,
 			"pinned_retired_bytes", result.PinnedRetiredDataBytes)
 	case errors.Is(err, tarp.ErrBusy), errors.Is(err, context.Canceled), errors.Is(err, tarp.ErrClosed):
 		schedule.quietSince = now.Add(elapsed)
 	default:
-		schedule.retryAfter = now.Add(elapsed + 10*time.Minute)
+		schedule.retryAfter = now.Add(elapsed).Add(10 * time.Minute)
 		slog.Warn("graphstore key-ordered compaction deferred", "error", err)
 	}
 }

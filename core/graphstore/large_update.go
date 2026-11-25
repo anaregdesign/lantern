@@ -44,7 +44,7 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 		return err
 	}
 	if !batch.oversized {
-		return db.commit(next, &batch.batch)
+		return db.commitRows(next, &batch.batch, batch.graphBytes)
 	}
 	batch.batch = tarp.WriteBatch{}
 	plan := rowUpdate{generation: db.head.active, changes: make(map[string]rowChange)}
@@ -59,16 +59,28 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 	}
 	if len(plan.changes) < tarp.MaxWriteBatchEntries && plan.size+128 < uint64(storageOptions().TargetSegmentBytes) {
 		var b tarp.WriteBatch
+		var graphBytes uint64
 		for key, op := range plan.changes {
+			if key[0] == 'G' {
+				graphBytes += uint64(len(key)) + uint64(len(op.value)) + 48
+			}
 			if op.deleted {
 				b.Delete([]byte(key))
 			} else {
 				b.Put([]byte(key), op.value)
 			}
 		}
-		return db.commit(next, &b)
+		return db.commitRows(next, &b, graphBytes)
 	}
 	return db.replaceRows(ctx, snap, plan, next)
+}
+
+func (db *DB) commitRows(next manifest, batch *tarp.WriteBatch, graphBytes uint64) error {
+	if err := db.commit(next, batch); err != nil {
+		return err
+	}
+	db.graphInput += graphBytes
+	return nil
 }
 
 // Ordinary requests write directly into Tarp's owned batch arena. Only
@@ -77,6 +89,7 @@ type boundedUpdate struct {
 	generation uint64
 	batch      tarp.WriteBatch
 	size       uint64
+	graphBytes uint64
 	oversized  bool
 	err        error
 }
@@ -101,6 +114,9 @@ func (b *boundedUpdate) fits(k, v []byte) bool {
 		return false
 	}
 	b.size += cost
+	if k[0] == 'G' {
+		b.graphBytes += cost
+	}
 	b.oversized = b.batch.Len()+2 > tarp.MaxWriteBatchEntries || b.size+128 >= uint64(storageOptions().TargetSegmentBytes)
 	return !b.oversized
 }

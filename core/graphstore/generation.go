@@ -309,7 +309,7 @@ func (db *DB) requestReclamation() {
 
 func (db *DB) reclaimLoop(ctx context.Context, initial layoutSample) {
 	defer close(db.reclaimDone)
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	layout := newLayoutSchedule(initial, time.Now(), 2*time.Minute, uint64(storageOptions().TargetSegmentBytes))
 	for {

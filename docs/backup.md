@@ -97,15 +97,29 @@ contribution values together on disk for range reads. The ordered keys already
 determine scan and cursor order before the checkpoint. A checkpoint can raise
 foreground write latency while it copies records.
 
-Lantern samples write activity once a minute. The background checkpoint
-requires at least one target segment of live data (128 MiB), two quiet
-minutes, and a new application revision. It becomes eligible after a
-generation replacement, one segment of net growth, or enough written records
-to cover a quarter of the live key count since the last checkpoint. The
-worker lets retired generations, pinned readers and backup work drain first.
-It takes its initial baseline when serving starts. The
-`graphstore key-ordered compaction completed` log records the duration and
-bytes unlinked by a successful automatic pass.
+Lantern samples write activity every 30 seconds on a serving node. Automatic
+checkpoints start at 128 MiB of live records.
+
+- **First pass after open.** A generation replacement or 16 MiB of new graph
+  input qualifies after two minutes of write inactivity. A smaller backlog of
+  at least 1 MiB also qualifies after an hour.
+- **Later passes on the same generation.** After 30 seconds of write inactivity,
+  the input threshold is the larger of 4 MiB and one sixteenth of the bytes
+  retired by the previous pass. The minimum interval is the larger of 30 seconds
+  and 32 times the previous pass duration. An hour of pending graph changes
+  also qualifies a smaller backlog once the node is quiet and the interval
+  has elapsed. A generation replacement uses the two-minute quiet period.
+
+Tarp sorts new records and rewrites affected segments. Updates spread across
+many segments, or repeated updates to shared metadata in one segment, can
+still cause substantial I/O.
+
+The worker lets retired generations, pinned readers and backups drain before
+starting. It uses the previous pass’s duration and retirement statistics to
+pace subsequent work. The `graphstore key-ordered compaction completed` log
+reports the generation, duration, graph input bytes, and bytes unlinked or
+still pinned. Those retirement counters describe old files. Filesystem
+write volume requires a separate measurement.
 
 For a planned maintenance window after a bulk import, stop one node and run
 the following against its existing data directory. In HA, restart the node
