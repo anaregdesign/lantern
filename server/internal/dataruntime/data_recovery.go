@@ -37,7 +37,7 @@ func ValidateDataSnapshotNamespace(frames []*pb.SnapshotResponse, expected strin
 // or clock journal. It validates the entire accepted-effect history and the
 // latest active baseline; a rejected history must not advance durable bytes.
 // Backup fallback supplies its own proven baseline and validates it separately.
-func preflightDataNamespaceWAL(path string, config DurableReceiptWALRuntimeConfig, includeBaseline bool) error {
+func preflightDataNamespaceWAL(path string, config ReceiptDatabaseConfig, includeBaseline bool) error {
 	var latest *receiptBaselineMarker
 	err := mutationlog.ReplayFileWAL(path, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
 		if err := validateReceiptWALUnionEntry(entry); err != nil {

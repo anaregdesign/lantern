@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/backup"
+
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -147,14 +149,14 @@ func TestConnectAdapter_PublicOperationsH2C(t *testing.T) {
 
 func TestConnectAdapter_ReceiptForwardingH2C(t *testing.T) {
 	now := time.Now()
-	runtime, err := CreateDurableReceiptWALServingRuntime(DurableReceiptWALRuntimeConfig{
-		Path: filepath.Join(t.TempDir(), "receipt.wal"),
+	runtime, err := OpenReceiptDatabase(t.Context(), ReceiptDatabaseConfig{
+		Path: filepath.Join(t.TempDir(), "graph"),
 		Receipt: mutationreceipt.Config{Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,
 			MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: now},
 		Log: mutationlog.Options{Capacity: 16, SubscriberBuffer: 2}, DefaultTTL: time.Hour,
 		ConfigureGraph: func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil },
-		NodeID:         hlc.NodeID{0x31}, Now: now,
-	})
+		NodeID:         hlc.NodeID{0x31}, Now: now, BaselineCodec: backup.ReceiptBaselineCodec{},
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

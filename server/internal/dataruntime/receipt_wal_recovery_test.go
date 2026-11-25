@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1843,4 +1846,300 @@ func TestReceiptWALReplayEdgeOnlySourcesWithoutEndpoints(t *testing.T) {
 	if weight, ok := candidate.graph.GetWeight("tail", "head"); !ok || weight != 5 {
 		t.Fatal("WAL replay weight", weight, ok)
 	}
+}
+
+func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config, now time.Time) (receiptWALDecisionAudit, error) {
+	base, err := mutationreceipt.New(config)
+	if err != nil {
+		return receiptWALDecisionAudit{}, err
+	}
+	highWater := now.UnixMilli()
+	if highWater < 0 {
+		return receiptWALDecisionAudit{}, mutationreceipt.ErrInvalidClock
+	}
+	if configured := base.Stats().HighWaterMillis; configured > highWater {
+		highWater = configured
+	}
+	rows := make(map[hlc.NodeID]originRow)
+	seenReceipts := make(map[mutationreceipt.ID]mutationreceipt.Receipt)
+	report := receiptWALDecisionAudit{}
+	var knownBytes uint64
+	seenReceipt := false
+	err = mutationlog.ReplayFileWAL(path, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
+		if err := validateReceiptWALUnionEntry(entry); err != nil {
+			return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, err)
+		}
+		var origin hlc.NodeID
+		var seq uint64
+		var receiptRows []mutationreceipt.Receipt
+		if envelope, ok := receiptWALEnvelopeInfo(entry.Op); ok {
+			seenReceipt = true
+			origin, seq = envelope.origin, envelope.originSeq
+			if envelope.epoch != config.Epoch || envelope.policy != base.PolicyFingerprint() {
+				return fmt.Errorf("receipt WAL local seq %d: %w: epoch or policy mismatch", entry.Seq, errReceiptWALUnion)
+			}
+			receiptRows = envelope.receipts
+		} else {
+			switch value := entry.Op.(type) {
+			case *pb.Mutation:
+				if isAnyGraphPut(value) {
+					if seenReceipt {
+						return fmt.Errorf("receipt WAL local seq %d: %w: graph Put lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
+					}
+					report.unprovenGraphPutRows++
+				}
+				if isAnyGraphAdd(value) {
+					if seenReceipt {
+						return fmt.Errorf("receipt WAL local seq %d: %w: graph Add lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
+					}
+					report.unprovenGraphAddRows++
+				}
+				copy(origin[:], value.GetOrigin())
+				seq = value.GetSeq()
+			case *edgeCreateEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+			case *graphPutEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				report.evidencedGraphPutRows++
+			case *graphAddEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				report.evidencedGraphAddRows++
+			case *graphDeleteEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+			default:
+				return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+			}
+		}
+		previous, exists := rows[origin]
+		if !nextContiguousOriginSeq(seq, previous, exists) {
+			return fmt.Errorf("receipt WAL local seq %d: %w: origin %x seq %d is not contiguous", entry.Seq, errReceiptWALUnion, origin, seq)
+		}
+		if wallMS := entry.HLC.WallNs / int64(time.Millisecond); wallMS > highWater {
+			highWater = wallMS
+			// A later graph-only record can advance the clock just as a
+			// receipt record can. Release expired rows and their exact
+			// logical byte charge before the next receipt capacity check.
+			previousReceipts := report.knownReceipts
+			live := previousReceipts[:0]
+			for _, receipt := range previousReceipts {
+				if receipt.DeadlineMillis <= highWater {
+					knownBytes -= receiptWALDecisionCost(receipt)
+					continue
+				}
+				live = append(live, receipt)
+			}
+			clear(previousReceipts[len(live):])
+			report.knownReceipts = live
+		}
+		for _, receipt := range receiptRows {
+			// Check every committed row, including rows now expired.
+			// Snapshot restore only sees the retained subset below.
+			issued := int64(binary.BigEndian.Uint64(receipt.ID[17:25]))
+			if receipt.DeadlineMillis-issued != config.Retention.Milliseconds() {
+				return fmt.Errorf("receipt WAL local seq %d: %w: retention differs from policy", entry.Seq, errReceiptWALUnion)
+			}
+			if previous, duplicate := seenReceipts[receipt.ID]; duplicate {
+				if !sameReceiptWALDecision(previous, receipt) {
+					return fmt.Errorf("receipt WAL local seq %d: %w: conflicting duplicate operation ID %x", entry.Seq, mutationreceipt.ErrInvalidSnapshot, receipt.ID)
+				}
+				continue
+			}
+			copyOf := receipt
+			copyOf.Result = append([]byte(nil), receipt.Result...)
+			seenReceipts[receipt.ID] = copyOf
+			// Expired results are never returned as confirmed. The ID and
+			// retention policy still make them non-executable, but this
+			// audit cannot answer any absent-ID status.
+			if receipt.DeadlineMillis <= highWater {
+				continue
+			}
+			// Match the Store's current logical byte ledger before
+			// retaining another row; NewFromSnapshot verifies the ledger
+			// again at the end.
+			cost := receiptWALDecisionCost(receipt)
+			if len(report.knownReceipts) >= config.MaxEntries || cost > config.MaxBytes-knownBytes {
+				return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, mutationreceipt.ErrCapacity)
+			}
+			knownBytes += cost
+			report.knownReceipts = append(report.knownReceipts, copyOf)
+		}
+		rows[origin] = originRow{seq: seq, hlc: entry.HLC}
+		report.lastLocalSeq = entry.Seq
+		return nil
+	})
+	if err != nil {
+		return receiptWALDecisionAudit{}, err
+	}
+	// Validate the final bounded set using the Store's own receipt/index
+	// rules rather than duplicating those rules here.
+	sort.Slice(report.knownReceipts, func(i, j int) bool {
+		return bytes.Compare(report.knownReceipts[i].ID[:], report.knownReceipts[j].ID[:]) < 0
+	})
+	state, err := base.Snapshot()
+	if err != nil {
+		return receiptWALDecisionAudit{}, err
+	}
+	state.ClockHighWaterMillis = highWater
+	state.Receipts = report.knownReceipts
+	if _, err := mutationreceipt.NewFromSnapshot(config, state); err != nil {
+		return receiptWALDecisionAudit{}, fmt.Errorf("receipt WAL decisions: %w", err)
+	}
+	report.highWaterMillis = highWater
+	report.origins = make([]OriginState, 0, len(rows))
+	for origin, row := range rows {
+		report.origins = append(report.origins, OriginState{Origin: origin, LastSeq: row.seq, LastHLC: row.hlc})
+	}
+	sort.Slice(report.origins, func(i, j int) bool {
+		return bytes.Compare(report.origins[i].Origin[:], report.origins[j].Origin[:]) < 0
+	})
+	return report, nil
+}
+
+func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
+	return resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, false, nil)
+}
+
+// stageEffectCompleteReceiptWALCandidate is the stricter prerequisite for a
+// future serving restore. Legacy graph Put/Add rows have no receiver-local
+// accepted-effect evidence, even if a detached replay happens to produce a
+// plausible graph. The lease must cover audit and replay, and configureGraph
+// must install the intended serving indexes and limits on an empty staged
+// cache before replay. The returned candidate remains read-only: effect
+// evidence alone cannot certify the Store clock, epoch, or publication cut.
+func stageEffectCompleteReceiptWALCandidate(lease *mutationlog.FileWALLease, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration, configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error) (*receiptWALRecoveryCandidate, error) {
+	if lease == nil || configureGraph == nil {
+		return nil, fmt.Errorf("%w: WAL lease and graph configuration are required", errReceiptWALUnion)
+	}
+	var candidate *receiptWALRecoveryCandidate
+	err := lease.WithPath(func(path string) error {
+		var stageErr error
+		candidate, stageErr = resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, true, configureGraph)
+		return stageErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return candidate, nil
+}
+
+func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration, requireCompleteEffects bool, configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error) (*receiptWALRecoveryCandidate, error) {
+	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
+	if err != nil {
+		return nil, err
+	}
+	if requireCompleteEffects && (audit.unprovenGraphPutRows != 0 || audit.unprovenGraphAddRows != 0) {
+		return nil, fmt.Errorf("%w: graph Put/Add rows lack receiver-local accepted-effect evidence", errReceiptWALUnion)
+	}
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](defaultTTL)
+	if configureGraph != nil {
+		if err := configureGraph(graph); err != nil {
+			return nil, fmt.Errorf("receipt WAL graph configuration: %w", err)
+		}
+		if !emptyReceiptWALRecoveryGraph(graph) {
+			return nil, fmt.Errorf("%w: graph configuration populated the recovery cache", errReceiptWALUnion)
+		}
+	}
+	origins := newOriginStateTracker()
+	replayService := NewExecutor(graph)
+	candidate := &receiptWALRecoveryCandidate{graph: graph, origins: origins}
+	seenReceipt := false
+	log, closer, err := mutationlog.ResumeLogFromFileWAL(path, opts, encodeReceiptWALUnion, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
+		if err := validateReceiptWALUnionEntry(entry); err != nil {
+			return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, err)
+		}
+		var origin hlc.NodeID
+		var seq uint64
+		if envelope, ok := receiptWALEnvelopeInfo(entry.Op); ok {
+			seenReceipt = true
+			origin, seq = envelope.origin, envelope.originSeq
+			if err := replayReceiptEnvelopeGraph(graph, entry.Op); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: receipt graph replay: %w", entry.Seq, err)
+			}
+		} else {
+			switch value := entry.Op.(type) {
+			case *pb.Mutation:
+				if seenReceipt || !receiptWALGraphRecoverable(value) {
+					return fmt.Errorf("receipt WAL local seq %d: %w: graph arm has no exact recovery contract", entry.Seq, errReceiptWALUnion)
+				}
+				copy(origin[:], value.GetOrigin())
+				seq = value.GetSeq()
+				if _, err := replayService.applyMutationGraph(value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph replay: %w", entry.Seq, err)
+				}
+			case *graphDeleteEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayGraphDeleteEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph Delete effect replay: %w", entry.Seq, err)
+				}
+			case *graphPutEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayGraphPutEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
+				}
+			case *edgeCreateEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayEdgeCreateEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: Create replay: %w", entry.Seq, err)
+				}
+			case *graphAddEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayGraphAddEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph Add effect replay: %w", entry.Seq, err)
+				}
+			default:
+				return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+			}
+		}
+		if !origins.Record(origin, seq, entry.HLC) {
+			return fmt.Errorf("receipt WAL local seq %d: %w: origin frontier drift", entry.Seq, errReceiptWALUnion)
+		}
+		if candidate.hlcFrontier.Less(entry.HLC) {
+			candidate.hlcFrontier = entry.HLC
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err // All callback state was detached; Resume closed its writer.
+	}
+	lastSeq, hasEntries := log.LastSeq()
+	if lastSeq != audit.lastLocalSeq || hasEntries != (audit.lastLocalSeq != 0) || !slices.Equal(origins.States(), audit.origins) {
+		_ = closer.Close()
+		return nil, fmt.Errorf("%w: recovered graph/origin/Log cut differs from WAL audit", errReceiptWALUnion)
+	}
+	base, err := mutationreceipt.New(config)
+	if err == nil {
+		var state mutationreceipt.Snapshot
+		state, err = base.Snapshot()
+		if err == nil {
+			state.ClockHighWaterMillis = audit.highWaterMillis
+			state.Receipts = audit.knownReceipts
+			candidate.receipts, err = mutationreceipt.NewFromSnapshot(config, state)
+		}
+	}
+	if err != nil {
+		_ = closer.Close()
+		return nil, fmt.Errorf("receipt WAL Store restore: %w", err)
+	}
+	candidate.retired, err = newEmptyRetiredCatalogSnapshot(config, audit.highWaterMillis)
+	if err != nil {
+		_ = closer.Close()
+		return nil, fmt.Errorf("receipt WAL retired catalog restore: %w", err)
+	}
+	if err := graph.CompleteSearchIndexRecovery(); err != nil {
+		_ = closer.Close()
+		return nil, fmt.Errorf("receipt WAL search rebuild: %w", err)
+	}
+	if err := closer.Close(); err != nil {
+		return nil, fmt.Errorf("receipt WAL close after detached replay: %w", err)
+	}
+	candidate.log = log
+	return candidate, nil
 }

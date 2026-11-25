@@ -393,7 +393,7 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeRestart)
 	if current := receiptProtocolCapability(t, restarted); !proto.Equal(current.GetEndpoint(), endpoint) {
 		t.Fatalf("receipt endpoint changed across clean WAL restart: before=%+v after=%+v", endpoint, current.GetEndpoint())
 	}

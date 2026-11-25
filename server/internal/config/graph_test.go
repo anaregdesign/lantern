@@ -12,7 +12,7 @@ func TestGraphLoading(t *testing.T) {
 	cleanEnvironment(t)
 	reader := envconfig.NewReader(os.Environ())
 	cfg := Load(reader, ":9090")
-	if cfg.Cache != (CacheConfig{DataDir: "lantern-data", TTL: time.Minute, GCInterval: time.Minute}) {
+	if cfg.Cache != (CacheConfig{DataDir: "tarp.db", TTL: time.Minute, GCInterval: time.Minute}) {
 		t.Fatalf("cache defaults = %+v", cfg.Cache)
 	}
 	if cfg.Traversal != (TraversalConfig{Timeout: 5 * time.Second, MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000, MaxResults: 1024}) {

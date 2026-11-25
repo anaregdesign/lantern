@@ -13,7 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
-func newTarpServingRuntime(ctx context.Context, receipt ReceiptWALConfig, cacheConfig CacheConfig, search SearchConfig, replication ReplicationConfig, logOptions mutationlog.Options, backups backup.Config) (*dataruntime.ServingRuntime, error) {
+func newTarpServingRuntime(ctx context.Context, receipt ReceiptConfig, cacheConfig CacheConfig, search SearchConfig, replication ReplicationConfig, logOptions mutationlog.Options, backups backup.Config) (*dataruntime.ServingRuntime, error) {
 	if cacheConfig.DataDir == "" {
 		return nil, errors.New("LANTERN_DATA_DIR must identify a node-owned directory")
 	}
@@ -27,16 +27,16 @@ func newTarpServingRuntime(ctx context.Context, receipt ReceiptWALConfig, cacheC
 	}
 	open := graphstore.Open
 	switch receipt.Mode {
-	case ReceiptWALModeFresh:
+	case ReceiptModeFresh:
 		if backups.RestoreRequired {
 			return nil, errors.New("receipt fresh mode cannot satisfy required restore")
 		}
-	case ReceiptWALModeRestart:
+	case ReceiptModeRestart:
 		// A self-consistent old backup cannot prove that the same receipt
 		// epoch acknowledged no later writes. Operators restore a witnessed
 		// final cut explicitly before restarting a missing node.
 		open = graphstore.OpenExisting
-	case ReceiptWALModeGraphOnly:
+	case ReceiptModeGraphOnly:
 		if err := backup.RestoreGraphStoreOnStartup(ctx, dir, expected, backups); err != nil {
 			return nil, err
 		}
@@ -53,25 +53,25 @@ func newTarpServingRuntime(ctx context.Context, receipt ReceiptWALConfig, cacheC
 	return rt, nil
 }
 
-func restoreTarpRuntime(ctx context.Context, db *graphstore.DB, receipt ReceiptWALConfig, cacheConfig CacheConfig, search SearchConfig, logOptions mutationlog.Options) (*dataruntime.ServingRuntime, error) {
+func restoreTarpRuntime(ctx context.Context, db *graphstore.DB, receipt ReceiptConfig, cacheConfig CacheConfig, search SearchConfig, logOptions mutationlog.Options) (*dataruntime.ServingRuntime, error) {
 	graph := NewGraphCache(cacheConfig, search)
 	stage, err := dataruntime.RestoreGraphStorage(ctx, graph, db)
 	if err != nil {
 		return nil, err
 	}
-	if receipt.Mode == ReceiptWALModeGraphOnly {
+	if receipt.Mode == ReceiptModeGraphOnly {
 		return dataruntime.NewTarpGraphServingRuntime(graph, db, logOptions, stage, cacheConfig.namespaceFormat)
 	}
 	now := time.Now()
-	config := dataruntime.DurableReceiptWALRuntimeConfig{
+	config := dataruntime.ReceiptDatabaseConfig{
 		NamespaceFormat: cacheConfig.namespaceFormat,
 		Receipt:         receipt.receiptConfig(now),
 		Log:             logOptions,
 		DefaultTTL:      cacheConfig.TTL,
-		ConfigureGraph:  receiptWALGraphConfigurator(cacheConfig, search),
+		ConfigureGraph:  receiptGraphConfigurator(cacheConfig, search),
 		NodeID:          db.NodeID(),
 		Now:             now,
 		BaselineCodec:   backup.ReceiptBaselineCodec{},
 	}
-	return dataruntime.NewTarpReceiptServingRuntime(graph, db, stage, config, receipt.Mode == ReceiptWALModeFresh)
+	return dataruntime.NewTarpReceiptServingRuntime(graph, db, stage, config, receipt.Mode == ReceiptModeFresh)
 }

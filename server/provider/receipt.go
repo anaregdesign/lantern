@@ -19,17 +19,17 @@ import (
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 )
 
-// ReceiptWALMode selects the process state owner before any listener or
+// ReceiptMode selects the process state owner before any listener or
 // replication worker is constructed.
-type ReceiptWALMode string
+type ReceiptMode string
 
 const (
-	ReceiptWALModeGraphOnly ReceiptWALMode = "graph-only"
-	ReceiptWALModeFresh     ReceiptWALMode = "fresh"
-	ReceiptWALModeRestart   ReceiptWALMode = "restart"
+	ReceiptModeGraphOnly ReceiptMode = "graph-only"
+	ReceiptModeFresh     ReceiptMode = "fresh"
+	ReceiptModeRestart   ReceiptMode = "restart"
 )
 
-// ReceiptWALConfig is the durable-runtime contract.
+// ReceiptConfig is the durable-runtime contract.
 //
 //   - LANTERN_RECEIPT_MODE            graph-only (default), fresh, or restart
 //   - LANTERN_RECEIPT_EPOCH           nonzero 32-hex-character deployment epoch
@@ -42,16 +42,16 @@ const (
 // activation additionally requires runtime, backup, recovery, and bearer-auth
 // certification. Fresh never overwrites existing bytes; restart requires the
 // matching Tarp database and receipt policy.
-type ReceiptWALConfig struct {
-	Mode       ReceiptWALMode
+type ReceiptConfig struct {
+	Mode       ReceiptMode
 	Epoch      mutationreceipt.Epoch
 	Retention  time.Duration
 	MaxEntries int
 	MaxBytes   int
 }
 
-func loadReceiptWALConfig(reader *envconfig.Reader) ReceiptWALConfig {
-	mode := ReceiptWALMode(strings.TrimSpace(reader.String("LANTERN_RECEIPT_MODE", string(ReceiptWALModeGraphOnly))))
+func loadReceiptConfig(reader *envconfig.Reader) ReceiptConfig {
+	mode := ReceiptMode(strings.TrimSpace(reader.String("LANTERN_RECEIPT_MODE", string(ReceiptModeGraphOnly))))
 	epochText := strings.TrimSpace(reader.String("LANTERN_RECEIPT_EPOCH", ""))
 	retention := reader.Duration("LANTERN_RECEIPT_RETENTION", 0)
 	maxEntries := reader.Int("LANTERN_RECEIPT_MAX_ENTRIES", 0)
@@ -66,14 +66,14 @@ func loadReceiptWALConfig(reader *envconfig.Reader) ReceiptWALConfig {
 			copy(epoch[:], decoded)
 		}
 	}
-	return ReceiptWALConfig{
+	return ReceiptConfig{
 		Mode: mode, Epoch: epoch, Retention: retention,
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 }
 
-func validateReceiptWALConfig(
-	config ReceiptWALConfig,
+func validateReceiptConfig(
+	config ReceiptConfig,
 	backups backup.Config,
 	replication ReplicationConfig,
 ) error {
@@ -81,13 +81,13 @@ func validateReceiptWALConfig(
 		return errors.New("LANTERN_NODE_ID must be a nonzero 32-hex-character value")
 	}
 	switch config.Mode {
-	case ReceiptWALModeGraphOnly:
+	case ReceiptModeGraphOnly:
 		if config.Epoch != (mutationreceipt.Epoch{}) ||
 			config.Retention != 0 || config.MaxEntries != 0 || config.MaxBytes != 0 {
 			return errors.New("LANTERN_RECEIPT_MODE=graph-only cannot be combined with durable receipt WAL settings")
 		}
 		return nil
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
+	case ReceiptModeFresh, ReceiptModeRestart:
 	default:
 		return fmt.Errorf("LANTERN_RECEIPT_MODE must be exactly graph-only, fresh, or restart")
 	}
@@ -109,7 +109,7 @@ func validateReceiptWALConfig(
 	return nil
 }
 
-func (c ReceiptWALConfig) receiptConfig(clockHighWater time.Time) mutationreceipt.Config {
+func (c ReceiptConfig) receiptConfig(clockHighWater time.Time) mutationreceipt.Config {
 	return mutationreceipt.Config{
 		Epoch:          c.Epoch,
 		Retention:      c.Retention,
@@ -119,14 +119,14 @@ func (c ReceiptWALConfig) receiptConfig(clockHighWater time.Time) mutationreceip
 	}
 }
 
-// NewReceiptWALConfig returns the ReceiptWALConfig slice of Config.
-func NewReceiptWALConfig(c *Config) ReceiptWALConfig { return c.ReceiptWAL }
+// NewReceiptConfig returns the ReceiptConfig slice of Config.
+func NewReceiptConfig(c *Config) ReceiptConfig { return c.Receipts }
 
 // NewServingRuntime is the sole production state-composition boundary. It
 // opens the node-owned graph database and binds the selected receipt policy
 // before any selector exposes state.
 func NewServingRuntime(
-	config ReceiptWALConfig,
+	config ReceiptConfig,
 	cacheConfig CacheConfig,
 	searchConfig SearchConfig,
 	logConfig MutationLogConfig,
@@ -134,7 +134,7 @@ func NewServingRuntime(
 	backups backup.Config,
 	metrics *domainmetrics.DomainMetrics,
 ) (_ *dataruntime.ServingRuntime, cleanup func(), err error) {
-	if err := validateReceiptWALConfig(config, backups, replicationConfig); err != nil {
+	if err := validateReceiptConfig(config, backups, replicationConfig); err != nil {
 		return nil, nil, err
 	}
 	options := mutationlog.Options{
@@ -153,7 +153,7 @@ func NewServingRuntime(
 	return runtime, func() { _ = runtime.Close() }, nil
 }
 
-func receiptWALGraphConfigurator(
+func receiptGraphConfigurator(
 	cacheConfig CacheConfig,
 	searchConfig SearchConfig,
 ) func(*graphcache.GraphCache[string, *pb.Vertex]) error {
@@ -190,9 +190,7 @@ func NewRuntimeRestored(
 	if runtime == nil || primary == nil {
 		return runtimeRestored{}, errors.New("startup restore requires the serving runtime and primary service")
 	}
-	if err := runtime.CompleteStartupRestore(context.Background(), primary); err != nil {
-		return runtimeRestored{}, err
-	}
+
 	return runtimeRestored{valid: true, runtime: runtime, primary: primary}, nil
 }
 
@@ -233,7 +231,7 @@ func NewRuntimeCertified(
 
 // NewOIDCPublicReceiptsCertified activates receipts only after the exact data
 // service has its native Principal/Role boundary installed.
-func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, backupper *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
+func NewOIDCPublicReceiptsCertified(config ReceiptConfig, security *SecurityRuntime, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, backupper *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
 	if security == nil || public.runtime != security || security.data != runtime {
 		return publicReceiptsCertified{}, errors.New("receipt activation requires the exact public security runtime")
 	}
@@ -243,19 +241,19 @@ func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityR
 	return certifyPublicReceipts(config, security.mode == "oidc", runtime, primary, certified)
 }
 
-func certifyPublicReceipts(config ReceiptWALConfig, authenticated bool, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified) (publicReceiptsCertified, error) {
+func certifyPublicReceipts(config ReceiptConfig, authenticated bool, runtime *dataruntime.ServingRuntime, primary *dataruntime.Executor, certified runtimeCertified) (publicReceiptsCertified, error) {
 	if !certified.valid || runtime == nil || primary == nil ||
 		certified.runtime != runtime || certified.primary != primary ||
 		certified.replication == nil {
 		return publicReceiptsCertified{}, errors.New("public receipt activation requires the exact certified serving runtime")
 	}
 	switch config.Mode {
-	case ReceiptWALModeGraphOnly:
-		if runtime.DurableReceiptWAL() {
+	case ReceiptModeGraphOnly:
+		if runtime.ReceiptsEnabled() {
 			return publicReceiptsCertified{}, errors.New("public receipt activation mode differs from the serving runtime")
 		}
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
-		if !runtime.DurableReceiptWAL() {
+	case ReceiptModeFresh, ReceiptModeRestart:
+		if !runtime.ReceiptsEnabled() {
 			return publicReceiptsCertified{}, errors.New("public receipt activation mode differs from the serving runtime")
 		}
 		if authenticated {

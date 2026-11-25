@@ -21,7 +21,7 @@ func TestGraphStoreReopensNodeAndNamespacedValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	open := func(node ReplicationConfig) (*dataruntime.ServingRuntime, func(), error) {
-		return NewServingRuntime(config.ReceiptWAL, config.Cache, config.Search, config.MutationLog, node, backup.Config{}, nil)
+		return NewServingRuntime(config.Receipts, config.Cache, config.Search, config.MutationLog, node, backup.Config{}, nil)
 	}
 	rt, closeRT, err := open(config.Replication)
 	if err != nil {

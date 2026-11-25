@@ -333,7 +333,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if app == nil || cleanup == nil || !app.runtime.DurableReceiptWAL() {
+	if app == nil || cleanup == nil || !app.runtime.ReceiptsEnabled() {
 		if cleanup != nil {
 			cleanup()
 		}
@@ -406,8 +406,8 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		}
 	}
 	receiptConfig := mutationreceipt.Config{
-		Epoch: app.cfg.ReceiptWAL.Epoch, Retention: app.cfg.ReceiptWAL.Retention,
-		MaxEntries: app.cfg.ReceiptWAL.MaxEntries, MaxBytes: uint64(app.cfg.ReceiptWAL.MaxBytes),
+		Epoch: app.cfg.Receipts.Epoch, Retention: app.cfg.Receipts.Retention,
+		MaxEntries: app.cfg.Receipts.MaxEntries, MaxBytes: uint64(app.cfg.Receipts.MaxBytes),
 	}
 	receiptMutation := productionReceiptEdgeDeleteMutation(
 		t, receiptConfig, remote, 4, receiptTail, receiptHead,
@@ -455,7 +455,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted == nil || cleanupRestart == nil || !restarted.runtime.DurableReceiptWAL() {
+	if restarted == nil || cleanupRestart == nil || !restarted.runtime.ReceiptsEnabled() {
 		if cleanupRestart != nil {
 			cleanupRestart()
 		}
@@ -584,7 +584,7 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 		if err != nil {
 			t.Fatalf("restart after partial owner cleanup: %v", err)
 		}
-		if app == nil || cleanup == nil || !app.runtime.DurableReceiptWAL() {
+		if app == nil || cleanup == nil || !app.runtime.ReceiptsEnabled() {
 			t.Fatalf("restart app = %p, cleanup %v", app, cleanup != nil)
 		}
 		if err := launch.Adopted(); err != nil {
@@ -681,12 +681,12 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cleanup == nil || app == nil || app.runtime.DurableReceiptWAL() ||
-		app.cfg.ReceiptWAL.Mode != "graph-only" {
+	if cleanup == nil || app == nil || app.runtime.ReceiptsEnabled() ||
+		app.cfg.Receipts.Mode != "graph-only" {
 		if cleanup != nil {
 			cleanup()
 		}
-		t.Fatalf("graph-only app = %p, cleanup %v, mode %q", app, cleanup != nil, app.cfg.ReceiptWAL.Mode)
+		t.Fatalf("graph-only app = %p, cleanup %v, mode %q", app, cleanup != nil, app.cfg.Receipts.Mode)
 	}
 	if !app.graphPolicy.OwnsInstallation(app.runtime, app.svc) || !app.server.UsesWatcher(app.graphPolicy) {
 		cleanup()

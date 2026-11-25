@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewGraphPolicyOwnerRequiresRestoredCertifiedIdentity(t *testing.T) {
-	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly})
+	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptConfig{Mode: ReceiptModeGraphOnly})
 	config := CacheConfig{CacheSettings: CacheSettings{
 		GCInterval: time.Minute, GCEdgeBudget: 7, MaxVertices: 8, MaxEdges: 9,
 		MaxVertexCausalEntries: 10, MaxEdgeCausalEntries: 11,
@@ -49,7 +49,7 @@ func TestNewGraphPolicyOwnerPreservesLegacyNonpositiveAggregateCaps(t *testing.T
 		{"explicit unlimited", 0, 0, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly})
+			runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptConfig{Mode: ReceiptModeGraphOnly})
 			config := CacheConfig{CacheSettings: CacheSettings{
 				GCInterval: time.Minute, GCEdgeBudget: 7, MaxVertices: test.vertices, MaxEdges: test.edges,
 				MaxVertexCausalEntries: 10, MaxEdgeCausalEntries: 11,

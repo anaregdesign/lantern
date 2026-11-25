@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"reflect"
@@ -1352,4 +1353,84 @@ func TestReceiptWholeStateCaptureWithTailFailsClosed(t *testing.T) {
 	if called || connect.CodeOf(err) != connect.CodeFailedPrecondition || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
 		t.Fatalf("faulted generation reserved tail: %+v, %v; callback=%v", capture, err, called)
 	}
+}
+
+// ReceiptWholeStateBackupCapture binds a detached whole-state image to the
+// exact durable FileWAL tip captured under the same exclusive publication
+// cut. It is a private backup-composition prerequisite, not a backup schedule,
+// persistence format, restore authority, or public receipt capability.
+type ReceiptWholeStateBackupCapture struct {
+	WholeState ReceiptWholeStateCapture
+	WALTip     mutationlog.FileWALTipWitness
+	NodeID     hlc.NodeID
+	Generation [16]byte
+}
+
+func (r *ServingRuntime) receiptWALTipWitness(
+	primary *Executor,
+	expectedSeq uint64,
+) (mutationlog.FileWALTipWitness, error) {
+	if r == nil || r.receipt == nil || r.receipt.owner == nil {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness is unavailable")
+	}
+	if primary == nil || primary.runtime != r || primary.cache != r.graph ||
+		primary.log != r.log || primary.clock != r.clock ||
+		primary.origins != r.origins || primary.receiptStore != r.receipt.store ||
+		primary.receiptRetiredCatalog != r.receipt.retired {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness service differs from runtime")
+	}
+	owner, ok := r.owner.(*receiptWALOwnedCandidate)
+	if !ok || owner != r.receipt.owner || owner.state == nil ||
+		owner.state.graph != r.graph || owner.state.log != r.log ||
+		owner.state.origins != r.origins || owner.state.receipts != r.receipt.store ||
+		owner.walProvenance == nil || owner.lease == nil {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness provenance differs from runtime")
+	}
+	var witness mutationlog.FileWALTipWitness
+	err := owner.lease.WithPath(func(canonicalPath string) error {
+		var witnessErr error
+		witness, witnessErr = owner.walProvenance.TipWitness(canonicalPath)
+		return witnessErr
+	})
+	if err != nil {
+		return mutationlog.FileWALTipWitness{}, fmt.Errorf("service: durable receipt WAL witness: %w", err)
+	}
+	if witness.Seq != expectedSeq {
+		return mutationlog.FileWALTipWitness{}, fmt.Errorf(
+			"service: durable receipt WAL witness: %w: captured seq %d differs from WAL seq %d",
+			mutationlog.ErrFileWALSequence,
+			expectedSeq,
+			witness.Seq,
+		)
+	}
+	return witness, nil
+}
+
+// CaptureForBackup qualifies the historical FileWAL fixtures only. The
+// deployed backup producer verifies its physical image and Tarp witness.
+func (c *ReceiptWholeStateSource) CaptureForBackup(ctx context.Context, policy mutationreceipt.Config) (ReceiptWholeStateBackupCapture, error) {
+	var result ReceiptWholeStateBackupCapture
+	image, err := c.captureWithTail(ctx, policy, func(seq uint64, _ map[string]uint64, _ <-chan struct{}) error {
+		rt := c.owner.runtime
+		if rt == nil || rt.receipt == nil {
+			return errors.New("FileWAL test fixture requires its runtime")
+		}
+		tip, err := rt.receiptWALTipWitness(c.owner, seq)
+		if err != nil {
+			return err
+		}
+		result.WALTip, result.NodeID, result.Generation = tip, rt.NodeID(), rt.receipt.generation
+		if result.NodeID == (hlc.NodeID{}) || result.Generation == ([16]byte{}) {
+			return errors.New("missing FileWAL fixture identity")
+		}
+		return nil
+	})
+	if err != nil {
+		return ReceiptWholeStateBackupCapture{}, err
+	}
+	if len(image.Graph) == 0 || image.Graph[0].GetHeader().GetCutoffLocalSeq() != result.WALTip.Seq {
+		return ReceiptWholeStateBackupCapture{}, mutationlog.ErrFileWALSequence
+	}
+	result.WholeState = image
+	return result, nil
 }

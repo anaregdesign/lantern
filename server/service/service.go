@@ -23,10 +23,8 @@ type (
 	LanternReplicationService       = dataruntime.Replication
 	Backend                         = dataruntime.Backend
 	ServingRuntime                  = dataruntime.ServingRuntime
-	DurableReceiptWALRuntimeConfig  = dataruntime.DurableReceiptWALRuntimeConfig
-	ReceiptStartupRestore           = dataruntime.ReceiptStartupRestore
+	ReceiptDatabaseConfig  = dataruntime.ReceiptDatabaseConfig
 	ReceiptWholeStateCapture        = dataruntime.ReceiptWholeStateCapture
-	ReceiptWholeStateBackupCapture  = dataruntime.ReceiptWholeStateBackupCapture
 	ReceiptWholeStateSource         = dataruntime.ReceiptWholeStateSource
 	ReceiptBaselineFormat           = dataruntime.ReceiptBaselineFormat
 	ReceiptBaselineArchiveCodec     = dataruntime.ReceiptBaselineArchiveCodec
@@ -68,8 +66,6 @@ const (
 	ReceiptBaselineFormatCombined = dataruntime.ReceiptBaselineFormatCombined
 )
 
-var ErrDurableReceiptWALBackupFallbackEligible = dataruntime.ErrDurableReceiptWALBackupFallbackEligible
-
 func ResolveSearchPolicy(baseline SearchLimits, generation uint64, policy SearchRequestPolicy) (SearchPolicySnapshot, error) {
 	return dataruntime.ResolveSearchPolicy(baseline, generation, policy)
 }
@@ -96,7 +92,7 @@ func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *
 	return dataruntime.OpenGraphDatabase(ctx, dir, node, graph, log, namespace)
 }
 
-func OpenReceiptDatabase(ctx context.Context, config DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, error) {
+func OpenReceiptDatabase(ctx context.Context, config ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
 	return dataruntime.OpenReceiptDatabase(ctx, config, fresh)
 }
 

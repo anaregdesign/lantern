@@ -42,7 +42,7 @@ func TestGraphMutationDefiniteAbortThenOtherOrigin(t *testing.T) {
 		if !reflect.DeepEqual(before, receiver.cache.SnapshotReplication()) || receiver.log.Len() != 0 || receiver.coordinator.store.Stats().Entries != 0 || receiver.service.LocalSeq(originTime.NodeID) != 0 {
 			t.Fatal("definite abort published graph, receipts, WAL or origin prefix")
 		}
-		provisional := receiver.service.pendingMutations[originTime.NodeID][1].receiptWAL.(*graphMutationEnvelope)
+		provisional := receiver.service.pendingMutations[originTime.NodeID][1].receipts.(*graphMutationEnvelope)
 		newer := originTime
 		newer.Logical++
 		newer.NodeID[0] ^= 0x40
@@ -99,7 +99,7 @@ func TestGraphMutationUnattemptedProjectionDoesNotDropOriginEffects(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		pending := &pendingMutation{receipt: origin, receiptWAL: provisional}
+		pending := &pendingMutation{receipt: origin, receipts: provisional}
 		if err := receiver.service.commitReplicatedGraphMutation(t.Context(), ts.NodeID, 1, ts, pending); err != nil {
 			t.Fatal(err)
 		}

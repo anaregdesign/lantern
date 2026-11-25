@@ -26,13 +26,13 @@ func managedBackupTestOwner(t *testing.T, input ...string) (*Config, *backup.Bac
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly})
+	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptConfig{Mode: ReceiptModeGraphOnly})
 	config.Backup.NamespaceFormat = runtime.DataNamespaceFormat()
 	if _, err := primary.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "preserved"}}); err != nil {
 		t.Fatal(err)
 	}
 	registry := prometheus.NewRegistry()
-	owner, err := NewBackupper(config.Backup, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, runtime, primary, certified, registry, nil)
+	owner, err := NewBackupper(config.Backup, ReceiptConfig{Mode: ReceiptModeGraphOnly}, runtime, primary, certified, registry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestManagedBackupEnvironmentDisabledProductionRestoresOnNextBoot(t *testing
 			}
 			store := CacheConfig{DataDir: filepath.Join(t.TempDir(), "graph")}
 			restartedConfig.Backup.NamespaceFormat = config.Backup.NamespaceFormat
-			data, cleanup, err := NewServingRuntime(ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, store, SearchConfig{}, MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}, ReplicationConfig{}, restartedConfig.Backup, nil)
+			data, cleanup, err := NewServingRuntime(ReceiptConfig{Mode: ReceiptModeGraphOnly}, store, SearchConfig{}, MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}, ReplicationConfig{}, restartedConfig.Backup, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -493,7 +493,7 @@ func TestBackupper_ProductionOFF_FinalDumpRestart_RealConnectWire(t *testing.T) 
 		}
 		cfg := productionOFFBackupConfig(t, dir)
 		cfg.Backup.RestoreRequired = true
-		runtime, cleanup, err := provider.NewServingRuntime(cfg.ReceiptWAL, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
+		runtime, cleanup, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -528,7 +528,7 @@ func productionOFFBackupConfig(t *testing.T, dir string) *provider.Config {
 
 func productionOFFBackupper(t *testing.T, cfg *provider.Config, logs io.Writer) (*service.ServingRuntime, *service.LanternService, *backup.Backupper) {
 	t.Helper()
-	runtime, cleanup, err := provider.NewServingRuntime(cfg.ReceiptWAL, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
+	runtime, cleanup, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func productionOFFBackupper(t *testing.T, cfg *provider.Config, logs io.Writer) 
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	b, err := provider.NewBackupper(provider.NewBackupConfig(cfg), cfg.ReceiptWAL, runtime, svc, certified, prometheus.NewRegistry(), logger)
+	b, err := provider.NewBackupper(provider.NewBackupConfig(cfg), cfg.Receipts, runtime, svc, certified, prometheus.NewRegistry(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}

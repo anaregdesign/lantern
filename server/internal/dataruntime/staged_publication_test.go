@@ -149,7 +149,7 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 						}
 						if relay {
 							pending := f.service.pendingMutations[originID][1]
-							if pending == nil || pending.receiptWAL != attempted {
+							if pending == nil || pending.receipts != attempted {
 								t.Fatal("relay lost exact receiver-local WAL evidence")
 							}
 						}

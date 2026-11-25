@@ -48,15 +48,15 @@ func loadGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig 
 	return *securityConfig.ProvisionedSnapshotSpool, nil
 }
 
-func selectGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig SecurityConfig, mode ReceiptWALMode) (GraphSnapshotSpoolConfig, error) {
+func selectGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig SecurityConfig, mode ReceiptMode) (GraphSnapshotSpoolConfig, error) {
 	profile, err := loadGraphSnapshotSpoolForSecurity(reader, securityConfig)
 	if err != nil || securityConfig.Mode != "oidc" {
 		return profile, err
 	}
 	switch mode {
-	case ReceiptWALModeGraphOnly:
+	case ReceiptModeGraphOnly:
 		return profile, nil
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
+	case ReceiptModeFresh, ReceiptModeRestart:
 		// Receipt WAL owns its independent durable representation. The signed
 		// graph profile remains validated material, without an active spool.
 		return GraphSnapshotSpoolConfig{}, nil
@@ -102,14 +102,14 @@ func loadGraphSnapshotSpoolConfig(reader *envconfig.Reader) (GraphSnapshotSpoolC
 	return GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: disk, MaxFrameBytes: int(frame)}, nil
 }
 
-func validateGraphSnapshotSpoolConfig(config GraphSnapshotSpoolConfig, mode ReceiptWALMode, peers PeerPlaneConfig) error {
+func validateGraphSnapshotSpoolConfig(config GraphSnapshotSpoolConfig, mode ReceiptMode, peers PeerPlaneConfig) error {
 	if config == (GraphSnapshotSpoolConfig{}) {
-		if mode == ReceiptWALModeGraphOnly && peers.ListenAddress != "" {
+		if mode == ReceiptModeGraphOnly && peers.ListenAddress != "" {
 			return errors.New("graph-only HA requires an explicit Snapshot spool directory, disk quota and frame limit")
 		}
 		return nil
 	}
-	if mode != ReceiptWALModeGraphOnly {
+	if mode != ReceiptModeGraphOnly {
 		return errors.New("graph Snapshot spool settings require graph-only runtime mode")
 	}
 	return config.Validate()

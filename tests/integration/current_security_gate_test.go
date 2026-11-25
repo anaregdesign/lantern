@@ -326,9 +326,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		receiptConfig := provider.ReceiptWALConfig{Mode: provider.ReceiptWALModeGraphOnly}
+		receiptConfig := provider.ReceiptConfig{Mode: provider.ReceiptModeGraphOnly}
 		if id == 1 {
-			receiptConfig.Mode = provider.ReceiptWALModeFresh
+			receiptConfig.Mode = provider.ReceiptModeFresh
 		}
 		backupConfig := startup.Backup
 		backupConfig.Dir, backupConfig.InstanceID = t.TempDir(), "managed-backup-fixture"
@@ -2715,7 +2715,7 @@ func TestCurrentPhysicalFixtureExpirationBounds(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = runtime.Close() })
-			wire := mountReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, currentFixtureTombstoneTTL(true), provider.ReceiptWALModeFresh)
+			wire := mountReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, currentFixtureTombstoneTTL(true), provider.ReceiptModeFresh)
 			capability := receiptProtocolCapability(t, wire)
 			receiptContext := receiptProtocolContext(t, capability, 0x55, 1, time.UnixMilli(int64(capability.GetServerNowUnixMs())))
 			expiration := time.Now().Add(8 * time.Hour)

@@ -1,5 +1,6 @@
-// Package graphcache provides Lantern's in-memory graph cache: a TTL-backed
-// vertex store plus additive, expiring directed edges.
+// Package graphcache implements TTL-aware vertex operations, additive directed
+// edges and derived query indexes. The Server binds it to graphstore so cold
+// values and contributions can be loaded from its node-owned Tarp database.
 //
 // GraphCache is the aggregate consistency boundary. Public write methods take
 // GraphCache.mu before mutating the vertex cache, edge cache, dictionary,

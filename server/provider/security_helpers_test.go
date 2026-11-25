@@ -71,8 +71,7 @@ func securityKeyFixture(t *testing.T, dir string) (string, string) {
 func securityDataFixture(t *testing.T) *dataruntime.ServingRuntime {
 	t.Helper()
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	log := mutationlog.New(mutationlog.Options{Capacity: 16})
-	data, err := dataruntime.NewGraphOnlyServingRuntime(graph, log, hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
+	data, err := dataruntime.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "graph"), hlc.NodeID{7}, graph, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)
 	}

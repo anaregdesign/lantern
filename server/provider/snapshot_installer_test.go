@@ -16,11 +16,11 @@ import (
 
 func certifiedSnapshotInstallerRuntime(
 	t *testing.T,
-	config ReceiptWALConfig,
+	config ReceiptConfig,
 ) (*dataruntime.ServingRuntime, *dataruntime.Executor, runtimeCertified) {
 	t.Helper()
 	replicationConfig := ReplicationConfig{
-		NodeID: hlc.NodeID{0x61}, nodeIDExplicit: config.Mode != ReceiptWALModeGraphOnly,
+		NodeID: hlc.NodeID{0x61}, nodeIDExplicit: config.Mode != ReceiptModeGraphOnly,
 	}
 	runtime, cleanup, err := NewServingRuntime(
 		config,
@@ -55,20 +55,20 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, tc := range []struct {
 		name   string
-		config func() ReceiptWALConfig
+		config func() ReceiptConfig
 		format pb.SnapshotFormat
 	}{
 		{
 			name: "graph only",
-			config: func() ReceiptWALConfig {
-				return ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+			config: func() ReceiptConfig {
+				return ReceiptConfig{Mode: ReceiptModeGraphOnly}
 			},
 			format: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 		},
 		{
 			name: "durable",
-			config: func() ReceiptWALConfig {
-				return validReceiptWALProviderConfig(ReceiptWALModeFresh)
+			config: func() ReceiptConfig {
+				return validReceiptProviderConfig(ReceiptModeFresh)
 			},
 			format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		},
@@ -127,18 +127,18 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 func TestSnapshotInstallerSelectionRejectsRuntimeModeMismatch(t *testing.T) {
 	tests := []struct {
 		name            string
-		runtimeConfig   ReceiptWALConfig
-		selectionConfig ReceiptWALConfig
+		runtimeConfig   ReceiptConfig
+		selectionConfig ReceiptConfig
 	}{
 		{
 			name:            "durable selection with graph runtime",
-			runtimeConfig:   ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
-			selectionConfig: validReceiptWALProviderConfig(ReceiptWALModeFresh),
+			runtimeConfig:   ReceiptConfig{Mode: ReceiptModeGraphOnly},
+			selectionConfig: validReceiptProviderConfig(ReceiptModeFresh),
 		},
 		{
 			name:            "graph selection with durable runtime",
-			runtimeConfig:   validReceiptWALProviderConfig(ReceiptWALModeFresh),
-			selectionConfig: ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
+			runtimeConfig:   validReceiptProviderConfig(ReceiptModeFresh),
+			selectionConfig: ReceiptConfig{Mode: ReceiptModeGraphOnly},
 		},
 	}
 	for _, tc := range tests {
@@ -162,7 +162,7 @@ func TestSnapshotInstallerSelectionRejectsRuntimeModeMismatch(t *testing.T) {
 }
 
 func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T) {
-	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+	config := ReceiptConfig{Mode: ReceiptModeGraphOnly}
 	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, config)
 	foreignPrimary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
 	if selection, err := NewSnapshotInstallerSelection(
@@ -196,7 +196,7 @@ func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T)
 }
 
 func TestSnapshotInstallerSelectionRequiresConfiguredGraphHASpool(t *testing.T) {
-	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+	config := ReceiptConfig{Mode: ReceiptModeGraphOnly}
 	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, config)
 	peers := PeerPlaneConfig{ListenAddress: "127.0.0.1:6391"}
 	if selected, err := NewSnapshotInstallerSelection(config, GraphSnapshotSpoolConfig{}, peers,

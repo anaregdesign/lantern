@@ -458,33 +458,33 @@ func (m *clusterReceiptSnapshotMetrics) OnPumpSnapshotReplayed(string, uint64, u
 
 func newClusterRecoveryReceiptProtocolServer(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 ) receiptProtocolWireServer {
 	t.Helper()
 	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mountClusterRecoveryReceiptProtocolServer(t, config, runtime, provider.ReceiptWALModeFresh)
+	return mountClusterRecoveryReceiptProtocolServer(t, config, runtime, provider.ReceiptModeFresh)
 }
 
 func openClusterRecoveryReceiptProtocolServer(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 ) receiptProtocolWireServer {
 	t.Helper()
 	runtime, err := service.OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mountClusterRecoveryReceiptProtocolServer(t, config, runtime, provider.ReceiptWALModeRestart)
+	return mountClusterRecoveryReceiptProtocolServer(t, config, runtime, provider.ReceiptModeRestart)
 }
 
 func mountClusterRecoveryReceiptProtocolServer(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	runtime *service.ServingRuntime,
-	mode provider.ReceiptWALMode,
+	mode provider.ReceiptMode,
 ) receiptProtocolWireServer {
 	t.Helper()
 	t.Cleanup(func() {
@@ -508,7 +508,7 @@ func mountClusterRecoveryReceiptProtocolServer(
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptConfig := provider.ReceiptWALConfig{
+	receiptConfig := provider.ReceiptConfig{
 		Mode:  mode,
 		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
 		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
@@ -534,7 +534,7 @@ func mountClusterRecoveryReceiptProtocolServer(
 // Cluster recovery exercises explicitly activated receipt protocol services.
 // Private tail admission remains separate: the senders below use the actual
 // signed-membership and mTLS fixture, never public credentials.
-func clusterRecoveryReceiptConfig(path string, nodeID hlc.NodeID) service.DurableReceiptWALRuntimeConfig {
+func clusterRecoveryReceiptConfig(path string, nodeID hlc.NodeID) service.ReceiptDatabaseConfig {
 	config := durableReceiptWireConfig(path, nodeID)
 	config.NamespaceFormat = "namespaced-v1"
 	return config

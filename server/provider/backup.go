@@ -86,7 +86,7 @@ func NewBackupConfig(c *Config) backup.Config { return c.Backup }
 // independently gated by receipt configuration and public authorization.
 func NewBackupper(
 	cfg backup.Config,
-	receiptConfig ReceiptWALConfig,
+	receiptConfig ReceiptConfig,
 	runtime *dataruntime.ServingRuntime,
 	svc *dataruntime.Executor,
 	certified runtimeCertified,
@@ -106,12 +106,12 @@ func NewBackupper(
 		return nil, errors.New("backup: graph storage namespace format differs from certified runtime")
 	}
 	switch receiptConfig.Mode {
-	case ReceiptWALModeGraphOnly:
-		if runtime.DurableReceiptWAL() {
+	case ReceiptModeGraphOnly:
+		if runtime.ReceiptsEnabled() {
 			return nil, errors.New("backup: graph-only mode received a receipt runtime")
 		}
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
-		if !runtime.DurableReceiptWAL() {
+	case ReceiptModeFresh, ReceiptModeRestart:
+		if !runtime.ReceiptsEnabled() {
 			return nil, errors.New("backup: receipt mode requires an installed receipt runtime")
 		}
 		if err := runtime.CertifyReceiptBackup(svc, certified.replication); err != nil {

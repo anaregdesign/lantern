@@ -32,7 +32,7 @@ const (
 type pendingMutation struct {
 	mutation   *pb.Mutation
 	receipt    receiptMutationEnvelope
-	receiptWAL receiptMutationEnvelope
+	receipts receiptMutationEnvelope
 	walOp      mutationlog.MutationOp
 	size       int
 	applied    bool // graph committed; retry the log append without applying twice

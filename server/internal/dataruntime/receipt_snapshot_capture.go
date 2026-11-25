@@ -14,7 +14,6 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
@@ -32,30 +31,14 @@ type ReceiptWholeStateCapture struct {
 	Origins  []OriginState
 }
 
-// ReceiptWholeStateBackupCapture binds a detached whole-state image to the
-// exact durable FileWAL tip captured under the same exclusive publication
-// cut. It is a private backup-composition prerequisite, not a backup schedule,
-// persistence format, restore authority, or public receipt capability.
-type ReceiptWholeStateBackupCapture struct {
-	WholeState ReceiptWholeStateCapture
-	WALTip     mutationlog.FileWALTipWitness
-	NodeID     hlc.NodeID
-	Generation [16]byte
-}
-
-// ReceiptWholeStateSource is the read-only source shared by the private archive
-// and opt-in replication Snapshot producers. Its private owner identity keeps a
-// replication service from accepting a cut from a different primary or serving
-// runtime. Capture returns all in-memory sections from one publication cut.
-// CaptureForBackup additionally binds that image to the exact durable WAL tip
-// without allowing callers to sample the runtime separately.
+// ReceiptWholeStateSource binds a logical replication image to a single
+// executor, graph and receipt policy.
 type ReceiptWholeStateSource struct {
-	owner         *Executor
-	store         *mutationreceipt.Store
-	retired       *retiredReceiptCatalogSlot
-	cache         *graphcache.GraphCache[string, *pb.Vertex]
-	capture       func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error)
-	captureBackup func(context.Context, mutationreceipt.Config) (ReceiptWholeStateBackupCapture, error)
+	owner   *Executor
+	store   *mutationreceipt.Store
+	retired *retiredReceiptCatalogSlot
+	cache   *graphcache.GraphCache[string, *pb.Vertex]
+	capture func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error)
 }
 
 // Capture returns one detached publication cut.
@@ -69,22 +52,9 @@ func (c *ReceiptWholeStateSource) Capture(
 	return c.capture(ctx, policy)
 }
 
-// CaptureForBackup returns one detached publication cut and its exact durable
-// FileWAL tip. Graph-only, faulted, mismatched, or closed runtimes fail closed
-// and return no partial image or witness.
-func (c *ReceiptWholeStateSource) CaptureForBackup(
-	ctx context.Context,
-	policy mutationreceipt.Config,
-) (ReceiptWholeStateBackupCapture, error) {
-	if c == nil || c.captureBackup == nil {
-		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state backup source is nil")
-	}
-	return c.captureBackup(ctx, policy)
-}
-
 func (c *ReceiptWholeStateSource) belongsTo(replication *Replication) bool {
 	if c == nil || c.owner == nil || c.store == nil || c.retired == nil || c.cache == nil ||
-		c.capture == nil || c.captureBackup == nil || replication == nil {
+		c.capture == nil || replication == nil {
 		return false
 	}
 	backend, backendOK := replication.backend.(*graphcache.GraphCache[string, *pb.Vertex])
@@ -141,7 +111,6 @@ func NewReceiptWholeStateSource(s *Executor, store *mutationreceipt.Store) (*Rec
 		owner: s, store: store, retired: retired, cache: coordinator.cache,
 	}
 	source.capture = source.captureReceiptWholeState
-	source.captureBackup = source.captureReceiptWholeStateForBackup
 	return source, nil
 }
 
@@ -159,18 +128,7 @@ func (c *ReceiptWholeStateSource) captureReceiptWholeState(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateCapture, error) {
-	capture, err := c.captureReceiptWholeStateCut(ctx, policy, false, nil)
-	if err != nil {
-		return ReceiptWholeStateCapture{}, err
-	}
-	return capture.WholeState, nil
-}
-
-func (c *ReceiptWholeStateSource) captureReceiptWholeStateForBackup(
-	ctx context.Context,
-	policy mutationreceipt.Config,
-) (ReceiptWholeStateBackupCapture, error) {
-	return c.captureReceiptWholeStateCut(ctx, policy, true, nil)
+	return c.captureWithTail(ctx, policy, nil)
 }
 
 // captureWithTail lets the private replication owner reserve the exact tail
@@ -182,45 +140,29 @@ func (c *ReceiptWholeStateSource) captureWithTail(
 	policy mutationreceipt.Config,
 	atCut func(uint64, map[string]uint64, <-chan struct{}) error,
 ) (ReceiptWholeStateCapture, error) {
-	capture, err := c.captureReceiptWholeStateCut(ctx, policy, false, atCut)
-	if err != nil {
-		return ReceiptWholeStateCapture{}, err
-	}
-	return capture.WholeState, nil
-}
-
-func (c *ReceiptWholeStateSource) captureReceiptWholeStateCut(
-	ctx context.Context,
-	policy mutationreceipt.Config,
-	includeWALTip bool,
-	atCut func(uint64, map[string]uint64, <-chan struct{}) error,
-) (ReceiptWholeStateBackupCapture, error) {
 	if err := ctx.Err(); err != nil {
-		return ReceiptWholeStateBackupCapture{}, ctxToConnect(err)
+		return ReceiptWholeStateCapture{}, ctxToConnect(err)
 	}
 	if c == nil || c.owner == nil || c.cache == nil || c.store == nil || c.retired == nil {
-		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture requires a staged service, Store, and retired catalog")
+		return ReceiptWholeStateCapture{}, errors.New("receipt whole-state capture requires a staged service, Store, and retired catalog")
 	}
 	s := c.owner
 	cache, ok := s.cache.(*graphcache.GraphCache[string, *pb.Vertex])
 	if s.log == nil || s.clock == nil || s.origins == nil || !ok || cache != c.cache {
-		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture requires one wired graph, log, clock, and origin tracker")
+		return ReceiptWholeStateCapture{}, errors.New("receipt whole-state capture requires one wired graph, log, clock, and origin tracker")
 	}
 	configured, err := mutationreceipt.New(policy)
 	if err != nil {
-		return ReceiptWholeStateBackupCapture{}, fmt.Errorf("receipt whole-state capture: invalid policy: %w", err)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt whole-state capture: invalid policy: %w", err)
 	}
 	if configured.Epoch() != c.store.Epoch() || configured.PolicyFingerprint() != c.store.PolicyFingerprint() {
-		return ReceiptWholeStateBackupCapture{}, fmt.Errorf("receipt whole-state capture: Store policy mismatch: %w", mutationreceipt.ErrInvalidSnapshot)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt whole-state capture: Store policy mismatch: %w", mutationreceipt.ErrInvalidSnapshot)
 	}
 
 	image := replicationSnapshotCut{namespaceFormat: s.namespaceFormat}
 	var receipts mutationreceipt.Snapshot
 	var retired mutationreceipt.RetiredCatalogSnapshot
 	var origins []OriginState
-	var walTip mutationlog.FileWALTipWitness
-	var nodeID hlc.NodeID
-	var generation [16]byte
 	err = s.withExclusiveCommittedView(func() error {
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
@@ -274,20 +216,7 @@ func (c *ReceiptWholeStateSource) captureReceiptWholeStateCut(
 			return errors.New("receipt whole-state capture has an invalid HLC frontier")
 		}
 		image.barriers, image.tombstones, image.graph = graph.Barriers, graph.Tombstones, graph.Graph
-		if includeWALTip {
-			if s.runtime == nil || s.runtime.receipt == nil {
-				return errors.New("receipt whole-state backup capture requires a durable serving runtime")
-			}
-			walTip, captureErr = s.runtime.receiptWALTipWitness(s, image.cutoffLocalSeq)
-			if captureErr != nil {
-				return captureErr
-			}
-			nodeID = s.clock.NodeID()
-			generation = s.runtime.receipt.generation
-			if nodeID == (hlc.NodeID{}) || generation == ([16]byte{}) {
-				return errors.New("receipt whole-state backup capture has an invalid runtime identity")
-			}
-		}
+
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
 		}
@@ -297,50 +226,33 @@ func (c *ReceiptWholeStateSource) captureReceiptWholeStateCut(
 		return nil
 	})
 	if err != nil {
-		return ReceiptWholeStateBackupCapture{}, fmt.Errorf("receipt whole-state capture: %w", err)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt whole-state capture: %w", err)
 	}
 	if !policy.ClockHighWater.IsZero() && policy.ClockHighWater.UnixMilli() > receipts.ClockHighWaterMillis {
-		return ReceiptWholeStateBackupCapture{}, fmt.Errorf("receipt whole-state capture: policy high-water exceeds Store: %w", mutationreceipt.ErrInvalidSnapshot)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt whole-state capture: policy high-water exceeds Store: %w", mutationreceipt.ErrInvalidSnapshot)
 	}
 	if receipts.ClockHighWaterMillis > image.cutoffHLC.WallNs/int64(time.Millisecond) {
-		return ReceiptWholeStateBackupCapture{}, fmt.Errorf(
+		return ReceiptWholeStateCapture{}, fmt.Errorf(
 			"receipt whole-state capture: Store clock high-water exceeds graph cutoff: %w",
 			mutationreceipt.ErrInvalidSnapshot,
 		)
 	}
 	policy.ClockHighWater = receipts.ClockHighWater()
 	if _, err := mutationreceipt.NewFromSnapshot(policy, receipts); err != nil {
-		return ReceiptWholeStateBackupCapture{}, fmt.Errorf("receipt whole-state capture: invalid Store policy or snapshot: %w", err)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt whole-state capture: invalid Store policy or snapshot: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return ReceiptWholeStateBackupCapture{}, ctxToConnect(err)
+		return ReceiptWholeStateCapture{}, ctxToConnect(err)
 	}
 
 	collector := &receiptSnapshotFrameCollector{}
 	if err := sendSnapshotFrames(ctx, image, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, collector); err != nil {
-		return ReceiptWholeStateBackupCapture{}, err
+		return ReceiptWholeStateCapture{}, err
 	}
 	wholeState := ReceiptWholeStateCapture{
 		Graph: collector.frames, Receipts: receipts, Retired: retired, Policy: policy, Origins: origins,
 	}
-	if includeWALTip {
-		if len(wholeState.Graph) == 0 {
-			return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture: graph frame stream is empty")
-		}
-		header := wholeState.Graph[0].GetHeader()
-		if header == nil || header.GetCutoffLocalSeq() != walTip.Seq {
-			return ReceiptWholeStateBackupCapture{}, fmt.Errorf(
-				"receipt whole-state capture: %w: graph seq differs from WAL witness",
-				mutationlog.ErrFileWALSequence,
-			)
-		}
-	}
-	return ReceiptWholeStateBackupCapture{
-		WholeState: wholeState,
-		WALTip:     walTip,
-		NodeID:     nodeID,
-		Generation: generation,
-	}, nil
+	return wholeState, nil
 }
 
 type receiptSnapshotFrameCollector struct{ frames []*pb.SnapshotResponse }

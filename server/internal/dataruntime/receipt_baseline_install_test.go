@@ -82,7 +82,7 @@ func setReceiptBaselineTestRetired(
 	}
 }
 
-func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeConfig) receiptBaselineTestImage {
+func newReceiptBaselineTestImage(t *testing.T, config ReceiptDatabaseConfig) receiptBaselineTestImage {
 	t.Helper()
 	issued := config.Receipt.ClockHighWater.Truncate(time.Millisecond)
 	if issued.IsZero() {
@@ -194,9 +194,9 @@ func setReceiptBaselineTestGraphFrames(t *testing.T, image *receiptBaselineTestI
 	image.capture.Graph = frames.frames
 }
 
-func baselineRuntimeTestConfig(path string) DurableReceiptWALRuntimeConfig {
+func baselineRuntimeTestConfig(path string) ReceiptDatabaseConfig {
 	now := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
-	return DurableReceiptWALRuntimeConfig{
+	return ReceiptDatabaseConfig{
 		Path: path,
 		Receipt: mutationreceipt.Config{
 			Epoch: mutationreceipt.Epoch{0x81}, Retention: time.Hour,

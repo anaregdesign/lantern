@@ -66,7 +66,7 @@ graph. Keep private graph storage recovery points accessible only to operators.
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
-| `LANTERN_DATA_DIR` | `lantern-data` in the Server binary | Node-owned Tarp database. Give every replica a separate persistent volume. |
+| `LANTERN_DATA_DIR` | `tarp.db` in the Server binary | Node-owned Tarp database. Give every replica a separate persistent volume. |
 | `LANTERN_BACKUP_DIR` | empty | Directory for recovery points. Leave empty to disable discovery and production. |
 | `LANTERN_BACKUP_ENABLED` | `false` | Enable periodic production when the destination is configured. |
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Interval between scheduled backups. |

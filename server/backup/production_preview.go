@@ -1,8 +1,6 @@
 package backup
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -12,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 const (
@@ -87,128 +84,45 @@ func (b *Backupper) retentionCatalog(ctx context.Context, retain int, maxBytes i
 		return preview, nil, nil
 	}
 	remaining := maxBytes
-	readDigest := sha256.New()
-	// Construct a read-only validator view explicitly: copying Backupper would
-	// copy its mutex and accidentally alias scheduler/attempt ownership.
-	validator := &Backupper{cfg: b.cfg, fs: b.fs}
-	validator.fs.readFile = func(path string, limit int64) ([]byte, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		info, statErr := b.fs.lstat(path)
-		if statErr != nil {
-			return nil, statErr
-		}
-		if info.Size() < 0 || info.Size() >= remaining {
-			return nil, ErrRetentionPreviewLimit
-		}
-		readLimit := min(limit, remaining-1)
-		raw, readErr := b.fs.readFile(path, readLimit)
-		if readErr != nil {
-			// The filesystem seam may return no partial bytes on failure;
-			// conservatively charge the entire bounded attempted read.
-			remaining -= readLimit + 1
-			var pathError *os.PathError
-			if errors.As(readErr, &pathError) {
-				return nil, readErr
-			}
-			if readLimit < limit {
-				return nil, ErrRetentionPreviewLimit
-			}
-			return nil, readErr
-		}
-		remaining -= int64(len(raw))
-		_, _ = readDigest.Write(raw)
-		return raw, readErr
-	}
 	validated := 0
 	visited := false
-	err = validator.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
+	err = b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
 		visited = true
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if b.graphStore != nil {
-			prefix := graphPointPrefix(b.cfg.InstanceID)
-			suffix, own := strings.CutPrefix(entry.Name(), prefix)
-			id, valid := parseReceiptBackupSetID(suffix)
-			if !own || !valid || !entry.IsDir() {
-				return nil
-			}
-			validated++
-			if validated > maxCandidates {
-				return ErrRetentionPreviewLimit
-			}
-			path := filepath.Join(b.cfg.Dir, entry.Name())
-			size, err := graphPointBytes(ctx, path)
-			if err != nil {
-				return err
-			}
-			if size > remaining {
-				return ErrRetentionPreviewLimit
-			}
-			remaining -= size
-			cut, raw, _, err := loadGraphPoint(ctx, path, b.cfg.InstanceID, id, b.cfg.NamespaceFormat)
-			if err != nil {
-				return previewCandidateError(err)
-			}
-			if cut.Application.NodeID != b.graphStore.NodeID() {
-				return nil
-			}
-			candidates = append(candidates, retentionPreviewCandidate{name: entry.Name(), stamp: id, size: size, digest: sha256.Sum256(raw)})
-			return nil
+		if b.graphStore == nil {
+			return ErrProductionUnavailable
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		name := entry.Name()
-		if b.receiptSource != nil {
-			id, _, kind, own := parseOwnReceiptBackupSetName(name, b.cfg.InstanceID)
-			if !own || kind != receiptBackupSetManifestFile {
-				return nil
-			}
-			validated++
-			if validated > maxCandidates {
-				return ErrRetentionPreviewLimit
-			}
-			readDigest.Reset()
-			loaded, loadErr := validator.loadReceiptBackupSet(filepath.Join(b.cfg.Dir, name))
-			if loadErr != nil {
-				return previewCandidateError(loadErr)
-			}
-			if loaded.id != id {
-				return nil
-			}
-			var digest [sha256.Size]byte
-			copy(digest[:], readDigest.Sum(nil))
-			candidates = append(candidates, retentionPreviewCandidate{name: name, stamp: id, size: loaded.stats.Bytes, digest: digest})
-			return nil
-		}
-		stamp, canonical := fileStamp(name)
-		if !strings.HasPrefix(name, b.ownPrefix()) || !strings.HasSuffix(name, fileSuffix) || !canonical || stamp <= 0 || b.fileName(time.Unix(0, stamp)) != name {
+		prefix := graphPointPrefix(b.cfg.InstanceID)
+		suffix, own := strings.CutPrefix(entry.Name(), prefix)
+		id, valid := parseGraphPointID(suffix)
+		if !own || !valid || !entry.IsDir() {
 			return nil
 		}
 		validated++
 		if validated > maxCandidates {
 			return ErrRetentionPreviewLimit
 		}
-		path := filepath.Join(b.cfg.Dir, name)
-		info, statErr := b.fs.lstat(path)
-		if statErr != nil {
-			return statErr
+		path := filepath.Join(b.cfg.Dir, entry.Name())
+		size, err := graphPointBytes(ctx, path)
+		if err != nil {
+			return err
 		}
-		if !info.Mode().IsRegular() {
+		if size > remaining {
+			return ErrRetentionPreviewLimit
+		}
+		remaining -= size
+		cut, raw, _, err := loadGraphPoint(ctx, path, b.cfg.InstanceID, id, b.cfg.NamespaceFormat)
+		if err != nil {
+			return previewCandidateError(err)
+		}
+		if cut.Application.NodeID != b.graphStore.NodeID() {
 			return nil
 		}
-		raw, readErr := validator.fs.readFile(path, maxBytes)
-		if readErr != nil {
-			return readErr
-		}
-		if decodeErr := scanGraph(ctx, bufio.NewReader(bytes.NewReader(raw)), b.cfg.NamespaceFormat, nil); decodeErr != nil {
-			return previewCandidateError(decodeErr)
-		}
-		candidates = append(candidates, retentionPreviewCandidate{name: name, stamp: uint64(stamp), size: int64(len(raw)), digest: sha256.Sum256(raw)})
+		candidates = append(candidates, retentionPreviewCandidate{name: entry.Name(), stamp: id, size: size, digest: sha256.Sum256(raw)})
 		return nil
+
 	})
 	if errors.Is(err, os.ErrNotExist) && !visited {
 		err = nil

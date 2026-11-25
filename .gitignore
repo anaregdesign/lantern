@@ -33,4 +33,4 @@ deploy/compose/backups/
 /sdks/dart/example/ios/Runner/AuthKey_*.p8
 
 # Default Server database in the checkout root.
-/lantern-data/
+/tarp.db/

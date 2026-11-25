@@ -7,7 +7,7 @@ value, query its neighborhood, and search its content through the same API.
 Each Server node stores Vertex and Edge rows, replication progress and optional
 receipts in one Tarp database. Set `LANTERN_DATA_DIR` to a private, writable
 directory on a persistent volume. Reuse that volume on restart and give every
-replica its own volume. The local default is `./lantern-data`.
+replica its own volume. The local default is `./tarp.db`.
 
 ## Try it in the Admin UI
 

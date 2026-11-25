@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func openTarpReceiptTestRuntime(t *testing.T, dir string, cfg DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, *Executor) {
+func openTarpReceiptTestRuntime(t *testing.T, dir string, cfg ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, *Executor) {
 	t.Helper()
 	db, err := graphstore.Open(t.Context(), dir, cfg.NodeID)
 	if err != nil {

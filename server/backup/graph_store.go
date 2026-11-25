@@ -7,13 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -54,14 +57,27 @@ func marshalGraphCut(cut graphStoreCut) ([]byte, error) {
 
 // NewGraphStore uses Tarp's native backup for this certified node's periodic,
 // manual and shutdown backups. Public BackupSnapshot remains a graph export.
-func NewGraphStore(svc Service, db *graphstore.DB, cfg Config, reg prometheus.Registerer, logger *slog.Logger) *Backupper {
-	b := New(svc, cfg, reg, logger)
-	b.graphStore = db
-	return b
+func NewGraphStore(svc *dataruntime.Executor, db *graphstore.DB, cfg Config, reg prometheus.Registerer, logger *slog.Logger) *Backupper {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Backupper{svc: svc, graphStore: db, cfg: cfg, metrics: newMetrics(reg), logger: logger, now: time.Now,
+		attempt: make(chan struct{}, 1), fs: newReceiptBackupFS(),
+		production: ProductionSnapshot{Config: ProductionConfig{Enabled: cfg.Enabled, Interval: cfg.Interval, Retain: cfg.Retain}},
+	}
 }
 
 func graphPointPrefix(instance string) string {
-	return "lantern-tarp-" + receiptBackupSetScope(instance) + "-"
+	return fmt.Sprintf("lantern-tarp-%x-", sha256.Sum256([]byte(instance)))
+}
+
+func graphPointID(id uint64) string { return fmt.Sprintf("%020d", id) }
+func parseGraphPointID(value string) (uint64, bool) {
+	if len(value) != 20 {
+		return 0, false
+	}
+	id, err := strconv.ParseUint(value, 10, 64)
+	return id, err == nil && id != 0 && graphPointID(id) == value
 }
 
 type graphPoint struct {
@@ -78,7 +94,7 @@ func (b *Backupper) graphPoints(ctx context.Context) ([]graphPoint, error) {
 		}
 		suffix, ok := strings.CutPrefix(entry.Name(), prefix)
 		if ok {
-			if id, ok := parseReceiptBackupSetID(suffix); ok {
+			if id, ok := parseGraphPointID(suffix); ok {
 				points = append(points, graphPoint{id, entry.Name()})
 			}
 		}
@@ -118,7 +134,7 @@ func (b *Backupper) backupGraphStore(ctx context.Context, source string, policy 
 	if b.cfg.InstanceID == "" {
 		return stats, errors.New("backup: graph storage recovery point requires instance ID")
 	}
-	tick := graphPointPrefix(b.cfg.InstanceID) + receiptBackupSetIDString(id)
+	tick := graphPointPrefix(b.cfg.InstanceID) + graphPointID(id)
 	if source == "periodic" {
 		b.logger.Info("backup: private graph storage backup started", "source", source, "tick_id", tick, "started_unix_ns", start.UnixNano())
 	}
@@ -264,7 +280,15 @@ func loadGraphPoint(ctx context.Context, dir, instance string, id uint64, namesp
 	if len(entries) != 2 || entries[0].Name() != cutFile || !entries[0].Type().IsRegular() || entries[1].Name() != nativeImage || !entries[1].IsDir() {
 		return cut, nil, empty, errors.New("backup: unexpected private backup members")
 	}
-	raw, err := newReceiptBackupFS().readFile(filepath.Join(dir, cutFile), 8192)
+	f, err := os.Open(filepath.Join(dir, cutFile))
+	if err != nil {
+		return cut, nil, empty, err
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(f, 8193))
+	err = errors.Join(readErr, f.Close())
+	if len(raw) > 8192 {
+		return cut, nil, empty, errors.New("backup: oversized private cut")
+	}
 	if err != nil {
 		return cut, nil, empty, err
 	}

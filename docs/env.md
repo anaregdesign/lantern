@@ -50,7 +50,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_CDC_ENABLED` | string | `true` | Exact true or false. Enables public scoped WatchChanges; never enables private Subscribe on the public listener. |
 | `LANTERN_COMMIT` | string | (empty) | Overrides the commit label reported in lantern_build_info. |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | string | (empty) | Comma-separated browser origins allowed by CORS (e.g. the admin SPA origin); empty disables CORS. |
-| `LANTERN_DATA_DIR` | string | `lantern-data` | Node-owned Tarp database directory for graph, replication and optional receipts. Reuse the same volume on restart. Each node needs a separate directory. |
+| `LANTERN_DATA_DIR` | string | `tarp.db` | Node-owned Tarp database directory for graph, replication and optional receipts. Reuse the same volume on restart. Each node needs a separate directory. |
 | `LANTERN_DEFAULT_TTL_SECONDS` | int | `60` | Reported in GetServerStatus and startup logs only; RPC writes without an expiration are permanent (decay is opt-in per write, #523). |
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` | uint32 | `10000` | Deletion cap used when DeleteVerticesByPrefix leaves limit unset. |
 | `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | uint32 | `100000` | Ceiling DeleteVerticesByPrefix's limit is clamped to. |

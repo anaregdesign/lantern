@@ -1531,10 +1531,10 @@ func TestEdgeDeleteReceiptFollowerDefiniteWALRetryReusesEvidence(t *testing.T) {
 		t.Fatalf("definite follower WAL abort = %v, want Unavailable", err)
 	}
 	pending := f.service.pendingMutations[origin][1]
-	if pending == nil || pending.receiptWAL == nil || len(attempts) != 1 || attempts[0] != pending.receiptWAL {
+	if pending == nil || pending.receipts == nil || len(attempts) != 1 || attempts[0] != pending.receipts {
 		t.Fatalf("definite abort did not retain exact evidence: pending=%+v attempts=%d", pending, len(attempts))
 	}
-	retained := pending.receiptWAL
+	retained := pending.receipts
 	if _, live := f.cache.GetWeight(key.Tail, key.Head); !live ||
 		f.service.LocalSeq(origin) != 0 || f.log.Len() != 0 {
 		t.Fatalf("definite abort leaked graph/origin/log state")
@@ -1575,7 +1575,7 @@ func TestEdgeDeleteReceiptFollowerIndeterminateWALRetainsEvidenceAndFailStops(t 
 	pending := f.service.pendingMutations[origin][1]
 	var retained *edgeDeleteReceiptEnvelope
 	if pending != nil {
-		retained, _ = pending.receiptWAL.(*edgeDeleteReceiptEnvelope)
+		retained, _ = pending.receipts.(*edgeDeleteReceiptEnvelope)
 	}
 	if pending == nil || retained == nil ||
 		retained.Receipts[0].ID != receiptIDFromWire(t, wire, 0) ||
@@ -1630,7 +1630,7 @@ func TestEdgeDeleteReceiptFollowerLegacyWALUncertaintyFailStops(t *testing.T) {
 		t.Fatalf("legacy-uncertain follower commit = %v", err)
 	}
 	pending := f.service.pendingMutations[origin][1]
-	if pending == nil || pending.receiptWAL == nil || !f.service.receiptCommitFaulted {
+	if pending == nil || pending.receipts == nil || !f.service.receiptCommitFaulted {
 		t.Fatalf("legacy uncertainty lost evidence or fail-stop: %+v", pending)
 	}
 	if _, live := f.cache.GetWeight(key.Tail, key.Head); !live ||

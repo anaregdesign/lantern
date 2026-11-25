@@ -40,11 +40,11 @@ func RestoreGraphStorage(ctx context.Context, graph *graphcache.GraphCache[strin
 // OpenReceiptDatabase opens a receipt-enabled runtime for an embedded Server.
 // Fresh mode initializes the application records, while restart requires the
 // existing node, namespace and immutable receipt policy to match.
-func OpenReceiptDatabase(ctx context.Context, cfg DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, error) {
-	if err := validateDurableReceiptWALRuntimeConfig(cfg); err != nil {
+func OpenReceiptDatabase(ctx context.Context, cfg ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
+	if err := validateReceiptDatabaseConfig(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.StartupRestore != nil {
+	if cfg.startupRestore != nil {
 		return nil, errors.New("restore the physical database before opening it")
 	}
 	open := graphstore.OpenExisting

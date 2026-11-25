@@ -136,7 +136,7 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 	t.Run("graph-only namespace mismatch fails before file effects", func(t *testing.T) {
 		for _, mismatch := range []string{"configuration", "service"} {
 			t.Run(mismatch, func(t *testing.T) {
-				receiptConfig := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+				receiptConfig := ReceiptConfig{Mode: ReceiptModeGraphOnly}
 				runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
 				dir := filepath.Join(t.TempDir(), "not-created")
 				cfg := backup.Config{Enabled: true, Dir: dir, Interval: time.Hour}
@@ -156,11 +156,11 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 		}
 	})
 
-	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh} {
+	for _, mode := range []ReceiptMode{ReceiptModeGraphOnly, ReceiptModeFresh} {
 		t.Run(string(mode), func(t *testing.T) {
-			cfg := ReceiptWALConfig{Mode: mode}
-			if mode == ReceiptWALModeFresh {
-				cfg = validReceiptWALProviderConfig(mode)
+			cfg := ReceiptConfig{Mode: mode}
+			if mode == ReceiptModeFresh {
+				cfg = validReceiptProviderConfig(mode)
 			}
 			rt, primary, cert := certifiedSnapshotInstallerRuntime(t, cfg)
 			dir := t.TempDir()
@@ -180,7 +180,7 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 			if _, err := tarp.VerifyBackup(t.Context(), filepath.Join(dir, entries[0].Name(), "image")); err != nil {
 				t.Fatal(err)
 			}
-			if mode == ReceiptWALModeFresh {
+			if mode == ReceiptModeFresh {
 				if _, err := primary.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "acknowledged-after-backup"}}); err != nil {
 					t.Fatal(err)
 				}
@@ -188,7 +188,7 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 				if err := backup.RestoreGraphStoreOnStartup(t.Context(), target, rt.NodeID(), points); err == nil {
 					t.Fatal("automatic graph-only discovery accepted a private receipt image")
 				}
-				cfg.Mode = ReceiptWALModeRestart
+				cfg.Mode = ReceiptModeRestart
 				_, cleanup, err := NewServingRuntime(cfg,
 					CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour, DataDir: target}},
 					SearchConfig{}, MutationLogConfig{Capacity: 8, SubscriberBuffer: 2},
@@ -208,10 +208,10 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 }
 
 func TestNewBackupperRejectsForeignCertification(t *testing.T) {
-	receiptConfig := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+	receiptConfig := validReceiptProviderConfig(ReceiptModeFresh)
 	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
 
-	foreignConfig := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+	foreignConfig := validReceiptProviderConfig(ReceiptModeFresh)
 	foreignRuntime, foreignPrimary, _ := certifiedSnapshotInstallerRuntime(t, foreignConfig)
 	cfg := backup.Config{
 		Enabled: true, Dir: t.TempDir(), Interval: time.Hour,

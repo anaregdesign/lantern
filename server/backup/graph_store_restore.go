@@ -67,7 +67,7 @@ func RestoreGraphStoreOnStartup(ctx context.Context, target string, expected hlc
 // the operator. Use server startup discovery to select the current catalog tip.
 func RestoreGraphStore(ctx context.Context, source, target, instance string, expected hlc.NodeID, expectedCut [32]byte) error {
 	idText, ok := strings.CutPrefix(filepath.Base(filepath.Clean(source)), graphPointPrefix(instance))
-	id, valid := parseReceiptBackupSetID(idText)
+	id, valid := parseGraphPointID(idText)
 	if !ok || !valid || instance == "" || expectedCut == ([32]byte{}) {
 		return errors.New("backup: expected a canonical point, instance and independent cut digest")
 	}

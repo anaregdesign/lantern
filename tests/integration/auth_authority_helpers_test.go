@@ -344,9 +344,9 @@ func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBoot
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptConfig := provider.ReceiptWALConfig{Mode: provider.ReceiptWALModeGraphOnly}
+	receiptConfig := provider.ReceiptConfig{Mode: provider.ReceiptModeGraphOnly}
 	if durableReceipts {
-		receiptConfig.Mode = provider.ReceiptWALModeFresh
+		receiptConfig.Mode = provider.ReceiptModeFresh
 	}
 	// Destination and restore selection are isolated external fixture inputs.
 	// The production values retain the same captured startup provenance.

@@ -497,7 +497,7 @@ func runMain() error {
 		slog.Duration("default_ttl", app.cfg.Cache.TTL),
 		slog.String("metrics_addr", app.cfg.Observability.MetricsAddr),
 		slog.Bool("reflection", app.cfg.Observability.EnableReflection),
-		slog.String("receipt_wal_mode", string(app.cfg.ReceiptWAL.Mode)),
+		slog.String("receipt_wal_mode", string(app.cfg.Receipts.Mode)),
 	)
 
 	if err := app.Run(ctx); err != nil {

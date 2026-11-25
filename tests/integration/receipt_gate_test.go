@@ -139,9 +139,9 @@ func TestReceiptReadSurface_RealConnectWire(t *testing.T) {
 	}
 }
 
-func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.DurableReceiptWALRuntimeConfig {
+func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.ReceiptDatabaseConfig {
 	now := time.Now()
-	return service.DurableReceiptWALRuntimeConfig{
+	return service.ReceiptDatabaseConfig{
 		Path: path,
 		Receipt: mutationreceipt.Config{
 			Epoch:          mutationreceipt.Epoch{0x42},
@@ -717,7 +717,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	}
 
 	runtime, cleanup, err := provider.NewServingRuntime(
-		cfg.ReceiptWAL,
+		cfg.Receipts,
 		cfg.Cache,
 		cfg.Search,
 		cfg.MutationLog,
@@ -753,7 +753,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	var audit bytes.Buffer
 	backupper, err := provider.NewBackupper(
 		cfg.Backup,
-		cfg.ReceiptWAL,
+		cfg.Receipts,
 		runtime,
 		primary,
 		certified,
@@ -802,15 +802,15 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	}
 	cleanup()
 	cfg.Cache.DataDir = filepath.Join(t.TempDir(), "restored")
-	cfg.ReceiptWAL.Mode = provider.ReceiptWALModeRestart
+	cfg.Receipts.Mode = provider.ReceiptModeRestart
 	cfg.Backup.RestoreOnStart = true
 	cfg.Backup.RestoreRequired = true
-	if _, cleanup, err := provider.NewServingRuntime(cfg.ReceiptWAL, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil); err == nil {
+	if _, cleanup, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil); err == nil {
 		cleanup()
 		t.Fatal("receipt restart resumed an unwitnessed backup")
 	}
 	restoreFinalPoint(t, ctx, audit.Bytes(), cfg.Backup, cfg.Cache.DataDir, runtime.NodeID())
-	restoredRuntime, closeRestore, err := provider.NewServingRuntime(cfg.ReceiptWAL, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
+	restoredRuntime, closeRestore, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +825,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 
 func newDurableReceiptSnapshotInstaller(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	target *connectTestServer,
 ) *backup.ReceiptSnapshotInstaller {
 	t.Helper()
@@ -834,7 +834,7 @@ func newDurableReceiptSnapshotInstaller(
 
 func newDurableReceiptSnapshotInstallerWithTarget(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	target backup.ReceiptSnapshotInstallTarget,
 ) *backup.ReceiptSnapshotInstaller {
 	t.Helper()
@@ -848,7 +848,7 @@ func newDurableReceiptSnapshotInstallerWithTarget(
 
 func newDurableReceiptSnapshotInstallerWithTargetLimits(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	target backup.ReceiptSnapshotInstallTarget,
 	limits backup.ReceiptSnapshotCollectorLimits,
 ) *backup.ReceiptSnapshotInstaller {
@@ -881,7 +881,7 @@ func startDurableReceiptPump(
 	t *testing.T,
 	parent context.Context,
 	name string,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	targetRuntime *service.ServingRuntime,
 	target *connectTestServer,
 	sourceURL string,
@@ -897,7 +897,7 @@ func startDurableReceiptPumpWithApplier(
 	t *testing.T,
 	parent context.Context,
 	name string,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	targetRuntime *service.ServingRuntime,
 	target *connectTestServer,
 	source replicationTestPeer,
@@ -1997,7 +1997,7 @@ type receiptProtocolWireServer struct {
 	runtime *service.ServingRuntime
 	server  *connectTestServer
 	raw     graphv1connect.LanternServiceClient
-	config  service.DurableReceiptWALRuntimeConfig
+	config  service.ReceiptDatabaseConfig
 }
 
 func newReceiptProtocolWireServer(t *testing.T, nodeID hlc.NodeID, maxEntries int) receiptProtocolWireServer {
@@ -2010,17 +2010,17 @@ func newReceiptProtocolWireServerWithNet(t *testing.T, nodeID hlc.NodeID, maxEnt
 
 func newReceiptProtocolWireServerWithNetAndTombstoneTTL(t *testing.T, nodeID hlc.NodeID, maxEntries int, netConfig provider.NetConfig, tombstoneTTL time.Duration) receiptProtocolWireServer {
 	runtime, config := newReceiptProtocolRuntime(t, nodeID, maxEntries)
-	return mountReceiptProtocolWireRuntime(t, runtime, config, netConfig, tombstoneTTL, provider.ReceiptWALModeFresh)
+	return mountReceiptProtocolWireRuntime(t, runtime, config, netConfig, tombstoneTTL, provider.ReceiptModeFresh)
 }
 
 func newUnactivatedReceiptProtocolWireServer(t *testing.T, nodeID hlc.NodeID, maxEntries int) receiptProtocolWireServer {
 	runtime, config := newReceiptProtocolRuntime(t, nodeID, maxEntries)
-	primary, peer := prepareReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeFresh)
+	primary, peer := prepareReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeFresh)
 	// Deliberately do not activate receipts. Credential absence is not a policy.
 	return serveReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, primary, peer)
 }
 
-func newReceiptProtocolRuntime(t *testing.T, nodeID hlc.NodeID, maxEntries int) (*service.ServingRuntime, service.DurableReceiptWALRuntimeConfig) {
+func newReceiptProtocolRuntime(t *testing.T, nodeID hlc.NodeID, maxEntries int) (*service.ServingRuntime, service.ReceiptDatabaseConfig) {
 	t.Helper()
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), nodeID)
 	config.Receipt.MaxEntries = maxEntries
@@ -2032,7 +2032,7 @@ func newReceiptProtocolRuntime(t *testing.T, nodeID hlc.NodeID, maxEntries int) 
 	return runtime, config
 }
 
-func mountReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.DurableReceiptWALRuntimeConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptWALMode) receiptProtocolWireServer {
+func mountReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.ReceiptDatabaseConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptMode) receiptProtocolWireServer {
 	t.Helper()
 	primary, peer := prepareReceiptProtocolWireRuntime(t, runtime, config, netConfig, tombstoneTTL, mode)
 	if err := runtime.ActivatePublicReceipts(primary, peer); err != nil {
@@ -2041,7 +2041,7 @@ func mountReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRunti
 	return serveReceiptProtocolWireRuntime(t, runtime, config, netConfig, primary, peer)
 }
 
-func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.DurableReceiptWALRuntimeConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptWALMode) (*service.LanternService, *service.LanternReplicationService) {
+func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.ReceiptDatabaseConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptMode) (*service.LanternService, *service.LanternReplicationService) {
 	t.Helper()
 	primary := runtime.NewExecutor(nil).WithTombstoneTTL(tombstoneTTL)
 	peer, err := runtime.NewReplication(primary)
@@ -2057,7 +2057,7 @@ func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRun
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptConfig := provider.ReceiptWALConfig{
+	receiptConfig := provider.ReceiptConfig{
 		Mode:  mode,
 		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
 		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
@@ -2068,7 +2068,7 @@ func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRun
 	return primary, peer
 }
 
-func serveReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.DurableReceiptWALRuntimeConfig, netConfig provider.NetConfig, primary *service.LanternService, peer *service.LanternReplicationService) receiptProtocolWireServer {
+func serveReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.ReceiptDatabaseConfig, netConfig provider.NetConfig, primary *service.LanternService, peer *service.LanternReplicationService) receiptProtocolWireServer {
 	t.Helper()
 	server := newConnectTestServerWithOptions(t, primary, peer,
 		connect.WithReadMaxBytes(netConfig.MaxRecvMsgBytes),
@@ -2638,7 +2638,7 @@ func TestPublicEdgeAddReceipts_RealConnectWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeRestart)
 	restartedCapability := receiptProtocolCapability(t, restarted)
 	if !proto.Equal(restartedCapability.GetEndpoint(), originalEndpoint) {
 		t.Fatalf("receipt endpoint changed across restart: before=%+v after=%+v",
@@ -3161,7 +3161,7 @@ func TestPublicEdgeAddReceipts_ConfirmedThenExpiredStatus(t *testing.T) {
 		t.Fatalf("reopen same epoch past confirmed deadline: %v", err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeRestart)
 	restartedCapability := receiptProtocolCapability(t, restarted)
 	if !proto.Equal(restartedCapability.GetEndpoint(), capability.GetEndpoint()) {
 		t.Fatalf("restart changed receipt endpoint: before=%+v after=%+v",
@@ -6603,7 +6603,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 	observe := func() (provider.PeerTimeObservation, error) {
 		return peerWireObservation{clockOwner, qualifiedUTC, qualifiedUTC, time.Since(began)}, nil
 	}
-	var configs [2]service.DurableReceiptWALRuntimeConfig
+	var configs [2]service.ReceiptDatabaseConfig
 	var durable [2]*service.ServingRuntime
 	var replicas [2]*service.LanternReplicationService
 	var source *nativeReceiptTailPeer

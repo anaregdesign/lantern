@@ -228,8 +228,8 @@ func (r *tarpRelay) advanceReceiptClock(ms int64) error {
 // NewTarpReceiptServingRuntime binds a fresh or existing Tarp data cut to
 // an explicitly configured receipt policy. Fresh and restart are distinct:
 // neither may silently replace or initialize the other's state.
-func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, stage TarpGraphStager, config DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, error) {
-	if db == nil || db.NodeID() != config.NodeID || config.NodeID == (hlc.NodeID{}) || config.BaselineCodec == nil || config.ConfigureGraph == nil || config.StartupRestore != nil {
+func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, stage TarpGraphStager, config ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
+	if db == nil || db.NodeID() != config.NodeID || config.NodeID == (hlc.NodeID{}) || config.BaselineCodec == nil || config.ConfigureGraph == nil || config.startupRestore != nil {
 		return nil, errors.New("invalid Tarp receipt runtime configuration")
 	}
 	policy := clearReceiptClockHighWater(config.Receipt)

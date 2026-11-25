@@ -10,7 +10,7 @@ import (
 // CacheConfig sizes the GraphCache TTL and its GC tick, plus the optional
 // aggregate capacity caps (#848).
 //
-//   - LANTERN_DATA_DIR             (default lantern-data) — node-owned graph database directory
+//   - LANTERN_DATA_DIR             (default tarp.db) — node-owned graph database directory
 //   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
 //   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
 //   - LANTERN_GC_EDGE_BUDGET             (default 0) — tail buckets scanned per tick; 0 = full sweep
@@ -90,7 +90,7 @@ type ValidationLimits struct {
 
 func loadCache(reader *envconfig.Reader) CacheConfig {
 	return CacheConfig{
-		DataDir:                reader.String("LANTERN_DATA_DIR", "lantern-data"),
+		DataDir:                reader.String("LANTERN_DATA_DIR", "tarp.db"),
 		TTL:                    time.Duration(reader.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
 		GCInterval:             time.Duration(reader.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
 		GCEdgeBudget:           reader.Int("LANTERN_GC_EDGE_BUDGET", 0),

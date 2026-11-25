@@ -9,11 +9,7 @@ import subprocess
 import sys
 
 
-RUST_TESTS = (
-    "transport::tests::real_wire_https_roots_and_invalid_certificates",
-    "transport::tests::real_wire_off_mtls_requires_client_identity",
-    "test_server::diagnostic_tests::real_wire_fixture_owns_ephemeral_listener_on_return",
-)
+RUST_TESTS = ("transport::tests::native_health_tls_checks_server_root_and_client_identity",)
 
 
 def require_rust(output, name):
@@ -37,11 +33,6 @@ def main():
     args.evidence.mkdir(parents=True, exist_ok=False)
     root = Path.cwd()
     env = os.environ.copy()
-    server = args.evidence.resolve() / "lantern-smoke.exe"
-    fixture = args.evidence.resolve() / "lantern-authfixture.exe"
-    env.update(LANTERN_RUST_TEST_SERVER=str(server),
-               LANTERN_RUST_TEST_AUTH_FIXTURE=str(fixture))
-
     def run(name, command, directory=root):
         result = subprocess.run(command, cwd=directory, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
@@ -52,9 +43,6 @@ def main():
             raise ValueError(f"{name} failed ({result.returncode})")
         return output
 
-    run("server-build", ["go", "build", "-o", str(server), "./server/cmd"])
-    run("fixture-build", ["go", "build", "-o", str(fixture), "./server/cmd/authfixture"])
-
     directory = root / "sdks/rust"
     name = "smoke::native_tls_roots_are_available_by_default"
     require_rust(run("native-roots", ["cargo", "test", "--locked", "--no-default-features",
@@ -64,7 +52,7 @@ def main():
                  "--", "--exact"], directory), name)
     for index, name in enumerate(RUST_TESTS):
         require_rust(run(f"native-wire-{index}", ["cargo", "test", "--locked", "--all-features",
-            "--lib", name, "--", "--ignored", "--exact", "--test-threads=1"], directory), name)
+            "--lib", name, "--", "--exact", "--test-threads=1"], directory), name)
 
 
 if __name__ == "__main__":

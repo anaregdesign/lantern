@@ -90,7 +90,11 @@ func TestPeriodicBackupStress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rt.Close()
+	defer func() {
+		if err := rt.Close(); err != nil {
+			t.Errorf("close backup stress runtime: %v", err)
+		}
+	}()
 	svc := rt.NewExecutor(nil)
 	keys := make([]string, vertices)
 	const batchSize = 128

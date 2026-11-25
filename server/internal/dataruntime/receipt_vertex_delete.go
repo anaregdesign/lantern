@@ -396,7 +396,7 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	if err := s.validateReplicationFrame(localEnvelope); err != nil {
 		return err
 	}
-	if prior, ok := pending.receiptWAL.(*vertexDeleteReceiptEnvelope); ok &&
+	if prior, ok := pending.receipts.(*vertexDeleteReceiptEnvelope); ok &&
 		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
@@ -413,7 +413,7 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
-	pending.receiptWAL = localEnvelope
+	pending.receipts = localEnvelope
 	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {

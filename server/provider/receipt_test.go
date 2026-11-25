@@ -15,8 +15,8 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
-func validReceiptWALProviderConfig(mode ReceiptWALMode) ReceiptWALConfig {
-	return ReceiptWALConfig{
+func validReceiptProviderConfig(mode ReceiptMode) ReceiptConfig {
+	return ReceiptConfig{
 		Mode:       mode,
 		Epoch:      mutationreceipt.Epoch{0x42},
 		Retention:  time.Hour,
@@ -55,14 +55,14 @@ func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+	config := ReceiptConfig{Mode: ReceiptModeGraphOnly}
 	if _, err := NewOIDCPublicReceiptsCertified(config, runtime, data, primary, operational.backup, certified, public); err != nil {
 		t.Fatal("exact certified producer refused", err)
 	}
 	for name, owner := range map[string]*backup.Backupper{
 		"absent":                            nil,
-		"same executor, different producer": backup.New(primary, backup.Config{Interval: time.Hour}, nil, nil),
-		"foreign executor":                  backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil),
+		"same executor, different producer": backup.NewGraphStore(primary, data.GraphStore(), backup.Config{Interval: time.Hour}, nil, nil),
+		"foreign executor":                  backup.NewGraphStore(data.NewExecutor(nil), data.GraphStore(), backup.Config{Interval: time.Hour}, nil, nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewOIDCPublicReceiptsCertified(config, runtime, data, primary, owner, certified, public); err == nil {
@@ -72,43 +72,43 @@ func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing
 	}
 }
 
-func TestValidateReceiptWALConfig(t *testing.T) {
+func TestValidateReceiptConfig(t *testing.T) {
 	replication := ReplicationConfig{NodeID: hlc.NodeID{0x31}, nodeIDExplicit: true}
-	if err := validateReceiptWALConfig(ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, backup.Config{}, ReplicationConfig{}); err != nil {
+	if err := validateReceiptConfig(ReceiptConfig{Mode: ReceiptModeGraphOnly}, backup.Config{}, ReplicationConfig{}); err != nil {
 		t.Fatalf("graph-only default: %v", err)
 	}
-	valid := validReceiptWALProviderConfig(ReceiptWALModeFresh)
-	if err := validateReceiptWALConfig(valid, backup.Config{}, replication); err != nil {
+	valid := validReceiptProviderConfig(ReceiptModeFresh)
+	if err := validateReceiptConfig(valid, backup.Config{}, replication); err != nil {
 		t.Fatalf("valid fresh config: %v", err)
 	}
-	valid.Mode = ReceiptWALModeRestart
-	if err := validateReceiptWALConfig(valid, backup.Config{}, replication); err != nil {
+	valid.Mode = ReceiptModeRestart
+	if err := validateReceiptConfig(valid, backup.Config{}, replication); err != nil {
 		t.Fatalf("valid restart config: %v", err)
 	}
 
 	tests := []struct {
 		name    string
-		config  ReceiptWALConfig
+		config  ReceiptConfig
 		backups backup.Config
 		want    string
 	}{
 		{
 			name:   "unknown mode",
-			config: ReceiptWALConfig{Mode: "auto"},
+			config: ReceiptConfig{Mode: "auto"},
 			want:   "must be exactly",
 		},
 		{
 			name: "graph-only mixed settings",
-			config: ReceiptWALConfig{
-				Mode:      ReceiptWALModeGraphOnly,
+			config: ReceiptConfig{
+				Mode:      ReceiptModeGraphOnly,
 				Retention: time.Hour,
 			},
 			want: "cannot be combined",
 		},
 		{
 			name: "zero epoch",
-			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+			config: func() ReceiptConfig {
+				config := validReceiptProviderConfig(ReceiptModeFresh)
 				config.Epoch = mutationreceipt.Epoch{}
 				return config
 			}(),
@@ -116,8 +116,8 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		},
 		{
 			name: "short retention",
-			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+			config: func() ReceiptConfig {
+				config := validReceiptProviderConfig(ReceiptModeFresh)
 				config.Retention = time.Minute
 				return config
 			}(),
@@ -125,8 +125,8 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		},
 		{
 			name: "sub-millisecond retention",
-			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+			config: func() ReceiptConfig {
+				config := validReceiptProviderConfig(ReceiptModeFresh)
 				config.Retention = time.Hour + time.Nanosecond
 				return config
 			}(),
@@ -134,8 +134,8 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		},
 		{
 			name: "zero entries",
-			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+			config: func() ReceiptConfig {
+				config := validReceiptProviderConfig(ReceiptModeFresh)
 				config.MaxEntries = 0
 				return config
 			}(),
@@ -143,8 +143,8 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		},
 		{
 			name: "zero bytes",
-			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+			config: func() ReceiptConfig {
+				config := validReceiptProviderConfig(ReceiptModeFresh)
 				config.MaxBytes = 0
 				return config
 			}(),
@@ -152,13 +152,13 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		},
 		{
 			name:    "required restore disabled",
-			config:  validReceiptWALProviderConfig(ReceiptWALModeFresh),
+			config:  validReceiptProviderConfig(ReceiptModeFresh),
 			backups: backup.Config{RestoreRequired: true},
 			want:    "RESTORE_REQUIRED requires",
 		},
 	}
-	if err := validateReceiptWALConfig(
-		validReceiptWALProviderConfig(ReceiptWALModeFresh),
+	if err := validateReceiptConfig(
+		validReceiptProviderConfig(ReceiptModeFresh),
 		backup.Config{Enabled: true},
 		replication,
 	); err != nil {
@@ -166,24 +166,24 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateReceiptWALConfig(tc.config, tc.backups, replication)
+			err := validateReceiptConfig(tc.config, tc.backups, replication)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("validateReceiptWALConfig error = %v, want %q", err, tc.want)
+				t.Fatalf("validateReceiptConfig error = %v, want %q", err, tc.want)
 			}
 		})
 	}
-	valid.Mode = ReceiptWALModeRestart
-	if err := validateReceiptWALConfig(valid, backup.Config{}, ReplicationConfig{NodeID: hlc.NodeID{0x31}}); err == nil ||
+	valid.Mode = ReceiptModeRestart
+	if err := validateReceiptConfig(valid, backup.Config{}, ReplicationConfig{NodeID: hlc.NodeID{0x31}}); err == nil ||
 		!strings.Contains(err.Error(), "explicitly set") {
 		t.Fatalf("implicit node ID validation error = %v", err)
 	}
-	if err := validateReceiptWALConfig(valid, backup.Config{}, ReplicationConfig{nodeIDExplicit: true}); err == nil ||
+	if err := validateReceiptConfig(valid, backup.Config{}, ReplicationConfig{nodeIDExplicit: true}); err == nil ||
 		!strings.Contains(err.Error(), "nonzero") {
 		t.Fatalf("zero node ID validation error = %v", err)
 	}
 }
 
-func TestLoadReceiptWALConfig(t *testing.T) {
+func TestLoadReceiptConfig(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	t.Setenv("LANTERN_RECEIPT_MODE", "restart")
@@ -200,16 +200,16 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.ReceiptWAL.Mode != ReceiptWALModeRestart ||
+	if config.Receipts.Mode != ReceiptModeRestart ||
 		config.Cache.DataDir != path ||
-		config.ReceiptWAL.Epoch != (mutationreceipt.Epoch{
+		config.Receipts.Epoch != (mutationreceipt.Epoch{
 			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
 			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
 		}) ||
-		config.ReceiptWAL.Retention != 2*time.Hour ||
-		config.ReceiptWAL.MaxEntries != 37 ||
-		config.ReceiptWAL.MaxBytes != 4096 {
-		t.Fatalf("loaded receipt WAL config = %+v", config.ReceiptWAL)
+		config.Receipts.Retention != 2*time.Hour ||
+		config.Receipts.MaxEntries != 37 ||
+		config.Receipts.MaxBytes != 4096 {
+		t.Fatalf("loaded receipt WAL config = %+v", config.Receipts)
 	}
 
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "not-hex")
@@ -240,7 +240,7 @@ func TestNewServingRuntimeSelectsExplicitMode(t *testing.T) {
 	replicationConfig := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
 
 	graphOnly, cleanup, err := NewServingRuntime(
-		ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
+		ReceiptConfig{Mode: ReceiptModeGraphOnly},
 		cacheConfig,
 		searchConfig,
 		logConfig,
@@ -251,8 +251,8 @@ func TestNewServingRuntimeSelectsExplicitMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cleanup == nil || graphOnly.DurableReceiptWAL() {
-		t.Fatalf("graph-only runtime = %p, cleanup %v, durable %v", graphOnly, cleanup != nil, graphOnly.DurableReceiptWAL())
+	if cleanup == nil || graphOnly.ReceiptsEnabled() {
+		t.Fatalf("graph-only runtime = %p, cleanup %v, durable %v", graphOnly, cleanup != nil, graphOnly.ReceiptsEnabled())
 	}
 	cleanup()
 }
@@ -263,7 +263,7 @@ func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
 	logConfig := MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}
 	replicationConfig := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
 	path := cacheConfig.DataDir
-	freshConfig := validReceiptWALProviderConfig(ReceiptWALModeFresh)
+	freshConfig := validReceiptProviderConfig(ReceiptModeFresh)
 	implicitNode := replicationConfig
 	implicitNode.nodeIDExplicit = false
 	if runtime, cleanup, err := NewServingRuntime(
@@ -295,13 +295,13 @@ func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cleanupFresh == nil || !fresh.DurableReceiptWAL() {
-		t.Fatalf("fresh runtime = %p, cleanup %v, durable %v", fresh, cleanupFresh != nil, fresh.DurableReceiptWAL())
+	if cleanupFresh == nil || !fresh.ReceiptsEnabled() {
+		t.Fatalf("fresh runtime = %p, cleanup %v, durable %v", fresh, cleanupFresh != nil, fresh.ReceiptsEnabled())
 	}
 	cleanupFresh()
 
 	restartConfig := freshConfig
-	restartConfig.Mode = ReceiptWALModeRestart
+	restartConfig.Mode = ReceiptModeRestart
 	restarted, cleanupRestart, err := NewServingRuntime(
 		restartConfig,
 		cacheConfig,
@@ -314,8 +314,8 @@ func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cleanupRestart == nil || !restarted.DurableReceiptWAL() {
-		t.Fatalf("restart runtime = %p, cleanup %v, durable %v", restarted, cleanupRestart != nil, restarted.DurableReceiptWAL())
+	if cleanupRestart == nil || !restarted.ReceiptsEnabled() {
+		t.Fatalf("restart runtime = %p, cleanup %v, durable %v", restarted, cleanupRestart != nil, restarted.ReceiptsEnabled())
 	}
 	cleanupRestart()
 
@@ -348,7 +348,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	newGraphOnly := func(t *testing.T) (*dataruntime.ServingRuntime, func()) {
 		t.Helper()
 		runtime, cleanup, err := NewServingRuntime(
-			ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
+			ReceiptConfig{Mode: ReceiptModeGraphOnly},
 			CacheConfig{CacheSettings: CacheSettings{DataDir: t.TempDir(), TTL: time.Hour}},
 			SearchConfig{},
 			MutationLogConfig{Capacity: 8},

@@ -30,7 +30,7 @@ var (
 // AvailableProduction checks actual resource ownership without producing a
 // backup or changing policy. Disabled production remains available for adoption.
 func (b *Backupper) AvailableProduction() error {
-	if b == nil || b.attempt == nil || (b.svc == nil && b.receiptSource == nil) {
+	if b == nil || b.attempt == nil || b.svc == nil || b.graphStore == nil {
 		return ErrProductionUnavailable
 	}
 	b.productionMu.Lock()
