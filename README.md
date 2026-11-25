@@ -484,9 +484,10 @@ and the [HA runbook](docs/ha-runbook.md) for operational signals.
 ```mermaid
 flowchart LR
     C["SDKs · CLI · Admin · MCP"] --> S["Connect / gRPC / gRPC-Web"]
-    S --> G["In-memory vertices + edges"]
+    S --> G[("Node-local Tarp database · vertices and edges")]
     S --> I["BM25 search index"]
     S <--> R["Replication and mutation log"]
+    R <--> G
     R <--> P["Full peer replicas (optional HA)"]
 ```
 

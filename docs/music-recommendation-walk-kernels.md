@@ -824,7 +824,7 @@ regimes where the factorization is undefined.
 ## 9. Reference implementation
 
 The direct reader described in §2 and §4 is implemented, with the stated
-guarantees as design contracts, in **Lantern**, an in-memory graph
+guarantees as design contracts, in **Lantern**, a graph
 key-vertex-store: Definition 2.1's expiring contributions are the edge
 representation in [core/graphcache/edge.go](../core/graphcache/edge.go);
 the beam walk, the ACL push (with the hard budget a constant multiple of

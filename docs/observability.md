@@ -15,13 +15,12 @@
 
 ## 1. Purpose & scope
 
-Lantern is an in-memory graph KVS: a **leaderless, full-replica** cluster
+Lantern is a Tarp-backed graph KVS with a **leaderless, full-replica** cluster
 (any pod accepts any read/write; writes fan out asynchronously to every peer),
 holding vertices **and** edges that carry TTLs and **decay** over time, served
-over Connect/HTTP-2. That shape dictates what is worth observing — there is no
-leader to watch, no quorum to count, no disk to fsync; instead the interesting
-questions are *"are the replicas converging?"*, *"is anything decaying that
-shouldn't?"*, and *"is any single node falling behind?"*.
+over Connect/HTTP-2. Each node commits graph and relay updates to its own volume.
+Monitor local storage health and write latency alongside TTL expiry, replica
+convergence and per-node replication lag.
 
 This document organises observability from the **application owner's seat**.
 It deliberately starts from *who needs to answer what* (§2–§3), then derives

@@ -1,6 +1,6 @@
 # server — Lantern Connect server
 
-The `lantern` server: an in-memory `key-vertex-store` (graph-based KVS)
+The `lantern` server: a Tarp-backed `key-vertex-store` (graph-based KVS)
 with replication, exposed on **`:6380`** by default. This module produces
 the `lantern` binary; the root module's `Dockerfile` builds and ships it.
 

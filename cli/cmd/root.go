@@ -51,12 +51,12 @@ var (
 // REPL — the REPL is now `lantern-cli repl`.
 var rootCmd = &cobra.Command{
 	Use:   "lantern-cli",
-	Short: "CLI for the Lantern in-memory key-vertex store",
+	Short: "CLI for the Lantern key-vertex store",
 	Long: `lantern-cli is the official command-line client for the Lantern server
 (github.com/anaregdesign/lantern).
 
 WHAT LANTERN IS
-  Lantern is an in-memory graph KVS. Every vertex and every edge carries a
+  Lantern is a Tarp-backed graph KVS. Every vertex and every edge carries a
   TTL and decays on its own; edges are additive (AddEdge sums weight onto
   the same (tail, head) pair, PutEdge replaces it). The server exposes a
   small Connect RPC surface (also accepting gRPC + gRPC-Web on the same

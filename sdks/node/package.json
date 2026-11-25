@@ -1,7 +1,7 @@
 {
   "name": "lantern-sdk",
   "version": "0.16.0",
-  "description": "Official TypeScript client SDK for Lantern — an in-memory graph KVS, over Connect (HTTP/2).",
+  "description": "Official TypeScript client SDK for Lantern — a Tarp-backed graph KVS, over Connect (HTTP/2).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",

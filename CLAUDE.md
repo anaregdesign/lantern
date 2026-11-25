@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Lantern is an in-memory graph KVS ("key-vertex-store") served over Connect/HTTP-2 (wire-compatible with gRPC and gRPC-Web on one h2c socket). Vertices and edges carry TTLs and decay over time.
+Lantern is a Tarp-backed graph KVS ("key-vertex-store") served over Connect/HTTP-2 (wire-compatible with gRPC and gRPC-Web on one h2c socket). Vertices and edges carry TTLs and decay over time.
 
 **[AGENTS.md](AGENTS.md) is the full agent guide — read it before non-trivial work.** [CONTRIBUTING.md](CONTRIBUTING.md) is the process/release contract (issue triage, quality gate, tag order, toolchain bumps). This file is the always-on summary; when docs overlap they must not conflict, and details live there.
 
