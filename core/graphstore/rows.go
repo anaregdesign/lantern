@@ -1,6 +1,7 @@
 package graphstore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -28,6 +29,12 @@ func NewRows[K comparable, V any](keys tarp.Codec[K], values tarp.Codec[V]) (*Ro
 		return nil, fmt.Errorf("%w: nil graph codec", ErrInvalidRow)
 	}
 	return &Rows[K, V]{keys, values}, nil
+}
+
+// ValueMatches compares an application value to its exact stored representation.
+func (r *Rows[K, V]) ValueMatches(value V, stored []byte) (bool, error) {
+	encoded, err := r.values.Encode(value)
+	return err == nil && bytes.Equal(encoded, stored), err
 }
 
 func nilCodec(c any) bool {

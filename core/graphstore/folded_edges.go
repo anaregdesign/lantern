@@ -57,6 +57,18 @@ type EdgeBucket[K comparable] struct {
 	Sources []SourceEntry
 }
 
+// RetainedDetail folds every retained source, including those whose deadline
+// passed after commit. The caller supplies scratch storage reusable across
+// buckets; the returned slice contains the sorted entries.
+func (b EdgeBucket[K]) RetainedDetail(scratch []SourceEntry) (EdgeDetail, []SourceEntry) {
+	scratch = scratch[:0]
+	if b.Edge.Base != nil {
+		scratch = append(scratch, SourceEntry{Source: *b.Edge.Base})
+	}
+	scratch = append(scratch, b.Sources...)
+	return foldSources(scratch), scratch
+}
+
 // EdgeBuckets merges the Edge and Source families in physical order, verifying
 // that every Add has an owning header and belongs to its ordinal range.
 func (r *Rows[K, V]) EdgeBuckets(ctx context.Context, snap *tarp.Snapshot, gen uint64, tailPrefix string) iter.Seq2[EdgeBucket[K], error] {

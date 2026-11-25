@@ -99,3 +99,36 @@ func TestVertexProjectionTracksExpiryAndValidatesReopen(t *testing.T) {
 		t.Fatalf("mismatched projection error = %v", got)
 	}
 }
+
+func TestVerifiedVertexBytesRejectsUnknownGraphFamilies(t *testing.T) {
+	db, err := tarp.Open(t.TempDir(), tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := NewRows[string, string](tarp.StringCodec{}, tarp.StringCodec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, family := range []byte{0, vertexMetadataFamily + 1} {
+		gen := uint64(i + 1)
+		key, err := familyPrefix(gen, family)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Put(key, []byte("unrecognized")); err != nil {
+			t.Fatal(err)
+		}
+		s, err := db.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got error
+		for _, err := range rows.VerifiedVertexBytes(t.Context(), s, gen) {
+			got = err
+		}
+		if err := s.Close(); err != nil || !errors.Is(got, ErrInvalidRow) {
+			t.Fatalf("family %d: verification %v, close %v", family, got, err)
+		}
+	}
+}
