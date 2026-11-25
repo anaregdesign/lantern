@@ -78,7 +78,7 @@ pub(crate) struct GoServer {
     child: Child,
     port: u16,
     native: Option<NativeFixture>,
-    _files: Option<TempDir>,
+    _files: TempDir,
     _startup_log: Option<StartupLog>,
     startup_deadline: Option<Instant>,
 }
@@ -360,10 +360,10 @@ impl GoServer {
         if overrides.iter().any(|(name, _)| {
             matches!(
                 *name,
-                "LANTERN_PORT" | "LANTERN_LOG_LEVEL" | "LANTERN_LOG_FORMAT"
+                "LANTERN_DATA_DIR" | "LANTERN_PORT" | "LANTERN_LOG_LEVEL" | "LANTERN_LOG_FORMAT"
             )
         }) {
-            return Err("port and startup logging are fixture-owned settings".into());
+            return Err("fixture owns the data directory, port, and startup logging".into());
         }
         let data_dir = tempfile::tempdir()?;
         let startup_log = StartupLog(tempfile::NamedTempFile::new()?);
@@ -391,7 +391,7 @@ impl GoServer {
             child: command.spawn()?,
             port: 0,
             native: None,
-            _files: Some(data_dir),
+            _files: data_dir,
             _startup_log: Some(startup_log),
             startup_deadline: Some(deadline),
         };
@@ -492,7 +492,7 @@ impl GoServer {
             child,
             port: 0,
             native: None,
-            _files: Some(files),
+            _files: files,
             _startup_log: None,
             startup_deadline: None,
         };
@@ -577,13 +577,11 @@ impl GoServer {
 
 impl Drop for GoServer {
     fn drop(&mut self) {
-        // The supervisor owns production descendants. Ask it to reap the
-        // cohort before removing private state, including on failed startup.
-        if self._files.is_some() {
-            if let Some(mut input) = self.child.stdin.take() {
-                let _ = input.write_all(b"shutdown\n");
-                let _ = input.flush();
-            }
+        // Only the native supervisor has a shutdown pipe. Let it reap the
+        // cohort even when startup failed before it returned node metadata.
+        if let Some(mut input) = self.child.stdin.take() {
+            let _ = input.write_all(b"shutdown\n");
+            drop(input);
             let deadline = Instant::now() + Duration::from_secs(15);
             while Instant::now() < deadline {
                 if matches!(self.child.try_wait(), Ok(Some(_))) {
