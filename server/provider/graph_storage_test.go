@@ -11,7 +11,32 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/tarp"
 )
+
+func TestGraphStoreRequiredRestoreNeedsInitializedLanternManifest(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "uninitialized")
+	raw, err := tarp.Open(dir, tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LANTERN_DATA_DIR", dir)
+	config, err := NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	points := backup.Config{RestoreOnStart: true, RestoreRequired: true, Dir: t.TempDir()}
+	_, closeRuntime, err := NewServingRuntime(config.Receipts, config.Cache, config.Search, config.MutationLog, config.Replication, points, nil)
+	if closeRuntime != nil {
+		closeRuntime()
+	}
+	if !errors.Is(err, graphstore.ErrInvalidManifest) {
+		t.Fatalf("required restore from an uninitialized Tarp database returned %v", err)
+	}
+}
 
 func TestGraphStoreReopensNodeAndNamespacedValues(t *testing.T) {
 	t.Setenv("LANTERN_DATA_DIR", filepath.Join(t.TempDir(), "graph"))

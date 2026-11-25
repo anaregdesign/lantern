@@ -55,8 +55,9 @@ of service.
 In graph-only mode, `LANTERN_BACKUP_RESTORE_ON_START=true` allows startup
 to select the newest private point for this instance when the target directory
 is missing. An existing initialized directory takes precedence. A damaged
-newest point fails startup. `LANTERN_BACKUP_RESTORE_REQUIRED=true` requires
-a recovery point if the target is missing. Receipt restart requires an
+newest point fails startup. With `LANTERN_BACKUP_RESTORE_REQUIRED=true`,
+startup opens only a directory with a valid Lantern manifest, including one
+just restored from a recovery point. Receipt restart requires an
 existing data directory, including one explicitly restored as described above.
 
 Public `BackupSnapshot` and `lantern-cli dump` export the authorized logical

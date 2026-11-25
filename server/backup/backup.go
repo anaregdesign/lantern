@@ -37,9 +37,8 @@ type Config struct {
 	// newest verified physical image before runtime construction. A receipt
 	// store requires explicit recovery with its witnessed terminal cut.
 	RestoreOnStart bool
-	// RestoreRequired makes graph-only restore errors and missing durable fresh
-	// restore evidence fail boot. An incomplete durable restart always fails
-	// when its narrowly eligible repair cannot complete.
+	// RestoreRequired opens only initialized graph stores, including one
+	// restored just before startup. Receipt fresh mode rejects this option.
 	RestoreRequired bool
 }
 

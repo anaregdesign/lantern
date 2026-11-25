@@ -40,6 +40,9 @@ func newTarpServingRuntime(ctx context.Context, receipt ReceiptConfig, cacheConf
 		if err := backup.RestoreGraphStoreOnStartup(ctx, dir, expected, backups); err != nil {
 			return nil, err
 		}
+		if backups.RestoreRequired {
+			open = graphstore.OpenExisting
+		}
 	}
 	db, err := open(ctx, dir, expected)
 	if err != nil {

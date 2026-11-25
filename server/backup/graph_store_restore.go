@@ -18,8 +18,8 @@ import (
 )
 
 // RestoreGraphStoreOnStartup recovers only into a new target. A surviving DB
-// is authoritative. A missing or damaged newest recovery point never triggers
-// a silent rollback to an earlier observed state.
+// is authoritative and its manifest is validated when the runtime opens it.
+// A missing or damaged newest recovery point never triggers a silent rollback.
 func RestoreGraphStoreOnStartup(ctx context.Context, target string, expected hlc.NodeID, cfg Config) error {
 	if !cfg.RestoreOnStart {
 		return nil
@@ -28,20 +28,6 @@ func RestoreGraphStoreOnStartup(ctx context.Context, target string, expected hlc
 	if err == nil {
 		if !stat.IsDir() {
 			return errors.New("backup: graph storage target is not a directory")
-		}
-		if cfg.RestoreRequired {
-			f, err := os.Open(target)
-			if err != nil {
-				return err
-			}
-			entries, readErr := f.ReadDir(1)
-			closeErr := f.Close()
-			if len(entries) == 0 {
-				return errors.New("backup: required restore needs a new target or an existing initialized database")
-			}
-			if err := errors.Join(readErr, closeErr); err != nil {
-				return err
-			}
 		}
 		return nil
 	}
