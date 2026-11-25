@@ -30,14 +30,14 @@ const (
 )
 
 type pendingMutation struct {
-	mutation   *pb.Mutation
-	receipt    receiptMutationEnvelope
+	mutation *pb.Mutation
+	receipt  receiptMutationEnvelope
 	receipts receiptMutationEnvelope
-	walOp      mutationlog.MutationOp
-	size       int
-	applied    bool // graph committed; retry the log append without applying twice
-	faulted    bool // relay WAL failed after graph apply; all CDC streams are gapped
-	opName     string
+	walOp    mutationlog.MutationOp
+	size     int
+	applied  bool // graph committed; retry the log append without applying twice
+	faulted  bool // relay WAL failed after graph apply; all CDC streams are gapped
+	opName   string
 }
 
 type receiptMutationEnvelope interface {

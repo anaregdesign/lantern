@@ -810,7 +810,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if f.primary[1].LocalSeq(hlc.NodeID{3}) != 1 {
 				t.Fatal("held receiver advanced its committed cursor")
 			}
-			if first, _ := f.logs[0].FirstSeq(); first != 1 {
+			if _, _, evicted := f.data[0].MutationLogStats(); evicted != 0 {
 				t.Fatal("retention was lost before the intended branch")
 			}
 			// The interruption proof is complete. Evicting a normal-size ring
@@ -826,7 +826,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 				for i := 0; i < 10016; i++ {
 					write(ctx, "data:pressure", []byte("later"))
 				}
-				if first, _ := f.logs[0].FirstSeq(); first <= 3 {
+				if _, _, evicted := f.data[0].MutationLogStats(); evicted < 3 {
 					t.Fatal("finite fixture failed to evict the committed resume cursor")
 				}
 			}
@@ -970,7 +970,19 @@ type peerSecurityFixture struct {
 	key      ed25519.PrivateKey
 	roots    *x509.CertPool
 	certs    [2]tls.Certificate
-	logs     [2]*mutationlog.Log
+	data     [2]*service.ServingRuntime
+}
+
+// All fixture mutations pass through the certified runtime. Its evictions
+// count committed positions preceding the current retained suffix.
+func (f *peerSecurityFixture) firstSeq(node int) (uint64, bool) {
+	length, _, evicted := f.data[node].MutationLogStats()
+	return evicted + 1, length > 0
+}
+func (f *peerSecurityFixture) lastSeq(node int) (uint64, bool) {
+	length, _, evicted := f.data[node].MutationLogStats()
+	last := evicted + uint64(length)
+	return last, last != 0
 }
 
 type peerSecurityOptions struct {
@@ -1118,8 +1130,8 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		if len(options) != 0 && options[0].LogOptions != nil {
 			logOptions = options[0].LogOptions(i)
 		}
-		f.logs[i] = mutationlog.New(logOptions)
-		data, err := service.NewGraphOnlyServingRuntime(graph, f.logs[i], hlc.New(hlc.NodeID{byte(i + 3)}, hlc.Options{}), "namespaced-v1")
+		data, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "graph"), hlc.NodeID{byte(i + 3)}, graph, logOptions, "namespaced-v1")
+		f.data[i] = data
 		if err != nil {
 			t.Fatal(err)
 		}

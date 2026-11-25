@@ -56,7 +56,7 @@ func newTarpServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db 
 	if err != nil {
 		return nil, err
 	}
-	rt, err := NewGraphOnlyServingRuntime(graph, log, clock, namespace)
+	rt, err := newGraphRuntime(graph, log, clock, namespace)
 	if err != nil {
 		return nil, errors.Join(err, log.Close())
 	}

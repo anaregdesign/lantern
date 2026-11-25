@@ -213,7 +213,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		shutdownPlanName == "" || !strings.Contains(text, "newApp(config, logger, executor, lanternServer, "+shutdownPlanName+", graphPolicyOwner, metricsServer") {
 		t.Fatal("generated injector does not share one managed GC watcher with LanternServer and App")
 	}
-	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||
+	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||
 		!strings.Contains(text, "backupper, peerConfig") {
 		t.Fatal("generated injector does not share the certified Backup producer with App")
 	}

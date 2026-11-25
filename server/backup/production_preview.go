@@ -83,6 +83,9 @@ func (b *Backupper) retentionCatalog(ctx context.Context, retain int, maxBytes i
 		preview.Fingerprint = fmt.Sprintf("%x", sha256.Sum256(nil))
 		return preview, nil, nil
 	}
+	if b.graphStore == nil {
+		return preview, nil, ErrProductionUnavailable
+	}
 	remaining := maxBytes
 	validated := 0
 	visited := false
@@ -90,9 +93,6 @@ func (b *Backupper) retentionCatalog(ctx context.Context, retain int, maxBytes i
 		visited = true
 		if err := ctx.Err(); err != nil {
 			return err
-		}
-		if b.graphStore == nil {
-			return ErrProductionUnavailable
 		}
 		prefix := graphPointPrefix(b.cfg.InstanceID)
 		suffix, own := strings.CutPrefix(entry.Name(), prefix)
@@ -122,7 +122,6 @@ func (b *Backupper) retentionCatalog(ctx context.Context, retain int, maxBytes i
 		}
 		candidates = append(candidates, retentionPreviewCandidate{name: entry.Name(), stamp: id, size: size, digest: sha256.Sum256(raw)})
 		return nil
-
 	})
 	if errors.Is(err, os.ErrNotExist) && !visited {
 		err = nil

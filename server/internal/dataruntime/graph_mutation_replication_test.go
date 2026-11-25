@@ -166,7 +166,7 @@ func TestGraphMutationSubscribeRequiresExplicitAcceptance(t *testing.T) {
 	}
 	stamp := hlcFromProto(original.Mutation.GetHlc())
 	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 2})
-	runtime, err := NewGraphOnlyServingRuntime(
+	runtime, err := newGraphRuntime(
 		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour), log,
 		hlc.New(stamp.NodeID, hlc.Options{}),
 	)

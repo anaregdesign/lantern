@@ -91,9 +91,9 @@ type receiptStartupRestore struct {
 	BackupSetID    uint64
 }
 
-// NewGraphOnlyServingRuntime preserves the historical in-memory composition.
-// The runtime owns log and closes it after all serving goroutines stop.
-func NewGraphOnlyServingRuntime(
+// newGraphRuntime assembles the shared graph, clock and origin tracker.
+// The storage constructor binds and owns the durable journal before publication.
+func newGraphRuntime(
 	graph *graphcache.GraphCache[string, *pb.Vertex],
 	log *mutationlog.Log,
 	clock *hlc.Clock,

@@ -18,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/tarp"
 )
 
 type appGuardTestListener struct{}
@@ -27,10 +28,7 @@ func (appGuardTestListener) Listener() net.Listener { return nil }
 func (appGuardTestListener) TLSEnabled() bool       { return false }
 
 func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
-	data, err := dataruntime.NewGraphOnlyServingRuntime(
-		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
-		mutationlog.New(mutationlog.Options{}), hlc.New(hlc.NodeID{0x19}, hlc.Options{}),
-	)
+	data, err := dataruntime.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{0x19}, graphcache.NewGraphCache[string, *pb.Vertex](time.Hour), mutationlog.Options{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,10 +59,7 @@ func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
 }
 
 func TestNewAppRejectsMismatchedShutdownPlanBeforeOtherSetup(t *testing.T) {
-	data, err := dataruntime.NewGraphOnlyServingRuntime(
-		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
-		mutationlog.New(mutationlog.Options{}), hlc.New(hlc.NodeID{0x1a}, hlc.Options{}),
-	)
+	data, err := dataruntime.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{0x1a}, graphcache.NewGraphCache[string, *pb.Vertex](time.Hour), mutationlog.Options{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,12 +129,7 @@ func TestDrainPhaseWithPlanCapturesAfterCancellationBeforeBegin(t *testing.T) {
 }
 
 func TestAppRunClosesMutationLogOnCanceledStartup(t *testing.T) {
-	log := mutationlog.New(mutationlog.Options{})
-	runtime, err := dataruntime.NewGraphOnlyServingRuntime(
-		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
-		log,
-		hlc.New(hlc.NodeID{1}, hlc.Options{}),
-	)
+	runtime, err := dataruntime.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{1}, graphcache.NewGraphCache[string, *pb.Vertex](time.Hour), mutationlog.Options{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +142,8 @@ func TestAppRunClosesMutationLogOnCanceledStartup(t *testing.T) {
 	if err := app.Run(ctx); !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupFailure) || lifecycle.closed != 1 || lifecycle.orderly != 0 {
 		t.Fatal("startup cancellation hid abort cleanup or declared CLEAN", err)
 	}
-	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
-		t.Fatalf("Log after failed startup = %v, want closed", err)
+	if _, err := runtime.GraphStore().Read(); !errors.Is(err, tarp.ErrClosed) {
+		t.Fatalf("database after failed startup = %v, want closed", err)
 	}
 }
 

@@ -60,7 +60,7 @@ func TestServingRuntimeCertificationRejectsRetainedOversizedFrame(t *testing.T) 
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
 	clock := hlc.New(hlc.NodeID{0x71}, hlc.Options{})
-	runtime, err := NewGraphOnlyServingRuntime(graph, log, clock)
+	runtime, err := newGraphRuntime(graph, log, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
 	clock := hlc.New(hlc.NodeID{0x21}, hlc.Options{})
-	runtime, err := NewGraphOnlyServingRuntime(graph, log, clock)
+	runtime, err := newGraphRuntime(graph, log, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1088,7 +1088,7 @@ func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
 	t.Cleanup(func() { _ = log.Close() })
-	if _, err := NewGraphOnlyServingRuntime(graph, log, hlc.New(hlc.NodeID{1}, hlc.Options{}), "namespaced-v1"); err != nil {
+	if _, err := newGraphRuntime(graph, log, hlc.New(hlc.NodeID{1}, hlc.Options{}), "namespaced-v1"); err != nil {
 		t.Fatal(err)
 	}
 	if !graph.RetainsDanglingEdgeHistory() {
@@ -1098,7 +1098,7 @@ func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	if err := occupied.PutVertex("data:existing", &pb.Vertex{Key: "data:existing"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewGraphOnlyServingRuntime(occupied, log, hlc.New(hlc.NodeID{2}, hlc.Options{}), "namespaced-v1"); err == nil {
+	if _, err := newGraphRuntime(occupied, log, hlc.New(hlc.NodeID{2}, hlc.Options{}), "namespaced-v1"); err == nil {
 		t.Fatal("late history policy selection admitted")
 	}
 	config := durableRuntimeTestConfig(t.TempDir() + "/history.wal")

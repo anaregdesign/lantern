@@ -98,3 +98,5 @@ the Vertex and Edge expiration times. Contribution identities, insertion
 history, receipt results, causal floors and private replication positions are
 available through private node recovery. A folded non-finite Edge weight
 cannot be submitted as a new public Put.
+
+The private producer exports the time and duration of the last successful backup, the number of members and total bytes in that point, and a failed-attempt counter. The corresponding series are `lantern_backup_last_success_timestamp_seconds`, `lantern_backup_duration_seconds`, `lantern_backup_set_members`, `lantern_backup_set_bytes` and `lantern_backup_failures_total`.

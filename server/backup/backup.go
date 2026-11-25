@@ -45,12 +45,8 @@ type Config struct {
 
 // Stats reports the counts and bytes recorded by a backup.
 type Stats struct {
-	Vertices int
-	Edges    int
-	Receipts int
-	Origins  int
-	Members  int
-	Bytes    int64
+	Members int
+	Bytes   int64
 }
 
 // Backupper owns periodic/manual/final production.

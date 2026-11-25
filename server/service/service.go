@@ -23,7 +23,7 @@ type (
 	LanternReplicationService       = dataruntime.Replication
 	Backend                         = dataruntime.Backend
 	ServingRuntime                  = dataruntime.ServingRuntime
-	ReceiptDatabaseConfig  = dataruntime.ReceiptDatabaseConfig
+	ReceiptDatabaseConfig           = dataruntime.ReceiptDatabaseConfig
 	ReceiptWholeStateCapture        = dataruntime.ReceiptWholeStateCapture
 	ReceiptWholeStateSource         = dataruntime.ReceiptWholeStateSource
 	ReceiptBaselineFormat           = dataruntime.ReceiptBaselineFormat
@@ -82,10 +82,6 @@ func NewLanternService(cache Backend) *LanternService { return dataruntime.NewEx
 
 func NewLanternReplicationService(log *mutationlog.Log, backend Backend, clock *hlc.Clock) *LanternReplicationService {
 	return dataruntime.NewReplication(log, backend, clock)
-}
-
-func NewGraphOnlyServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], log *mutationlog.Log, clock *hlc.Clock, namespaceFormat ...string) (*ServingRuntime, error) {
-	return dataruntime.NewGraphOnlyServingRuntime(graph, log, clock, namespaceFormat...)
 }
 
 func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *graphcache.GraphCache[string, *pb.Vertex], log mutationlog.Options, namespace string) (*ServingRuntime, error) {

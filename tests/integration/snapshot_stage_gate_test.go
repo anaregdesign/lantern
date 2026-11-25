@@ -291,7 +291,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 				put(0, fmt.Sprintf("data:stage-source-%d", sequence))
 			}
 			put(1, "data:stage-resident")
-			if first, ok := fixture.logs[0].FirstSeq(); !ok || first != 5 {
+			if first, ok := fixture.firstSeq(0); !ok || first != 5 {
 				t.Fatalf("source retained first=%d present=%t, want an actual initial gap", first, ok)
 			}
 			if tc.priorFault {
@@ -302,7 +302,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 				finish(false)
 			}
 			beforeGraph, beforeOrigins := graphs[1].SnapshotReplication(), fixture.primary[1].OriginStates()
-			beforeSeq, beforeHasSeq := fixture.logs[1].LastSeq()
+			beforeSeq, beforeHasSeq := fixture.lastSeq(1)
 			apply := &snapshotStageGateApply{LanternService: fixture.primary[1]}
 			graph := &snapshotStageGateGraph{GraphCache: graphs[1]}
 			spool := graphSnapshotSpoolConfig(t)
@@ -432,7 +432,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 					apply.begins.Load(), apply.marks.Load(), apply.mutations.Load(), graph.indexBegins.Load(), graph.indexFinishes.Load(),
 					apply.finishes.Load(), apply.verifiedFinishes.Load(), wantBegin, wantReplay)
 			}
-			if afterSeq, afterHasSeq := fixture.logs[1].LastSeq(); afterSeq != beforeSeq || afterHasSeq != beforeHasSeq {
+			if afterSeq, afterHasSeq := fixture.lastSeq(1); afterSeq != beforeSeq || afterHasSeq != beforeHasSeq {
 				t.Fatal("rejected install changed publication log")
 			}
 			if !tc.expireFinish {
@@ -588,7 +588,7 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if first, ok := fixture.logs[0].FirstSeq(); !ok || first != 62 {
+	if first, ok := fixture.firstSeq(0); !ok || first != 62 {
 		t.Fatalf("large source did not require Snapshot: retained first=%d present=%t", first, ok)
 	}
 	// Source preparation is outside this bounded native transfer. Its

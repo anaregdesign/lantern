@@ -40,7 +40,7 @@ def main():
         "native_source_config_sha256": digest(args.config), "events": [], "phases": [], "volumes": {},
     }
     if args.mixed_ha:
-        receipt["scope"] = "three current-v2 product containers with independent data WALs and real private replication; bounded functional mixed HA only"
+        receipt["scope"] = "three current-v2 product containers with independent Tarp stores and real private replication; bounded functional mixed HA only"
     label = "lantern.task=1610-mixed-ha" if args.mixed_ha else "lantern.task=1727-custody"
     containers, networks = [], []
     sequence = 0

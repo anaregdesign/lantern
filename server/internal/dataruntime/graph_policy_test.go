@@ -19,7 +19,7 @@ import (
 func newGraphPolicyTestRuntime(t *testing.T) (*ServingRuntime, *Executor) {
 	t.Helper()
 	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
-	runtime, err := NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 128}), hlc.New(hlc.NodeID{0x61}, hlc.Options{}))
+	runtime, err := newGraphRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 128}), hlc.New(hlc.NodeID{0x61}, hlc.Options{}))
 	if err != nil {
 		t.Fatal(err)
 	}

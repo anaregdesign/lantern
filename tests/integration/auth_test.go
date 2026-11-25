@@ -2271,7 +2271,7 @@ func TestAuth_OFFScopedCursorQualifiedClockOverConnect(t *testing.T) {
 	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	setTime := func(value time.Time) { mu.Lock(); now = value; mu.Unlock() }
 	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
-	data, err := service.NewGraphOnlyServingRuntime(cache, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{9}, hlc.Options{}), "namespaced-v1")
+	data, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{9}, cache, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2450,7 +2450,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 	})
 	t.Run("OFF existing admission bound", func(t *testing.T) {
 		cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
-		data, err := service.NewGraphOnlyServingRuntime(cache, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{9}, hlc.Options{}), "namespaced-v1")
+		data, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{9}, cache, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2875,7 +2875,7 @@ func TestAuth_OIDCRustScopedChangesFacadeRealConnect(t *testing.T) { runScopedLa
 
 func TestAuth_OFFPublicChangeLifecycleRealConnect(t *testing.T) {
 	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
-	data, err := service.NewGraphOnlyServingRuntime(cache, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{9}, hlc.Options{}), "namespaced-v1")
+	data, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{9}, cache, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
