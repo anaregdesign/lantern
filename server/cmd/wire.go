@@ -65,7 +65,6 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewServingRuntime,
 		provider.NewRuntimeGraph,
 		provider.NewGraphPolicyOwner,
-		provider.NewRuntimeRestored,
 		provider.NewRuntimeCertified,
 		provider.NewOIDCPublicReceiptsCertified,
 		provider.NewSnapshotInstallerSelection,

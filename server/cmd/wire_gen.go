@@ -46,12 +46,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		cleanup()
 		return nil, nil, err
 	}
-	runtimeRestored, err := provider.NewRuntimeRestored(servingRuntime, executor)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
-	}
-	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, executor, replication, runtimeRestored, v6)
+	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, executor, replication, v6)
 	if err != nil {
 		cleanup()
 		return nil, nil, err

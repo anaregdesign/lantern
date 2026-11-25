@@ -736,15 +736,10 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := provider.NewRuntimeRestored(runtime, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
 	certified, err := provider.NewRuntimeCertified(
 		runtime,
 		primary,
 		replicationService,
-		restored,
 		provider.NetConfig{},
 	)
 	if err != nil {
@@ -2049,11 +2044,7 @@ func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRun
 		t.Fatal(err)
 	}
 	peer.WithSearchConfig(primary)
-	restored, err := provider.NewRuntimeRestored(runtime, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certified, err := provider.NewRuntimeCertified(runtime, primary, peer, restored, netConfig)
+	certified, err := provider.NewRuntimeCertified(runtime, primary, peer, netConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,12 +30,8 @@ func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(data, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
 	limits := NetConfig{MaxRecvMsgBytes: 4 << 20, MaxSendMsgBytes: 4 << 20}
-	cert, err := NewRuntimeCertified(data, primary, rep, restored, limits)
+	cert, err := NewRuntimeCertified(data, primary, rep, limits)
 	if err != nil {
 		t.Fatal(err)
 	}

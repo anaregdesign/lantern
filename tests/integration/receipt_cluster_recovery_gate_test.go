@@ -498,12 +498,8 @@ func mountClusterRecoveryReceiptProtocolServer(
 		t.Fatal(err)
 	}
 	replicationService.WithSearchConfig(primary)
-	restored, err := provider.NewRuntimeRestored(runtime, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
 	certified, err := provider.NewRuntimeCertified(
-		runtime, primary, replicationService, restored, provider.NetConfig{},
+		runtime, primary, replicationService, provider.NetConfig{},
 	)
 	if err != nil {
 		t.Fatal(err)

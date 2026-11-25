@@ -84,7 +84,7 @@ func validateReceiptConfig(
 	case ReceiptModeGraphOnly:
 		if config.Epoch != (mutationreceipt.Epoch{}) ||
 			config.Retention != 0 || config.MaxEntries != 0 || config.MaxBytes != 0 {
-			return errors.New("LANTERN_RECEIPT_MODE=graph-only cannot be combined with durable receipt WAL settings")
+			return errors.New("LANTERN_RECEIPT_MODE=graph-only cannot be combined with receipt policy settings")
 		}
 		return nil
 	case ReceiptModeFresh, ReceiptModeRestart:
@@ -101,7 +101,7 @@ func validateReceiptConfig(
 		return errors.New("LANTERN_RECEIPT_MAX_BYTES must be positive in receipt mode")
 	}
 	if _, err := mutationreceipt.New(config.receiptConfig(time.Time{})); err != nil {
-		return fmt.Errorf("durable receipt WAL policy: %w", err)
+		return fmt.Errorf("durable receipt policy: %w", err)
 	}
 	if backups.RestoreRequired && !backups.RestoreOnStart {
 		return errors.New("LANTERN_BACKUP_RESTORE_REQUIRED requires LANTERN_BACKUP_RESTORE_ON_START in receipt mode")
@@ -174,26 +174,6 @@ type runtimeCertified struct {
 	replicationSendMaxBytes int
 }
 
-// runtimeRestored is the identity-bearing startup-restore barrier. Even a
-// no-op graph-only or healthy-restart path passes through it, so Wire cannot
-// certify a runtime before any pending durable baseline has committed.
-type runtimeRestored struct {
-	valid   bool
-	runtime *dataruntime.ServingRuntime
-	primary *dataruntime.Executor
-}
-
-func NewRuntimeRestored(
-	runtime *dataruntime.ServingRuntime,
-	primary *dataruntime.Executor,
-) (runtimeRestored, error) {
-	if runtime == nil || primary == nil {
-		return runtimeRestored{}, errors.New("startup restore requires the serving runtime and primary service")
-	}
-
-	return runtimeRestored{valid: true, runtime: runtime, primary: primary}, nil
-}
-
 // publicReceiptsCertified is the final pre-listener activation barrier. Wire
 // can construct it only after the exact runtime is certified and its
 // production backup path has been bound.
@@ -206,13 +186,8 @@ func NewRuntimeCertified(
 	runtime *dataruntime.ServingRuntime,
 	primary *dataruntime.Executor,
 	replication *dataruntime.Replication,
-	restored runtimeRestored,
 	netConfig NetConfig,
 ) (runtimeCertified, error) {
-	if runtime == nil || primary == nil || replication == nil ||
-		!restored.valid || restored.runtime != runtime || restored.primary != primary {
-		return runtimeCertified{}, errors.New("receipt WAL runtime certification requires both service surfaces")
-	}
 	if err := runtime.CertifyInstallationWithReplicationSendLimit(
 		primary,
 		replication,

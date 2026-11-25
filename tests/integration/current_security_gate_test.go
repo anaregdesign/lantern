@@ -319,12 +319,8 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		restored, err := provider.NewRuntimeRestored(data, svc)
-		if err != nil {
-			t.Fatal(err)
-		}
 		limits := provider.NetConfig{MaxRecvMsgBytes: 1 << 20, MaxSendMsgBytes: 1 << 20, MaxConcurrentStreams: 16}
-		certified, err := provider.NewRuntimeCertified(data, svc, peer, restored, limits)
+		certified, err := provider.NewRuntimeCertified(data, svc, peer, limits)
 		if err != nil {
 			t.Fatal(err)
 		}

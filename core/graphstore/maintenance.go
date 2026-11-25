@@ -115,9 +115,11 @@ func (db *DB) maintainKeyOrder(ctx context.Context, now time.Time, schedule *lay
 }
 
 // CompactByKey reclaims abandoned generations and asks Tarp to cluster live
-// records by their encoded keys. It runs synchronously regardless of database
-// size. A pinned graph view, staging operation, or competing checkpoint can
-// return tarp.ErrBusy. Backup, generation replacement and Close can interrupt
+// records by their encoded keys. For offline maintenance, call OpenExisting
+// and leave StartMaintenance disabled. The serving worker tracks its own
+// checkpoints independently of this call. CompactByKey runs synchronously at
+// any database size. A pinned graph view, staging operation, or competing
+// checkpoint can return tarp.ErrBusy. Backup, generation replacement and Close can interrupt
 // the request. Tarp permits subsequent commits while the checkpoint runs.
 func (db *DB) CompactByKey(ctx context.Context) (tarp.CompactResult, error) {
 	return db.compactByKey(ctx, nil)

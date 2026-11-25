@@ -154,11 +154,7 @@ func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
 	if _, _, err := NewPeerPlaneServer(PeerPlaneConfig{}, nil, rep, NetConfig{}, nil, runtimeCertified{}, nil); err == nil {
 		t.Fatal("private surface ignored runtime identity")
 	}
-	restored, err := NewRuntimeRestored(data, svc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := NewRuntimeCertified(data, svc, rep, restored, NetConfig{})
+	cert, err := NewRuntimeCertified(data, svc, rep, NetConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +184,7 @@ func TestPeerListenerAdoptionRequiresExactRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(data, svc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := NewRuntimeCertified(data, svc, rep, restored, NetConfig{})
+	cert, err := NewRuntimeCertified(data, svc, rep, NetConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -540,11 +540,7 @@ func productionOFFBackupper(t *testing.T, cfg *provider.Config, logs io.Writer) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := provider.NewRuntimeRestored(runtime, svc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certified, err := provider.NewRuntimeCertified(runtime, svc, replication, restored, cfg.Net)
+	certified, err := provider.NewRuntimeCertified(runtime, svc, replication, cfg.Net)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -378,12 +378,8 @@ func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBoot
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := provider.NewRuntimeRestored(data, dataService)
-	if err != nil {
-		t.Fatal(err)
-	}
 	limits := provider.NetConfig{MaxRecvMsgBytes: 8 << 20, MaxSendMsgBytes: 8 << 20, MaxConcurrentStreams: 16}
-	certified, err := provider.NewRuntimeCertified(data, dataService, peer, restored, limits)
+	certified, err := provider.NewRuntimeCertified(data, dataService, peer, limits)
 	if err != nil {
 		t.Fatal(err)
 	}

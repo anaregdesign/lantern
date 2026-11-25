@@ -32,11 +32,7 @@ func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(data, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certified, err := NewRuntimeCertified(data, primary, peer, restored, NetConfig{})
+	certified, err := NewRuntimeCertified(data, primary, peer, NetConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +329,7 @@ func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
 }
 
 func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
-	certified, err := NewRuntimeCertified(nil, nil, nil, runtimeRestored{}, NetConfig{})
+	certified, err := NewRuntimeCertified(nil, nil, nil, NetConfig{})
 	if certified.valid || err == nil {
 		t.Fatalf("incomplete runtime certification = %+v, %v", certified, err)
 	}
@@ -368,11 +364,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(first, firstPrimary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certified, err = NewRuntimeCertified(first, firstPrimary, firstReplication, restored, NetConfig{})
+	certified, err = NewRuntimeCertified(first, firstPrimary, firstReplication, NetConfig{})
 	if err != nil || !certified.valid {
 		t.Fatalf("valid runtime certification = %+v, %v", certified, err)
 	}
@@ -384,7 +376,16 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if certified, err := NewRuntimeCertified(first, secondPrimary, secondReplication, restored, NetConfig{}); certified.valid || err == nil {
-		t.Fatalf("mismatched runtime certification = %+v, %v", certified, err)
+	for _, foreign := range []struct {
+		primary     *dataruntime.Executor
+		replication *dataruntime.Replication
+	}{
+		{secondPrimary, firstReplication},
+		{firstPrimary, secondReplication},
+		{secondPrimary, secondReplication},
+	} {
+		if certified, err := NewRuntimeCertified(first, foreign.primary, foreign.replication, NetConfig{}); certified.valid || err == nil {
+			t.Fatalf("mismatched runtime certification = %+v, %v", certified, err)
+		}
 	}
 }

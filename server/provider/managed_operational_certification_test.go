@@ -93,11 +93,7 @@ func operationalPublicTestDataCertification(t *testing.T, manager *ManagedOperat
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(data, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certified, err := NewRuntimeCertified(data, primary, peer, restored, NetConfig{})
+	certified, err := NewRuntimeCertified(data, primary, peer, NetConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
