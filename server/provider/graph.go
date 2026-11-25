@@ -18,9 +18,8 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 }
 
 // ConfigureGraphCache applies the production cache policy to a fresh cache.
-// Receipt WAL and archive staging use the same policy before replay, while
-// NewGraphCache uses it for the ordinary graph-only provider. Indexes must be
-// enabled before the first mutation reaches the cache.
+// Both graph-only and receipt runtimes configure indexes before restoring
+// the committed Tarp generation or accepting the first mutation.
 func ConfigureGraphCache(gc *graphcache.GraphCache[string, *v1.Vertex], c CacheConfig, sc SearchConfig) {
 	if c.namespaceFormat != "" {
 		gc.RetainDanglingEdgeHistory()

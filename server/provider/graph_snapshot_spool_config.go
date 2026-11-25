@@ -12,7 +12,7 @@ import (
 )
 
 // GraphSnapshotSpoolConfig owns the graph-only receiver's explicit temporary
-// storage contract. It never inherits the Receipt WAL path or system temp dir.
+// storage contract. Graph-only HA requires a dedicated operator-supplied path.
 type GraphSnapshotSpoolConfig = replication.GraphSnapshotSpoolConfig
 
 func NewGraphSnapshotSpoolConfig(config *Config) GraphSnapshotSpoolConfig {
@@ -57,8 +57,8 @@ func selectGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfi
 	case ReceiptModeGraphOnly:
 		return profile, nil
 	case ReceiptModeFresh, ReceiptModeRestart:
-		// Receipt WAL owns its independent durable representation. The signed
-		// graph profile remains validated material, without an active spool.
+		// The receipt Snapshot installer uses its own bounded collector. OIDC
+		// still validates the provisioned graph-only spool profile.
 		return GraphSnapshotSpoolConfig{}, nil
 	default:
 		return GraphSnapshotSpoolConfig{}, errors.New("unknown serving durability representation")

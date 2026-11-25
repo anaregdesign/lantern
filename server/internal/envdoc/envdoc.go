@@ -104,10 +104,10 @@ var descriptions = map[string]string{
 
 	"LANTERN_MUTATION_LOG_CAPACITY":                "Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds.",
 	"LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER":       "Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped.",
-	"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR":             "Canonical resolved absolute path to a pre-existing private 0700 directory owned by the server identity for graph-only Snapshot staging; symlink components are rejected. Required with the private peer plane in graph-only mode; no system-temp, Receipt WAL or backup-volume fallback. Pump and anti-entropy share one installer; each attempt takes the directory owner lease.",
+	"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR":             "Canonical resolved absolute path to a pre-existing private 0700 directory owned by the server identity for graph-only Snapshot staging; symlink components are rejected. Required with the private peer plane in graph-only mode; configure a dedicated spool path. Pump and anti-entropy share one installer; each attempt takes the directory owner lease.",
 	"LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES":  "Positive logical disk budget for graph-only Snapshot frame, index, sort and merge files, charged in 4096-byte extents plus 4096 bytes per file including the owner lease. Required with the spool directory; zero/empty settings disable staging only when graph-only HA is disabled. Staged data remains invisible until the active Tarp generation changes.",
 	"LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES": "Positive finite graph-only Snapshot protobuf frame limit, no larger than the configured disk allowance, required with an explicit spool directory and disk budget. Decoded frame, contribution rows and per-frame maps consume additional memory; this is not a whole-heap quota. Independent of public request/send caps.",
-	"LANTERN_RECEIPT_MODE":                         "Select graph-only (default), fresh receipt initialization or receipt restart in the node-owned Tarp database. Receipt modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only after runtime, recovery, replication, Snapshot, and backup certification.",
+	"LANTERN_RECEIPT_MODE":                         "Select graph-only (default), fresh receipt initialization or receipt restart in the node-owned Tarp database. Receipt capability and status become available after runtime, recovery, replication, Snapshot, backup and authentication certification. GetReceiptCapability reports the operations enabled at that endpoint.",
 	"LANTERN_DATA_DIR":                             "Node-owned Tarp database directory for graph, replication and optional receipts. Reuse the same volume on restart. Each node needs a separate directory.",
 	"LANTERN_RECEIPT_EPOCH":                        "Nonzero 32-hex-character deployment epoch required by fresh/restart mode and immutable for restart.",
 	"LANTERN_RECEIPT_RETENTION":                    "Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart.",
@@ -141,7 +141,7 @@ var descriptions = map[string]string{
 	"LANTERN_BACKUP_RETAIN":           "How many valid backups owned by this instance to keep, newest first (0 keeps all).",
 	"LANTERN_BACKUP_INSTANCE_ID":      "Stable producer identity for backup discovery and retention. Defaults to the hostname.",
 	"LANTERN_BACKUP_RESTORE_ON_START": "Allow graph-only startup to recover a missing data directory from this instance’s newest private point. Receipt restart requires an existing Tarp database. Use restore-graph-store with an independent final cut to recover a lost receipt volume.",
-	"LANTERN_BACKUP_RESTORE_REQUIRED": "Require a recovery point if graph-only startup needs to restore a missing data directory. Receipt fresh initialization rejects required restore.",
+	"LANTERN_BACKUP_RESTORE_REQUIRED": "In graph-only mode, require an initialized Lantern database or restore a missing directory from its private recovery point. Receipt fresh initialization rejects required restore.",
 
 	"LANTERN_STRICT_CONFIG": "Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set.",
 
@@ -213,12 +213,12 @@ func Render(specs []envconfig.Spec) (string, error) {
 	b.WriteString("local or relayed mutation is published, Lantern verifies that its exact binary\n")
 	b.WriteString("full-mutation `SubscribeResponse` and the largest receiver-local relay of any\n")
 	b.WriteString("receipt envelope fit `LANTERN_MAX_SEND_MSG_BYTES`; an oversize frame is rejected\n")
-	b.WriteString("with `ResourceExhausted` before graph, Store, WAL, or origin publication.\n")
+	b.WriteString("with `ResourceExhausted` before committing graph, receipt, relay or origin state.\n")
 	b.WriteString("Startup also fails if a retained frame or its maximal relay exceeds a newly\n")
 	b.WriteString("lowered send cap. `LANTERN_MAX_RECV_MSG_BYTES` remains an independent\n")
 	b.WriteString("request cap, so a request that fits it may still be rejected after response\n")
-	b.WriteString("projection. Receipt-WAL and receipt-wire 8 MiB bounds do not raise the send cap;\n")
-	b.WriteString("intrinsic wire limits apply even when the configured cap is unlimited. Every\n")
+	b.WriteString("projection. Receipt bodies and receipt wire frames each have an 8 MiB ceiling.\n")
+	b.WriteString("The configured send cap also applies. Every\n")
 	b.WriteString("full-mutation Subscribe consumer must accept its sender's admitted maximum;\n")
 	b.WriteString("use compatible peer read limits. Full-mutation Subscribe requires binary\n")
 	b.WriteString("protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.\n")

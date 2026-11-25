@@ -15,12 +15,12 @@ The public and replication handlers share the message-size limits. Before a
 local or relayed mutation is published, Lantern verifies that its exact binary
 full-mutation `SubscribeResponse` and the largest receiver-local relay of any
 receipt envelope fit `LANTERN_MAX_SEND_MSG_BYTES`; an oversize frame is rejected
-with `ResourceExhausted` before graph, Store, WAL, or origin publication.
+with `ResourceExhausted` before committing graph, receipt, relay or origin state.
 Startup also fails if a retained frame or its maximal relay exceeds a newly
 lowered send cap. `LANTERN_MAX_RECV_MSG_BYTES` remains an independent
 request cap, so a request that fits it may still be rejected after response
-projection. Receipt-WAL and receipt-wire 8 MiB bounds do not raise the send cap;
-intrinsic wire limits apply even when the configured cap is unlimited. Every
+projection. Receipt bodies and receipt wire frames each have an 8 MiB ceiling.
+The configured send cap also applies. Every
 full-mutation Subscribe consumer must accept its sender's admitted maximum;
 use compatible peer read limits. Full-mutation Subscribe requires binary
 protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.
@@ -43,7 +43,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_BACKUP_INSTANCE_ID` | string | (empty) | Stable producer identity for backup discovery and retention. Defaults to the hostname. |
 | `LANTERN_BACKUP_INTERVAL` | duration | `5m0s` | Backup production cadence (Go duration). |
 | `LANTERN_BACKUP_RESTORE_ON_START` | bool | `true` | Allow graph-only startup to recover a missing data directory from this instance’s newest private point. Receipt restart requires an existing Tarp database. Use restore-graph-store with an independent final cut to recover a lost receipt volume. |
-| `LANTERN_BACKUP_RESTORE_REQUIRED` | bool | `false` | Require a recovery point if graph-only startup needs to restore a missing data directory. Receipt fresh initialization rejects required restore. |
+| `LANTERN_BACKUP_RESTORE_REQUIRED` | bool | `false` | In graph-only mode, require an initialized Lantern database or restore a missing directory from its private recovery point. Receipt fresh initialization rejects required restore. |
 | `LANTERN_BACKUP_RETAIN` | int | `3` | How many valid backups owned by this instance to keep, newest first (0 keeps all). |
 | `LANTERN_BLOCK_PROFILE_RATE` | int | `0` | runtime.SetBlockProfileRate in nanoseconds between samples (0 = disabled). |
 | `LANTERN_CDC_CURSOR_KEY_RING_FILE` | string | (empty) | Absolute private JSON key ring with current_version and up to four versioned 32-byte lowercase-hex AEAD keys. Required for protected or HA CDC and shared across its replicas. |
@@ -57,7 +57,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_DRAIN_DELAY_SECONDS` | int | `0` | Zero-drop rolling-update window: keep serving this long after readiness flips NOT_SERVING (0 = disabled). |
 | `LANTERN_GC_EDGE_BUDGET` | int | `0` | Maximum tail buckets swept per GC tick (0 = full sweep); high-degree tails can still be expensive. |
 | `LANTERN_GC_INTERVAL_SECONDS` | int | `60` | Graph-cache GC tick interval in seconds (expired vertex/edge sweep). |
-| `LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR` | string | (empty) | Canonical resolved absolute path to a pre-existing private 0700 directory owned by the server identity for graph-only Snapshot staging; symlink components are rejected. Required with the private peer plane in graph-only mode; no system-temp, Receipt WAL or backup-volume fallback. Pump and anti-entropy share one installer; each attempt takes the directory owner lease. |
+| `LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR` | string | (empty) | Canonical resolved absolute path to a pre-existing private 0700 directory owned by the server identity for graph-only Snapshot staging; symlink components are rejected. Required with the private peer plane in graph-only mode; configure a dedicated spool path. Pump and anti-entropy share one installer; each attempt takes the directory owner lease. |
 | `LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES` | string | `0` | Positive logical disk budget for graph-only Snapshot frame, index, sort and merge files, charged in 4096-byte extents plus 4096 bytes per file including the owner lease. Required with the spool directory; zero/empty settings disable staging only when graph-only HA is disabled. Staged data remains invisible until the active Tarp generation changes. |
 | `LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES` | string | `0` | Positive finite graph-only Snapshot protobuf frame limit, no larger than the configured disk allowance, required with an explicit spool directory and disk budget. Decoded frame, contribution rows and per-frame maps consume additional memory; this is not a whole-heap quota. Independent of public request/send caps. |
 | `LANTERN_ILLUMINATE_MAX_K` | int | `1024` | Upper bound on the Illuminate k parameter. |
@@ -116,7 +116,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_RECEIPT_EPOCH` | string | (empty) | Nonzero 32-hex-character deployment epoch required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_MAX_BYTES` | int | `0` | Positive retained-receipt logical-byte cap required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_MAX_ENTRIES` | int | `0` | Positive retained-receipt entry cap required by fresh/restart mode and immutable for restart. |
-| `LANTERN_RECEIPT_MODE` | string | `graph-only` | Select graph-only (default), fresh receipt initialization or receipt restart in the node-owned Tarp database. Receipt modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only after runtime, recovery, replication, Snapshot, and backup certification. |
+| `LANTERN_RECEIPT_MODE` | string | `graph-only` | Select graph-only (default), fresh receipt initialization or receipt restart in the node-owned Tarp database. Receipt capability and status become available after runtime, recovery, replication, Snapshot, backup and authentication certification. GetReceiptCapability reports the operations enabled at that endpoint. |
 | `LANTERN_RECEIPT_RETENTION` | duration | `0s` | Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart. |
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |
