@@ -3,13 +3,8 @@ package dataruntime
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
-	"math"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,7 +28,7 @@ func (d runtimeSearchDocument) PreparationSizeHint() (int, int) { return len(d),
 func durableRuntimeTestConfig(path string) ReceiptDatabaseConfig {
 	now := time.Now()
 	return ReceiptDatabaseConfig{
-		Path: path,
+		Path: path, BaselineCodec: &receiptBaselineTestCodec{},
 		Receipt: mutationreceipt.Config{
 			Epoch:          mutationreceipt.Epoch{0x42},
 			Retention:      time.Hour,
@@ -106,8 +101,8 @@ func TestServingRuntimeCertificationRejectsRetainedOversizedFrame(t *testing.T) 
 }
 
 func TestServingRuntimeRestartRejectsLoweredSendCap(t *testing.T) {
-	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "graph.db"))
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +124,7 @@ func TestServingRuntimeRestartRejectsLoweredSendCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed retained frame: %v", err)
 	}
-	entries := runtime.log.RetainedEntries()
+	entries := mustRetainedPayloads(t, runtime.log)
 	if len(entries) != 1 {
 		t.Fatalf("retained entries = %d, want 1", len(entries))
 	}
@@ -143,7 +138,7 @@ func TestServingRuntimeRestartRejectsLoweredSendCap(t *testing.T) {
 
 	config.Now = time.Now()
 	config.Receipt.ClockHighWater = config.Now
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +179,7 @@ func TestServingRuntimeRestartRejectsLoweredSendCap(t *testing.T) {
 func TestServingRuntimeRestartRejectsRetainedSparseReceiptRelay(t *testing.T) {
 	originConfig := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "origin.wal"))
 	originConfig.NodeID = hlc.NodeID{0x41}
-	originRuntime, err := CreateDurableReceiptWALServingRuntime(originConfig)
+	originRuntime, err := OpenReceiptDatabase(t.Context(), originConfig, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,16 +201,16 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptRelay(t *testing.T) {
 	if _, err := originPrimary.receiptEdgeDeleteCoordinator.Commit(context.Background(), call); err != nil {
 		t.Fatal(err)
 	}
-	originEnvelope := originRuntime.log.RetainedEntries()[0].Op.(*edgeDeleteReceiptEnvelope)
+	originEnvelope := mustRetainedPayloads(t, originRuntime.log)[0].Op.(*edgeDeleteReceiptEnvelope)
 	wire, err := originEnvelope.ReplicationMutation()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	config := originConfig
-	config.Path = filepath.Join(t.TempDir(), "follower.wal")
+	config.Path = filepath.Join(t.TempDir(), "follower.db")
 	config.NodeID = hlc.NodeID{0x42}
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,10 +232,10 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptRelay(t *testing.T) {
 	if err := primary.ApplyMutation(context.Background(), wire); err != nil {
 		t.Fatalf("apply sparse receiver-local receipt: %v", err)
 	}
-	if entries := runtime.log.RetainedEntries(); len(entries) != 2 {
+	if entries := mustRetainedPayloads(t, runtime.log); len(entries) != 2 {
 		t.Fatalf("follower retained %d entries, want barrier and receipt", len(entries))
 	}
-	envelope := runtime.log.RetainedEntries()[1].Op.(*edgeDeleteReceiptEnvelope)
+	envelope := mustRetainedPayloads(t, runtime.log)[1].Op.(*edgeDeleteReceiptEnvelope)
 	if len(envelope.Accepted) != 1 || envelope.Accepted[0].Index != 1 {
 		t.Fatalf("receiver-local receipt accepted indexes = %+v, want only index 1", envelope.Accepted)
 	}
@@ -258,7 +253,7 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptRelay(t *testing.T) {
 
 	config.Now = time.Now()
 	config.Receipt.ClockHighWater = config.Now
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,14 +302,14 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptAddRelay(t *testing.T)
 	if _, err := sourceAdd.Commit(t.Context(), call); err != nil {
 		t.Fatal(err)
 	}
-	wire, err := source.log.RetainedEntries()[0].Op.(*graphAddEffectEnvelope).ReplicationMutation()
+	wire, err := mustRetainedPayloads(t, source.log)[0].Op.(*graphAddEffectEnvelope).ReplicationMutation()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "add-follower.wal"))
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "add-follower.db"))
 	config.NodeID = hlc.NodeID{0x52}
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +334,7 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptAddRelay(t *testing.T)
 	if err := primary.ApplyMutation(t.Context(), wire); err != nil {
 		t.Fatalf("apply sparse receiver-local Add receipt: %v", err)
 	}
-	entries := runtime.log.RetainedEntries()
+	entries := mustRetainedPayloads(t, runtime.log)
 	if len(entries) != 2 {
 		t.Fatalf("follower retained %d entries, want barrier and Add receipt", len(entries))
 	}
@@ -366,7 +361,7 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptAddRelay(t *testing.T)
 
 	config.Now = time.Now()
 	config.Receipt.ClockHighWater = config.Now
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +469,7 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 }
 
 func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
-	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "graph.db"))
 	install := func(t *testing.T, runtime *ServingRuntime) (*Executor, *Replication) {
 		t.Helper()
 		primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
@@ -488,7 +483,7 @@ func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
 		return primary, replication
 	}
 
-	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	fresh, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +513,7 @@ func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
 		t.Fatalf("closed capability = %+v, %v", capability, err)
 	}
 
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,13 +528,13 @@ func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
 }
 
 func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "receipts.wal")
+	path := filepath.Join(t.TempDir(), "graph.db")
 	config := durableRuntimeTestConfig(path)
 	// Model a wall clock that was previously ahead. Certification must seed
 	// the serving HLC above this persisted Store clock even after rollback.
 	config.Receipt.ClockHighWater = time.Now().Add(2 * time.Hour)
 
-	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	fresh, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,18 +649,17 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	entry := recoveryGraphPutEffectEntry(t, 0x53, wall, &pb.MutationOp{
 		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
 			Vertex: &pb.Vertex{
-				Key:        "wal-restored",
+				Key:        "restored-item",
 				Expiration: timestamppb.New(time.Now().Add(time.Hour)),
 			},
 		}},
 	})
-	// Append without publishing to the live graph. This is the crash point
-	// after WAL fsync but before in-memory publication.
-	if appended, err := fresh.log.Append(entry.Op, entry.HLC); err != nil || appended.Seq != 1 {
-		t.Fatalf("durable append = (%+v, %v), want seq 1", appended, err)
+	frame, err := subscribeMutationFrame(entry.Op)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := fresh.graph.GetVertex("wal-restored"); ok {
-		t.Fatal("test setup unexpectedly published the WAL-only vertex")
+	if err = primary.ApplyMutation(t.Context(), frame.GetMutation()); err != nil {
+		t.Fatal(err)
 	}
 	if err := fresh.Close(); err != nil {
 		t.Fatal(err)
@@ -673,7 +667,7 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 
 	config.Now = time.Now()
 	config.Receipt.ClockHighWater = config.Now
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,14 +684,14 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		len(restartedRetired.Epochs) != 0 {
 		t.Fatalf("marker-free restart retired catalog = %+v, %v", restartedRetired, err)
 	}
-	if vertex, ok := restarted.graph.GetVertex("wal-restored"); !ok || vertex.GetKey() != "wal-restored" {
-		t.Fatalf("WAL-before-publication recovery = %v, %v", vertex, ok)
+	if vertex, ok := restarted.graph.GetVertex("restored-item"); !ok || vertex.GetKey() != "restored-item" {
+		t.Fatalf("durable mutation recovery = %v, %v", vertex, ok)
 	}
-	if got := restarted.graph.CountByPrefix("wal-"); got != 1 {
+	if got := restarted.graph.CountByPrefix("restored-"); got != 1 {
 		t.Fatalf("rebuilt prefix index count = %d, want 1", got)
 	}
-	if hits := restarted.graph.SearchVertices("restored", 10, ""); len(hits) != 1 || hits[0].ID != "wal-restored" {
-		t.Fatalf("rebuilt search index = %+v, want wal-restored", hits)
+	if hits := restarted.graph.SearchVertices("restored", 10, ""); len(hits) != 1 || hits[0].ID != "restored-item" {
+		t.Fatalf("rebuilt search index = %+v, want restored-item", hits)
 	}
 	if next := restarted.clock.Now(); !entry.HLC.Less(next) {
 		t.Fatalf("restarted HLC = %+v, want above WAL frontier %+v", next, entry.HLC)
@@ -709,7 +703,7 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 }
 
 func TestServingRuntimeDurablePersistsGenericRemoteClockFloor(t *testing.T) {
-	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "graph.db"))
 	config.Receipt.ClockHighWater = time.Now().Add(10 * time.Second).Truncate(time.Millisecond)
 	origin := hlc.NodeID{0x62}
 	firstStamp := hlc.Timestamp{
@@ -723,7 +717,7 @@ func TestServingRuntimeDurablePersistsGenericRemoteClockFloor(t *testing.T) {
 		}
 	}
 
-	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	fresh, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +753,7 @@ func TestServingRuntimeDurablePersistsGenericRemoteClockFloor(t *testing.T) {
 
 	config.Now = time.Now()
 	config.Receipt.ClockHighWater = config.Now
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,285 +799,6 @@ func TestServingRuntimeDurablePersistsGenericRemoteClockFloor(t *testing.T) {
 	}
 }
 
-func TestServingRuntimeDurableRejectsLeaseAndGenerationFaults(t *testing.T) {
-	t.Run("nonempty fresh target", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "receipts.wal")
-		config := durableRuntimeTestConfig(path)
-		config.ConfigureGraph = func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-			return graph.PutVertex("unexpected", &pb.Vertex{Key: "unexpected"})
-		}
-		runtime, err := CreateDurableReceiptWALServingRuntime(config)
-		if runtime != nil || err == nil {
-			if runtime != nil {
-				_ = runtime.Close()
-			}
-			t.Fatalf("nonempty fresh target = %p, %v", runtime, err)
-		}
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("nonempty target created durable bytes: %v", err)
-		}
-	})
-
-	t.Run("lease contention", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "receipts.wal")
-		config := durableRuntimeTestConfig(path)
-		runtime, err := CreateDurableReceiptWALServingRuntime(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			if err := runtime.Close(); err != nil {
-				t.Errorf("close owned runtime: %v", err)
-			}
-		}()
-		if second, err := OpenDurableReceiptWALServingRuntime(config); second != nil ||
-			!errors.Is(err, mutationlog.ErrFileWALLeaseBusy) {
-			if second != nil {
-				_ = second.Close()
-			}
-			t.Fatalf("contending runtime = %p, %v", second, err)
-		}
-	})
-
-	t.Run("missing or corrupt durable artifacts", func(t *testing.T) {
-		tests := []struct {
-			name   string
-			mutate func(*testing.T, string)
-		}{
-			{
-				name: "missing WAL",
-				mutate: func(t *testing.T, path string) {
-					if err := os.Remove(path); err != nil {
-						t.Fatal(err)
-					}
-				},
-			},
-			{
-				name: "corrupt WAL",
-				mutate: func(t *testing.T, path string) {
-					file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := file.Write([]byte("corrupt")); err != nil {
-						_ = file.Close()
-						t.Fatal(err)
-					}
-					if err := file.Close(); err != nil {
-						t.Fatal(err)
-					}
-				},
-			},
-			{
-				name: "missing tip",
-				mutate: func(t *testing.T, path string) {
-					if err := os.Remove(path + ".tip"); err != nil {
-						t.Fatal(err)
-					}
-				},
-			},
-			{
-				name: "missing clock",
-				mutate: func(t *testing.T, path string) {
-					if err := os.Remove(path + ".clock"); err != nil {
-						t.Fatal(err)
-					}
-				},
-			},
-		}
-		for _, tc := range tests {
-			t.Run(tc.name, func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "receipts.wal")
-				config := durableRuntimeTestConfig(path)
-				runtime, err := CreateDurableReceiptWALServingRuntime(config)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := runtime.Close(); err != nil {
-					t.Fatal(err)
-				}
-				tc.mutate(t, path)
-				if resumed, err := OpenDurableReceiptWALServingRuntime(config); resumed != nil || err == nil {
-					if resumed != nil {
-						_ = resumed.Close()
-					}
-					t.Fatalf("faulted artifacts resumed as %p, %v", resumed, err)
-				}
-				lease, err := mutationlog.AcquireFileWALLease(path)
-				if err != nil {
-					t.Fatalf("failed artifact validation leaked lease: %v", err)
-				}
-				if err := lease.Close(); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
-	})
-
-	t.Run("missing corrupt and mismatched generation", func(t *testing.T) {
-		tests := []struct {
-			name   string
-			mutate func(*testing.T, string)
-		}{
-			{
-				name: "missing",
-				mutate: func(t *testing.T, path string) {
-					if err := os.Remove(path + ".generation"); err != nil {
-						t.Fatal(err)
-					}
-				},
-			},
-			{
-				name: "corrupt",
-				mutate: func(t *testing.T, path string) {
-					record, err := os.ReadFile(path + ".generation")
-					if err != nil {
-						t.Fatal(err)
-					}
-					record[len(record)-1] ^= 0xff
-					if err := os.WriteFile(path+".generation", record, 0o600); err != nil {
-						t.Fatal(err)
-					}
-				},
-			},
-		}
-		for _, tc := range tests {
-			t.Run(tc.name, func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "receipts.wal")
-				config := durableRuntimeTestConfig(path)
-				runtime, err := CreateDurableReceiptWALServingRuntime(config)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := runtime.Close(); err != nil {
-					t.Fatal(err)
-				}
-				tc.mutate(t, path)
-				if resumed, err := OpenDurableReceiptWALServingRuntime(config); resumed != nil || err == nil {
-					if resumed != nil {
-						_ = resumed.Close()
-					}
-					t.Fatalf("faulted generation resumed as %p, %v", resumed, err)
-				}
-				lease, err := mutationlog.AcquireFileWALLease(path)
-				if err != nil {
-					t.Fatalf("failed restart leaked lease: %v", err)
-				}
-				if err := lease.Close(); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
-
-		path := filepath.Join(t.TempDir(), "binding.wal")
-		config := durableRuntimeTestConfig(path)
-		runtime, err := CreateDurableReceiptWALServingRuntime(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		generation := runtime.receipt.generation
-		policy := runtime.receipt.store.PolicyFingerprint()
-		canonicalPath := runtime.owner.(*receiptWALOwnedCandidate).lease.Path()
-		if err := runtime.Close(); err != nil {
-			t.Fatal(err)
-		}
-		wrongEpoch := config.Receipt.Epoch
-		wrongEpoch[0] ^= 0xff
-		if got, err := readReceiptRuntimeGeneration(canonicalPath, wrongEpoch, policy, config.NodeID); got != ([16]byte{}) ||
-			err == nil || !strings.Contains(err.Error(), "binding mismatch") {
-			t.Fatalf("wrong-epoch generation = %x, %v", got, err)
-		}
-		wrongPolicy := policy
-		wrongPolicy[0] ^= 0xff
-		if got, err := readReceiptRuntimeGeneration(canonicalPath, config.Receipt.Epoch, wrongPolicy, config.NodeID); got != ([16]byte{}) ||
-			err == nil || !strings.Contains(err.Error(), "binding mismatch") {
-			t.Fatalf("wrong-policy generation = %x, %v", got, err)
-		}
-		wrongNodeID := config.NodeID
-		wrongNodeID[0] ^= 0xff
-		if got, err := readReceiptRuntimeGeneration(canonicalPath, config.Receipt.Epoch, policy, wrongNodeID); got != ([16]byte{}) ||
-			err == nil || !strings.Contains(err.Error(), "binding mismatch") {
-			t.Fatalf("wrong-node generation = %x, %v", got, err)
-		}
-		if got, err := readReceiptRuntimeGeneration(canonicalPath, config.Receipt.Epoch, policy, config.NodeID); got != generation || err != nil {
-			t.Fatalf("valid generation = %x, %v, want %x", got, err, generation)
-		}
-	})
-
-	t.Run("epoch and policy mismatch", func(t *testing.T) {
-		tests := []struct {
-			name   string
-			mutate func(*ReceiptDatabaseConfig)
-		}{
-			{"epoch", func(config *ReceiptDatabaseConfig) { config.Receipt.Epoch[0] ^= 0xff }},
-			{"retention", func(config *ReceiptDatabaseConfig) { config.Receipt.Retention = 2 * time.Hour }},
-			{"entry cap", func(config *ReceiptDatabaseConfig) { config.Receipt.MaxEntries++ }},
-			{"byte cap", func(config *ReceiptDatabaseConfig) { config.Receipt.MaxBytes++ }},
-			{"node ID", func(config *ReceiptDatabaseConfig) { config.NodeID[0] ^= 0xff }},
-		}
-		for _, tc := range tests {
-			t.Run(tc.name, func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "receipts.wal")
-				config := durableRuntimeTestConfig(path)
-				runtime, err := CreateDurableReceiptWALServingRuntime(config)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := runtime.Close(); err != nil {
-					t.Fatal(err)
-				}
-				clockBefore, err := os.ReadFile(path + ".clock")
-				if err != nil {
-					t.Fatal(err)
-				}
-				tc.mutate(&config)
-				if resumed, err := OpenDurableReceiptWALServingRuntime(config); resumed != nil || err == nil {
-					if resumed != nil {
-						_ = resumed.Close()
-					}
-					t.Fatalf("mismatched restart = %p, %v", resumed, err)
-				}
-				clockAfter, err := os.ReadFile(path + ".clock")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(clockAfter, clockBefore) {
-					t.Fatal("mismatched restart changed the clock journal before rejecting generation")
-				}
-				lease, err := mutationlog.AcquireFileWALLease(path)
-				if err != nil {
-					t.Fatalf("mismatched restart leaked lease: %v", err)
-				}
-				if err := lease.Close(); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
-	})
-
-	t.Run("partial fresh failure closes owner", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "receipts.wal")
-		if err := os.WriteFile(path+".generation", []byte("uncertain"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		config := durableRuntimeTestConfig(path)
-		runtime, err := CreateDurableReceiptWALServingRuntime(config)
-		if runtime != nil || !errors.Is(err, os.ErrExist) {
-			t.Fatalf("partial fresh runtime = %p, %v", runtime, err)
-		}
-		lease, err := mutationlog.AcquireFileWALLease(path)
-		if err != nil {
-			t.Fatalf("partial fresh failure leaked lease: %v", err)
-		}
-		if err := lease.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if runtime, err := CreateDurableReceiptWALServingRuntime(config); runtime != nil || !errors.Is(err, os.ErrExist) {
-			t.Fatalf("partial bytes silently reinitialized: %p, %v", runtime, err)
-		}
-	})
-}
-
 func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
@@ -1103,7 +818,7 @@ func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	}
 	config := durableRuntimeTestConfig(t.TempDir() + "/history.wal")
 	config.NamespaceFormat = "namespaced-v1"
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +828,7 @@ func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := OpenDurableReceiptWALServingRuntime(config)
+	resumed, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1125,374 +840,4 @@ func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
 	if !resumed.GraphCache().RetainsDanglingEdgeHistory() {
 		t.Fatal("durable restart omitted history")
 	}
-}
-
-// Historical FileWAL fixtures for the in-package transaction fault tests.
-// CreateDurableReceiptWALServingRuntime creates a new genesis WAL generation.
-// Existing or partially-created files are rejected by the owned candidate.
-func CreateDurableReceiptWALServingRuntime(config ReceiptDatabaseConfig) (*ServingRuntime, error) {
-	if err := validateReceiptDatabaseConfig(config); err != nil {
-		return nil, err
-	}
-	if config.startupRestore != nil {
-		if err := validateFreshReceiptStartupRestore(config, *config.startupRestore); err != nil {
-			return nil, err
-		}
-	}
-	candidate, err := createLeasedReceiptWALCandidate(
-		config.Path,
-		config.Receipt,
-		config.Log,
-		config.DefaultTTL,
-		durableRuntimeGraphPolicy(config),
-	)
-	if err != nil {
-		return nil, err
-	}
-	generation, err := createReceiptRuntimeGeneration(
-		candidate.lease.Path(),
-		config.Receipt.Epoch,
-		candidate.state.receipts.PolicyFingerprint(),
-		config.NodeID,
-		config.startupRestore != nil,
-	)
-	if err != nil {
-		return nil, errors.Join(err, candidate.Close())
-	}
-	runtime, err := certifyReceiptWALServingRuntime(candidate, config, generation, receiptBaselineReference{})
-	if err != nil {
-		return nil, err
-	}
-	if config.startupRestore != nil {
-		restore := cloneReceiptStartupRestore(*config.startupRestore)
-		runtime.receipt.startupRestore = &restore
-	}
-	return runtime, nil
-}
-
-// OpenDurableReceiptWALServingRuntime resumes one complete genesis WAL under
-// its lease. Missing, corrupt, mismatched, truncated, or unreplayable state is
-// rejected without rotating or reinitializing any durable bytes.
-func OpenDurableReceiptWALServingRuntime(config ReceiptDatabaseConfig) (*ServingRuntime, error) {
-	if err := validateReceiptDatabaseConfig(config); err != nil {
-		return nil, err
-	}
-	if config.startupRestore != nil {
-		return nil, errors.New("service: normal durable receipt WAL restart cannot carry backup restore evidence")
-	}
-	now := config.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-	var generation [16]byte
-	var requiresBaseline bool
-	preflight := func(canonicalPath string, policy [sha256.Size]byte) error {
-		var readErr error
-		var record receiptRuntimeGenerationRecord
-		record, readErr = readReceiptRuntimeGenerationRecord(
-			canonicalPath,
-			config.Receipt.Epoch,
-			policy,
-			config.NodeID,
-		)
-		generation = record.generation
-		requiresBaseline = record.requiresBaseline
-		if readErr == nil && requiresBaseline && config.BaselineCodec == nil {
-			return errors.New(
-				"service: durable receipt WAL startup restore requires the combined baseline codec",
-			)
-		}
-		if readErr != nil {
-			return readErr
-		}
-		return preflightDataNamespaceWAL(canonicalPath, config, true)
-	}
-	var candidate *receiptWALOwnedCandidate
-	var err error
-	if config.BaselineCodec == nil {
-		candidate, err = openLeasedReceiptWALCandidate(
-			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
-			durableRuntimeGraphPolicy(config), preflight,
-		)
-	} else {
-		validateBaseline := func(scan receiptBaselineWALScan) error {
-			if requiresBaseline && !scan.hasMarker {
-				return errors.New("service: durable receipt WAL requires its committed startup restore baseline")
-			}
-			if scan.hasMarker && scan.firstGeneration != generation {
-				return errors.New("service: receipt baseline generation does not descend from genesis")
-			}
-			return nil
-		}
-		candidate, err = openLeasedReceiptWALCandidateWithBaseline(
-			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
-			durableRuntimeGraphPolicy(config), config.NodeID, config.BaselineCodec, validateBaseline, preflight,
-		)
-	}
-	if err != nil {
-		return nil, err
-	}
-	activeGeneration := generation
-	var committedBaseline receiptBaselineReference
-	if candidate.baseline.hasMarker {
-		if candidate.baseline.firstGeneration != generation {
-			return nil, errors.Join(
-				errors.New("service: receipt baseline generation does not descend from genesis"),
-				candidate.Close(),
-			)
-		}
-		activeGeneration = candidate.baseline.activeGeneration
-		committedBaseline = candidate.baseline.marker.reference()
-	}
-	return certifyReceiptWALServingRuntime(candidate, config, activeGeneration, committedBaseline)
-}
-
-const (
-	receiptRuntimeGenerationMagic = "LNRGEN1\n"
-	receiptRuntimeGenerationSize  = len(receiptRuntimeGenerationMagic) + sha256.Size + 16 + 1 + sha256.Size
-)
-
-type receiptRuntimeGenerationRecord struct {
-	generation       [16]byte
-	requiresBaseline bool
-}
-
-func createReceiptRuntimeGeneration(
-	walPath string,
-	epoch mutationreceipt.Epoch,
-	policy [sha256.Size]byte,
-	nodeID hlc.NodeID,
-	requiresBaseline bool,
-) (_ [16]byte, err error) {
-	generation, err := newReceiptRuntimeGeneration()
-	if err != nil {
-		return generation, err
-	}
-	path := walPath + ".generation"
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return generation, fmt.Errorf("service: create receipt runtime generation: %w", err)
-	}
-	defer func() {
-		err = errors.Join(err, file.Close())
-	}()
-	record := encodeReceiptRuntimeGeneration(
-		walPath,
-		epoch,
-		policy,
-		nodeID,
-		generation,
-		requiresBaseline,
-	)
-	if _, err := file.Write(record); err != nil {
-		return generation, fmt.Errorf("service: write receipt runtime generation: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return generation, fmt.Errorf("service: sync receipt runtime generation: %w", err)
-	}
-	if err := syncReceiptDirectory(filepath.Dir(path)); err != nil {
-		return generation, fmt.Errorf("service: sync receipt runtime generation directory: %w", err)
-	}
-	return generation, nil
-}
-
-func readReceiptRuntimeGeneration(
-	walPath string,
-	epoch mutationreceipt.Epoch,
-	policy [sha256.Size]byte,
-	nodeID hlc.NodeID,
-) ([16]byte, error) {
-	record, err := readReceiptRuntimeGenerationRecord(walPath, epoch, policy, nodeID)
-	return record.generation, err
-}
-
-func readReceiptRuntimeGenerationRecord(
-	walPath string,
-	epoch mutationreceipt.Epoch,
-	policy [sha256.Size]byte,
-	nodeID hlc.NodeID,
-) (recordValue receiptRuntimeGenerationRecord, err error) {
-	path := walPath + ".generation"
-	info, err := os.Lstat(path)
-	if err != nil {
-		return recordValue, fmt.Errorf("service: stat receipt runtime generation: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Size() != int64(receiptRuntimeGenerationSize) {
-		return recordValue, errors.New("service: receipt runtime generation is corrupt")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return recordValue, fmt.Errorf("service: open receipt runtime generation: %w", err)
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			recordValue = receiptRuntimeGenerationRecord{}
-			err = errors.Join(err, fmt.Errorf("service: close receipt runtime generation: %w", closeErr))
-		}
-	}()
-	opened, err := file.Stat()
-	if err != nil {
-		return recordValue, fmt.Errorf("service: stat receipt runtime generation: %w", err)
-	}
-	if !os.SameFile(info, opened) {
-		return recordValue, errors.New("service: receipt runtime generation changed during open")
-	}
-	record := make([]byte, receiptRuntimeGenerationSize)
-	if _, err := io.ReadFull(file, record); err != nil {
-		return recordValue, fmt.Errorf("service: read receipt runtime generation: %w", err)
-	}
-	final, err := os.Lstat(path)
-	if err != nil {
-		return recordValue, fmt.Errorf("service: restat receipt runtime generation: %w", err)
-	}
-	if !os.SameFile(info, final) {
-		return recordValue, errors.New("service: receipt runtime generation changed during read")
-	}
-	wantBinding := receiptRuntimeGenerationBinding(walPath, epoch, policy, nodeID)
-	if !bytes.Equal(record[:len(receiptRuntimeGenerationMagic)], []byte(receiptRuntimeGenerationMagic)) ||
-		!bytes.Equal(record[len(receiptRuntimeGenerationMagic):len(receiptRuntimeGenerationMagic)+sha256.Size], wantBinding[:]) {
-		return recordValue, errors.New("service: receipt runtime generation binding mismatch")
-	}
-	checksumStart := receiptRuntimeGenerationSize - sha256.Size
-	checksum := sha256.Sum256(record[:checksumStart])
-	if !bytes.Equal(record[checksumStart:], checksum[:]) {
-		return recordValue, errors.New("service: receipt runtime generation checksum mismatch")
-	}
-	generationStart := len(receiptRuntimeGenerationMagic) + sha256.Size
-	copy(recordValue.generation[:], record[generationStart:generationStart+16])
-	if recordValue.generation == ([16]byte{}) {
-		return receiptRuntimeGenerationRecord{}, errors.New("service: receipt runtime generation is zero")
-	}
-	switch record[generationStart+16] {
-	case 0:
-	case 1:
-		recordValue.requiresBaseline = true
-	default:
-		return receiptRuntimeGenerationRecord{}, errors.New(
-			"service: receipt runtime generation baseline requirement is invalid",
-		)
-	}
-	return recordValue, nil
-}
-
-func encodeReceiptRuntimeGeneration(
-	walPath string,
-	epoch mutationreceipt.Epoch,
-	policy [sha256.Size]byte,
-	nodeID hlc.NodeID,
-	generation [16]byte,
-	requiresBaseline bool,
-) []byte {
-	record := make([]byte, 0, receiptRuntimeGenerationSize)
-	record = append(record, receiptRuntimeGenerationMagic...)
-	binding := receiptRuntimeGenerationBinding(walPath, epoch, policy, nodeID)
-	record = append(record, binding[:]...)
-	record = append(record, generation[:]...)
-	if requiresBaseline {
-		record = append(record, 1)
-	} else {
-		record = append(record, 0)
-	}
-	checksum := sha256.Sum256(record)
-	return append(record, checksum[:]...)
-}
-
-func receiptRuntimeGenerationBinding(
-	walPath string,
-	epoch mutationreceipt.Epoch,
-	policy [sha256.Size]byte,
-	nodeID hlc.NodeID,
-) [sha256.Size]byte {
-	h := sha256.New()
-	_, _ = h.Write([]byte("lantern-receipt-runtime-generation-v1\x00"))
-	var length [8]byte
-	binary.BigEndian.PutUint64(length[:], uint64(len(walPath)))
-	_, _ = h.Write(length[:])
-	_, _ = h.Write([]byte(walPath))
-	_, _ = h.Write(epoch[:])
-	_, _ = h.Write(policy[:])
-	_, _ = h.Write(nodeID[:])
-	var binding [sha256.Size]byte
-	copy(binding[:], h.Sum(nil))
-	return binding
-}
-
-func certifyReceiptWALServingRuntime(
-	candidate *receiptWALOwnedCandidate,
-	config ReceiptDatabaseConfig,
-	generation [16]byte,
-	committedBaseline receiptBaselineReference,
-) (_ *ServingRuntime, err error) {
-	if candidate == nil || candidate.state == nil || candidate.state.graph == nil ||
-		candidate.state.receipts == nil || candidate.state.origins == nil ||
-		candidate.state.log == nil || candidate.walProvenance == nil ||
-		candidate.lease == nil || generation == ([16]byte{}) {
-		if candidate != nil {
-			_ = candidate.Close()
-		}
-		return nil, errors.New("service: durable receipt WAL candidate is incomplete")
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, candidate.Close())
-		}
-	}()
-	policy := clearReceiptClockHighWater(config.Receipt)
-	policyStore, err := mutationreceipt.New(policy)
-	if err != nil {
-		return nil, fmt.Errorf("service: certify receipt Snapshot policy: %w", err)
-	}
-	if candidate.state.receipts.Epoch() != policy.Epoch ||
-		candidate.state.receipts.PolicyFingerprint() != policyStore.PolicyFingerprint() {
-		return nil, errors.New("service: durable receipt WAL policy does not match recovered Store")
-	}
-	receiptState, err := candidate.state.receipts.Snapshot()
-	if err != nil {
-		return nil, fmt.Errorf("service: certify recovered receipt Store: %w", err)
-	}
-	retired, err := newRetiredReceiptCatalogSlot(
-		policy,
-		receiptState.ClockHighWaterMillis,
-		candidate.state.retired,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("service: certify recovered retired receipt catalog: %w", err)
-	}
-
-	clock := hlc.New(config.NodeID, hlc.Options{})
-	floor := candidate.state.hlcFrontier
-	highWaterMillis := candidate.state.receipts.Stats().HighWaterMillis
-	if highWaterMillis < 0 || highWaterMillis > math.MaxInt64/int64(time.Millisecond) {
-		return nil, errors.New("service: durable receipt WAL clock high-water is outside HLC range")
-	}
-	if highWaterMillis > 0 {
-		highWaterFloor := hlc.Timestamp{WallNs: highWaterMillis * int64(time.Millisecond)}
-		if floor.Less(highWaterFloor) {
-			floor = highWaterFloor
-		}
-	}
-	if err := clock.RestoreFloor(floor); err != nil {
-		return nil, fmt.Errorf("service: restore durable receipt WAL HLC frontier: %w", err)
-	}
-	return &ServingRuntime{
-		namespaceFormat: config.NamespaceFormat,
-		graph:           candidate.state.graph,
-		log:             candidate.state.log,
-		clock:           clock,
-		origins:         candidate.state.origins,
-		receipt: &receiptServingRuntime{
-			store:              candidate.state.receipts,
-			retired:            retired,
-			policy:             policy,
-			epoch:              candidate.state.receipts.Epoch(),
-			generation:         generation,
-			committedBaseline:  committedBaseline,
-			operationAdmission: newReceiptOperationAdmission(),
-			baselineCodec:      config.BaselineCodec,
-			defaultTTL:         config.DefaultTTL,
-			configureGraph:     durableRuntimeGraphPolicy(config),
-			owner:              candidate,
-		},
-		owner: candidate,
-	}, nil
 }

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 )
 
@@ -30,7 +29,7 @@ func receiptBaselineMarkerFixture() receiptBaselineMarker {
 	}
 }
 
-func TestReceiptBaselineMarkerCanonicalRoundTripAndFrameBinding(t *testing.T) {
+func TestReceiptBaselineMarkerCanonicalRoundTripAndRelaySeparation(t *testing.T) {
 	want := receiptBaselineMarkerFixture()
 	raw, err := marshalReceiptBaselineMarker(want)
 	if err != nil {
@@ -50,20 +49,8 @@ func TestReceiptBaselineMarkerCanonicalRoundTripAndFrameBinding(t *testing.T) {
 	if err != nil || !bytes.Equal(raw, again) {
 		t.Fatalf("marker is not canonical: %v", err)
 	}
-	union, err := encodeReceiptWALUnion(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := decodeReceiptWALUnion(union)
-	if err != nil || decoded.(receiptBaselineMarker) != want {
-		t.Fatalf("union roundtrip = %+v, %v", decoded, err)
-	}
-	if err := validateReceiptWALUnionEntry(mutationlog.Entry{Seq: 8, HLC: want.RestoreFloor, Op: got}); err != nil {
-		t.Fatal(err)
-	}
-	badFrame := mutationlog.Entry{Seq: 8, HLC: want.SnapshotHLC, Op: got}
-	if err := validateReceiptWALUnionEntry(badFrame); !errors.Is(err, errReceiptBaselineMarker) {
-		t.Fatalf("mismatched frame HLC = %v", err)
+	if _, err := encodeReceiptWALUnion(want); err == nil {
+		t.Fatal("generation metadata was accepted as a relay payload")
 	}
 	retired := bytes.Clone(raw)
 	binary.BigEndian.PutUint32(retired[:4], 2)

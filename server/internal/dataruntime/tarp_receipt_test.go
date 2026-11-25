@@ -142,7 +142,7 @@ func TestTarpReceiptSnapshotRestoresBoundMarkerAndRetiredCatalog(t *testing.T) {
 	}
 	defer view.Close()
 	w, err := rt.TarpBackupWitness(view.Snapshot, view.Generation)
-	if err != nil || w.ReceiptRetiredCount != 2 || w.ReceiptCount != 1 || w.ReceiptBaselineDigest != ref.Digest {
+	if err != nil || w.ReceiptRetiredCount != 2 || w.ReceiptCount != 1 || w.ReceiptBaselineDigest != ref {
 		t.Fatalf("restored witness %+v, %v", w, err)
 	}
 }

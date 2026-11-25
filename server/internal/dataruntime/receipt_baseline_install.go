@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"reflect"
 	"time"
@@ -20,10 +19,10 @@ import (
 type receiptBaselineInstallFaultPoint string
 
 const (
-	receiptBaselineAfterSidecarBeforeFinalCut receiptBaselineInstallFaultPoint = "after-sidecar-before-final-cut"
-	receiptBaselineAfterMarkerBeforePublish   receiptBaselineInstallFaultPoint = "after-marker-before-publish"
-	receiptBaselineAfterPublish               receiptBaselineInstallFaultPoint = "after-baseline-publish"
-	receiptBaselineInstallMaxAttempts                                          = 3
+	receiptBaselineAfterStageBeforeFinalCut receiptBaselineInstallFaultPoint = "after-stage-before-final-cut"
+	receiptBaselineAfterMarkerBeforePublish receiptBaselineInstallFaultPoint = "after-marker-before-publish"
+	receiptBaselineAfterPublish             receiptBaselineInstallFaultPoint = "after-baseline-publish"
+	receiptBaselineInstallMaxAttempts                                        = 3
 )
 
 var errReceiptBaselineInstallDrift = errors.New("service: receipt baseline install state drifted")
@@ -43,7 +42,7 @@ func (s *Executor) installReceiptBaseline(
 		return err
 	}
 	if s == nil || s.runtime == nil || s.runtime.receipt == nil ||
-		(s.runtime.receipt.owner == nil && s.runtime.tarp == nil) || s.runtime.receipt.baselineCodec == nil ||
+		s.runtime.tarp == nil || s.runtime.receipt.baselineCodec == nil ||
 		s.runtime.receipt.operationAdmission == nil ||
 		s.cache != s.runtime.graph || s.log != s.runtime.log ||
 		s.clock != s.runtime.clock || s.origins != s.runtime.origins ||
@@ -99,10 +98,6 @@ func (s *Executor) installReceiptBaseline(
 		return fmt.Errorf("%w: active and retired baseline high-water differs", errReceiptBaselineMarker)
 	}
 	graphFrames := cloneReceiptBaselineGraphFrames(capture.Graph)
-	var sidecars receiptBaselineSidecarStore
-	if s.runtime.tarp == nil {
-		sidecars = receiptBaselineSidecarStore{walPath: receiptRuntime.owner.lease.Path(), fault: receiptRuntime.sidecarFault}
-	}
 	for attempt := 0; attempt < receiptBaselineInstallMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -121,69 +116,22 @@ func (s *Executor) installReceiptBaseline(
 		if err != nil {
 			return fmt.Errorf("service: encode combined receipt baseline: %w", err)
 		}
-		if s.runtime.tarp != nil {
-			target, ledger, e := s.stageTarpReceiptBaseline(ctx, prepared)
-			if e != nil {
-				return e
-			}
-			digest := sha256.Sum256(raw)
-			var attempted bool
-			e = func() error {
-				defer target.Abort()
-				return s.commitReceiptBaselineAttempt(ctx, receiptRuntime, policyStore.PolicyFingerprint(), observed, prepared.candidate, raw, digest, &attempted, &tarpReceiptInstall{target: target, ledger: ledger, originCount: len(prepared.candidate.Origins)})
-			}()
-			if e == nil {
-				receiptRuntime.committedBaseline = receiptBaselineReference{Format: ReceiptBaselineFormatCombined, Digest: digest}
-				return nil
-			}
-			if errors.Is(e, errReceiptBaselineInstallDrift) {
-				continue
-			}
-			return e
-		}
-		committed := receiptRuntime.committedBaseline
-		digest, _, err := sidecars.persist(ReceiptBaselineFormatCombined, raw)
+		target, ledger, err := s.stageTarpReceiptBaseline(ctx, prepared)
 		if err != nil {
-			return errors.Join(err, sidecars.cleanup(committed))
-		}
-		if fault := receiptRuntime.injectInstallFault(receiptBaselineAfterSidecarBeforeFinalCut); fault != nil {
-			return errors.Join(fault, sidecars.cleanup(committed))
-		}
-		markerMayBeDurable := false
-		err = s.commitReceiptBaselineAttempt(
-			ctx,
-			receiptRuntime,
-			policyStore.PolicyFingerprint(),
-			observed,
-			prepared.candidate,
-			raw,
-			digest,
-			&markerMayBeDurable, nil,
-		)
-		if err == nil {
-			reference := receiptBaselineReference{
-				Format: ReceiptBaselineFormatCombined,
-				Digest: digest,
-			}
-			receiptRuntime.committedBaseline = reference
-			if cleanupErr := sidecars.cleanup(reference); cleanupErr != nil {
-				logger := s.logger
-				if logger == nil {
-					logger = slog.Default()
-				}
-				logger.Error(
-					"receipt baseline committed but stale sidecar cleanup failed",
-					"baseline_digest", fmt.Sprintf("%x", digest),
-					"error", cleanupErr,
-				)
-			}
-			return nil
-		}
-		if markerMayBeDurable && !receiptBaselineMarkerDefinitelyAbsent(err) {
 			return err
 		}
-		if cleanupErr := sidecars.cleanup(committed); cleanupErr != nil {
-			return errors.Join(err, cleanupErr)
+		digest := sha256.Sum256(raw)
+		err = func() error {
+			defer target.Abort()
+			if err := receiptRuntime.injectInstallFault(receiptBaselineAfterStageBeforeFinalCut); err != nil {
+				return err
+			}
+			stage := &tarpReceiptInstall{target: target, ledger: ledger, originCount: len(prepared.candidate.Origins)}
+			return s.commitReceiptBaselineAttempt(ctx, receiptRuntime, policyStore.PolicyFingerprint(), observed, prepared.candidate, raw, digest, stage)
+		}()
+		if err == nil {
+			receiptRuntime.committedBaseline = digest
+			return nil
 		}
 		if !errors.Is(err, errReceiptBaselineInstallDrift) {
 			return err
@@ -209,7 +157,7 @@ func (s *Executor) pristineReceiptBaselineReceiver(
 	receiptRuntime *receiptServingRuntime,
 	observed receiptBaselineInstallObservation,
 ) bool {
-	if receiptRuntime.committedBaseline != (receiptBaselineReference{}) ||
+	if receiptRuntime.committedBaseline != ([32]byte{}) ||
 		len(observed.active.Receipts) != 0 ||
 		len(observed.retired.Epochs) != 0 ||
 		len(observed.origins) != 0 {
@@ -219,7 +167,7 @@ func (s *Executor) pristineReceiptBaselineReceiver(
 		return false
 	}
 	length, _, evicted := s.runtime.MutationLogStats()
-	return length == 0 && evicted == 0 && emptyReceiptWALRecoveryGraph(s.runtime.graph)
+	return length == 0 && evicted == 0 && emptyReceiptGraph(s.runtime.graph)
 }
 
 func (s *Executor) prepareReceiptBaselineAttempt(
@@ -266,7 +214,7 @@ func (s *Executor) prepareReceiptBaselineAttempt(
 			return receiptBaselineInstallObservation{}, preparedReceiptBaselineAttempt{},
 				fmt.Errorf("%w: active receipt high-water would move backward", mutationreceipt.ErrRetiredCatalogClockRollback)
 		}
-		// Only the receiver-local receipt clock moves; the sender's graph and origin cutoffs still bound WAL replay.
+		// Rebase the receiver's receipt clock while preserving the sender's graph and origin cutoffs.
 		effectiveHighWater = observed.active.ClockHighWaterMillis
 	}
 	activeConfig := receiptRuntime.policy
@@ -361,28 +309,8 @@ func (s *Executor) commitReceiptBaselineAttempt(
 	candidate *ReceiptBaselineCandidate,
 	raw []byte,
 	digest [32]byte,
-	markerMayBeDurable *bool,
 	tarpInstall *tarpReceiptInstall,
 ) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if !*markerMayBeDurable && tarpInstall == nil {
-				if cleanupErr := (receiptBaselineSidecarStore{
-					walPath: receiptRuntime.owner.lease.Path(),
-				}).cleanup(receiptRuntime.committedBaseline); cleanupErr != nil {
-					logger := s.logger
-					if logger == nil {
-						logger = slog.Default()
-					}
-					logger.Error(
-						"receipt baseline panic cleanup failed",
-						"error", cleanupErr,
-					)
-				}
-			}
-			panic(recovered)
-		}
-	}()
 	return s.withExclusiveCommittedView(func() (installErr error) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -491,7 +419,6 @@ func (s *Executor) commitReceiptBaselineAttempt(
 				panic(recovered)
 			}
 		}()
-		*markerMayBeDurable = true
 		release := func(mutationlog.Entry) {
 			if fault := receiptRuntime.injectInstallFault(receiptBaselineAfterMarkerBeforePublish); fault != nil {
 				panic(fault)
@@ -502,17 +429,11 @@ func (s *Executor) commitReceiptBaselineAttempt(
 			graphStage.Commit()
 			retiredStage.Commit()
 			storeStage.Commit()
-			if tarpInstall != nil {
-				s.runtime.graph.StorageGenerationPublished()
-			}
+			s.runtime.graph.StorageGenerationPublished()
 		}
-		if tarpInstall != nil {
-			err = s.publishTarpReceiptBaseline(ctx, tarpInstall, marker, release)
-		} else {
-			_, err = s.log.CommitBoundaryWithPostRingPublication(marker, marker.RestoreFloor, release)
-		}
+		err = s.publishTarpReceiptBaseline(ctx, tarpInstall, marker, release)
 		if err != nil {
-			if receiptBaselineWALFailureRequiresFailStop(err) {
+			if receiptBaselineCommitRequiresReopen(err) {
 				s.markReceiptCommitFaultLocked()
 			}
 			return fmt.Errorf("service: commit receipt baseline marker: %w", err)
@@ -524,32 +445,16 @@ func (s *Executor) commitReceiptBaselineAttempt(
 	})
 }
 
-func receiptBaselineMarkerDefinitelyAbsent(err error) bool {
+func receiptBaselineCommitRequiresReopen(err error) bool {
 	var aborted *mutationlog.DefiniteWALAbort
 	if errors.As(err, &aborted) {
-		return true
-	}
-	// Indeterminate joins take precedence in case a WAL returns one of the
-	// readiness sentinels as its underlying I/O error.
-	if errors.Is(err, mutationlog.ErrWALIndeterminate) ||
-		errors.Is(err, mutationlog.ErrPublicationInterrupted) {
 		return false
 	}
-	// CommitBoundaryWithPostRingPublication returns these only from its
-	// readiness and sequence checks, before WAL.Write.
-	return errors.Is(err, mutationlog.ErrClosed) ||
-		errors.Is(err, mutationlog.ErrSeqExhausted) ||
-		errors.Is(err, mutationlog.ErrLegacyWALUncertain)
-}
-
-func receiptBaselineWALFailureRequiresFailStop(err error) bool {
-	if !receiptBaselineMarkerDefinitelyAbsent(err) {
+	if errors.Is(err, mutationlog.ErrWALIndeterminate) || errors.Is(err, mutationlog.ErrPublicationInterrupted) {
 		return true
 	}
-	var aborted *mutationlog.DefiniteWALAbort
-	// Legacy uncertainty predates this candidate, so discard the candidate
-	// while keeping the serving runtime fail-stopped.
-	return !errors.As(err, &aborted) && errors.Is(err, mutationlog.ErrLegacyWALUncertain)
+	// Closed and exhausted logs refuse the new generation before writing.
+	return !errors.Is(err, mutationlog.ErrClosed) && !errors.Is(err, mutationlog.ErrSeqExhausted)
 }
 
 func nextReceiptRuntimeGeneration(previous [16]byte) ([16]byte, error) {

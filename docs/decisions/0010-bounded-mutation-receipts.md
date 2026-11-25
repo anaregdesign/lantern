@@ -1,8 +1,16 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted Edge contribution Delete; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
+- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted Edge contribution Delete. Continuity relies on atomic Tarp publication, the guarded receipt-tail wire, active and retired receipt recovery, RECEIPT Snapshot, verified physical backup, and pre-listener certification. Put Edge and prefix Delete remain disabled.
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491, #1528
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491, #1528, #2246
+
+Under #2246, the per-node Tarp database owns the graph, relay, origin
+positions, and receipt state. The receipt manifest persists the clock
+high-water even when a lookup or aborted operation advances it without a
+graph mutation. Physical restore verifies the database against its backup
+witness. References below to data FileWAL replay, sidecars, and manifest-last
+file sets describe the earlier implementation. Native security consensus and
+materialization continue to use separate FileWAL journals.
 
 ## Context and boundary
 
@@ -543,8 +551,8 @@ kind pins the reachable `Mutation` schema, rejects an unreviewed field change
 under union v4, and old union versions fail closed rather than gaining aliases,
 dual readers, or compatibility fallback. Any future compatibility policy is a
 v1 activation decision, not a prerequisite for changing this private format.
-The private [read-only mixed-WAL audit](../../server/internal/dataruntime/receipt_wal_recovery.go)
-checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
+The former private read-only mixed-WAL audit
+checked a complete, genesis-based FileWAL for frame/payload HLC agreement,
 contiguous per-origin sequences, one configured epoch/policy, and a bounded
 set of known unexpired receipt results. It validates those rows through the
 Store snapshot rules and releases expired entry/byte capacity as each frame's
@@ -563,8 +571,8 @@ must fail closed after epoch rollover.
 `mutationlog.AcquireFileWALLease` provides an advisory process lock for the
 WAL path across separate audit, replay, and append calls. A production owner
 must hold it throughout those calls and shutdown, use its canonical path,
-and never unlink the stable `.lease` sidecar. The private production
-`ServingRuntime` now holds this lease together with the graph, Store, origin
+and never unlink the stable `.lease` sidecar. The former data FileWAL
+`ServingRuntime` held this lease together with the graph, Store, origin
 tracker, appendable Log, clock/tip journals, and endpoint generation for the
 entire process lifetime. The lease alone still does not certify application
 recovery.
@@ -856,13 +864,9 @@ The internal Store can now take an optional synchronous
 Begin/Lookup changes in-memory state, and a sink error permanently faults
 those decisions and Snapshot export. Snapshot import validates first, then
 binds and advances the sink. This establishes the in-process persistence seam
-only. A raw `ClockJournal` can now create or resume a synced, checksummed
-sidecar bound to the canonical WAL path, epoch, and policy fingerprint, while
-rejecting torn or incompatible metadata. Its caller must hold the same WAL
-lease through journal Close. Neither path binding nor the journal alone
-attests the WAL bytes, their archive/suffix cut, or a complete serving state;
-the private production runtime owns it only together with the verified WAL,
-tip, Store, graph, origin cut, HLC, lease, and endpoint generation.
+only. The former data FileWAL runtime backed this sink with a checksummed
+clock sidecar bound to its path, epoch, and policy. The Tarp receipt runtime
+now binds the same sink to its receipt manifest on startup.
 A separate opt-in FileWAL tip journal durably records each frame's
 local sequence and rolling hash after the WAL fsync but before the Log reports
 success. On restart it verifies the complete attested prefix and rejects a

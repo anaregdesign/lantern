@@ -140,6 +140,18 @@ func validReceiptOperationIDForTest(t *testing.T, seed byte) []byte {
 	return id.Bytes()
 }
 
+func mustRetainedPayloads(t testing.TB, log *mutationlog.Log) []mutationlog.Entry {
+	t.Helper()
+	var result []mutationlog.Entry
+	if err := log.VisitRetained(func(entry mutationlog.Entry) error {
+		result = append(result, entry)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
 func mustMutationLogEntry(t *testing.T, log *mutationlog.Log, seq uint64) mutationlog.Entry {
 	t.Helper()
 	entries, cancel, err := log.Subscribe(seq)
@@ -360,7 +372,7 @@ func graphMutationCommittedFixture(t *testing.T) (*ServingRuntime, *Executor, *g
 	if _, err := svc.MutateGraph(t.Context(), graphMutationTestRequest(t, runtime, 0x54)); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := runtime.log.RetainedEntries()[0].Op.(*graphMutationEnvelope)
+	e, ok := mustRetainedPayloads(t, runtime.log)[0].Op.(*graphMutationEnvelope)
 	if !ok {
 		t.Fatal("wrong envelope")
 	}
@@ -434,4 +446,18 @@ func graphMutationEnvelopeFixture(t *testing.T) *graphMutationEnvelope {
 		Op:  &pb.MutationOp{Op: &pb.MutationOp_GraphMutation{GraphMutation: call}},
 	}
 	return e
+}
+
+func recoveryGraphPutEffectEntry(t *testing.T, origin byte, wall int64, op *pb.MutationOp) mutationlog.Entry {
+	t.Helper()
+	m := receiptWALUnionGraphFixture(op)
+	m.Origin = bytes.Repeat([]byte{origin}, 16)
+	m.Hlc.NodeId = append([]byte(nil), m.Origin...)
+	m.Hlc.WallNs = wall
+	m.Seq = 1
+	effect, err := newGraphPutEffectEnvelope(m, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(m), Op: effect}
 }

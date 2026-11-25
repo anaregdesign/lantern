@@ -41,7 +41,7 @@ func TestGraphMutationScopedChangesCurrentImageAndHiddenProgress(t *testing.T) {
 	if _, err := svc.MutateGraph(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
-	m := runtime.log.RetainedEntries()[0].Op.(*graphMutationEnvelope).Mutation
+	m := mustRetainedPayloads(t, runtime.log)[0].Op.(*graphMutationEnvelope).Mutation
 	if err := runtime.graph.PutVertex("data:orders:a", &pb.Vertex{Key: "data:orders:a", Value: &pb.Vertex_String_{String_: "current"}}); err != nil {
 		t.Fatal(err)
 	}

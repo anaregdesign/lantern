@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
 	"time"
 
@@ -21,10 +20,8 @@ const (
 
 var errReceiptBaselineMarker = errors.New("service: invalid receipt baseline marker")
 
-// receiptBaselineMarker is a private WAL record that makes one immutable
-// sidecar the serving baseline. The FileWAL frame sequence is the compaction
-// boundary and its HLC must equal RestoreFloor. It is deliberately not a
-// protobuf or public replication operation.
+// receiptBaselineMarker binds the published receipt generation to its
+// validated Snapshot, origin cutoff, and HLC floor inside the node database.
 type receiptBaselineMarker struct {
 	Format                 ReceiptBaselineFormat
 	Digest                 [sha256.Size]byte
@@ -37,11 +34,6 @@ type receiptBaselineMarker struct {
 	ReceiptHighWaterMillis int64
 	SnapshotHLC            hlc.Timestamp
 	RestoreFloor           hlc.Timestamp
-}
-
-type receiptBaselineReference struct {
-	Format ReceiptBaselineFormat
-	Digest [sha256.Size]byte
 }
 
 func receiptBaselineMaxBytes(format ReceiptBaselineFormat) uint64 {
@@ -140,10 +132,6 @@ func unmarshalReceiptBaselineMarker(raw []byte) (receiptBaselineMarker, error) {
 	return marker, nil
 }
 
-func (m receiptBaselineMarker) reference() receiptBaselineReference {
-	return receiptBaselineReference{Format: m.Format, Digest: m.Digest}
-}
-
 func putReceiptBaselineTimestamp(dst []byte, off int, ts hlc.Timestamp) int {
 	binary.BigEndian.PutUint64(dst[off:], uint64(ts.WallNs))
 	off += 8
@@ -161,11 +149,4 @@ func readReceiptBaselineTimestamp(raw []byte, off int) (hlc.Timestamp, int) {
 	off += 12
 	copy(ts.NodeID[:], raw[off:off+len(ts.NodeID)])
 	return ts, off + len(ts.NodeID)
-}
-
-func validateReceiptBaselineEntry(entrySequence uint64, frameHLC hlc.Timestamp, marker receiptBaselineMarker) error {
-	if entrySequence == 0 || !frameHLC.Equal(marker.RestoreFloor) {
-		return fmt.Errorf("%w: marker frame does not match its restore floor", errReceiptBaselineMarker)
-	}
-	return validateReceiptBaselineMarker(marker)
 }

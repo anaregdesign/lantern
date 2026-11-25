@@ -2,7 +2,6 @@ package dataruntime
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -45,15 +44,11 @@ type receiptServingRuntime struct {
 	policy                  mutationreceipt.Config
 	epoch                   mutationreceipt.Epoch
 	generation              [16]byte
-	committedBaseline       receiptBaselineReference
+	committedBaseline       [32]byte
 	operationAdmission      *receiptOperationAdmission
 	baselineCodec           ReceiptBaselineArchiveCodec
 	defaultTTL              time.Duration
 	configureGraph          func(*graphcache.GraphCache[string, *pb.Vertex]) error
-	owner                   *receiptWALOwnedCandidate
-	startupRestore          *receiptStartupRestore
-	recaptureOnRestore      bool
-	sidecarFault            func(receiptBaselineSidecarFaultPoint) error
 	installFault            func(receiptBaselineInstallFaultPoint) error
 	backupCertified         bool
 	publicEnabled           atomic.Bool
@@ -73,22 +68,6 @@ type ReceiptDatabaseConfig struct {
 	NodeID          hlc.NodeID
 	Now             time.Time
 	BaselineCodec   ReceiptBaselineArchiveCodec
-	startupRestore  *receiptStartupRestore
-}
-
-// receiptStartupRestore is immutable backup-set evidence prepared for one
-// durable startup. Fresh mode installs Capture directly after creating a new
-// epoch. Restart fallback uses Capture as the proven WAL boundary, replays the
-// current suffix, then captures that complete recovered runtime before
-// publishing a new canonical baseline.
-type receiptStartupRestore struct {
-	Capture        ReceiptWholeStateCapture
-	WALCut         mutationlog.FileWALTipWitness
-	NodeID         hlc.NodeID
-	Generation     [16]byte
-	ArchivedEpoch  mutationreceipt.Epoch
-	ArchivedPolicy [sha256.Size]byte
-	BackupSetID    uint64
 }
 
 // newGraphRuntime assembles the shared graph, clock and origin tracker.
@@ -449,7 +428,7 @@ func (r *ServingRuntime) ActivatePublicReceipts(
 	replication *Replication,
 ) error {
 	if r == nil || r.closed.Load() || r.receipt == nil ||
-		r.receipt.startupRestore != nil || !r.receipt.backupCertified {
+		!r.receipt.backupCertified {
 		return errors.New("service: public receipts require a live recovery- and backup-certified durable runtime")
 	}
 	if !r.replicationFrameCertified ||

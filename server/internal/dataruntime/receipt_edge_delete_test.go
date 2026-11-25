@@ -1767,8 +1767,15 @@ func TestEdgeDeleteReceiptFollowerHeldWALHidesWholeCut(t *testing.T) {
 }
 
 func TestEdgeDeleteReceiptFollowerConvergesAndRecoversAboveCausalLimit(t *testing.T) {
-	f := newReceiptEdgeDeleteFixtureWithLimits(t, nil, hlc.NodeID{0x3d}, 32, 1<<20)
-	f.cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+	dir := t.TempDir()
+	config := durableRuntimeTestConfig("")
+	configure := config.ConfigureGraph
+	config.ConfigureGraph = func(g *graphcache.GraphCache[string, *pb.Vertex]) error {
+		g.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+		return configure(g)
+	}
+	runtime, service := openTarpReceiptTestRuntime(t, dir, config, true)
+	f := receiptEdgeDeleteFixture{service: service, cache: runtime.graph, log: runtime.log, epoch: config.Receipt.Epoch, coordinator: service.receiptEdgeDeleteCoordinator}
 	now := time.Now()
 	origin := hlc.NodeID{0x5d}
 	firstStamp := now.Add(-time.Millisecond)
@@ -1798,36 +1805,33 @@ func TestEdgeDeleteReceiptFollowerConvergesAndRecoversAboveCausalLimit(t *testin
 	if stats := f.cache.CausalMetadataStats(); stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
 		t.Fatalf("receipt follower did not converge above local causal limit: %+v", stats)
 	}
-	if _, ok := f.log.RetainedEntries()[1].Op.(*edgeDeleteReceiptEnvelope); !ok {
-		t.Fatalf("over-limit receipt relay = %T", f.log.RetainedEntries()[1].Op)
-	}
-
-	entries := f.log.RetainedEntries()
-	path := writeReceiptWALAuditEntries(t, entries...)
-	config := mutationreceipt.Config{
-		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
-	}
-	candidate, err := resumeReceiptWALCandidateWithEffectPolicy(
-		path,
-		config,
-		time.Now(),
-		mutationlog.Options{Capacity: 32, SubscriberBuffer: 32},
-		time.Hour,
-		true,
-		func(cache *graphcache.GraphCache[string, *pb.Vertex]) error {
-			cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
-			return nil
-		},
-	)
+	reader, err := runtime.tarp.Pin()
 	if err != nil {
-		t.Fatalf("restart above causal limit: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = candidate.log.Close() })
+	entry, err := reader.Read(f.log.RetainedEntries()[1])
+	if err := errors.Join(err, reader.Close()); err != nil {
+		t.Fatal(err)
+	}
+	effect, ok := entry.Op.(*edgeDeleteReceiptEnvelope)
+	if !ok {
+		t.Fatalf("over-limit receipt relay = %T", entry.Op)
+	}
+	expected := effect.Receipts
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	candidate, _ := openTarpReceiptTestRuntime(t, dir, config, false)
 	if stats := candidate.graph.CausalMetadataStats(); stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
 		t.Fatalf("restarted causal metadata = %+v", stats)
 	}
 	if got := candidate.origins.LocalSeq(origin); got != 2 {
 		t.Fatalf("restarted origin seq = %d, want 2", got)
 	}
-	requireReceiptWALEvidence(t, candidate, f.log.RetainedEntries()[1].Op.(*edgeDeleteReceiptEnvelope).Receipts)
+	for _, receipt := range expected {
+		_, match, err := candidate.receipt.store.ObserveMany([]mutationreceipt.ID{receipt.ID}, now)
+		if err != nil || len(match) != 1 || match[0].Status != mutationreceipt.Confirmed || !sameReceiptWALDecision(match[0].Receipt, receipt) {
+			t.Fatalf("durable receipt = %+v, err %v", match, err)
+		}
+	}
 }

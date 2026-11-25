@@ -59,7 +59,7 @@ func TestGraphMutationDefiniteAbortThenOtherOrigin(t *testing.T) {
 		if attempts != 3 || receiver.log.Len() != 2 || receiver.service.LocalSeq(originTime.NodeID) != 1 || receiver.service.LocalSeq(newer.NodeID) != 1 || receiver.coordinator.store.Stats().Entries != 3 {
 			t.Fatal("retry did not publish one complete decision")
 		}
-		local := receiver.log.RetainedEntries()[1].Op.(*graphMutationEnvelope)
+		local := mustRetainedPayloads(t, receiver.log)[1].Op.(*graphMutationEnvelope)
 		if local == provisional || !sameGraphMutationIntent(origin, local) || !reflect.DeepEqual(origin.Receipts, local.Receipts) || len(local.Mutation.GetOp().GetGraphMutation().GetProjection()) != 2 {
 			t.Fatal("retry changed origin proof or retained obsolete receiver projection")
 		}
@@ -103,7 +103,7 @@ func TestGraphMutationUnattemptedProjectionDoesNotDropOriginEffects(t *testing.T
 		if err := receiver.service.commitReplicatedGraphMutation(t.Context(), ts.NodeID, 1, ts, pending); err != nil {
 			t.Fatal(err)
 		}
-		local := receiver.log.RetainedEntries()[0].Op.(*graphMutationEnvelope)
+		local := mustRetainedPayloads(t, receiver.log)[0].Op.(*graphMutationEnvelope)
 		if !proto.Equal(local.Mutation, origin.Mutation) || receiver.log.Len() != 1 || receiver.service.LocalSeq(ts.NodeID) != 1 || receiver.coordinator.store.Stats().Entries != 3 {
 			t.Fatal("unattempted projection constrained the committed decision")
 		}
@@ -225,7 +225,7 @@ func TestGraphMutationRelayPreservesOriginAndRecoveryProjection(t *testing.T) {
 		if w, live := receiver.cache.GetWeight("a", "b"); !live || w != 2 {
 			t.Fatal(w, live)
 		}
-		local := receiver.log.RetainedEntries()[0].Op.(*graphMutationEnvelope)
+		local := mustRetainedPayloads(t, receiver.log)[0].Op.(*graphMutationEnvelope)
 		if !sameGraphMutationIntent(origin, local) || len(local.Mutation.GetOp().GetGraphMutation().GetProjection()) != 2 {
 			t.Fatal("origin evidence/projection drift")
 		}

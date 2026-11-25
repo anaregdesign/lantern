@@ -229,7 +229,7 @@ func (r *tarpRelay) advanceReceiptClock(ms int64) error {
 // an explicitly configured receipt policy. Fresh and restart are distinct:
 // neither may silently replace or initialize the other's state.
 func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, stage TarpGraphStager, config ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
-	if db == nil || db.NodeID() != config.NodeID || config.NodeID == (hlc.NodeID{}) || config.BaselineCodec == nil || config.ConfigureGraph == nil || config.startupRestore != nil {
+	if db == nil || db.NodeID() != config.NodeID || config.NodeID == (hlc.NodeID{}) || config.BaselineCodec == nil || config.ConfigureGraph == nil {
 		return nil, errors.New("invalid Tarp receipt runtime configuration")
 	}
 	policy := clearReceiptClockHighWater(config.Receipt)
@@ -284,7 +284,7 @@ func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Verte
 	}
 	rt.receipt = &receiptServingRuntime{store: store, retired: slot, policy: policy, epoch: policy.Epoch, generation: cut.endpoint, operationAdmission: newReceiptOperationAdmission(), baselineCodec: config.BaselineCodec, defaultTTL: config.DefaultTTL, configureGraph: config.ConfigureGraph}
 	if cut.baselineDigest != ([32]byte{}) {
-		rt.receipt.committedBaseline = receiptBaselineReference{Format: ReceiptBaselineFormatCombined, Digest: cut.baselineDigest}
+		rt.receipt.committedBaseline = cut.baselineDigest
 	}
 	if err = rt.tarp.trimRelay(); err != nil {
 		return nil, errors.Join(err, rt.log.Close())

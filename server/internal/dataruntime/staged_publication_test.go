@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"testing/synctest"
@@ -586,23 +585,11 @@ func TestStagedPublicationUncertaintyThenPanicFaultsOnce(t *testing.T) {
 	assertReceiptCommitFaultDiagnostics(t, &diagnostics, true, "private WAL evidence", interruption)
 }
 
-// A durable frame may exist even though the service rolled its staged graph
-// back. Replay recovers the original graph/result cut into a detached candidate;
-// it does not clear the fault on the old serving generation.
-func TestStagedPublicationLostAcknowledgementRecoversOriginalResult(t *testing.T) {
+func TestStagedPublicationLostAcknowledgementFencesAndPreservesOriginalEvidence(t *testing.T) {
 	for _, sentinel := range []error{mutationlog.ErrClosed, mutationlog.ErrSeqExhausted} {
 		t.Run(sentinel.Error(), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "lost-ack.wal")
-			fileWAL, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = fileWAL.Close() })
 			var durable mutationlog.Entry
 			wal := receiptEdgeDeleteWALFunc(func(entry mutationlog.Entry) error {
-				if err := fileWAL.Write(entry); err != nil {
-					return err
-				}
 				durable = entry
 				return sentinel // durable success, lost acknowledgement
 			})
@@ -618,29 +605,12 @@ func TestStagedPublicationLostAcknowledgementRecoversOriginalResult(t *testing.T
 			if _, _, err := f.coordinator.Lookup(call.Items[0].ID, time.Now()); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("old generation exposed absence: %v", err)
 			}
-			if err := f.log.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := fileWAL.Close(); err != nil {
-				t.Fatal(err)
-			}
-			candidate, err := resumeReceiptWALCandidate(path, mutationreceipt.Config{
-				Epoch: f.epoch, Retention: time.Hour, MaxEntries: 8, MaxBytes: 1 << 20,
-			}, time.Now(), mutationlog.Options{Capacity: 16}, time.Hour)
-			if err != nil {
-				t.Fatal(err)
-			}
 			metadata, ok := receiptWALEnvelopeInfo(durable.Op)
 			if !ok || len(metadata.receipts) != 1 {
 				t.Fatal("lost durable receipt evidence")
 			}
-			requireReceiptWALEvidence(t, candidate, metadata.receipts)
-			vertex, live := candidate.graph.GetVertex("durable")
-			if !live || vertex.GetString_() != "original" || candidate.origins.LocalSeq(metadata.origin) != 1 || !candidate.hlcFrontier.Equal(durable.HLC) {
-				t.Fatal("recovery did not restore the durable graph/origin/HLC cut")
-			}
-			if seq, ok := candidate.log.LastSeq(); !ok || seq != 1 || !f.service.receiptCommitFaulted {
-				t.Fatal("recovery lost Log progress or cleared the old generation fault")
+			if metadata.receipts[0].ID != call.Items[0].ID || metadata.originSeq != 1 {
+				t.Fatal("lost acknowledgement did not preserve the original decision")
 			}
 		})
 	}

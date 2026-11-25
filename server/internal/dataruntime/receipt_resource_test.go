@@ -31,9 +31,9 @@ func TestReceiptResourceIdentityIsLogicalAndProven(t *testing.T) {
 }
 
 func TestReceiptResourceSurvivesAllWALFamiliesAndRestart(t *testing.T) {
-	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "graph.db"))
 	config.NamespaceFormat = keyspace.Version
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestReceiptResourceSurvivesAllWALFamiliesAndRestart(t *testing.T) {
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := OpenDurableReceiptWALServingRuntime(config)
+	resumed, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}

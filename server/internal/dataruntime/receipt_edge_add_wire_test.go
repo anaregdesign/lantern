@@ -345,14 +345,6 @@ func TestReceiptEdgeAddEndpointEffectWireWALAndIntent(t *testing.T) {
 	if !ok || !recovered.NoEndpointCreation || !recovered.Mutation.GetOp().GetNoEndpointCreation() || !sameReceiptEdgeAddIntent(envelope, recovered) {
 		t.Fatal("WAL hydration lost immutable endpoint effect")
 	}
-	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
-	graph.RetainDanglingEdgeHistory()
-	if err := replayReceiptEnvelopeGraph(graph, recovered); err != nil {
-		t.Fatal(err)
-	}
-	if len(graph.SnapshotVertices()) != 0 || len(graph.SnapshotReplication().Graph.Edges) != 1 {
-		t.Fatal("receipt WAL replay fabricated endpoints or lost source")
-	}
 	recovered.NoEndpointCreation = false
 	if _, err := validateReceiptEdgeAddEnvelope(recovered); err == nil {
 		t.Fatal("effect drift accepted")

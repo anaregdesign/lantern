@@ -174,10 +174,8 @@ func (c *leasedFileWALTipLogCloser) Close() error {
 // On any error, neither a Log nor a closer is returned, and restore's partial
 // application state must be discarded by the caller.
 //
-// This helper certifies only the Log/WAL sequence and replay window. The
-// caller owns graph, receipt, origin epoch, policy, and highwater recovery and
-// must not serve application traffic until those states match the WAL. The
-// production server does not wire FileWAL recovery yet.
+// This helper certifies the Log sequence and replay window. The owner
+// validates the resulting application state before admitting new work.
 func ResumeLogFromFileWAL(
 	path string,
 	opts Options,

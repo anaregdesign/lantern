@@ -2,66 +2,40 @@ package dataruntime
 
 import (
 	"errors"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/anaregdesign/lantern/core/graphcache"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestEdgeCreateWALRestoresOriginalDecisionsWithoutResurrection(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "create.wal")
-	wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := newReceiptEdgeDeleteFixture(t, wal)
-	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
+func TestEdgeCreateTarpRestoresOriginalDecisionsWithoutResurrection(t *testing.T) {
+	dir := t.TempDir()
+	cfg := durableRuntimeTestConfig("")
+	runtime, service := openTarpReceiptTestRuntime(t, dir, cfg, true)
 	future := timestamppb.New(time.Now().Add(time.Hour))
-	if _, err := f.service.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "a", Expiration: future}, {Key: "b", Expiration: future}, {Key: "c", Expiration: future}}}); err != nil {
+	if _, err := service.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "a", Expiration: future}, {Key: "b", Expiration: future}, {Key: "c", Expiration: future}}}); err != nil {
 		t.Fatal(err)
 	}
 	req := &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 2}, {Tail: "a", Head: "b", Weight: 9}, {Tail: "a", Head: "missing", Weight: 2}, {Tail: "a", Head: "c", Weight: 3}}, ReceiptContext: publicReceiptContext(t, runtime, 0x51, 4)}
-	first, err := f.service.CreateEdges(t.Context(), req)
+	first, err := service.CreateEdges(t.Context(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.DeleteEdge(t.Context(), &pb.DeleteEdgeRequest{Tail: "a", Head: "b"}); err != nil {
+	if _, err := service.DeleteEdge(t.Context(), &pb.DeleteEdgeRequest{Tail: "a", Head: "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "missing", Expiration: future}}); err != nil {
+	if _, err := service.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "missing", Expiration: future}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.log.Close(); err != nil {
+	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := wal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	lease, err := mutationlog.AcquireFileWALLease(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func(closeOwned func() error) {
-		if err := closeOwned(); err != nil {
-			t.Errorf("close owned lease.Close: %v", err)
-		}
-	}(lease.Close)
-	config := runtime.receipt.policy
-	candidate, err := stageEffectCompleteReceiptWALCandidate(lease, config, time.Now(), mutationlog.Options{Capacity: 32}, time.Hour, func(g *graphcache.GraphCache[string, *pb.Vertex]) error {
-		g.EnablePrefixIndex(func(key string) string { return key })
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	candidate, _ := openTarpReceiptTestRuntime(t, dir, cfg, false)
 	if _, live := candidate.graph.GetWeight("a", "b"); live {
 		t.Fatal("restore resurrected later-deleted Create")
 	}
@@ -78,7 +52,7 @@ func TestEdgeCreateWALRestoresOriginalDecisionsWithoutResurrection(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	_, observations, err := candidate.receipts.ObserveMany(ids, time.Now())
+	_, observations, err := candidate.receipt.store.ObserveMany(ids, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

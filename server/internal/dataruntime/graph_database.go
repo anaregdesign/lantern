@@ -44,9 +44,6 @@ func OpenReceiptDatabase(ctx context.Context, cfg ReceiptDatabaseConfig, fresh b
 	if err := validateReceiptDatabaseConfig(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.startupRestore != nil {
-		return nil, errors.New("restore the physical database before opening it")
-	}
 	open := graphstore.OpenExisting
 	if fresh {
 		open = graphstore.Open

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
@@ -1742,15 +1741,9 @@ func TestLocalGraphWritesPublishEffectCompleteEnvelopes(t *testing.T) {
 }
 
 func TestProductionGraphPublicationStrictRestartWithoutTombstones(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "publication.wal")
-	wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32, WAL: wal})
-	local := bytes16("local-restart")
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-	svc := NewExecutor(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	dir := t.TempDir()
+	rt, svc := openTarpTestRuntime(t, dir, 32)
+	local := rt.clock.NodeID()
 	ctx := context.Background()
 	future := timestamppb.New(time.Now().Add(time.Hour))
 
@@ -1788,48 +1781,10 @@ func TestProductionGraphPublicationStrictRestartWithoutTombstones(t *testing.T) 
 			t.Fatalf("remote mutation %d: %v", seq, err)
 		}
 	}
-	if err := log.Close(); err != nil {
+	if err := rt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := wal.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	var rows int
-	if err := mutationlog.ReplayFileWAL(path, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
-		rows++
-		switch entry.Op.(type) {
-		case *graphPutEffectEnvelope, *graphAddEffectEnvelope, *graphDeleteEffectEnvelope:
-			return nil
-		default:
-			return errors.New("production graph publication wrote a raw WAL row")
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if rows != 6 {
-		t.Fatalf("WAL rows = %d, want 6", rows)
-	}
-
-	lease, err := mutationlog.AcquireFileWALLease(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func(closeOwned func() error) {
-		if err := closeOwned(); err != nil {
-			t.Errorf("close receipt WAL path lease: %v", err)
-		}
-	}(lease.Close)
-	config := mutationreceipt.Config{
-		Epoch: mutationreceipt.Epoch{1}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
-	}
-	candidate, err := stageEffectCompleteReceiptWALCandidate(
-		lease, config, time.Now(), mutationlog.Options{Capacity: 32}, time.Hour,
-		func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil },
-	)
-	if err != nil {
-		t.Fatalf("strict restart: %v", err)
-	}
+	candidate, _ := openTarpTestRuntime(t, dir, 32)
 	if last, ok := candidate.log.LastSeq(); !ok || last != 6 {
 		t.Fatalf("strict restart log frontier = %d, %v", last, ok)
 	}
