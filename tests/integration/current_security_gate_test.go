@@ -177,6 +177,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	publicRoots := x509.NewCertPool()
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
+	dataOwners := make(map[int]*service.ServingRuntime)
 	var servingLoggers []*slog.Logger
 	var slowOwners []*provider.SlowRPCInterceptor
 	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
@@ -243,6 +244,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		dataOwners[id] = data
 		t.Cleanup(func() { _ = data.Close() })
 		securityConfig := loadAuthorityWireSecurityConfig(t, dir, id, f.provider.URL, roots, func(input map[string]any) {
 			if native != nil {
@@ -525,6 +527,13 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		servers = append(servers, s)
 		controls = append(controls, graphv1connect.NewLanternSecurityServiceClient(transport, s.URL))
 	}
+	restartNode := func(id int) {
+		t.Helper()
+		if err := dataOwners[id].Close(); err != nil {
+			t.Fatal("close graph before same-volume restart", id, err)
+		}
+		startNode(id, "resume", restartPublic(id))
+	}
 	// Every fixed member is initialized explicitly with the same required
 	// operator input before any owner serves. All normal starts hard-resume.
 	for id := 1; id <= 3; id++ {
@@ -628,7 +637,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	}
 	if renewal {
 		runCurrentMembershipGate(t, f, dir, servers, runtimes, workerStops, func(id int) (*httptest.Server, *provider.SecurityRuntime, func()) {
-			startNode(id, "resume", restartPublic(id))
+			restartNode(id)
 			last := len(runtimes) - 1
 			return servers[last], runtimes[last], workerStops[last]
 		})
@@ -1551,7 +1560,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("conflicting startup rate environment was not loaded", err)
 			}
 		}
-		startNode(2, "resume", restartPublic(2))
+		restartNode(2)
 		last := len(runtimes) - 1
 		runtimes[1], stops[1], servers[1], controls[1] = runtimes[last], stops[last], servers[last], controls[last]
 		servingLoggers[1] = servingLoggers[last]

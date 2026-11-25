@@ -207,6 +207,7 @@ const (
 	SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX            SnapshotReceiptKind = 4
 	SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE              SnapshotReceiptKind = 5
 	SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION SnapshotReceiptKind = 6
+	SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_CREATE_EDGE              SnapshotReceiptKind = 7
 )
 
 // Enum value maps for SnapshotReceiptKind.
@@ -219,6 +220,7 @@ var (
 		4: "SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX",
 		5: "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE",
 		6: "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION",
+		7: "SNAPSHOT_RECEIPT_KIND_CREATE_EDGE",
 	}
 	SnapshotReceiptKind_value = map[string]int32{
 		"SNAPSHOT_RECEIPT_KIND_UNSPECIFIED":              0,
@@ -228,6 +230,7 @@ var (
 		"SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX":            4,
 		"SNAPSHOT_RECEIPT_KIND_DELETE_EDGE":              5,
 		"SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION": 6,
+		"SNAPSHOT_RECEIPT_KIND_CREATE_EDGE":              7,
 	}
 )
 
@@ -4643,7 +4646,7 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x0eSnapshotFormat\x12\x1f\n" +
 	"\x1bSNAPSHOT_FORMAT_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dSNAPSHOT_FORMAT_GRAPH_ONLY_V1\x10\x01\x12\x1b\n" +
-	"\x17SNAPSHOT_FORMAT_RECEIPT\x10\x03*\xae\x02\n" +
+	"\x17SNAPSHOT_FORMAT_RECEIPT\x10\x03*\xd5\x02\n" +
 	"\x13SnapshotReceiptKind\x12%\n" +
 	"!SNAPSHOT_RECEIPT_KIND_UNSPECIFIED\x10\x00\x12$\n" +
 	" SNAPSHOT_RECEIPT_KIND_PUT_VERTEX\x10\x01\x12\"\n" +
@@ -4651,7 +4654,8 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x1eSNAPSHOT_RECEIPT_KIND_ADD_EDGE\x10\x03\x12'\n" +
 	"#SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX\x10\x04\x12%\n" +
 	"!SNAPSHOT_RECEIPT_KIND_DELETE_EDGE\x10\x05\x122\n" +
-	".SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION\x10\x062\xf1\x01\n" +
+	".SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION\x10\x06\x12%\n" +
+	"!SNAPSHOT_RECEIPT_KIND_CREATE_EDGE\x10\a2\xf1\x01\n" +
 	"\x19LanternReplicationService\x12F\n" +
 	"\tSubscribe\x12\x1a.graph.v1.SubscribeRequest\x1a\x1b.graph.v1.SubscribeResponse0\x01\x12C\n" +
 	"\bSnapshot\x12\x19.graph.v1.SnapshotRequest\x1a\x1a.graph.v1.SnapshotResponse0\x01\x12G\n" +

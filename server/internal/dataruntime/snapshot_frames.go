@@ -971,6 +971,8 @@ func receiptSnapshotKind(kind mutationreceipt.Kind) (pb.SnapshotReceiptKind, err
 		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE, nil
 	case mutationreceipt.DeleteEdgeContribution:
 		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION, nil
+	case mutationreceipt.CreateEdge:
+		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_CREATE_EDGE, nil
 	default:
 		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_UNSPECIFIED,
 			fmt.Errorf("receipt Snapshot has unknown receipt kind %d", kind)
@@ -991,6 +993,8 @@ func receiptKindFromSnapshot(kind pb.SnapshotReceiptKind) (mutationreceipt.Kind,
 		return mutationreceipt.DeleteEdge, nil
 	case pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION:
 		return mutationreceipt.DeleteEdgeContribution, nil
+	case pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_CREATE_EDGE:
+		return mutationreceipt.CreateEdge, nil
 	default:
 		return 0, fmt.Errorf("receipt Snapshot has unknown receipt kind %d", kind)
 	}

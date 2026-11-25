@@ -146,6 +146,9 @@ class SnapshotReceiptKind extends $pb.ProtobufEnum {
           _omitEnumNames
               ? ''
               : 'SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION');
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_CREATE_EDGE =
+      SnapshotReceiptKind._(
+          7, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_CREATE_EDGE');
 
   static const $core.List<SnapshotReceiptKind> values = <SnapshotReceiptKind>[
     SNAPSHOT_RECEIPT_KIND_UNSPECIFIED,
@@ -155,10 +158,11 @@ class SnapshotReceiptKind extends $pb.ProtobufEnum {
     SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX,
     SNAPSHOT_RECEIPT_KIND_DELETE_EDGE,
     SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION,
+    SNAPSHOT_RECEIPT_KIND_CREATE_EDGE,
   ];
 
   static final $core.List<SnapshotReceiptKind?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 6);
+      $pb.ProtobufEnum.$_initByValueList(values, 7);
   static SnapshotReceiptKind? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

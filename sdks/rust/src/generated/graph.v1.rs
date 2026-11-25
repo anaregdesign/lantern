@@ -8336,6 +8336,7 @@ pub enum SnapshotReceiptKind {
     DeleteVertex = 4,
     DeleteEdge = 5,
     DeleteEdgeContribution = 6,
+    CreateEdge = 7,
 }
 impl SnapshotReceiptKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -8353,6 +8354,7 @@ impl SnapshotReceiptKind {
             Self::DeleteEdgeContribution => {
                 "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION"
             }
+            Self::CreateEdge => "SNAPSHOT_RECEIPT_KIND_CREATE_EDGE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -8367,6 +8369,7 @@ impl SnapshotReceiptKind {
             "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION" => {
                 Some(Self::DeleteEdgeContribution)
             }
+            "SNAPSHOT_RECEIPT_KIND_CREATE_EDGE" => Some(Self::CreateEdge),
             _ => None,
         }
     }
