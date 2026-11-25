@@ -31,7 +31,7 @@ const (
 
 // ReceiptWALConfig is the durable-runtime contract.
 //
-//   - LANTERN_RECEIPT_WAL_MODE        graph-only (default), fresh, or restart
+//   - LANTERN_RECEIPT_MODE            graph-only (default), fresh, or restart
 //   - LANTERN_RECEIPT_EPOCH           nonzero 32-hex-character deployment epoch
 //   - LANTERN_RECEIPT_RETENTION       immutable one-hour to 30-day Go duration
 //   - LANTERN_RECEIPT_MAX_ENTRIES     positive retained-receipt entry cap
@@ -51,7 +51,7 @@ type ReceiptWALConfig struct {
 }
 
 func loadReceiptWALConfig(reader *envconfig.Reader) ReceiptWALConfig {
-	mode := ReceiptWALMode(strings.TrimSpace(reader.String("LANTERN_RECEIPT_WAL_MODE", string(ReceiptWALModeGraphOnly))))
+	mode := ReceiptWALMode(strings.TrimSpace(reader.String("LANTERN_RECEIPT_MODE", string(ReceiptWALModeGraphOnly))))
 	epochText := strings.TrimSpace(reader.String("LANTERN_RECEIPT_EPOCH", ""))
 	retention := reader.Duration("LANTERN_RECEIPT_RETENTION", 0)
 	maxEntries := reader.Int("LANTERN_RECEIPT_MAX_ENTRIES", 0)
@@ -84,27 +84,27 @@ func validateReceiptWALConfig(
 	case ReceiptWALModeGraphOnly:
 		if config.Epoch != (mutationreceipt.Epoch{}) ||
 			config.Retention != 0 || config.MaxEntries != 0 || config.MaxBytes != 0 {
-			return errors.New("LANTERN_RECEIPT_WAL_MODE=graph-only cannot be combined with durable receipt WAL settings")
+			return errors.New("LANTERN_RECEIPT_MODE=graph-only cannot be combined with durable receipt WAL settings")
 		}
 		return nil
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 	default:
-		return fmt.Errorf("LANTERN_RECEIPT_WAL_MODE must be exactly graph-only, fresh, or restart")
+		return fmt.Errorf("LANTERN_RECEIPT_MODE must be exactly graph-only, fresh, or restart")
 	}
 	if config.Epoch == (mutationreceipt.Epoch{}) {
-		return errors.New("LANTERN_RECEIPT_EPOCH must be a nonzero 32-hex-character value in durable receipt WAL mode")
+		return errors.New("LANTERN_RECEIPT_EPOCH must be a nonzero 32-hex-character value in receipt mode")
 	}
 	if !replication.nodeIDExplicit || replication.NodeID == (hlc.NodeID{}) {
-		return errors.New("LANTERN_NODE_ID must be explicitly set to a nonzero 32-hex-character value in durable receipt WAL mode")
+		return errors.New("LANTERN_NODE_ID must be explicitly set to a nonzero 32-hex-character value in receipt mode")
 	}
 	if config.MaxBytes <= 0 {
-		return errors.New("LANTERN_RECEIPT_MAX_BYTES must be positive in durable receipt WAL mode")
+		return errors.New("LANTERN_RECEIPT_MAX_BYTES must be positive in receipt mode")
 	}
 	if _, err := mutationreceipt.New(config.receiptConfig(time.Time{})); err != nil {
 		return fmt.Errorf("durable receipt WAL policy: %w", err)
 	}
 	if backups.RestoreRequired && !backups.RestoreOnStart {
-		return errors.New("LANTERN_BACKUP_RESTORE_REQUIRED requires LANTERN_BACKUP_RESTORE_ON_START in durable receipt WAL mode")
+		return errors.New("LANTERN_BACKUP_RESTORE_REQUIRED requires LANTERN_BACKUP_RESTORE_ON_START in receipt mode")
 	}
 	return nil
 }

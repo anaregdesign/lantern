@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	"io"
 	"log/slog"
 	"os"
@@ -185,13 +187,8 @@ func drainBackup(t *testing.T, ctx context.Context, raw graphv1connect.LanternSe
 	return vertices, edges
 }
 
-// TestBackupper_ServerInternal_RoundTrip_E2E drives the server-internal
-// snapshot engine (#770) end-to-end against real services + caches: seed a
-// graph, dump it to a temp dir via the Backupper's BackupNow (same path the
-// periodic loop uses), then RestoreOnStartup it into a FRESH service and
-// confirm every vertex value + edge weight survived. Proves the
-// server-internal proto dump interchanges with the BackupSnapshot surface
-// and that restore replays faithfully through PutVertices / PutEdges.
+// The private physical backup restores exact graph data and rebuilds the
+// enabled query index while respecting TTLs expired during downtime.
 func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -203,7 +200,13 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	// Source service, seeded via the SDK.
 	searchLimits := productionSearchLimits(true, true)
 	srcCache := newProductionSearchCache(time.Minute, true, true, searchLimits.AnalysisLimits)
-	srcSvc := service.NewLanternService(srcCache).WithSearchLimits(searchLimits)
+	node := hlc.NodeID{1}
+	srcRuntime, err := service.OpenGraphDatabase(ctx, filepath.Join(t.TempDir(), "db"), node, srcCache, mutationlog.Options{Capacity: 16}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srcRuntime.Close() })
+	srcSvc := srcRuntime.NewExecutor(nil).WithSearchLimits(searchLimits)
 	srcSrv := newConnectTestServer(t, srcSvc, nil, val.ConnectInterceptor())
 	srcSDK := newConnectClientFor(t, srcSrv.url)
 	srcRaw := graphv1connect.NewLanternServiceClient(h2cClient(), srcSrv.url)
@@ -224,27 +227,25 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	}
 
 	// Server-internal dump (same path as the periodic loop).
-	if _, err := backup.New(srcSvc, cfg, nil, nil).BackupNow(ctx); err != nil {
+	if _, err := backup.NewGraphStore(srcSvc, srcRuntime.GraphStore(), cfg, nil, nil).BackupNow(ctx); err != nil {
 		t.Fatalf("BackupNow: %v", err)
 	}
 	time.Sleep(time.Until(expiresBeforeRestore) + 25*time.Millisecond)
 
 	// Fresh service, restored on startup from the dump.
 	dstCache := newProductionSearchCache(time.Minute, true, true, searchLimits.AnalysisLimits)
-	dstSvc := service.NewLanternService(dstCache).WithSearchLimits(searchLimits)
+	restored := filepath.Join(t.TempDir(), "restored")
+	if err := backup.RestoreGraphStoreOnStartup(ctx, restored, node, cfg); err != nil {
+		t.Fatal(err)
+	}
+	dstRuntime, err := service.OpenGraphDatabase(ctx, restored, node, dstCache, mutationlog.Options{Capacity: 16}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dstRuntime.Close() })
+	dstSvc := dstRuntime.NewExecutor(nil).WithSearchLimits(searchLimits)
 	dstSrv := newConnectTestServer(t, dstSvc, nil, val.ConnectInterceptor())
 	dstRaw := graphv1connect.NewLanternServiceClient(h2cClient(), dstSrv.url)
-
-	stats, err := backup.New(dstSvc, cfg, nil, nil).RestoreOnStartup(ctx)
-	if err != nil {
-		t.Fatalf("RestoreOnStartup: %v", err)
-	}
-	if stats.Vertices != 2 || stats.Edges != 1 {
-		t.Fatalf("restore stats = %+v, want {2,1}", stats)
-	}
-	if vertices, edges := dstCache.CausalBarrierCounts(); vertices != 0 || edges != 0 {
-		t.Fatalf("zero-HLC backup restore retained causal barriers = %d/%d, want 0/0", vertices, edges)
-	}
 
 	// Re-dump the restored service and confirm fidelity.
 	vs, es := drainBackup(t, ctx, dstRaw, &pb.BackupSnapshotRequest{})
@@ -509,7 +510,7 @@ func productionOFFBackupConfig(t *testing.T, dir string) *provider.Config {
 	t.Helper()
 	t.Setenv("LANTERN_AUTH_MODE", "off")
 	t.Setenv("LANTERN_DATA_DIR", filepath.Join(t.TempDir(), "graph"))
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
+	t.Setenv("LANTERN_RECEIPT_MODE", "graph-only")
 	t.Setenv("LANTERN_BACKUP_ENABLED", "true")
 	t.Setenv("LANTERN_BACKUP_DIR", dir)
 	t.Setenv("LANTERN_BACKUP_INTERVAL", "1h")

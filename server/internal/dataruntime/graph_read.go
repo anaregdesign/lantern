@@ -3,6 +3,7 @@ package dataruntime
 import (
 	"context"
 	"errors"
+	"iter"
 	"sync"
 	"time"
 
@@ -124,45 +125,62 @@ func (r graphRead) edgePage(ctx context.Context, tailPrefix, headPrefix, afterTa
 		})
 		return more, ctxToConnect(ctx.Err())
 	}
-	scope := graphcache.AdmittedQueryView(ctx)
 	n := 0
-	for tails := range scope.Ranges(tailPrefix, true, false) {
-		for tail, err := range r.rows.EdgeTailsRange(ctx, r.cut.Snapshot, r.cut.Generation, max(afterTail, tails.Lower), tails.Upper) {
-			if err != nil {
-				return false, graphReadError(err)
-			}
-			if !scope.Vertex(tail) {
-				continue
-			}
-			var cursor *string
-			if tail == afterTail && afterHead != "" {
-				cursor = &afterHead
-			}
-			for heads := range scope.Ranges(headPrefix, true, false) {
-				for head, err := range r.rows.EdgeHeadsRange(ctx, r.cut.Snapshot, r.cut.Generation, tail, heads.Lower, heads.Upper, cursor) {
-					if err != nil {
-						return false, graphReadError(err)
+	for e, err := range r.scopedEdges(ctx, tailPrefix, headPrefix, afterTail, afterHead) {
+		if err != nil {
+			return false, graphReadError(err)
+		}
+		if n == limit {
+			return true, nil
+		}
+		emit(e.Key.Tail, e.Key.Head, e.Detail.Weight, e.Detail.Expiration)
+		n++
+	}
+	return false, ctxToConnect(ctx.Err())
+}
+
+func (r graphRead) scopedEdges(ctx context.Context, tailPrefix, headPrefix, afterTail, afterHead string) iter.Seq2[graphstore.FoldedEdge[string], error] {
+	return func(yield func(graphstore.FoldedEdge[string], error) bool) {
+		scope := graphcache.AdmittedQueryView(ctx)
+		for tails := range scope.Ranges(tailPrefix, true, false) {
+			for tail, err := range r.rows.EdgeTailsRange(ctx, r.cut.Snapshot, r.cut.Generation, max(afterTail, tails.Lower), tails.Upper) {
+				if err != nil {
+					yield(graphstore.FoldedEdge[string]{}, err)
+					return
+				}
+				if !scope.Vertex(tail) {
+					continue
+				}
+				var cursor *string
+				if tail == afterTail && afterHead != "" {
+					cursor = &afterHead
+				}
+				for heads := range scope.Ranges(headPrefix, true, false) {
+					for head, err := range r.rows.EdgeHeadsRange(ctx, r.cut.Snapshot, r.cut.Generation, tail, heads.Lower, heads.Upper, cursor) {
+						if err != nil {
+							yield(graphstore.FoldedEdge[string]{}, err)
+							return
+						}
+						if !scope.Edge(tail, head) {
+							continue
+						}
+						d, err := r.rows.EdgeAt(ctx, r.cut.Snapshot, r.cut.Generation, graphstore.EdgeKey[string]{Tail: tail, Head: head}, r.now)
+						if err != nil {
+							yield(graphstore.FoldedEdge[string]{}, err)
+							return
+						}
+						if !d.Found {
+							continue
+						}
+						if !yield(graphstore.FoldedEdge[string]{Key: graphstore.EdgeKey[string]{Tail: tail, Head: head}, Detail: d}, nil) {
+							return
+						}
 					}
-					if !scope.Edge(tail, head) {
-						continue
-					}
-					d, err := r.rows.EdgeAt(ctx, r.cut.Snapshot, r.cut.Generation, graphstore.EdgeKey[string]{Tail: tail, Head: head}, r.now)
-					if err != nil {
-						return false, graphReadError(err)
-					}
-					if !d.Found {
-						continue
-					}
-					if n == limit {
-						return true, nil
-					}
-					emit(tail, head, d.Weight, d.Expiration)
-					n++
 				}
 			}
 		}
+
 	}
-	return false, ctxToConnect(ctx.Err())
 }
 
 func (s *Executor) storageFault() error {

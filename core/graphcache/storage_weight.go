@@ -18,11 +18,16 @@ func (s *storageResidency[S, T]) bindWeight(key graphstore.EdgeKey[S], w *weight
 		return
 	}
 	w.storedCount = len(w.values)
-	w.storedZero = w.sum == 0
+	w.storedSum = w.sum
+	w.storedLatest = time.Time{}
+	w.changes = nil
 	w.storedExplicit = false
 	w.storedExpiry = time.Time{}
 	for _, v := range w.values {
 		w.storedExplicit = w.storedExplicit || !v.contribID.IsZero()
+		if v.expiration.After(w.storedLatest) {
+			w.storedLatest = v.expiration
+		}
 		if !v.expiration.IsZero() && (w.storedExpiry.IsZero() || v.expiration.Before(w.storedExpiry)) {
 			w.storedExpiry = v.expiration
 		}
@@ -87,6 +92,9 @@ func (w *weight) releaseReadLocked() {
 }
 
 func (w *weight) editLocked(now time.Time) bool {
+	if w.cold {
+		w.changes = make(sourceChanges)
+	}
 	if !w.loadLocked(now) {
 		return false
 	}

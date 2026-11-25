@@ -8,6 +8,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/graphstorage"
 	"github.com/anaregdesign/tarp"
@@ -134,5 +135,25 @@ func TestTarpReceiptSnapshotRestoresBoundMarkerAndRetiredCatalog(t *testing.T) {
 	w, err := rt.TarpBackupWitness(view.Snapshot, view.Generation)
 	if err != nil || w.ReceiptRetiredCount != 2 || w.ReceiptCount != 1 || w.ReceiptBaselineDigest != ref.Digest {
 		t.Fatalf("restored witness %+v, %v", w, err)
+	}
+}
+
+func TestTarpReceiptRestartPreservesAcceptedRemoteClockFloor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "store")
+	config := durableRuntimeTestConfig("")
+	config.BaselineCodec = &receiptBaselineTestCodec{}
+	rt, s := openTarpReceiptTestRuntime(t, dir, config, true)
+	remote := hlc.NodeID{7}
+	future := time.Now().Add(hlc.DefaultMaxSkew / 2).UnixNano()
+	m := &pb.Mutation{Origin: remote[:], Seq: 1, Hlc: newHLC(future, remote), Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "remote", Value: &pb.Vertex_String_{String_: "accepted"}}}}}}
+	if err := s.ApplyMutation(t.Context(), m); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rt, _ = openTarpReceiptTestRuntime(t, dir, config, false)
+	if now := rt.clock.Now(); now.WallNs < future || (now.WallNs == future && now.Logical == 0) {
+		t.Fatalf("reopened clock %v below accepted remote floor", now)
 	}
 }

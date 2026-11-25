@@ -110,6 +110,10 @@ func (c *GraphCache[S, T]) storeEdgeLocked(ctx context.Context, rows *graphstore
 	if bucket != nil {
 		bucket.mu.Lock()
 		cold := bucket.cold
+		if !cold && bucket.changes != nil {
+			defer bucket.mu.Unlock()
+			return writeSourceChanges(bucket, rows, batch, generation, k)
+		}
 		bucket.mu.Unlock()
 		if cold {
 			return nil

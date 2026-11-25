@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/backup"
@@ -33,15 +34,11 @@ type backupStressCall struct {
 }
 
 type backupStressTick struct {
-	Source            string `json:"source"`
-	TickID            string `json:"tick_id"`
-	StartNS           int64  `json:"started_unix_ns"`
-	EndNS             int64  `json:"finished_unix_ns"`
-	MaterializationNS int64  `json:"materialization_ns"`
-	SendNS            int64  `json:"send_ns"`
-	FinalizationNS    int64  `json:"finalization_ns"`
-	Vertices          int    `json:"vertices"`
-	Edges             int    `json:"edges"`
+	Source  string `json:"source"`
+	TickID  string `json:"tick_id"`
+	StartNS int64  `json:"started_unix_ns"`
+	EndNS   int64  `json:"finished_unix_ns"`
+	Bytes   int64  `json:"bytes"`
 }
 
 type backupStressAttempt struct {
@@ -66,7 +63,7 @@ type backupStressCorrelation struct {
 	After    backupStressWindow `json:"after"`
 }
 
-// TestPeriodicBackupStress is opt-in. It seeds a host-memory graph directly
+// TestPeriodicBackupStress is opt-in. It seeds the durable runtime in batches
 // to avoid millions of setup RPCs, then drives real Connect/h2c read/write
 // producers while the actual Backupper.Run writes periodic file snapshots.
 // It emits only timing, counts, and build metadata; no keys or graph values.
@@ -89,51 +86,47 @@ func TestPeriodicBackupStress(t *testing.T) {
 	}
 	interval := time.Duration(intervalMS) * time.Millisecond
 	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
+	rt, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "graph"), hlc.NodeID{1}, cache, mutationlog.Options{Capacity: 1024}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	svc := rt.NewExecutor(nil)
 	keys := make([]string, vertices)
-	vertexBatch := make([]graphcache.VertexItem[string, *pb.Vertex], 0, 1000)
-	liveUntil := time.Now().Add(time.Hour)
+	const batchSize = 128
+	verticesIn := &pb.PutVerticesRequest{}
+	edgesIn := &pb.AddEdgesRequest{}
 	for i := range keys {
 		keys[i] = fmt.Sprintf("stress:%08d", i)
-		vertexBatch = append(vertexBatch, graphcache.VertexItem[string, *pb.Vertex]{
-			Key: keys[i], Value: &pb.Vertex{Key: keys[i]}, Expiration: liveUntil,
-		})
-		if len(vertexBatch) == cap(vertexBatch) {
-			if err := cache.PutVerticesWithExpiration(vertexBatch); err != nil {
+		verticesIn.Vertices = append(verticesIn.Vertices, &pb.Vertex{Key: keys[i]})
+		if len(verticesIn.Vertices) == batchSize || i == len(keys)-1 {
+			if _, err := svc.PutVertices(t.Context(), verticesIn); err != nil {
 				t.Fatal(err)
 			}
-			vertexBatch = vertexBatch[:0]
+			verticesIn.Vertices = verticesIn.Vertices[:0]
 		}
 	}
-	if len(vertexBatch) > 0 {
-		if err := cache.PutVerticesWithExpiration(vertexBatch); err != nil {
-			t.Fatal(err)
-		}
-	}
-	edgeBatch := make([]graphcache.EdgeItem[string], 0, 10_000)
 	for tail := range keys {
 		for offset := 1; offset <= degree; offset++ {
 			head := (tail + offset) % vertices
-			edgeBatch = append(edgeBatch, graphcache.EdgeItem[string]{Tail: keys[tail], Head: keys[head], Weight: 1, Expiration: liveUntil})
-			if len(edgeBatch) == cap(edgeBatch) {
-				cache.AddEdgesWithExpiration(edgeBatch)
-				edgeBatch = edgeBatch[:0]
+			edgesIn.Edges = append(edgesIn.Edges, &pb.Edge{Tail: keys[tail], Head: keys[head], Weight: 1})
+			if len(edgesIn.Edges) == batchSize || tail == len(keys)-1 && offset == degree {
+				if _, err := svc.AddEdges(t.Context(), edgesIn); err != nil {
+					t.Fatal(err)
+				}
+				edgesIn.Edges = edgesIn.Edges[:0]
 			}
 		}
-	}
-	if len(edgeBatch) > 0 {
-		cache.AddEdgesWithExpiration(edgeBatch)
 	}
 	if got, want := cache.EdgeCount(), vertices*degree; got != want {
 		t.Fatalf("seeded edges = %d, want %d", got, want)
 	}
-
-	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
 	sdk := newConnectClientFor(t, srv.url)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	backupper := backup.New(svc, backup.Config{
+	backupper := backup.NewGraphStore(svc, rt.GraphStore(), backup.Config{
 		Enabled: true, Dir: t.TempDir(), Interval: interval, Retain: 1, InstanceID: "stress",
 	}, nil, logger)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -208,9 +201,9 @@ func TestPeriodicBackupStress(t *testing.T) {
 			continue
 		}
 		switch record.Msg {
-		case "backup: dump started":
+		case "backup: private graph storage backup started":
 			attempts = append(attempts, backupStressAttempt{TickID: record.TickID, StartNS: record.StartNS})
-		case "backup: wrote dump":
+		case "backup: wrote private graph storage recovery point":
 			ticks = append(ticks, record.backupStressTick)
 		}
 	}

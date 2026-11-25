@@ -41,7 +41,9 @@ type weight struct {
 	storedCount    int
 	storedExpiry   time.Time
 	storedExplicit bool
-	storedZero     bool
+	storedSum      float32
+	storedLatest   time.Time
+	changes        sourceChanges
 	lastOrdinal    uint64
 	mu             sync.Mutex
 	values         []weightValue
@@ -205,13 +207,15 @@ func (w *weight) addWithExpirationContribHLCAt(value float32, expiration time.Ti
 		w.lastOrdinal++
 		ordinal = w.lastOrdinal
 	}
-	w.values = append(w.values, weightValue{
+	added := weightValue{
 		ordinal:    ordinal,
 		value:      value,
 		expiration: expiration,
 		contribID:  contribID,
 		hlc:        ts,
-	})
+	}
+	w.values = append(w.values, added)
+	w.changes.note(added, false)
 	if ts != (hlc.Timestamp{}) && len(w.values) > 1 {
 		prev := w.values[len(w.values)-2]
 		if ts.Less(prev.hlc) || (ts == prev.hlc && bytes.Compare(contribID[:], prev.contribID[:]) < 0) {
@@ -298,6 +302,8 @@ func (w *weight) retainAddsNewerThanLocked(ts hlc.Timestamp) {
 	for _, v := range w.values {
 		if !v.contribID.IsZero() && ts.Less(v.hlc) {
 			kept = append(kept, v)
+		} else {
+			w.changes.note(v, true)
 		}
 	}
 	w.values = kept
@@ -319,6 +325,7 @@ func (w *weight) removeContributionAt(id ContribID, now time.Time) (existed, emp
 			continue
 		}
 		existed = true
+		w.changes.note(w.values[i], true)
 		copy(w.values[i:], w.values[i+1:])
 		w.values[len(w.values)-1] = weightValue{}
 		w.values = w.values[:len(w.values)-1]
@@ -356,7 +363,7 @@ func (w *weight) isZeroAndPrunedAt(now time.Time) (bool, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.cold && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
-		return w.storedZero && !w.storedExplicit, 0
+		return w.storedSum == 0 && !w.storedExplicit, 0
 	}
 	if !w.loadLocked(now) {
 		return false, 0
@@ -397,6 +404,7 @@ func (w *weight) replace(value float32, expiration time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.cold = false
+	w.changes = nil // full replacement may remove a cold source set
 	w.values = w.values[:0]
 	w.values = append(w.values, weightValue{value: value, expiration: expiration})
 	w.sum = value
@@ -431,6 +439,9 @@ func (w *weight) snapshotAt(now time.Time) (sum float32, latest time.Time, nonZe
 // that has locked all of its buckets before sampling one observation time.
 // Caller must hold w.mu.
 func (w *weight) snapshotLockedAt(now time.Time) (sum float32, latest time.Time, nonZero bool) {
+	if w.cold && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
+		return w.storedSum, w.storedLatest, w.storedSum != 0
+	}
 	if !w.loadLocked(now) {
 		return 0, time.Time{}, false
 	}
@@ -509,6 +520,8 @@ func (w *weight) flushLockedAt(now time.Time) {
 			if expires(v.expiration) && (minExp.IsZero() || v.expiration.Before(minExp)) {
 				minExp = v.expiration
 			}
+		} else {
+			w.changes.note(v, true)
 		}
 	}
 	w.values = w.values[:write]

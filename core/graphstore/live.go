@@ -24,12 +24,12 @@ func (r *Rows[K, V]) VertexAt(snap *tarp.Snapshot, generation uint64, key K, now
 // HasVertexAt checks TTL from the row header without decoding the application
 // payload. It is used for keys-only scans and edge endpoint liveness.
 func (r *Rows[K, V]) HasVertexAt(snap *tarp.Snapshot, gen uint64, key K, now time.Time) (bool, error) {
-	physical, err := r.vertexKey(gen, vertexFamily, key)
+	physical, err := r.vertexKey(gen, vertexMetadataFamily, key)
 	if err != nil {
 		return false, err
 	}
 	expiry, found, err := readRow(snap, physical, func(data []byte) (time.Time, error) {
-		deadline, _, err := parseMetadata(data)
+		deadline, _, err := parseVertexProjection(data)
 		return deadline, err
 	})
 	return found && cache.IsLiveAt(expiry, now), err

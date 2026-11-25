@@ -28,7 +28,7 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 	defer c.mu.Unlock()
 	now := c.applicationTime()
 	c.storage.pending.observed = now
-	for entry, err := range rows.Vertices(ctx, view.Snapshot, view.Generation, "", nil, false) {
+	for entry, err := range rows.VerifiedVertices(ctx, view.Snapshot, view.Generation) {
 		if err != nil {
 			return err
 		}

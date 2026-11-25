@@ -102,7 +102,7 @@ func setDurableRuntimeEnv(t *testing.T, mode, path string, port int) {
 	t.Helper()
 	t.Setenv("LANTERN_PORT", strconv.Itoa(port))
 	t.Setenv("LANTERN_NODE_ID", "31313131313131313131313131313131")
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", mode)
+	t.Setenv("LANTERN_RECEIPT_MODE", mode)
 	t.Setenv("LANTERN_DATA_DIR", path)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "42424242424242424242424242424242")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "1h")
@@ -572,7 +572,7 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
+	t.Setenv("LANTERN_RECEIPT_MODE", "restart")
 	t.Setenv("LANTERN_PORT", strconv.Itoa(address.Port))
 	// Keep both reservations held: restart must adopt its existing socket,
 	// rather than close a probe and race to bind the same port again.
@@ -668,7 +668,7 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 	}
 	t.Setenv("LANTERN_PORT", strconv.Itoa(port))
 	t.Setenv("LANTERN_NODE_ID", "31313131313131313131313131313131")
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
+	t.Setenv("LANTERN_RECEIPT_MODE", "graph-only")
 	t.Setenv("LANTERN_DATA_DIR", filepath.Join(t.TempDir(), "graph"))
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "0s")

@@ -1,10 +1,8 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,18 +20,19 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
-	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
 // This fixture changes network reachability only. Product processes terminate
-// mTLS and own every pump, anti-entropy, HLC, receipt, WAL and replay operation.
+// mTLS and own every pump, anti-entropy, HLC, receipt, durable commit and replay operation.
 type mixedHAProxy struct {
 	mu          sync.Mutex
 	hosts       []string
@@ -138,7 +137,7 @@ type mixedHAGate struct {
 	sdks          []*client.Lantern
 	originals     []*mixedHAOriginal
 	backupCuts    [3]uint64
-	walOrigins    map[string]uint64
+	closedOrigins map[string]uint64
 	cdcCursor     []byte
 	extraVertices int
 }
@@ -290,8 +289,8 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		t.Log("gap/relay caught up; B-before-A and A-before-B converge per effect with immutable B result")
 	case "mixed-backup-cut":
 		m.captureBackups(t)
-	case "mixed-closed-wal":
-		m.inspectClosedWALs(t)
+	case "mixed-closed-store":
+		m.inspectClosedStores(t)
 	case "mixed-lost-response":
 		m.write(t, 0, "lost-response", "orders:lost:", "retained", 7, true)
 		for _, original := range m.originals {
@@ -649,131 +648,18 @@ func (c *mixedHACountTransport) RoundTrip(r *http.Request) (*http.Response, erro
 	return c.inner.RoundTrip(r)
 }
 
-// Select one already committed, validated backup before the final mutation.
-// Copies preserve its exact bytes; all original sets/WALs remain untouched.
-// Restart consumes this earlier cut plus its real, later WAL suffix.
-func (m *mixedHAGate) captureBackups(t *testing.T) {
-	t.Helper()
-	policy := mixedHAReceiptPolicy()
-	for node := range m.sdks {
-		source, target := fmt.Sprintf("/archive-%d", node+1), fmt.Sprintf("/restore-%d", node+1)
-		instance := fmt.Sprintf("mixed-node-%d", node+1)
-		deadline := time.Now().Add(20 * time.Second)
-		var selected backup.ReceiptBackupSetEvidence
-		for {
-			evidence, err := backup.LoadLatestReceiptBackupSet(source, instance)
-			if err == nil {
-				restore, e := backup.PrepareRestartReceiptStartupRestore(evidence, policy)
-				if e != nil {
-					t.Fatal("invalid produced backup", e)
-				}
-				if len(restore.Capture.Receipts.Receipts) == 3*len(m.originals) && len(restore.Capture.Origins) == 2 {
-					selected = evidence
-					break
-				}
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("complete mixed backup not produced", node, err)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		paths, err := filepath.Glob(filepath.Join(source, "*.set.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		copied := false
-		for _, path := range paths {
-			raw, e := os.ReadFile(path)
-			if e != nil {
-				t.Fatal(e)
-			}
-			var manifest struct {
-				SetID   string `json:"set_id"`
-				Members []struct {
-					Name string `json:"name"`
-				} `json:"members"`
-			}
-			if json.Unmarshal(raw, &manifest) != nil {
-				t.Fatal("invalid produced manifest")
-			}
-			if manifest.SetID != fmt.Sprintf("%020d", selected.SetID) {
-				continue
-			}
-			for _, member := range manifest.Members {
-				if filepath.Base(member.Name) != member.Name {
-					t.Fatal("unsafe member")
-				}
-				memberRaw, e := os.ReadFile(filepath.Join(source, member.Name))
-				if e != nil {
-					t.Fatal(e)
-				}
-				if e = createPrivateTestFile(filepath.Join(target, member.Name), memberRaw); e != nil {
-					t.Fatal(e)
-				}
-			}
-			if e = createPrivateTestFile(filepath.Join(target, filepath.Base(path)), raw); e != nil {
-				t.Fatal(e)
-			}
-			copied = true
-		}
-		frozen, err := backup.LoadLatestReceiptBackupSet(target, instance)
-		if !copied || err != nil || frozen.WALCut != selected.WALCut || !bytes.Equal(frozen.Archive, selected.Archive) {
-			t.Fatal("selected backup changed", err)
-		}
-		m.backupCuts[node] = selected.WALCut.Seq
-		t.Logf("node=%d validated frozen backup cut=%d receipts=%d origins=2", node+1, selected.WALCut.Seq, 3*len(m.originals))
+type mixedBackupPoint struct {
+	Instance    string
+	Rows        [32]byte
+	Application struct {
+		NodeID                             hlc.NodeID
+		Generation, LocalSeq, ReceiptCount uint64
+		Digest, ReceiptDigest              [32]byte
+		ReceiptEpoch                       mutationreceipt.Epoch
 	}
 }
 
-func (m *mixedHAGate) inspectClosedWALs(t *testing.T) {
-	t.Helper()
-	for node := range m.sdks {
-		groups := make(map[string]bool)
-		origins := make(map[string]uint64)
-		var tip uint64
-		err := mutationlog.ReplayFileWAL(fmt.Sprintf("/journal-%d/business.wal", node+1), func(raw []byte) (mutationlog.MutationOp, error) { return append([]byte(nil), raw...), nil }, func(entry mutationlog.Entry) error {
-			tip = entry.Seq
-			raw := entry.Op.([]byte)
-			if len(raw) < 16 || string(raw[:8]) != "LRWU\x0a\x00\x00\x00" || int(binary.BigEndian.Uint32(raw[12:16])) != len(raw)-16 {
-				return errors.New("unexpected WAL union")
-			}
-			if raw[8] != 11 {
-				return nil
-			}
-			var mutation pb.Mutation
-			if err := proto.Unmarshal(raw[16:], &mutation); err != nil {
-				return err
-			}
-			call := mutation.GetOp().GetGraphMutation()
-			if len(call.GetItems()) != 3 || mutation.Seq == 0 || len(mutation.Origin) != 16 {
-				return errors.New("incomplete mixed WAL bundle")
-			}
-			origin := fmt.Sprintf("%x", mutation.Origin)
-			origins[origin] = max(origins[origin], mutation.Seq)
-			group := string(call.Items[0].Receipt.LogicalCallId)
-			if groups[group] {
-				return errors.New("duplicate mixed WAL decision")
-			}
-			groups[group] = true
-			for i, item := range call.Items {
-				if item.Receipt.ItemCount != 3 || item.Receipt.ItemIndex != uint32(i) || string(item.Receipt.LogicalCallId) != group {
-					return errors.New("split receipt/WAL group")
-				}
-			}
-			t.Logf("node=%d mixed WAL local=%d origin=%x origin_seq=%d items=3 projection=%d", node+1, entry.Seq, mutation.Origin, mutation.Seq, len(call.Projection))
-			return nil
-		})
-		if err != nil || len(groups) != len(m.originals) || m.backupCuts[node] == 0 || tip <= m.backupCuts[node] {
-			t.Fatal("closed WAL or snapshot-tail evidence", node, len(groups), tip, m.backupCuts[node], err)
-		}
-		if m.walOrigins == nil {
-			m.walOrigins = origins
-		} else if !reflect.DeepEqual(m.walOrigins, origins) {
-			t.Fatal("replicas disagree on the complete origin prefixes", node, origins, m.walOrigins)
-		}
-		t.Logf("node=%d closed WAL tip=%d selected snapshot=%d positive tail=%d", node+1, tip, m.backupCuts[node], tip-m.backupCuts[node])
-	}
-}
+func mixedNodeID(node int) hlc.NodeID { return hlc.NodeID{15: byte(node + 1)} }
 
 func mixedHAReceiptPolicy() mutationreceipt.Config {
 	var epoch mutationreceipt.Epoch
@@ -783,61 +669,201 @@ func mixedHAReceiptPolicy() mutationreceipt.Config {
 	return mutationreceipt.Config{Epoch: epoch, Retention: time.Hour, MaxEntries: 128, MaxBytes: 1048576}
 }
 
+func mixedReceiptRuntime(t *testing.T, dir string, node int) *service.ServingRuntime {
+	t.Helper()
+	cfg := clusterRecoveryReceiptConfig(dir, mixedNodeID(node))
+	cfg.Receipt = mixedHAReceiptPolicy()
+	cfg.Log.Capacity = 65536 // retain every mutation in this small fixture
+	rt, err := service.OpenReceiptDatabase(t.Context(), cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	return rt
+}
+
+// Reconstruct a private point in a disposable directory solely for inspection.
+// No serving mount or live identity is modified.
+func mixedBackupView(t *testing.T, node int, dir string, count int, after uint64) (*service.ServingRuntime, uint64) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		points, err := filepath.Glob(filepath.Join(dir, "lantern-tarp-*", "cut.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := len(points) - 1; i >= 0; i-- {
+			raw, err := os.ReadFile(points[i])
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cut mixedBackupPoint
+			if err = json.Unmarshal(raw, &cut); err != nil {
+				t.Fatal(err)
+			}
+			w := cut.Application
+			if cut.Instance != fmt.Sprintf("mixed-node-%d", node+1) || w.NodeID != mixedNodeID(node) ||
+				w.ReceiptEpoch != mixedHAReceiptPolicy().Epoch || w.ReceiptCount != uint64(count) || w.LocalSeq <= after {
+				continue
+			}
+			target := filepath.Join(t.TempDir(), "copy")
+			if err := graphstore.Restore(t.Context(), filepath.Join(filepath.Dir(points[i]), "image"), target); err != nil {
+				t.Fatal(err)
+			}
+			rt := mixedReceiptRuntime(t, target, node)
+			view, err := rt.GraphStore().Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest, err := graphstore.StateDigest(t.Context(), view.Generation, view.Snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := rt.TarpBackupWitness(view.Snapshot, view.Generation)
+			_ = view.Close()
+			if err != nil || digest != cut.Rows || actual.Generation != w.Generation || actual.Digest != w.Digest ||
+				actual.ReceiptDigest != w.ReceiptDigest || actual.ReceiptCount != w.ReceiptCount || actual.LocalSeq != w.LocalSeq {
+				t.Fatal("physical image and application cut disagree", node+1, err)
+			}
+			return rt, actual.LocalSeq
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node %d missing verified physical point with %d receipts after %d", node+1, count, after)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (m *mixedHAGate) captureBackups(t *testing.T) {
+	t.Helper()
+	for node := range m.sdks {
+		rt, tip := mixedBackupView(t, node, fmt.Sprintf("/archive-%d", node+1), 3*len(m.originals), 0)
+		if origins := rt.NewExecutor(nil).OriginStates(); len(origins) != 2 {
+			t.Fatalf("node %d backup origins %v", node+1, origins)
+		}
+		m.backupCuts[node] = tip
+		if err := createPrivateTestFile(fmt.Sprintf("/restore-%d/observed-cut", node+1), []byte(strconv.FormatUint(tip, 10))); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("node=%d validated physical recovery point local_seq=%d receipts=%d origins=2", node+1, tip, 3*len(m.originals))
+	}
+}
+
+type mixedRelayObserver func(*pb.SubscribeResponse) error
+
+func (f mixedRelayObserver) Send(r *pb.SubscribeResponse) error { return f(r) }
+
+func (m *mixedHAGate) inspectClosedStores(t *testing.T) {
+	t.Helper()
+	for node := range m.sdks {
+		target := filepath.Join(t.TempDir(), "copy")
+		if err := os.CopyFS(target, os.DirFS(fmt.Sprintf("/journal-%d/graph", node+1))); err != nil {
+			t.Fatal(err)
+		}
+		rt := mixedReceiptRuntime(t, target, node)
+		w := clusterReceiptWitness(t, rt)
+		if w.seq <= m.backupCuts[node] || w.count != uint64(len(m.originals)*3) {
+			t.Fatal("expected complete closed cut after earlier witnessed point", node+1, w.seq, w.count)
+		}
+		ex := rt.NewExecutor(nil)
+		repl, err := rt.NewReplication(ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.CertifyInstallation(ex, repl); err != nil {
+			t.Fatal(err)
+		}
+		originSeqs := make(map[string]uint64)
+		for _, state := range ex.OriginStates() {
+			originSeqs[fmt.Sprintf("%x", state.Origin)] = state.LastSeq
+		}
+		if m.closedOrigins != nil && !reflect.DeepEqual(m.closedOrigins, originSeqs) {
+			t.Fatal("closed origin prefixes differ", node+1, originSeqs, m.closedOrigins)
+		}
+		m.closedOrigins = originSeqs
+		groups := make(map[string]bool)
+		var frames uint64
+		done := errors.New("reached captured local relay tip")
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		err = repl.Subscribe(ctx, &pb.SubscribeRequest{AcceptReceiptEnvelopes: true, NamespaceFormat: "namespaced-v1"}, mixedRelayObserver(func(r *pb.SubscribeResponse) error {
+			mutation := r.GetMutation()
+			if mutation == nil || mutation.Seq == 0 || len(mutation.Origin) != 16 {
+				return errors.New("invalid retained mutation identity")
+			}
+			frames++
+			if call := mutation.GetOp().GetGraphMutation(); call != nil {
+				if len(call.Items) != 3 {
+					return errors.New("incomplete mixed receipt envelope")
+				}
+				group := string(call.Items[0].GetReceipt().GetLogicalCallId())
+				if len(group) == 0 || groups[group] {
+					return errors.New("duplicate or missing mixed group")
+				}
+				groups[group] = true
+				for i, item := range call.Items {
+					r := item.GetReceipt()
+					if r.GetItemCount() != 3 || r.GetItemIndex() != uint32(i) || string(r.GetLogicalCallId()) != group {
+						return errors.New("split mixed receipt group")
+					}
+				}
+			}
+			if frames == w.seq {
+				return done
+			}
+			return nil
+		}))
+		cancel()
+		if !errors.Is(err, done) || len(groups) != len(m.originals) {
+			t.Fatal("incomplete reopened relay", node+1, frames, len(groups), err)
+		}
+		t.Logf("node=%d closed Tarp tip=%d earlier backup=%d suffix=%d groups=%d", node+1, w.seq, m.backupCuts[node], w.seq-m.backupCuts[node], len(groups))
+	}
+}
+
 func (m *mixedHAGate) checkRestoredOrigins(t *testing.T) {
 	t.Helper()
-	if len(m.walOrigins) != 3 {
-		t.Fatal("missing pre-restart three-origin prefix evidence", m.walOrigins)
+	if len(m.closedOrigins) != 3 {
+		t.Fatal("missing pre-restart three-origin evidence", m.closedOrigins)
 	}
 	for node := range m.sdks {
-		deadline := time.Now().Add(20 * time.Second)
-		for {
-			evidence, err := backup.LoadLatestReceiptBackupSet(fmt.Sprintf("/restore-%d", node+1), fmt.Sprintf("mixed-node-%d", node+1))
-			if err == nil && evidence.WALCut.Seq > m.backupCuts[node] {
-				restored, e := backup.PrepareRestartReceiptStartupRestore(evidence, mixedHAReceiptPolicy())
-				if e != nil {
-					t.Fatal("invalid post-restart backup", e)
-				}
-				origins := make(map[string]uint64)
-				for _, origin := range restored.Capture.Origins {
-					origins[fmt.Sprintf("%x", origin.Origin)] = origin.LastSeq
-				}
-				if !reflect.DeepEqual(origins, m.walOrigins) || len(restored.Capture.Receipts.Receipts) != 3*len(m.originals) {
-					t.Fatal("restarted origin prefixes or receipt bundle count changed", node, origins, m.walOrigins)
-				}
-				t.Logf("node=%d restored origin prefixes=%v receipts=%d cut=%d", node+1, origins, len(restored.Capture.Receipts.Receipts), evidence.WALCut.Seq)
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("no post-restart backup to verify replayed prefixes", node, err)
-			}
-			time.Sleep(100 * time.Millisecond)
+		rt, _ := mixedBackupView(t, node, fmt.Sprintf("/restore-%d", node+1), 3*len(m.originals), m.backupCuts[node])
+		got := make(map[string]uint64)
+		for _, st := range rt.NewExecutor(nil).OriginStates() {
+			got[fmt.Sprintf("%x", st.Origin)] = st.LastSeq
+		}
+		if !reflect.DeepEqual(m.closedOrigins, got) {
+			t.Fatal("restarted origin prefix changed", node+1, got, m.closedOrigins)
 		}
 	}
 }
 
-// Read-only diagnostic for retained volumes after a campaign has stopped every
-// product process. This does not certify CLEAN or authorize reopening a server.
-func TestMixedHAClosedWALInspection(t *testing.T) {
+func TestMixedHAClosedStoreInspection(t *testing.T) {
 	if os.Getenv("LANTERN_MIXED_HA_INSPECT") != "1" {
-		t.Skip("explicit read-only inspection of stopped mixed HA volumes")
+		t.Skip("explicit inspection of stopped mixed HA volumes")
 	}
 	groups := 5
 	if raw := os.Getenv("LANTERN_MIXED_HA_INSPECT_GROUPS"); raw != "" {
-		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 16 {
-			t.Fatal("bounded expected group count required")
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 16 {
+			t.Fatal("invalid expected group count")
 		}
-		groups = value
+		groups = n
 	}
 	m := &mixedHAGate{sdks: make([]*client.Lantern, 3), originals: make([]*mixedHAOriginal, groups)}
 	for node := range m.sdks {
-		selected, err := backup.LoadLatestReceiptBackupSet(fmt.Sprintf("/restore-%d", node+1), fmt.Sprintf("mixed-node-%d", node+1))
+		raw, err := os.ReadFile(fmt.Sprintf("/restore-%d/observed-cut", node+1))
 		if err != nil {
 			t.Fatal(err)
 		}
-		m.backupCuts[node] = selected.WALCut.Seq
+		m.backupCuts[node], err = strconv.ParseUint(string(raw), 10, 64)
+		if err != nil || m.backupCuts[node] == 0 {
+			t.Fatal("invalid observed cut", err)
+		}
 	}
-	m.inspectClosedWALs(t)
+	m.inspectClosedStores(t)
 }
 
 func mixedHAWireContext(t *testing.T, g *custodyProcessGate, node int, identity client.GraphMutationReceiptContext) *pb.MutationReceiptContext {

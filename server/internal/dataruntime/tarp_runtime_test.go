@@ -3,7 +3,10 @@ package dataruntime
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -166,6 +169,91 @@ func TestTarpFailedGraphSnapshotReopensOldCut(t *testing.T) {
 	}
 	if _, ok := service.cache.GetVertex("before"); !ok {
 		t.Fatal("previous generation lost")
+	}
+}
+
+// Kill the process with an older relay view held. The first crash occurs in
+// the generation's final validator, after every staged row has reached disk;
+// the second occurs after publication but before clean DB or pin shutdown.
+func TestTarpSnapshotProcessCrashWithPinnedReplay(t *testing.T) {
+	const phaseVar = "LANTERN_TEST_TARP_CRASH_PHASE"
+	const dirVar = "LANTERN_TEST_TARP_CRASH_DIR"
+	remote := hlc.NodeID{2}
+	if phase := os.Getenv(phaseVar); phase != "" {
+		dir := os.Getenv(dirVar)
+		rt, svc := openTarpTestRuntime(t, dir, 2)
+		if _, err := svc.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "before"}}); err != nil {
+			t.Fatal(err)
+		}
+		ref := rt.log.RetainedEntries()[0]
+		pin, err := rt.tarp.Pin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		crash := func() error {
+			if _, err := pin.Read(ref); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dir+".ready", []byte(phase), 0600); err != nil {
+				t.Fatal(err)
+			}
+			process, err := os.FindProcess(os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			select {}
+		}
+		finish, err := svc.BeginSnapshotInstallChecked(t.Context(), func() error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		stamp := hlc.Timestamp{WallNs: 1000, NodeID: remote}
+		rt.graph.PutVertexWithExpirationHLC("peer", &pb.Vertex{Key: "peer"}, time.Time{}, stamp)
+		if err := svc.ApplySnapshotWatermarks(map[string]uint64{hex.EncodeToString(remote[:]): 9}, stamp); err != nil {
+			t.Fatal(err)
+		}
+		if phase == "staged" {
+			// Invoke the same durable commit used by finish, with an explicit
+			// crash at the last instruction before manifest publication.
+			t.Fatal("did not crash before publication", svc.commitTarpGraphSnapshot(t.Context(), crash))
+		}
+		if err := finish(true); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("did not crash after publication", crash())
+	}
+	for _, phase := range []string{"staged", "published"} {
+		t.Run(phase, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "db")
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTarpSnapshotProcessCrashWithPinnedReplay$")
+			cmd.Env = append(os.Environ(), phaseVar+"="+phase, dirVar+"="+dir)
+			output, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			ready, readErr := os.ReadFile(dir + ".ready")
+			if !errors.As(err, &exit) || ctx.Err() != nil || readErr != nil || string(ready) != phase {
+				t.Fatalf("subprocess missed %s boundary: %v, %v, %s", phase, err, readErr, output)
+			}
+			rt, svc := openTarpTestRuntime(t, dir, 2)
+			_, before := svc.cache.GetVertex("before")
+			_, peer := svc.cache.GetVertex("peer")
+			tip, ok := rt.log.LastSeq()
+			hasPeer := phase == "published"
+			wantTip, wantOrigin, retained := uint64(1), uint64(0), 1
+			if hasPeer {
+				wantTip, wantOrigin, retained = 2, 9, 0
+			}
+			if !before || peer != hasPeer || svc.LocalSeq(remote) != wantOrigin || !ok || tip != wantTip || rt.log.Len() != retained {
+				t.Fatalf("after crash at %s: before=%v peer=%v peer seq=%d local tip=%d retained=%d", phase, before, peer, svc.LocalSeq(remote), tip, rt.log.Len())
+			}
+			if _, err := svc.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "successor"}}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

@@ -438,15 +438,7 @@ type clusterReceiptCut struct {
 
 func clusterReceiptWitness(t *testing.T, runtime *service.ServingRuntime) clusterReceiptCut {
 	t.Helper()
-	view, err := runtime.GraphStore().Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer view.Close()
-	w, err := runtime.TarpBackupWitness(view.Snapshot, view.Generation)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := storageWitness(t, runtime)
 	return clusterReceiptCut{w.NodeID, w.ReceiptEpoch, w.ReceiptGeneration, w.LocalSeq, w.ReceiptCount, w.ReceiptHighWaterMillis, w.Digest, w.ReceiptDigest}
 }
 

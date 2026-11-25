@@ -116,7 +116,7 @@ func (s *Executor) backupStoredGraph(ctx context.Context, db *graphstore.DB, pre
 				return graphReadError(err)
 			}
 
-			if remaining > 0 {
+			if scope == nil && remaining > 0 {
 				remaining -= len(row.Key) + 48
 				if remaining > 0 {
 					live[row.Key] = struct{}{}
@@ -145,26 +145,33 @@ func (s *Executor) backupStoredGraph(ctx context.Context, db *graphstore.DB, pre
 		}
 		return rows.HasVertexAt(cut.Snapshot, cut.Generation, key, now)
 	}
-	for e, err := range rows.FoldedEdges(ctx, cut.Snapshot, cut.Generation, prefix, now) {
+	edges := rows.FoldedEdges(ctx, cut.Snapshot, cut.Generation, prefix, now)
+	if scope != nil {
+		reader := graphRead{cut: cut, rows: rows, now: now}
+		edges = reader.scopedEdges(ctx, prefix, prefix, "", "")
+	}
+	for e, err := range edges {
 		if err != nil {
 			return graphReadError(err)
 		}
-		if !strings.HasPrefix(e.Key.Head, prefix) || !scope.Edge(e.Key.Tail, e.Key.Head) {
-			continue
-		}
-		tail, err := hasEndpoint(e.Key.Tail)
-		if err != nil {
-			return graphReadError(err)
-		}
-		if !tail {
-			continue
-		}
-		head, err := hasEndpoint(e.Key.Head)
-		if err != nil {
-			return graphReadError(err)
-		}
-		if !head {
-			continue
+		if scope == nil {
+			if !strings.HasPrefix(e.Key.Head, prefix) {
+				continue
+			}
+			tail, err := hasEndpoint(e.Key.Tail)
+			if err != nil {
+				return graphReadError(err)
+			}
+			if !tail {
+				continue
+			}
+			head, err := hasEndpoint(e.Key.Head)
+			if err != nil {
+				return graphReadError(err)
+			}
+			if !head {
+				continue
+			}
 		}
 		edge := &pb.Edge{Tail: e.Key.Tail, Head: e.Key.Head, Weight: e.Detail.Weight}
 		if !e.Detail.Expiration.IsZero() {

@@ -62,7 +62,7 @@ func TestComposeRestartSeparatesWorkloadAndGraphContinuity(t *testing.T) {
 			if env["LANTERN_PEER_WORKLOAD_ID"] != metadata.Nodes[1].Environment["LANTERN_PEER_WORKLOAD_ID"] {
 				t.Fatal("explicit runtime continuity changed workload authority")
 			}
-			if env["LANTERN_NODE_ID"] != original || receipt && env["LANTERN_RECEIPT_WAL_MODE"] != "restart" {
+			if env["LANTERN_NODE_ID"] != original || receipt && env["LANTERN_RECEIPT_MODE"] != "restart" {
 				t.Fatal("restart lost its durable graph origin or receipt mode")
 			}
 			if err := prepareComposeRestart(dir, "lantern-1"); err == nil {
@@ -95,7 +95,7 @@ func TestGraphComposeFixtureMapsSnapshotStorageBeforeMountedFileExport(t *testin
 				// copier tries to open it. No such source file/directory exists.
 				env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = filepath.Join(directory, fmt.Sprintf("must-not-copy-spool-%d", i))
 				if mode != "" {
-					env["LANTERN_RECEIPT_WAL_MODE"] = mode
+					env["LANTERN_RECEIPT_MODE"] = mode
 				}
 			}
 			if err := exportComposeFixture(&result, directory); err != nil {

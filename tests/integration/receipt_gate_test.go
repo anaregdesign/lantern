@@ -694,7 +694,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	walPath := filepath.Join(t.TempDir(), "receipts.wal")
 	backupDir := t.TempDir()
 	t.Setenv("LANTERN_STRICT_CONFIG", "false")
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "fresh")
+	t.Setenv("LANTERN_RECEIPT_MODE", "fresh")
 	t.Setenv("LANTERN_DATA_DIR", walPath)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", strings.Repeat("42", 16))
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "1h")
@@ -2106,13 +2106,8 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 				Tail: fmt.Sprintf("replication-frame-tail-%02d-%s", i, strings.Repeat("t", 96)),
 				Head: fmt.Sprintf("replication-frame-head-%02d-%s", i, strings.Repeat("h", 96)),
 			}
-			wire.runtime.GraphCache().AddEdgeWithExpiration(
-				edges[i].GetTail(),
-				edges[i].GetHead(),
-				1,
-				time.Now().Add(time.Hour),
-			)
 		}
+		putReceiptProtocolEdges(t, wire.raw, edges...)
 		request := &pb.DeleteEdgesRequest{
 			Edges:          edges,
 			ReceiptContext: receiptContext,
@@ -2131,7 +2126,7 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 		stream, err := newReplicationRawClient(t, call.wire.server.url).Subscribe(
 			context.Background(),
 			connect.NewRequest(&pb.SubscribeRequest{
-				FromLocalSeq:           1,
+				FromLocalSeq:           storageWitness(t, call.wire.runtime).LocalSeq,
 				AcceptReceiptEnvelopes: true,
 			}),
 		)
@@ -2188,10 +2183,10 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 	if stats := rejected.wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
 		t.Fatalf("rejected receipt mutation changed Store: %+v", stats)
 	}
-	if length, _, _ := rejected.wire.runtime.MutationLogStats(); length != 0 {
+	if length, _, _ := rejected.wire.runtime.MutationLogStats(); uint64(length) != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt mutation retained %d log entries", length)
 	}
-	if seq := rejected.wire.server.svc.LocalSeq(nodeID); seq != 0 {
+	if seq := rejected.wire.server.svc.LocalSeq(nodeID); seq != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt mutation advanced origin seq to %d", seq)
 	}
 	if after := mutationCut(t, rejected.wire.runtime); after != beforeCut {
@@ -2229,6 +2224,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
 		)
 		edges := make([]*pb.EdgeKey, itemCount)
+		var liveEdges []*pb.EdgeKey
 		for i := range edges {
 			key := fmt.Sprintf("receipt-relay-%02d-%s", i, strings.Repeat("k", 48))
 			edges[i] = &pb.EdgeKey{Tail: key, Head: "head"}
@@ -2239,8 +2235,9 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 				}
 				continue
 			}
-			wire.runtime.GraphCache().AddEdgeWithExpiration(key, "head", 1, time.Now().Add(time.Hour))
+			liveEdges = append(liveEdges, edges[i])
 		}
+		putReceiptProtocolEdges(t, wire.raw, liveEdges...)
 		result := call{
 			wire: wire,
 			request: &pb.DeleteEdgesRequest{
@@ -2265,7 +2262,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 		stream, err := newReplicationRawClient(t, wire.server.url).Subscribe(
 			ctx,
 			connect.NewRequest(&pb.SubscribeRequest{
-				FromLocalSeq: 1, AcceptReceiptEnvelopes: true,
+				FromLocalSeq: storageWitness(t, wire.runtime).LocalSeq, AcceptReceiptEnvelopes: true,
 			}),
 		)
 		if err != nil {
@@ -2325,10 +2322,10 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	if stats := rejected.wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
 		t.Fatalf("rejected receipt Delete changed Store: %+v", stats)
 	}
-	if length, _, _ := rejected.wire.runtime.MutationLogStats(); length != 0 {
+	if length, _, _ := rejected.wire.runtime.MutationLogStats(); uint64(length) != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt Delete retained %d log entries", length)
 	}
-	if seq := rejected.wire.server.svc.LocalSeq(origin); seq != 0 {
+	if seq := rejected.wire.server.svc.LocalSeq(origin); seq != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt Delete advanced origin seq to %d", seq)
 	}
 	if after := mutationCut(t, rejected.wire.runtime); after != beforeCut {
@@ -2356,7 +2353,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 		follower.server, newVerifiedReplicationPeer(t, exact.wire.server), follower.server.svc, nil,
 	)
 	defer stopAB()
-	cut := map[string]uint64{hex.EncodeToString(origin[:]): 1}
+	cut := map[string]uint64{hex.EncodeToString(origin[:]): exact.wire.server.svc.LocalSeq(origin)}
 	waitForDurableReceiptCut(t, ctx, "dense follower", follower.server, follower.runtime, cut, 5*time.Second)
 	dense := readFrame(follower)
 	if !proto.Equal(dense, exactMaximal) || proto.Size(dense) != sendLimit {
@@ -2374,7 +2371,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	})); err != nil {
 		t.Fatalf("post-boundary mutation: %v", err)
 	}
-	cut[hex.EncodeToString(origin[:])] = 2
+	cut[hex.EncodeToString(origin[:])] = exact.wire.server.svc.LocalSeq(origin)
 	waitForDurableReceiptCut(t, ctx, "downstream after exact cap", downstream.server, downstream.runtime, cut, 5*time.Second)
 	if _, err := downstream.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "receipt-relay/after"})); err != nil {
 		t.Fatalf("Pump pinned at accepted receipt frame: %v", err)
@@ -3753,7 +3750,11 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 			t.Fatalf("closed receipt mutation = %v, want FailedPrecondition", err)
 		}
-		requireReceiptProtocolEdge(t, closed.raw, protected)
+		if _, err := closed.raw.GetEdge(t.Context(), connect.NewRequest(&pb.GetEdgeRequest{Tail: protected.Tail, Head: protected.Head})); connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("closed database read: %v", err)
+		}
+		reopened := openClusterRecoveryReceiptProtocolServer(t, closed.config)
+		requireReceiptProtocolEdge(t, reopened.raw, protected)
 	})
 }
 
@@ -5967,9 +5968,8 @@ func captureInitialMixedWireState(ctx context.Context, wire receiptProtocolWireS
 	if err != nil {
 		return initialMixedWireState{}, err
 	}
-	defer before.Close()
 	witness, err := wire.runtime.TarpBackupWitness(before.Snapshot, before.Generation)
-	if err != nil {
+	if err := errors.Join(err, before.Close()); err != nil {
 		return initialMixedWireState{}, err
 	}
 	whole, err := source.Capture(ctx, policy)
@@ -5980,7 +5980,9 @@ func captureInitialMixedWireState(ctx context.Context, wire receiptProtocolWireS
 	if err != nil {
 		return initialMixedWireState{}, err
 	}
-	defer after.Close()
+	if err := after.Close(); err != nil {
+		return initialMixedWireState{}, err
+	}
 	if before.Revision != after.Revision {
 		return initialMixedWireState{}, errors.New("concurrent mutation during receipt capture")
 	}
@@ -6972,9 +6974,8 @@ func storageWitness(t testing.TB, rt *service.ServingRuntime) service.TarpBackup
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer view.Close()
 	w, err := rt.TarpBackupWitness(view.Snapshot, view.Generation)
-	if err != nil {
+	if err := errors.Join(err, view.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return w

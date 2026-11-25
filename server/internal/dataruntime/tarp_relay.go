@@ -148,10 +148,11 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 	if fault := r.replayReadFault.Load(); fault != nil {
 		return *fault
 	}
-	raw, err := encodeReceiptWALUnion(entry.Op)
+	record, err := encodeRelayRecord(entry.Op, sha256.Size)
 	if err != nil {
 		return abort(err)
 	}
+	raw := record[sha256.Size:]
 	m, ok := graphMutationFromLog(entry.Op)
 	if !ok || entry.Seq == 0 || m.GetSeq() == 0 || len(m.GetOrigin()) != len(hlc.NodeID{}) || !bytes.Equal(m.GetOrigin(), m.GetHlc().GetNodeId()) || m.GetNamespaceFormat() != r.namespace || !hlcFromProto(m.GetHlc()).Equal(entry.HLC) {
 		return abort(errors.New("invalid operation/relay identity for graph publication"))
@@ -213,9 +214,7 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 			cut.floor = localFloor
 		}
 		batch.Put(tarpOriginKey(gen, id), encodeTarpOrigin(m.GetSeq(), entry.HLC))
-		record := make([]byte, 0, sha256.Size+len(raw))
-		record = append(record, cut.digest[:]...)
-		record = append(record, raw...)
+		copy(record[:sha256.Size], cut.digest[:])
 		batch.Put(tarpEntryKey(gen, entry.Seq), record)
 		cut.digest = tarpEntryDigest(cut.digest, entry.Seq, raw)
 		committedDigest = cut.digest

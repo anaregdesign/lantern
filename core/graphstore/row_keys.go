@@ -14,9 +14,10 @@ import (
 const graphDomain byte = 'G'
 
 const (
-	vertexFamily byte = 1
-	edgeFamily   byte = 2
-	sourceFamily byte = 3
+	vertexFamily         byte = 1
+	edgeFamily           byte = 2
+	sourceFamily         byte = 3
+	vertexMetadataFamily byte = 9
 )
 
 type FloorKind byte

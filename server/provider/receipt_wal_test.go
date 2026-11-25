@@ -186,7 +186,7 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 func TestLoadReceiptWALConfig(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "receipts.wal")
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
+	t.Setenv("LANTERN_RECEIPT_MODE", "restart")
 	t.Setenv("LANTERN_DATA_DIR", path)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "42424242424242424242424242424242")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "2h")
@@ -217,7 +217,7 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 		t.Fatalf("malformed epoch NewConfig error = %v", err)
 	}
 
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
+	t.Setenv("LANTERN_RECEIPT_MODE", "graph-only")
 	t.Setenv("LANTERN_DATA_DIR", "")
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "")

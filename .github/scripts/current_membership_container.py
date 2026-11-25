@@ -175,7 +175,7 @@ def main():
         values += bind(journals[node], "/journal") + bind(custody[node], "/custody")
         env = {"LANTERN_AUTH_MODE": "oidc",
                "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_NODE_ID": f"{node:032x}",
-               "LANTERN_RECEIPT_WAL_MODE": "restart" if mode == "resume" else "fresh", "LANTERN_DATA_DIR": "/journal/graph",
+               "LANTERN_RECEIPT_MODE": "restart" if mode == "resume" else "fresh", "LANTERN_DATA_DIR": "/journal/graph",
                "LANTERN_RECEIPT_EPOCH": "42424242424242424242424242424242", "LANTERN_RECEIPT_RETENTION": "1h", "LANTERN_RECEIPT_MAX_ENTRIES": "128", "LANTERN_RECEIPT_MAX_BYTES": "1048576",
                "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "1"}
         for key, value in env.items():

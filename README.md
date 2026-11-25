@@ -465,7 +465,7 @@ defines defaults, validation, limits, and recovery requirements. Common entries:
 | `LANTERN_AUTH_MODE` | `off` | `oidc` requires complete native security/Issuer configuration; retired static-token settings are rejected |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` | unset | TLS; `LANTERN_TLS_CLIENT_CA_FILE` enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | empty | Browser origin allow-list |
-| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Select graph-only storage or enable receipts in the same Tarp database with `fresh` / `restart` |
+| `LANTERN_RECEIPT_MODE` | `graph-only` | Select graph-only storage or enable receipts in the same Tarp database with `fresh` / `restart` |
 | `LANTERN_METRICS_ADDR` | `:9090` | Prometheus and HTTP health listener |
 | `LANTERN_STRICT_CONFIG` | `false` | Reject malformed/unknown config when enabled |
 

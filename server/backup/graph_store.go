@@ -118,6 +118,10 @@ func (b *Backupper) backupGraphStore(ctx context.Context, source string, policy 
 	if b.cfg.InstanceID == "" {
 		return stats, errors.New("backup: graph storage recovery point requires instance ID")
 	}
+	tick := graphPointPrefix(b.cfg.InstanceID) + receiptBackupSetIDString(id)
+	if source == "periodic" {
+		b.logger.Info("backup: private graph storage backup started", "source", source, "tick_id", tick, "started_unix_ns", start.UnixNano())
+	}
 	cut := graphStoreCut{Format: privateGraphBackupFormat, ID: id, Instance: b.cfg.InstanceID, Namespace: b.cfg.NamespaceFormat}
 	// Own the complete staging directory. No invalid point or half-written
 	// witness can be discovered by another node or a restarting operator.
@@ -169,8 +173,7 @@ func (b *Backupper) backupGraphStore(ctx context.Context, source string, policy 
 	if err != nil {
 		return stats, err
 	}
-	name := graphPointPrefix(b.cfg.InstanceID) + receiptBackupSetIDString(id)
-	final := filepath.Join(b.cfg.Dir, name)
+	final := filepath.Join(b.cfg.Dir, tick)
 	if err = ctx.Err(); err != nil {
 		return stats, err
 	}
@@ -184,7 +187,7 @@ func (b *Backupper) backupGraphStore(ctx context.Context, source string, policy 
 	if b.metrics != nil {
 		b.metrics.observeBackup(stats, b.now().Sub(start), b.now())
 	}
-	b.logger.Info("backup: wrote private graph storage recovery point", "source", source, "point", name, "cut_sha256", fmt.Sprintf("%x", sha256.Sum256(raw)), "local_seq", cut.Application.LocalSeq, "took", b.now().Sub(start))
+	b.logger.Info("backup: wrote private graph storage recovery point", "source", source, "point", tick, "tick_id", tick, "started_unix_ns", start.UnixNano(), "finished_unix_ns", b.now().UnixNano(), "bytes", size, "cut_sha256", fmt.Sprintf("%x", sha256.Sum256(raw)), "local_seq", cut.Application.LocalSeq, "took", b.now().Sub(start))
 	// Only independently verified, complete points owned by this node can
 	// count towards retention or be selected for removal.
 	if policy.Config.Retain > 0 && len(points) >= policy.Config.Retain {

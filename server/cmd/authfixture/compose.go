@@ -28,7 +28,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 		return errors.New("compose requires three nodes")
 	}
 	for _, node := range result.Nodes {
-		mode := node.Environment["LANTERN_RECEIPT_WAL_MODE"]
+		mode := node.Environment["LANTERN_RECEIPT_MODE"]
 		if (mode == "" || mode == "graph-only") && node.Environment["LANTERN_AUTH_MODE"] != "oidc" {
 			for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"} {
 				if node.Environment[key] == "" {
@@ -71,7 +71,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 			node.PublicOrigin = strings.Replace(node.PublicOrigin, "https://", "http://", 1)
 		}
 		env["LANTERN_DATA_DIR"] = "/state/graph"
-		if mode := env["LANTERN_RECEIPT_WAL_MODE"]; mode == "" || mode == "graph-only" {
+		if mode := env["LANTERN_RECEIPT_MODE"]; mode == "" || mode == "graph-only" {
 			// The matching graph overlay owns this container-private directory.
 			// Translate before the generic file-copy loop: scratch storage is
 			// never host configuration material or part of its read-only mount.
@@ -319,8 +319,8 @@ func prepareComposeRestart(dir, service string) error {
 	if env["LANTERN_AUTH_MODE"] != "oidc" {
 		env["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
 	}
-	if env["LANTERN_RECEIPT_WAL_MODE"] == "fresh" {
-		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"
+	if env["LANTERN_RECEIPT_MODE"] == "fresh" {
+		env["LANTERN_RECEIPT_MODE"] = "restart"
 
 	}
 	if metadata.Nodes[index].StartupFile != "" {

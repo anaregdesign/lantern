@@ -124,7 +124,7 @@ func addFixtureReceipts(result *fixture, dir string) error {
 		delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR")
 		delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES")
 		delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES")
-		env["LANTERN_RECEIPT_WAL_MODE"] = "fresh"
+		env["LANTERN_RECEIPT_MODE"] = "fresh"
 		env["LANTERN_RECEIPT_EPOCH"] = hex.EncodeToString(epoch[:])
 		env["LANTERN_RECEIPT_RETENTION"] = "1h"
 		env["LANTERN_RECEIPT_MAX_ENTRIES"] = "512"

@@ -974,7 +974,7 @@ operational error while the install still reports the already-committed
 outcome.
 
 The production runtime uses one Tarp database per node in `LANTERN_DATA_DIR`.
-`LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart` controls receipt support.
+`LANTERN_RECEIPT_MODE=graph-only|fresh|restart` controls receipt support.
 All three modes retain the graph, relay history, causal floors and node identity
 across restarts. Receipt-enabled nodes additionally bind the explicitly configured
 node ID, deployment epoch, retention and capacity policy to the database.

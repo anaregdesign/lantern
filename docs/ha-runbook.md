@@ -87,7 +87,7 @@ exits; local native/Compose conformance does not qualify a production deployment
 
 ### 2.3 Opt-in receipts
 
-`LANTERN_RECEIPT_WAL_MODE=graph-only` is the default; it offers no durable
+`LANTERN_RECEIPT_MODE=graph-only` is the default; it offers no durable
 receipt proof. `fresh` and `restart` require a persistent Tarp directory, explicit
 stable nonzero NodeID and deployment epoch, and immutable positive receipt
 retention/entry/byte policy (see [env.md](env.md)). Only a fully certified

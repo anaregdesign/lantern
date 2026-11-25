@@ -1321,7 +1321,7 @@ func TestBenchHeapAppRealWire(t *testing.T) {
 	env = append(env, "LANTERN_PORT="+port, "LANTERN_METRICS_ADDR=", "LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=false", "LANTERN_DRAIN_DELAY_SECONDS=0")
 	// Both executables use the same ordinary durable composition and public
 	// activation guard; only the observer tag changes across this clean restart.
-	env = append(env, "LANTERN_RECEIPT_WAL_MODE=fresh", "LANTERN_DATA_DIR="+filepath.Join(root, "graph"), "LANTERN_RECEIPT_EPOCH="+strings.Repeat("42", 16), "LANTERN_RECEIPT_RETENTION=1h", "LANTERN_RECEIPT_MAX_ENTRIES=32", "LANTERN_RECEIPT_MAX_BYTES=1048576", "LANTERN_NODE_ID="+strings.Repeat("31", 16), "LANTERN_BACKUP_DIR="+filepath.Join(root, "backups"))
+	env = append(env, "LANTERN_RECEIPT_MODE=fresh", "LANTERN_DATA_DIR="+filepath.Join(root, "graph"), "LANTERN_RECEIPT_EPOCH="+strings.Repeat("42", 16), "LANTERN_RECEIPT_RETENTION=1h", "LANTERN_RECEIPT_MAX_ENTRIES=32", "LANTERN_RECEIPT_MAX_BYTES=1048576", "LANTERN_NODE_ID="+strings.Repeat("31", 16), "LANTERN_BACKUP_DIR="+filepath.Join(root, "backups"))
 	issuer.server = &httptest.Server{URL: origin}
 	// A controlled-time executable without the observer tag ignores even a
 	// complete test session; no production runtime setting enables this hook.
@@ -1333,8 +1333,8 @@ func TestBenchHeapAppRealWire(t *testing.T) {
 	stop()
 
 	for i, entry := range env {
-		if entry == "LANTERN_RECEIPT_WAL_MODE=fresh" {
-			env[i] = "LANTERN_RECEIPT_WAL_MODE=restart"
+		if entry == "LANTERN_RECEIPT_MODE=fresh" {
+			env[i] = "LANTERN_RECEIPT_MODE=restart"
 		}
 	}
 	directory, session := securityProvisioningHeapSession(t, tagged)

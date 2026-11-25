@@ -22,7 +22,7 @@ var (
 )
 
 const manifestKey = "H"
-const manifestFormat = "LGS1"
+const manifestFormat = "LGS2"
 
 // The 32-MiB relay frame plus row framing must fit one record. Leave space
 // for related graph and service records in the same atomic write. The B+tree

@@ -134,7 +134,14 @@ func (r *Rows[K, V]) PutVertex(b Writer, gen uint64, k K, v Vertex[V]) error {
 	if err != nil {
 		return err
 	}
+	// The small projection shares the entire commit (including generation
+	// switches), and can answer TTL without ever loading a Vertex payload.
+	projection, err := r.vertexKey(gen, vertexMetadataFamily, k)
+	if err != nil {
+		return err
+	}
 	b.Put(key, data)
+	b.Put(projection, data[:metadataSize])
 	return nil
 }
 
@@ -143,7 +150,12 @@ func (r *Rows[K, V]) DeleteVertex(b Writer, gen uint64, k K) error {
 	if err != nil {
 		return err
 	}
+	projection, err := r.vertexKey(gen, vertexMetadataFamily, k)
+	if err != nil {
+		return err
+	}
 	b.Delete(key)
+	b.Delete(projection)
 	return nil
 }
 

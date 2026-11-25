@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache"
-
 	"github.com/anaregdesign/tarp"
 )
 
@@ -30,31 +29,44 @@ func projectedBounds(prefix []byte, lower, upper string) scanBounds {
 func (r *Rows[K, V]) LiveVertexRange(ctx context.Context, snap *tarp.Snapshot, gen uint64, lower, upper string, after *K, reverse, keysOnly bool, now time.Time) iter.Seq2[VertexEntry[K, V], error] {
 	return func(yield func(VertexEntry[K, V], error) bool) {
 		var zero VertexEntry[K, V]
-		p, err := familyPrefix(gen, vertexFamily)
+		family := vertexFamily
+		if keysOnly {
+			family = vertexMetadataFamily
+		}
+		p, err := familyPrefix(gen, family)
 		if err != nil {
 			yield(zero, err)
 			return
 		}
 		bounds := projectedBounds(p, lower, upper)
 		if after != nil {
-			cursor, err := r.vertexKey(gen, vertexFamily, *after)
+			cursor, err := r.vertexKey(gen, family, *after)
 			if err != nil {
 				yield(zero, err)
 				return
 			}
 			bounds = bounds.after(cursor, reverse)
 		}
-		for row, err := range snap.ScanRange(ctx, bounds.lower, bounds.upper, scanOptions(reverse)...) {
+		scan := snap.ScanRange(ctx, bounds.lower, bounds.upper, scanOptions(reverse)...)
+		if keysOnly {
+			scan = projectedEntries(ctx, snap, bounds, reverse)
+		}
+		for row, err := range scan {
 			if err != nil {
 				yield(zero, err)
 				return
 			}
-			deadline, ts, err := parseMetadata(row.Value)
+			var v Vertex[V]
+			if keysOnly {
+				v.Expiration, v.HLC, err = parseVertexProjection(row.Value)
+			} else {
+				v.Expiration, v.HLC, err = parseMetadata(row.Value)
+			}
 			if err != nil {
 				yield(zero, err)
 				return
 			}
-			if !cache.IsLiveAt(deadline, now) {
+			if !cache.IsLiveAt(v.Expiration, now) {
 				continue
 			}
 			k, err := r.decodeVertexKey(row.Key)
@@ -62,7 +74,6 @@ func (r *Rows[K, V]) LiveVertexRange(ctx context.Context, snap *tarp.Snapshot, g
 				yield(zero, err)
 				return
 			}
-			v := Vertex[V]{Expiration: deadline, HLC: ts}
 			if !keysOnly {
 				v.Value, err = r.values.Decode(row.Value[metadataSize:])
 				if err != nil {

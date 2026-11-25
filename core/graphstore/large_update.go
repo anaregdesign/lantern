@@ -12,7 +12,9 @@ import (
 
 // UpdateRows commits a graph mutation and its application records together.
 // If a single Tarp batch cannot hold the result, it streams the same postimage
-// into an unpublished generation and switches the manifest once.
+// into an unpublished generation and switches the manifest once. prepare may
+// be called again on the same snapshot if its writes exceed a single batch.
+// It must only stage rows and return the same postimage on each invocation.
 func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapshot, Writer) error) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -27,16 +29,30 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 		return err
 	}
 	defer snap.Close()
-	plan := rowUpdate{generation: db.head.active, changes: make(map[string]rowChange)}
-	if err := prepare(db.head.active, snap, &plan); err != nil {
+	batch := boundedUpdate{generation: db.head.active}
+	if err := prepare(db.head.active, snap, &batch); err != nil {
 		return err
 	}
-	if plan.err != nil || len(plan.changes) == 0 {
-		return plan.err
+	if batch.err != nil || batch.batch.Len() == 0 && !batch.oversized {
+		return batch.err
 	}
 	next := db.head
 	if err := next.advance(); err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !batch.oversized {
+		return db.commit(next, &batch.batch)
+	}
+	batch.batch = tarp.WriteBatch{}
+	plan := rowUpdate{generation: db.head.active, changes: make(map[string]rowChange)}
+	if err := prepare(db.head.active, snap, &plan); err != nil {
+		return err
+	}
+	if plan.err != nil {
+		return plan.err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -53,6 +69,51 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 		return db.commit(next, &b)
 	}
 	return db.replaceRows(ctx, snap, plan, next)
+}
+
+// Ordinary requests write directly into Tarp's owned batch arena. Only
+// oversized requests need the map of distinct keys for generation replacement.
+type boundedUpdate struct {
+	generation uint64
+	batch      tarp.WriteBatch
+	size       uint64
+	oversized  bool
+	err        error
+}
+
+func (b *boundedUpdate) Put(k, v []byte) {
+	if b.fits(k, v) {
+		b.batch.Put(k, v)
+	}
+}
+func (b *boundedUpdate) Delete(k []byte) {
+	if b.fits(k, nil) {
+		b.batch.Delete(k)
+	}
+}
+func (b *boundedUpdate) fits(k, v []byte) bool {
+	if b.err != nil || b.oversized {
+		return false
+	}
+	cost, err := rowSize(b.generation, k, v)
+	if err != nil {
+		b.err = err
+		return false
+	}
+	b.size += cost
+	b.oversized = b.batch.Len()+2 > tarp.MaxWriteBatchEntries || b.size+128 >= uint64(storageOptions().TargetSegmentBytes)
+	return !b.oversized
+}
+
+func rowSize(gen uint64, k, v []byte) (uint64, error) {
+	if len(k) < 10 || (k[0] != 'G' && k[0] != 'S') || binary.BigEndian.Uint64(k[1:9]) != gen {
+		return 0, errors.New("graphstore: update outside the active generation")
+	}
+	cost := uint64(len(k)) + uint64(len(v)) + 48
+	if cost > uint64(storageOptions().MaxRecordBytes) {
+		return 0, tarp.ErrTooLarge
+	}
+	return cost, nil
 }
 
 type rowChange struct {
@@ -74,13 +135,9 @@ func (p *rowUpdate) set(key, value []byte, remove bool) {
 	if p.err != nil {
 		return
 	}
-	if len(key) < 10 || (key[0] != 'G' && key[0] != 'S') || binary.BigEndian.Uint64(key[1:9]) != p.generation {
-		p.err = errors.New("graphstore: update outside the active generation")
-		return
-	}
-	cost := uint64(len(key)) + uint64(len(value)) + 48
-	if cost > uint64(storageOptions().MaxRecordBytes) {
-		p.err = tarp.ErrTooLarge
+	cost, err := rowSize(p.generation, key, value)
+	if err != nil {
+		p.err = err
 		return
 	}
 	if old, ok := p.changes[string(key)]; ok {

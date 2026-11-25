@@ -345,22 +345,8 @@ func TestAuth_ModePreflightAndAnonymousConnect(t *testing.T) {
 
 func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 	nodeID := hlc.NodeID{0x7a}
-	now := time.Now()
-	runtime, err := service.OpenReceiptDatabase(t.Context(), service.DurableReceiptWALRuntimeConfig{
-		Path: filepath.Join(t.TempDir(), "receipts.wal"),
-		Receipt: mutationreceipt.Config{
-			Epoch: mutationreceipt.Epoch{0x7a}, Retention: time.Hour,
-			MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: now,
-		},
-		Log:        mutationlog.Options{Capacity: 16, SubscriberBuffer: 16},
-		DefaultTTL: time.Hour,
-		ConfigureGraph: func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-			provider.ConfigureGraphCache(graph, provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
-			return nil
-		},
-		NodeID: nodeID,
-		Now:    now,
-	}, true)
+	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "graph"), nodeID)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}

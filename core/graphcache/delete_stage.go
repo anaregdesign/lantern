@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"errors"
+	"maps"
 	"sync/atomic"
 	"time"
 
@@ -324,11 +325,19 @@ func cloneWeightForStaging(before *weight, now time.Time) *weight {
 	}
 	before.mu.Lock()
 	defer before.mu.Unlock()
-	if !before.loadLocked(now) {
-		return nil
+	if before.cold {
+		values, err := before.load()
+		if err != nil {
+			return nil
+		}
+		// The detached candidate owns the decoded buffer. Its first fold
+		// also journals any expired sources to remove if this stage commits.
+		after := &weight{values: values, lastHLC: before.lastHLC, lastOrdinal: before.lastOrdinal, needsSort: true, changes: make(sourceChanges)}
+		after.flushLockedAt(now)
+		return after
 	}
-	defer before.releaseReadLocked()
 	return &weight{
+		changes:      maps.Clone(before.changes),
 		values:       append([]weightValue(nil), before.values...),
 		sum:          before.sum,
 		lastFlushLen: before.lastFlushLen,

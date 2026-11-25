@@ -48,7 +48,7 @@ the recovered application and graph state with the retained cut. It publishes
 the target directory atomically after verification. Point the same node's
 `LANTERN_DATA_DIR` at the restored directory. Restore native security material
 and state through their separate procedures. Start a recovered receipt node
-with `LANTERN_RECEIPT_WAL_MODE=restart` and its original configured epoch.
+with `LANTERN_RECEIPT_MODE=restart` and its original configured epoch.
 If there is no independent evidence of the final cut, keep that epoch out
 of service.
 
