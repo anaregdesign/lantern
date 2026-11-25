@@ -437,14 +437,14 @@ func decodeReceiptVertexPutWAL(raw []byte) (mutationlog.MutationOp, error) {
 
 func validateReceiptVertexPutWALEntry(entry mutationlog.Entry) error {
 	if entry.Seq == 0 {
-		return receiptVertexPutWALError("zero FileWAL local seq")
+		return receiptVertexPutWALError("zero relay sequence")
 	}
 	envelope, ok := entry.Op.(*vertexPutReceiptEnvelope)
 	if !ok {
 		return receiptVertexPutWALError("unexpected operation type %T", entry.Op)
 	}
 	if !entry.HLC.Equal(envelope.HLC) {
-		return receiptVertexPutWALError("FileWAL HLC differs from envelope HLC")
+		return receiptVertexPutWALError("relay HLC differs from envelope HLC")
 	}
 	_, err := validateReceiptVertexPutWALEnvelope(envelope)
 	return err

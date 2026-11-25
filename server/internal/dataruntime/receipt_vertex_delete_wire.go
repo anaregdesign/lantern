@@ -256,14 +256,14 @@ func decodeReceiptVertexDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 
 func validateReceiptVertexDeleteWALEntry(entry mutationlog.Entry) error {
 	if entry.Seq == 0 {
-		return receiptVertexDeleteWALError("zero FileWAL local seq")
+		return receiptVertexDeleteWALError("zero relay sequence")
 	}
 	envelope, ok := entry.Op.(*vertexDeleteReceiptEnvelope)
 	if !ok {
 		return receiptVertexDeleteWALError("unexpected operation type %T", entry.Op)
 	}
 	if !entry.HLC.Equal(envelope.HLC) {
-		return receiptVertexDeleteWALError("FileWAL HLC differs from envelope HLC")
+		return receiptVertexDeleteWALError("relay HLC differs from envelope HLC")
 	}
 	_, err := validateReceiptVertexDeleteWALEnvelope(envelope)
 	return err

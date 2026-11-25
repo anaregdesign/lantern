@@ -208,7 +208,7 @@ func encodeGraphDeleteEffectWAL(op mutationlog.MutationOp) ([]byte, error) {
 	}
 	if len(graph) > math.MaxUint32 || len(e.AcceptedIndexes) > math.MaxUint32 ||
 		uint64(len(graph))+8+4*uint64(len(e.AcceptedIndexes)) > uint64(receiptWALUnionMaxBytes-receiptWALUnionHeaderSize) {
-		return nil, receiptWALUnionError("graph Delete effect exceeds FileWAL frame limit")
+		return nil, receiptWALUnionError("graph Delete effect exceeds relay record limit")
 	}
 	result := make([]byte, 8+len(graph)+4*len(e.AcceptedIndexes))
 	binary.BigEndian.PutUint32(result[:4], uint32(len(graph)))

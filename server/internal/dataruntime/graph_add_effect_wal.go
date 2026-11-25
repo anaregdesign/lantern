@@ -193,7 +193,7 @@ func encodeGraphAddEffectWAL(op mutationlog.MutationOp) ([]byte, error) {
 	maxBody := receiptWALUnionMaxBytes - receiptWALUnionHeaderSize
 	if len(graph) > math.MaxUint32 || len(e.AcceptedIndexes) > math.MaxUint32 ||
 		uint64(len(graph))+graphAddEffectWALHeaderSize+4*uint64(len(e.AcceptedIndexes)) > uint64(maxBody) {
-		return nil, receiptWALUnionError("graph Add effect exceeds FileWAL frame limit")
+		return nil, receiptWALUnionError("graph Add effect exceeds relay record limit")
 	}
 	body := make([]byte, graphAddEffectWALHeaderSize+len(graph)+4*len(e.AcceptedIndexes))
 	copy(body[:8], graphAddEffectWALMagic)

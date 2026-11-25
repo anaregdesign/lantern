@@ -22,23 +22,23 @@ import (
 // versioned envelope keeps receipt-bearing operations distinct from ordinary
 // graph mutations and is validated before replay.
 const (
-	receiptWALUnionMagic                  = "LRWU\x0a\x00\x00\x00"
-	receiptWALUnionGraphMutation          = byte(11)
-	receiptWALUnionHeaderSize             = 16 // magic, kind, reserved[3], body length
-	receiptWALUnionEdgeCreate             = byte(10)
-	receiptWALUnionGraph                  = byte(1)
-	receiptWALUnionEdgeDelete             = byte(2)
-	receiptWALUnionGraphDeleteEffect      = byte(3)
-	receiptWALUnionGraphPutEffect         = byte(4)
-	receiptWALUnionGraphAddEffect         = byte(5)
-	receiptWALUnionBaseline               = byte(6)
+	receiptWALUnionMagic             = "LRWU\x0a\x00\x00\x00"
+	receiptWALUnionGraphMutation     = byte(11)
+	receiptWALUnionHeaderSize        = 16 // magic, kind, reserved[3], body length
+	receiptWALUnionEdgeCreate        = byte(10)
+	receiptWALUnionGraph             = byte(1)
+	receiptWALUnionEdgeDelete        = byte(2)
+	receiptWALUnionGraphDeleteEffect = byte(3)
+	receiptWALUnionGraphPutEffect    = byte(4)
+	receiptWALUnionGraphAddEffect    = byte(5)
+
 	receiptWALUnionVertexPut              = byte(7)
 	receiptWALUnionVertexDelete           = byte(8)
 	receiptWALUnionEdgeContributionDelete = byte(9)
 	receiptWALGraphHeaderSize             = 12 // protobuf length, repeated-slot count, nil count
-	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
-	// Each receipt-envelope body has a stricter independent 8 MiB cap.
-	receiptWALUnionMaxBytes = (32 << 20) - 36
+	// Each accepted-effect envelope fits one Tarp relay record, including its
+	// 32-byte digest prefix. Receipt bodies have their own 8 MiB limit.
+	receiptWALUnionMaxBytes = 32 << 20
 	// Every reachable Mutation field is reviewed before advancing this pin.
 	receiptWALGraphSchemaFingerprintV10 = "ef5ce9cf8a47f437d150bd56d0a38c6a3f9e65b60b63c24c40c5643a5dfa0ecd"
 )
@@ -57,9 +57,8 @@ func receiptWALUnionError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptWALUnion, fmt.Sprintf(format, args...))
 }
 
-// encodeReceiptWALUnion matches FileWAL's payload encoder signature. It
-// rejects unknown payloads rather than silently projecting a private
-// envelope to graph-only.
+// encodeReceiptWALUnion encodes a standalone relay envelope and rejects
+// operations with missing accepted-effect evidence.
 func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	return encodeRelayRecord(op, 0)
 }
@@ -107,15 +106,6 @@ func encodeRelayRecord(op mutationlog.MutationOp, prefix int) ([]byte, error) {
 	case *graphAddEffectEnvelope:
 		kind = receiptWALUnionGraphAddEffect
 		body, err = encodeGraphAddEffectWAL(value)
-	case receiptBaselineMarker:
-		kind = receiptWALUnionBaseline
-		body, err = marshalReceiptBaselineMarker(value)
-	case *receiptBaselineMarker:
-		if value == nil {
-			return nil, receiptWALUnionError("nil baseline marker")
-		}
-		kind = receiptWALUnionBaseline
-		body, err = marshalReceiptBaselineMarker(*value)
 	default:
 		return nil, receiptWALUnionError("unexpected operation type %T", op)
 	}
@@ -123,7 +113,7 @@ func encodeRelayRecord(op mutationlog.MutationOp, prefix int) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
 	}
 	if len(body) > receiptWALUnionMaxBytes-receiptWALUnionHeaderSize {
-		return nil, receiptWALUnionError("body exceeds FileWAL frame limit")
+		return nil, receiptWALUnionError("body exceeds relay record limit")
 	}
 	record := make([]byte, prefix+receiptWALUnionHeaderSize+len(body))
 	raw := record[prefix:]
@@ -135,8 +125,8 @@ func encodeRelayRecord(op mutationlog.MutationOp, prefix int) ([]byte, error) {
 }
 
 // decodeReceiptWALUnion requires an exact version, kind, reserved header,
-// length, and valid inner representation. FileWAL checks CRC before this
-// decoder runs; validateReceiptWALUnionEntry additionally checks frame HLC.
+// length and inner representation. The relay reader checks the storage digest
+// and validates the decoded operation against its sequence and HLC.
 func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) < receiptWALUnionHeaderSize || len(raw) > receiptWALUnionMaxBytes {
 		return nil, receiptWALUnionError("invalid payload size %d", len(raw))
@@ -186,12 +176,6 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		return decodeEdgeCreateWAL(body)
 	case receiptWALUnionGraphAddEffect:
 		return decodeGraphAddEffectWAL(body)
-	case receiptWALUnionBaseline:
-		marker, err := unmarshalReceiptBaselineMarker(body)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
-		}
-		return marker, nil
 	case receiptWALUnionVertexPut:
 		value, err := decodeReceiptVertexPutWAL(body)
 		if err != nil {
@@ -209,13 +193,11 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 	}
 }
 
-// The decoder API receives only payload bytes. A replay/restore visitor must
-// call this before applying an Entry; otherwise FileWAL's frame HLC has not
-// been compared with the payload HLC. The frame seq is replica-local and is
-// deliberately independent of the payload's origin-local seq.
+// Validate the decoded operation against its relay entry before applying it.
+// The enclosing sequence belongs to this replica. Each origin has its own sequence.
 func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 	if entry.Seq == 0 {
-		return receiptWALUnionError("zero FileWAL local seq")
+		return receiptWALUnionError("zero relay sequence")
 	}
 	switch value := entry.Op.(type) {
 	case *graphMutationEnvelope:
@@ -241,7 +223,7 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		copy(node[:], value.GetHlc().GetNodeId())
 		payloadHLC := hlc.Timestamp{WallNs: value.GetHlc().GetWallNs(), Logical: value.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
-			return receiptWALUnionError("FileWAL HLC differs from graph mutation HLC")
+			return receiptWALUnionError("relay HLC differs from graph mutation HLC")
 		}
 		return nil
 	case *graphDeleteEffectEnvelope:
@@ -253,7 +235,7 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		copy(node[:], m.GetHlc().GetNodeId())
 		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
-			return receiptWALUnionError("FileWAL HLC differs from graph Delete effect HLC")
+			return receiptWALUnionError("relay HLC differs from graph Delete effect HLC")
 		}
 		return nil
 	case *graphPutEffectEnvelope:
@@ -265,7 +247,7 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		copy(node[:], m.GetHlc().GetNodeId())
 		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
-			return receiptWALUnionError("FileWAL HLC differs from graph Put effect HLC")
+			return receiptWALUnionError("relay HLC differs from graph Put effect HLC")
 		}
 		return nil
 	case *graphAddEffectEnvelope:
@@ -277,7 +259,7 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		copy(node[:], m.GetHlc().GetNodeId())
 		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
-			return receiptWALUnionError("FileWAL HLC differs from graph Add effect HLC")
+			return receiptWALUnionError("relay HLC differs from graph Add effect HLC")
 		}
 		return nil
 	case *edgeCreateEnvelope:
@@ -306,11 +288,6 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		return nil
 	case *vertexDeleteReceiptEnvelope:
 		if err := validateReceiptVertexDeleteWALEntry(entry); err != nil {
-			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
-		}
-		return nil
-	case receiptBaselineMarker:
-		if err := validateReceiptBaselineEntry(entry.Seq, entry.HLC, value); err != nil {
 			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
 		}
 		return nil
