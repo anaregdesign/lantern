@@ -124,6 +124,15 @@ func (c *GraphCache[S, T]) storeEdgeLocked(ctx context.Context, rows *graphstore
 	if bucket != nil {
 		edge, sources = storageEdge(bucket)
 	}
+	if len(sources) == 0 {
+		if err := rows.DeleteSources(ctx, snapshot, batch, generation, k); err != nil {
+			return err
+		}
+		if bucket == nil {
+			return rows.DeleteEdge(batch, generation, k)
+		}
+		return rows.PutEdge(batch, generation, k, edge)
+	}
 	for entry, err := range rows.Sources(ctx, snapshot, generation, k) {
 		if err != nil {
 			return err
@@ -143,9 +152,6 @@ func (c *GraphCache[S, T]) storeEdgeLocked(ctx context.Context, rows *graphstore
 			return err
 		}
 	}
-	if bucket == nil {
-		return rows.DeleteEdge(batch, generation, k)
-	}
 	return rows.PutEdge(batch, generation, k, edge)
 }
 
@@ -155,7 +161,7 @@ func storageEdge(bucket *weight) (graphstore.Edge, map[graphstore.SourceID]graph
 	edge := graphstore.Edge{HLC: bucket.lastHLC, LastOrdinal: bucket.lastOrdinal}
 	sources := make(map[graphstore.SourceID]graphstore.Source, len(bucket.values))
 	for _, v := range bucket.values {
-		source := graphstore.Source{Weight: v.value, Expiration: v.expiration, HLC: v.hlc, DerivedAggregate: v.derivedAggregate}
+		source := v.storedSource()
 		if v.contribID.IsZero() && v.ordinal == 0 {
 			edge.Base = &source
 			continue

@@ -332,11 +332,12 @@ func cloneWeightForStaging(before *weight, now time.Time) *weight {
 		}
 		// The detached candidate owns the decoded buffer. Its first fold
 		// also journals any expired sources to remove if this stage commits.
-		after := &weight{values: values, lastHLC: before.lastHLC, lastOrdinal: before.lastOrdinal, needsSort: true, changes: make(sourceChanges)}
+		after := &weight{values: values, lastHLC: before.lastHLC, lastOrdinal: before.lastOrdinal, needsSort: true, changes: make(sourceChanges), load: before.load}
 		after.flushLockedAt(now)
 		return after
 	}
 	return &weight{
+		load:         before.load,
 		changes:      maps.Clone(before.changes),
 		values:       append([]weightValue(nil), before.values...),
 		sum:          before.sum,

@@ -27,6 +27,20 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	if c.searchIndex == nil {
+		return c.restoreStorageRows(ctx, rows, view, now, nil)
+	}
+	c.searchCommitMu.Lock()
+	defer c.searchCommitMu.Unlock()
+	return c.searchIndex.RebuildDocuments(func(yield func(S, search.Document, time.Time) error) error {
+		return c.restoreStorageRows(ctx, rows, view, now, yield)
+	})
+}
+
+// Build the Vertex descriptors and search documents from the same decoded
+// payload, then verify the Edge/Source and floor families before publishing
+// the new search index.
+func (c *GraphCache[S, T]) restoreStorageRows(ctx context.Context, rows *graphstore.Rows[S, T], view *graphstore.ReadView, now time.Time, indexDocument func(S, search.Document, time.Time) error) error {
 	c.storage.pending.observed = now
 	for entry, err := range rows.VerifiedVertices(ctx, view.Snapshot, view.Generation) {
 		if err != nil {
@@ -42,8 +56,13 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 		c.upsertVertexStorageLocked(entry.Key, zero, v.Expiration)
 		c.vertices.ReleaseValue(entry.Key)
 		c.recordVertexHLCLocked(entry.Key, v.HLC)
+		if indexDocument != nil {
+			if err := indexDocument(entry.Key, c.searchExtract(entry.Key, v.Value), v.Expiration); err != nil {
+				return err
+			}
+		}
 	}
-	for entry, err := range rows.Edges(ctx, view.Snapshot, view.Generation, "", "", nil, false) {
+	for entry, err := range rows.EdgeBuckets(ctx, view.Snapshot, view.Generation, "") {
 		if err != nil {
 			return err
 		}
@@ -55,13 +74,7 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 		if v := entry.Edge.Base; v != nil && cache.IsLiveAt(v.Expiration, now) {
 			bucket.values = append(bucket.values, weightValue{value: v.Weight, expiration: v.Expiration, hlc: v.HLC, derivedAggregate: v.DerivedAggregate})
 		}
-		for s, err := range rows.Sources(ctx, view.Snapshot, view.Generation, entry.Key) {
-			if err != nil {
-				return err
-			}
-			if s.ID.Ordinal > entry.Edge.LastOrdinal {
-				return graphstore.ErrInvalidRow
-			}
+		for _, s := range entry.Sources {
 			v := s.Source
 			if cache.IsLiveAt(v.Expiration, now) {
 				bucket.values = append(bucket.values, weightValue{value: v.Weight, expiration: v.Expiration, hlc: v.HLC, contribID: s.ID.ContribID, ordinal: s.ID.Ordinal})
@@ -90,27 +103,7 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 		}
 		c.restoreStorageFloor(entry.Key, entry.Floor, now)
 	}
-	if c.searchIndex == nil {
-		return ctx.Err()
-	}
-	// Traverse the original pin once. Loading every recovered cold vertex
-	// individually would acquire a new Tarp snapshot for every document.
-	c.searchCommitMu.Lock()
-	defer c.searchCommitMu.Unlock()
-	return c.searchIndex.RebuildDocuments(func(yield func(S, search.Document, time.Time) error) error {
-		for entry, err := range rows.Vertices(ctx, view.Snapshot, view.Generation, "", nil, false) {
-			if err != nil {
-				return err
-			}
-			v := entry.Vertex
-			if cache.IsLiveAt(v.Expiration, now) {
-				if err := yield(entry.Key, c.searchExtract(entry.Key, v.Value), v.Expiration); err != nil {
-					return err
-				}
-			}
-		}
-		return ctx.Err()
-	})
+	return ctx.Err()
 }
 
 func (c *GraphCache[S, T]) installRecoveredBucket(key graphstore.EdgeKey[S], bucket *weight) {

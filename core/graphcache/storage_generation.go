@@ -42,7 +42,7 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 			if chunk.err != nil {
 				break
 			}
-			src := graphstore.Source{Weight: v.value, Expiration: v.expiration, HLC: v.hlc, DerivedAggregate: v.derivedAggregate}
+			src := v.storedSource()
 			if v.contribID.IsZero() && v.ordinal == 0 {
 				edge.Base = &src
 				continue

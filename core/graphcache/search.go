@@ -342,15 +342,15 @@ func (c *GraphCache[S, T]) searchVerticesContext(ctx context.Context, query stri
 	if view := queryViewFromContext(ctx); view != nil {
 		// Restrict matching posting IDs before score/top-k selection. This
 		// does not enumerate the complete visible corpus or derive new DF/N.
-		ctx = search.WithCandidateFilter(ctx, func(id S) bool { return view.Vertex(c.queryProjection(id)) })
+		ctx = search.WithCandidateFilter(ctx, func(id S) bool {
+			return view.Vertex(c.queryProjection(id)) && (keyPrefix == "" || keyHasPrefix(prefixExtract, id, keyPrefix))
+		})
 		execute(nil)
 	} else if keyPrefix != "" && prefixIndex == nil && c.storagePrefixOrder && c.storage != nil {
-		execute(func(yield func(S) bool) {
-			c.walkStoredVertexKeys(ctx, keyPrefix, "", true, false, false, yield)
-		})
-		if err == nil {
-			err = c.StorageError()
-		}
+		// Intersect matching postings with the requested scope before scoring.
+		// A broad namespace can have many unindexed vertices and non-matches.
+		ctx = search.WithCandidateFilter(ctx, func(id S) bool { return keyHasPrefix(prefixExtract, id, keyPrefix) })
+		execute(nil)
 	} else if keyPrefix != "" && prefixIndex != nil {
 		// Establish radix -> inverted-index lock order and retain the radix read
 		// lock only for the synchronous query. Writers already mutate the prefix
