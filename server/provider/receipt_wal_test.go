@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"errors"
 	"io"
 	"os"
@@ -11,19 +10,14 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
-	"github.com/anaregdesign/lantern/server/internal/envconfig"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func validReceiptWALProviderConfig(path string, mode ReceiptWALMode) ReceiptWALConfig {
+func validReceiptWALProviderConfig(mode ReceiptWALMode) ReceiptWALConfig {
 	return ReceiptWALConfig{
 		Mode:       mode,
-		Path:       path,
 		Epoch:      mutationreceipt.Epoch{0x42},
 		Retention:  time.Hour,
 		MaxEntries: 32,
@@ -78,25 +72,12 @@ func TestOIDCPublicReceiptsCertificationRequiresExactManagedBackupper(t *testing
 	}
 }
 
-func restoreOnlyBackupTestConfig(t *testing.T, dir, instance string) backup.Config {
-	t.Helper()
-	input := []string{
-		"LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_DIR=" + dir,
-		"LANTERN_BACKUP_INSTANCE_ID=" + instance, "LANTERN_BACKUP_RESTORE_REQUIRED=true",
-	}
-	config := loadBackupConfig(envconfig.NewReader(input))
-	if config.Enabled {
-		t.Fatal("fixture unexpectedly enabled production")
-	}
-	return config
-}
-
 func TestValidateReceiptWALConfig(t *testing.T) {
 	replication := ReplicationConfig{NodeID: hlc.NodeID{0x31}, nodeIDExplicit: true}
 	if err := validateReceiptWALConfig(ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, backup.Config{}, ReplicationConfig{}); err != nil {
 		t.Fatalf("graph-only default: %v", err)
 	}
-	valid := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "receipts.wal"), ReceiptWALModeFresh)
+	valid := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 	if err := validateReceiptWALConfig(valid, backup.Config{}, replication); err != nil {
 		t.Fatalf("valid fresh config: %v", err)
 	}
@@ -119,25 +100,15 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		{
 			name: "graph-only mixed settings",
 			config: ReceiptWALConfig{
-				Mode: ReceiptWALModeGraphOnly,
-				Path: filepath.Join(t.TempDir(), "unused.wal"),
+				Mode:      ReceiptWALModeGraphOnly,
+				Retention: time.Hour,
 			},
 			want: "cannot be combined",
 		},
 		{
-			name:   "missing path",
-			config: validReceiptWALProviderConfig("", ReceiptWALModeFresh),
-			want:   "absolute path",
-		},
-		{
-			name:   "relative path",
-			config: validReceiptWALProviderConfig("receipts.wal", ReceiptWALModeFresh),
-			want:   "absolute path",
-		},
-		{
 			name: "zero epoch",
 			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "zero.wal"), ReceiptWALModeFresh)
+				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 				config.Epoch = mutationreceipt.Epoch{}
 				return config
 			}(),
@@ -146,7 +117,7 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		{
 			name: "short retention",
 			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "short.wal"), ReceiptWALModeFresh)
+				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 				config.Retention = time.Minute
 				return config
 			}(),
@@ -155,7 +126,7 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		{
 			name: "sub-millisecond retention",
 			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "precision.wal"), ReceiptWALModeFresh)
+				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 				config.Retention = time.Hour + time.Nanosecond
 				return config
 			}(),
@@ -164,7 +135,7 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		{
 			name: "zero entries",
 			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "entries.wal"), ReceiptWALModeFresh)
+				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 				config.MaxEntries = 0
 				return config
 			}(),
@@ -173,7 +144,7 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		{
 			name: "zero bytes",
 			config: func() ReceiptWALConfig {
-				config := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "bytes.wal"), ReceiptWALModeFresh)
+				config := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 				config.MaxBytes = 0
 				return config
 			}(),
@@ -181,13 +152,13 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 		},
 		{
 			name:    "required restore disabled",
-			config:  validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "restore.wal"), ReceiptWALModeFresh),
+			config:  validReceiptWALProviderConfig(ReceiptWALModeFresh),
 			backups: backup.Config{RestoreRequired: true},
 			want:    "RESTORE_REQUIRED requires",
 		},
 	}
 	if err := validateReceiptWALConfig(
-		validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "backup.wal"), ReceiptWALModeFresh),
+		validReceiptWALProviderConfig(ReceiptWALModeFresh),
 		backup.Config{Enabled: true},
 		replication,
 	); err != nil {
@@ -216,7 +187,7 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
-	t.Setenv("LANTERN_RECEIPT_WAL_PATH", path)
+	t.Setenv("LANTERN_DATA_DIR", path)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "42424242424242424242424242424242")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "2h")
 	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "37")
@@ -230,7 +201,7 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if config.ReceiptWAL.Mode != ReceiptWALModeRestart ||
-		config.ReceiptWAL.Path != path ||
+		config.Cache.DataDir != path ||
 		config.ReceiptWAL.Epoch != (mutationreceipt.Epoch{
 			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
 			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
@@ -247,7 +218,7 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 	}
 
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
-	t.Setenv("LANTERN_RECEIPT_WAL_PATH", "")
+	t.Setenv("LANTERN_DATA_DIR", "")
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "")
 	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "")
@@ -257,13 +228,13 @@ func TestLoadReceiptWALConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("graph-only random NodeID fallback: %v", err)
 	}
-	if graphOnly.Replication.NodeID == (hlc.NodeID{}) || graphOnly.Replication.nodeIDExplicit {
+	if graphOnly.Replication.NodeID != (hlc.NodeID{}) || graphOnly.Replication.nodeIDExplicit {
 		t.Fatalf("graph-only fallback NodeID = %x, explicit %v", graphOnly.Replication.NodeID, graphOnly.Replication.nodeIDExplicit)
 	}
 }
 
 func TestNewServingRuntimeSelectsExplicitMode(t *testing.T) {
-	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{DataDir: filepath.Join(t.TempDir(), "graph"), TTL: time.Hour}}
 	searchConfig := SearchConfig{Enabled: true, Positions: true}
 	logConfig := MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}
 	replicationConfig := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
@@ -286,551 +257,13 @@ func TestNewServingRuntimeSelectsExplicitMode(t *testing.T) {
 	cleanup()
 }
 
-func TestNewServingRuntimeFreshRestoreAndNoBackupPolicy(t *testing.T) {
-	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
-	searchConfig := SearchConfig{}
-	logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
-	node := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
-	backupDir := t.TempDir()
-	instance := "fresh-restore"
-	sourcePath := filepath.Join(t.TempDir(), "source.wal")
-	sourceConfig := validReceiptWALProviderConfig(sourcePath, ReceiptWALModeFresh)
-	produceProviderReceiptBackup(
-		t,
-		sourceConfig,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: backupDir, Interval: time.Hour,
-			Retain: 1, InstanceID: instance,
-		},
-		false,
-	)
-
-	targetConfig := validReceiptWALProviderConfig(
-		filepath.Join(t.TempDir(), "fresh-restored.wal"),
-		ReceiptWALModeFresh,
-	)
-	targetConfig.Epoch[0] ^= 1
-	restoreConfig := restoreOnlyBackupTestConfig(t, backupDir, instance)
-	if !restoreConfig.RestoreOnStart {
-		t.Fatal("production-disabled fresh restore was suppressed")
-	}
-	interruptedConfig := targetConfig
-	interruptedConfig.Path = filepath.Join(t.TempDir(), "interrupted-fresh.wal")
-	interrupted, interruptedCleanup, err := NewServingRuntime(
-		interruptedConfig,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		restoreConfig,
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := interrupted.GraphCache().GetVertex("startup-restored"); ok {
-		interruptedCleanup()
-		t.Fatal("interrupted fresh restore exposed the archived graph")
-	}
-	interruptedCleanup()
-	interruptedConfig.Mode = ReceiptWALModeRestart
-	if runtime, cleanup, err := NewServingRuntime(
-		interruptedConfig,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{},
-		nil,
-	); runtime != nil || cleanup != nil ||
-		err == nil || !strings.Contains(err.Error(), "requires its committed startup restore baseline") {
-		if cleanup != nil {
-			cleanup()
-		}
-		t.Fatalf("interrupted fresh restore restart = %p, %v, %v", runtime, cleanup != nil, err)
-	}
-
-	runtime, cleanup, err := NewServingRuntime(
-		targetConfig,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		restoreConfig,
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-	if _, ok := runtime.GraphCache().GetVertex("startup-restored"); ok {
-		t.Fatal("fresh backup graph became visible before the restore barrier")
-	}
-	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
-	if _, err := NewRuntimeRestored(runtime, primary); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := runtime.GraphCache().GetVertex("startup-restored"); !ok {
-		t.Fatal("fresh restore did not publish the archived graph")
-	}
-	if matches, err := filepath.Glob(targetConfig.Path + ".receipt.*.baseline"); err != nil ||
-		len(matches) != 1 {
-		t.Fatalf("fresh restore baseline sidecars = %v, %v; want one", matches, err)
-	}
-	optOut := validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "explicit-empty.wal"), ReceiptWALModeFresh)
-	optOut.Epoch[0] ^= 3
-	optOutBackup := loadBackupConfig(envconfig.NewReader([]string{
-		"LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_DIR=" + backupDir,
-		"LANTERN_BACKUP_INSTANCE_ID=" + instance, "LANTERN_BACKUP_RESTORE_ON_START=false",
-	}))
-	optOutRuntime, optOutCleanup, err := NewServingRuntime(
-		optOut, cacheConfig, searchConfig, logConfig, node,
-		optOutBackup, nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewRuntimeRestored(optOutRuntime, optOutRuntime.NewExecutor(nil).WithTombstoneTTL(time.Hour)); err != nil {
-		optOutCleanup()
-		t.Fatal(err)
-	}
-	if _, ok := optOutRuntime.GraphCache().GetVertex("startup-restored"); ok {
-		optOutCleanup()
-		t.Fatal("explicit restore opt-out imported backup data")
-	}
-	optOutCleanup()
-
-	optional := validReceiptWALProviderConfig(
-		filepath.Join(t.TempDir(), "optional-empty.wal"),
-		ReceiptWALModeFresh,
-	)
-	optionalRuntime, optionalCleanup, err := NewServingRuntime(
-		optional,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: t.TempDir(), InstanceID: "missing",
-			RestoreOnStart: true,
-		},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("optional missing fresh backup: %v", err)
-	}
-	optionalPrimary := optionalRuntime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
-	if _, err := NewRuntimeRestored(optionalRuntime, optionalPrimary); err != nil {
-		t.Fatal(err)
-	}
-	optionalCleanup()
-
-	requiredPath := filepath.Join(t.TempDir(), "required-missing.wal")
-	required := validReceiptWALProviderConfig(requiredPath, ReceiptWALModeFresh)
-	if runtime, cleanup, err := NewServingRuntime(
-		required,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: t.TempDir(), InstanceID: "missing",
-			RestoreOnStart: true, RestoreRequired: true,
-		},
-		nil,
-	); runtime != nil || cleanup != nil || !errors.Is(err, backup.ErrReceiptBackupSetNotFound) {
-		if cleanup != nil {
-			cleanup()
-		}
-		t.Fatalf("required missing fresh backup = %p, %v, %v", runtime, cleanup != nil, err)
-	}
-	if _, err := os.Stat(requiredPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("required missing restore created WAL bytes: %v", err)
-	}
-
-	archives, err := filepath.Glob(filepath.Join(backupDir, "*.active.lar"))
-	if err != nil || len(archives) != 1 {
-		t.Fatalf("fresh backup archives = %v, %v", archives, err)
-	}
-	if err := os.WriteFile(archives[0], []byte("corrupt selected backup"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	invalidPath := filepath.Join(t.TempDir(), "optional-invalid.wal")
-	invalid := validReceiptWALProviderConfig(invalidPath, ReceiptWALModeFresh)
-	invalid.Epoch[0] ^= 2
-	if runtime, cleanup, err := NewServingRuntime(
-		invalid,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: backupDir, InstanceID: instance,
-			RestoreOnStart: true,
-		},
-		nil,
-	); runtime != nil || cleanup != nil || err == nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		t.Fatalf("optional invalid fresh backup = %p, %v, %v", runtime, cleanup != nil, err)
-	}
-	if _, err := os.Stat(invalidPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("optional invalid restore created WAL bytes: %v", err)
-	}
-}
-
-func TestNewServingRuntimeRestartFallsBackOnlyForMissingBaseline(t *testing.T) {
-	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
-	searchConfig := SearchConfig{}
-	logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
-	node := ReplicationConfig{NodeID: hlc.NodeID{0x52}, nodeIDExplicit: true}
-	backupDir := t.TempDir()
-	instance := "restart-restore"
-	path := filepath.Join(t.TempDir(), "restart.wal")
-	freshConfig := validReceiptWALProviderConfig(path, ReceiptWALModeFresh)
-	produceProviderReceiptBackup(
-		t,
-		freshConfig,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: backupDir, Interval: time.Hour,
-			Retain: 1, InstanceID: instance,
-		},
-		true,
-	)
-	sidecars, err := filepath.Glob(path + ".receipt.*.baseline")
-	if err != nil || len(sidecars) != 1 {
-		t.Fatalf("source baseline sidecars = %v, %v", sidecars, err)
-	}
-	if err := os.Remove(sidecars[0]); err != nil {
-		t.Fatal(err)
-	}
-
-	restart := freshConfig
-	restart.Mode = ReceiptWALModeRestart
-	if runtime, cleanup, err := NewServingRuntime(
-		restart,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: t.TempDir(), InstanceID: "missing",
-			RestoreOnStart: true,
-		},
-		nil,
-	); runtime != nil || cleanup != nil ||
-		!errors.Is(err, backup.ErrReceiptBackupSetNotFound) {
-		if cleanup != nil {
-			cleanup()
-		}
-		t.Fatalf("optional missing restart backup = %p, %v, %v", runtime, cleanup != nil, err)
-	}
-	restoreConfig := restoreOnlyBackupTestConfig(t, backupDir, instance)
-	if !restoreConfig.RestoreOnStart {
-		t.Fatal("production-disabled eligible fallback was suppressed")
-	}
-	runtime, cleanup, err := NewServingRuntime(
-		restart,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		restoreConfig,
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
-	if _, err := NewRuntimeRestored(runtime, primary); err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	if _, ok := runtime.GraphCache().GetVertex("startup-restored"); !ok {
-		cleanup()
-		t.Fatal("restart fallback did not publish the archived graph")
-	}
-	cleanup()
-
-	_, cleanup, err = NewServingRuntime(
-		restart,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("restored runtime did not become a normal restart: %v", err)
-	}
-	cleanup()
-}
-
-func TestNewServingRuntimePrefersValidRestartOverInvalidBackup(t *testing.T) {
-	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
-	searchConfig := SearchConfig{}
-	logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
-	node := ReplicationConfig{NodeID: hlc.NodeID{0x53}, nodeIDExplicit: true}
-	backupDir := t.TempDir()
-	instance := "prefer-current"
-	path := filepath.Join(t.TempDir(), "current.wal")
-	freshConfig := validReceiptWALProviderConfig(path, ReceiptWALModeFresh)
-	produceProviderReceiptBackup(
-		t,
-		freshConfig,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{
-			Enabled: true, Dir: backupDir, Interval: time.Hour,
-			Retain: 1, InstanceID: instance,
-		},
-		false,
-	)
-	archives, err := filepath.Glob(filepath.Join(backupDir, "*.active.lar"))
-	if err != nil || len(archives) != 1 {
-		t.Fatalf("backup archives = %v, %v", archives, err)
-	}
-	if err := os.WriteFile(archives[0], []byte("corrupt newest"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	restart := freshConfig
-	restart.Mode = ReceiptWALModeRestart
-	runtime, cleanup, err := NewServingRuntime(
-		restart,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		restoreOnlyBackupTestConfig(t, backupDir, instance),
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("valid current WAL consulted invalid backup: %v", err)
-	}
-	defer cleanup()
-	if _, ok := runtime.GraphCache().GetVertex("startup-restored"); !ok {
-		t.Fatal("valid current WAL lost graph state")
-	}
-}
-
-func TestNewServingRuntimeRestartRejectsIneligibleFallbacks(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		mutate func(*testing.T, string) func()
-	}{
-		{
-			name: "lease held",
-			mutate: func(t *testing.T, path string) func() {
-				t.Helper()
-				lease, err := mutationlog.AcquireFileWALLease(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				return func() {
-					if err := lease.Close(); err != nil {
-						t.Fatal(err)
-					}
-				}
-			},
-		},
-		{
-			name: "corrupt WAL",
-			mutate: func(t *testing.T, path string) func() {
-				t.Helper()
-				file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := file.Write([]byte("ambiguous trailing WAL bytes")); err != nil {
-					_ = file.Close()
-					t.Fatal(err)
-				}
-				if err := file.Close(); err != nil {
-					t.Fatal(err)
-				}
-				return func() {}
-			},
-		},
-		{
-			name: "corrupt tip journal",
-			mutate: func(t *testing.T, path string) func() {
-				t.Helper()
-				if err := os.WriteFile(path+".tip", []byte("corrupt"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				return func() {}
-			},
-		},
-		{
-			name: "corrupt clock journal",
-			mutate: func(t *testing.T, path string) func() {
-				t.Helper()
-				if err := os.WriteFile(path+".clock", []byte("corrupt"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				return func() {}
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
-			searchConfig := SearchConfig{}
-			logConfig := MutationLogConfig{Capacity: 16, SubscriberBuffer: 2}
-			node := ReplicationConfig{NodeID: hlc.NodeID{0x54}, nodeIDExplicit: true}
-			backupDir := t.TempDir()
-			instance := "ineligible-" + strings.ReplaceAll(tc.name, " ", "-")
-			path := filepath.Join(t.TempDir(), "current.wal")
-			freshConfig := validReceiptWALProviderConfig(path, ReceiptWALModeFresh)
-			produceProviderReceiptBackup(
-				t,
-				freshConfig,
-				cacheConfig,
-				searchConfig,
-				logConfig,
-				node,
-				backup.Config{
-					Enabled: true, Dir: backupDir, Interval: time.Hour,
-					Retain: 1, InstanceID: instance,
-				},
-				true,
-			)
-			archives, err := filepath.Glob(filepath.Join(backupDir, "*.active.lar"))
-			if err != nil || len(archives) != 1 {
-				t.Fatalf("backup archives = %v, %v", archives, err)
-			}
-			if err := os.WriteFile(archives[0], []byte("must not be read"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			release := tc.mutate(t, path)
-			defer release()
-
-			restart := freshConfig
-			restart.Mode = ReceiptWALModeRestart
-			runtime, cleanup, err := NewServingRuntime(
-				restart,
-				cacheConfig,
-				searchConfig,
-				logConfig,
-				node,
-				backup.Config{
-					Enabled: true, Dir: backupDir, InstanceID: instance,
-					RestoreOnStart: true, RestoreRequired: true,
-				},
-				nil,
-			)
-			if runtime != nil || cleanup != nil || err == nil {
-				if cleanup != nil {
-					cleanup()
-				}
-				t.Fatalf("ineligible fallback = %p, %v, %v", runtime, cleanup != nil, err)
-			}
-			if strings.Contains(err.Error(), "load restart receipt startup backup") {
-				t.Fatalf("ineligible current failure consulted backup: %v", err)
-			}
-		})
-	}
-}
-
-func produceProviderReceiptBackup(
-	t *testing.T,
-	config ReceiptWALConfig,
-	cacheConfig CacheConfig,
-	searchConfig SearchConfig,
-	logConfig MutationLogConfig,
-	node ReplicationConfig,
-	backupConfig backup.Config,
-	installBaseline bool,
-) {
-	t.Helper()
-	runtime, cleanup, err := NewServingRuntime(
-		config,
-		cacheConfig,
-		searchConfig,
-		logConfig,
-		node,
-		backup.Config{},
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
-	replication, err := runtime.NewReplication(primary)
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	restored, err := NewRuntimeRestored(runtime, primary)
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	certified, err := NewRuntimeCertified(runtime, primary, replication, restored, NetConfig{})
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	if _, err := primary.PutVertex(context.Background(), &pb.PutVertexRequest{
-		Vertex: &pb.Vertex{
-			Key:        "startup-restored",
-			Value:      &pb.Vertex_Nil{Nil: true},
-			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
-		},
-	}); err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	source, policy, err := runtime.ReceiptWholeStateBackupSource(
-		primary,
-		certified.replication,
-	)
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	if installBaseline {
-		capture, err := source.Capture(context.Background(), policy)
-		if err != nil {
-			cleanup()
-			t.Fatal(err)
-		}
-		if err := primary.InstallReceiptBaseline(context.Background(), capture); err != nil {
-			cleanup()
-			t.Fatal(err)
-		}
-	}
-	backupper, err := backup.NewReceipt(primary, source, policy, backupConfig, nil, nil)
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	if _, err := backupper.BackupNow(context.Background()); err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-	cleanup()
-}
-
 func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
-	cacheConfig := CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}}
+	cacheConfig := CacheConfig{CacheSettings: CacheSettings{DataDir: filepath.Join(t.TempDir(), "graph"), TTL: time.Hour}}
 	searchConfig := SearchConfig{Enabled: true, Positions: true}
 	logConfig := MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}
 	replicationConfig := ReplicationConfig{NodeID: hlc.NodeID{0x51}, nodeIDExplicit: true}
-	path := filepath.Join(t.TempDir(), "receipts.wal")
-	freshConfig := validReceiptWALProviderConfig(path, ReceiptWALModeFresh)
+	path := cacheConfig.DataDir
+	freshConfig := validReceiptWALProviderConfig(ReceiptWALModeFresh)
 	implicitNode := replicationConfig
 	implicitNode.nodeIDExplicit = false
 	if runtime, cleanup, err := NewServingRuntime(
@@ -916,7 +349,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 		t.Helper()
 		runtime, cleanup, err := NewServingRuntime(
 			ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly},
-			CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour}},
+			CacheConfig{CacheSettings: CacheSettings{DataDir: t.TempDir(), TTL: time.Hour}},
 			SearchConfig{},
 			MutationLogConfig{Capacity: 8},
 			ReplicationConfig{NodeID: hlc.NodeID{0x61}},

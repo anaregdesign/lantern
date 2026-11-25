@@ -45,7 +45,7 @@ func TestNativeListenerLaunchLifecycle(t *testing.T) {
 	binary := fixtureServerBinary(t)
 	failRestore := func(env map[string]string, dir string) {
 		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"
-		env["LANTERN_RECEIPT_WAL_PATH"] = filepath.Join(dir, "missing-receipts.wal")
+		env["LANTERN_DATA_DIR"] = filepath.Join(dir, "missing-receipts.wal")
 		env["LANTERN_RECEIPT_EPOCH"] = "42424242424242424242424242424242"
 		env["LANTERN_RECEIPT_RETENTION"] = "1h"
 		env["LANTERN_RECEIPT_MAX_ENTRIES"] = "32"

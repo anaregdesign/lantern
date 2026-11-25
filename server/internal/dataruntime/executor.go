@@ -639,6 +639,10 @@ func (s *Executor) ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Tim
 	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
+	tarpSnapshot := s.runtime != nil && s.runtime.tarp != nil
+	if tarpSnapshot && !s.snapshotInstallFaulted {
+		return errors.New("Tarp snapshot cutoffs require an active verified install")
+	}
 	if s.pendingLocalMutation != nil {
 		local := s.clock.NodeID()
 		for _, item := range validated {
@@ -654,6 +658,12 @@ func (s *Executor) ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Tim
 				s.dropPending(item.origin, seq)
 			}
 		}
+	}
+	if tarpSnapshot {
+		if ts != (hlc.Timestamp{}) {
+			s.clock.Update(ts)
+		}
+		return nil // publish the verified merged generation before replaying its pending tail
 	}
 	for _, item := range validated {
 		if err := s.drainRemoteOrigin(context.Background(), item.origin); err != nil {
@@ -725,7 +735,7 @@ func (s *Executor) appendPreparedLocalMutationLocked(effect mutationlog.Mutation
 	}
 	origin := s.clock.NodeID()
 	ts := hlcFromProto(mutation.GetHlc())
-	_, err = s.log.Append(effect, ts)
+	err = s.appendGraphLog(effect, ts)
 	if err != nil {
 		return err
 	}
@@ -1021,11 +1031,17 @@ func (s *Executor) GetVertices(ctx context.Context, request *pb.GetVerticesReque
 	resp := &pb.GetVerticesResponse{
 		Vertices: make([]*pb.Vertex, 0, len(keys)),
 	}
-	if err := s.withPublicGraphReadRetry(ctx, func() error {
+	if err := s.withGraphRows(ctx, func(read graphRead) error {
 		resp.Vertices = resp.Vertices[:0]
 		resp.Missing = resp.Missing[:0]
 		for _, k := range keys {
-			v, ok := s.cache.GetVertex(k)
+			if err := ctx.Err(); err != nil {
+				return ctxToConnect(err)
+			}
+			v, ok, err := read.vertex(k)
+			if err != nil {
+				return err
+			}
 			if !ok {
 				resp.Missing = append(resp.Missing, k)
 				continue
@@ -1567,10 +1583,13 @@ func (s *Executor) GetEdges(ctx context.Context, request *pb.GetEdgesRequest) (*
 	for i, k := range in {
 		keys[i] = graphcache.EdgeKey[string]{Tail: k.GetTail(), Head: k.GetHead()}
 	}
-	if err := s.withPublicGraphReadRetry(ctx, func() error {
+	if err := s.withGraphRows(ctx, func(read graphRead) error {
 		resp.Edges = resp.Edges[:0]
 		resp.Missing = resp.Missing[:0]
-		details := s.cache.GetEdgeDetails(keys)
+		details, err := read.edges(ctx, keys)
+		if err != nil {
+			return err
+		}
 		if len(details) != len(keys) {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("edge batch read returned %d results for %d keys", len(details), len(keys)))
 		}

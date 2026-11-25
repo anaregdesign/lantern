@@ -973,30 +973,15 @@ installs cannot reap it. Cleanup failure after commit is logged as an
 operational error while the install still reports the already-committed
 outcome.
 
-The sole production composition boundary selects
-`LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
-default and preserves the historical in-memory graph, NopWAL-backed Log, HLC,
-and graph-only backup restore. `fresh` and `restart` require an absolute
-`LANTERN_RECEIPT_WAL_PATH`, a nonzero `LANTERN_RECEIPT_EPOCH`, and explicit
-immutable retention, entry-cap, and logical-byte-cap policy. They also require
-an explicitly configured, nonzero `LANTERN_NODE_ID`; graph-only mode retains
-the historical random-per-boot fallback, but durable mode must not resume a
-local Log at sequence N+1 under a new origin. They certify one owned
-graph/Store/origin/Log/HLC/epoch/generation bundle before constructing either
-service, the primary listener, metrics server, or replication pump.
-Wire cleanup releases later owners before this bundle, and `App` retains the
-bundle until all serving goroutines stop. Durable mode selects receipt-set
-production from the exact certified runtime and performs durable restore in a
-private identity-bearing barrier before `NewRuntimeCertified`. Snapshot
-installer, Pump, anti-entropy, and backup construction follow that barrier.
-After the exact production backup source is certified, a separate public
-receipt barrier activates capability, status, and receipt-bearing Vertex Put,
-exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and
-targeted Edge contribution Delete only
-when bearer authentication is configured; primary listener construction
-follows that decision. Graph-only mode alone keeps the
-historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
-metrics, and behavior are unchanged.
+The production runtime uses one Tarp database per node in `LANTERN_DATA_DIR`.
+`LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart` controls receipt support.
+All three modes retain the graph, relay history, causal floors and node identity
+across restarts. Receipt-enabled nodes additionally bind the explicitly configured
+node ID, deployment epoch, retention and capacity policy to the database.
+`fresh` initializes a new receipt domain. `restart` verifies and opens it.
+The runtime validates the private backup and replication boundaries before
+admitting authorized public receipt operations. Physical backup and startup
+restore use the same Tarp database in every mode.
 
 Durable runtime selection alone does not enable the public surface.
 Graph-only, auth-disabled, recovering, faulted, closed, or otherwise

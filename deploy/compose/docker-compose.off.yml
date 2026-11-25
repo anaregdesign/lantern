@@ -8,6 +8,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+    volumes:
+      - node-data:/var/lib/lantern/runtime
     stop_grace_period: 45s
     environment:
       LANTERN_AUTH_MODE: "off"
@@ -36,3 +38,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+
+volumes:
+  node-data: {}

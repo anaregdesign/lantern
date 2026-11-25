@@ -516,7 +516,7 @@ func mountClusterRecoveryReceiptProtocolServer(
 		t.Fatal(err)
 	}
 	receiptConfig := provider.ReceiptWALConfig{
-		Mode: mode, Path: config.Path,
+		Mode: mode,
 		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
 		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
 	}

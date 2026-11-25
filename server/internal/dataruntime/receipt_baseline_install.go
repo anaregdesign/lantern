@@ -2,6 +2,7 @@ package dataruntime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -42,7 +43,7 @@ func (s *Executor) installReceiptBaseline(
 		return err
 	}
 	if s == nil || s.runtime == nil || s.runtime.receipt == nil ||
-		s.runtime.receipt.owner == nil || s.runtime.receipt.baselineCodec == nil ||
+		(s.runtime.receipt.owner == nil && s.runtime.tarp == nil) || s.runtime.receipt.baselineCodec == nil ||
 		s.runtime.receipt.operationAdmission == nil ||
 		s.cache != s.runtime.graph || s.log != s.runtime.log ||
 		s.clock != s.runtime.clock || s.origins != s.runtime.origins ||
@@ -98,9 +99,9 @@ func (s *Executor) installReceiptBaseline(
 		return fmt.Errorf("%w: active and retired baseline high-water differs", errReceiptBaselineMarker)
 	}
 	graphFrames := cloneReceiptBaselineGraphFrames(capture.Graph)
-	sidecars := receiptBaselineSidecarStore{
-		walPath: receiptRuntime.owner.lease.Path(),
-		fault:   receiptRuntime.sidecarFault,
+	var sidecars receiptBaselineSidecarStore
+	if s.runtime.tarp == nil {
+		sidecars = receiptBaselineSidecarStore{walPath: receiptRuntime.owner.lease.Path(), fault: receiptRuntime.sidecarFault}
 	}
 	for attempt := 0; attempt < receiptBaselineInstallMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -120,6 +121,26 @@ func (s *Executor) installReceiptBaseline(
 		if err != nil {
 			return fmt.Errorf("service: encode combined receipt baseline: %w", err)
 		}
+		if s.runtime.tarp != nil {
+			target, ledger, e := s.stageTarpReceiptBaseline(ctx, prepared)
+			if e != nil {
+				return e
+			}
+			digest := sha256.Sum256(raw)
+			var attempted bool
+			e = func() error {
+				defer target.Abort()
+				return s.commitReceiptBaselineAttempt(ctx, receiptRuntime, policyStore.PolicyFingerprint(), observed, prepared.candidate, raw, digest, &attempted, &tarpReceiptInstall{target: target, ledger: ledger, originCount: len(prepared.candidate.Origins)})
+			}()
+			if e == nil {
+				receiptRuntime.committedBaseline = receiptBaselineReference{Format: ReceiptBaselineFormatCombined, Digest: digest}
+				return nil
+			}
+			if errors.Is(e, errReceiptBaselineInstallDrift) {
+				continue
+			}
+			return e
+		}
 		committed := receiptRuntime.committedBaseline
 		digest, _, err := sidecars.persist(ReceiptBaselineFormatCombined, raw)
 		if err != nil {
@@ -137,7 +158,7 @@ func (s *Executor) installReceiptBaseline(
 			prepared.candidate,
 			raw,
 			digest,
-			&markerMayBeDurable,
+			&markerMayBeDurable, nil,
 		)
 		if err == nil {
 			reference := receiptBaselineReference{
@@ -341,10 +362,11 @@ func (s *Executor) commitReceiptBaselineAttempt(
 	raw []byte,
 	digest [32]byte,
 	markerMayBeDurable *bool,
+	tarpInstall *tarpReceiptInstall,
 ) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			if !*markerMayBeDurable {
+			if !*markerMayBeDurable && tarpInstall == nil {
 				if cleanupErr := (receiptBaselineSidecarStore{
 					walPath: receiptRuntime.owner.lease.Path(),
 				}).cleanup(receiptRuntime.committedBaseline); cleanupErr != nil {
@@ -470,21 +492,25 @@ func (s *Executor) commitReceiptBaselineAttempt(
 			}
 		}()
 		*markerMayBeDurable = true
-		_, err = s.log.CommitBoundaryWithPostRingPublication(
-			marker,
-			marker.RestoreFloor,
-			func(mutationlog.Entry) {
-				if fault := receiptRuntime.injectInstallFault(receiptBaselineAfterMarkerBeforePublish); fault != nil {
-					panic(fault)
-				}
-				receiptRuntime.generation = rotatedGeneration
-				clockStage.Commit()
-				originStage.Commit()
-				graphStage.Commit()
-				retiredStage.Commit()
-				storeStage.Commit()
-			},
-		)
+		release := func(mutationlog.Entry) {
+			if fault := receiptRuntime.injectInstallFault(receiptBaselineAfterMarkerBeforePublish); fault != nil {
+				panic(fault)
+			}
+			receiptRuntime.generation = rotatedGeneration
+			clockStage.Commit()
+			originStage.Commit()
+			graphStage.Commit()
+			retiredStage.Commit()
+			storeStage.Commit()
+			if tarpInstall != nil {
+				s.runtime.graph.StorageGenerationPublished()
+			}
+		}
+		if tarpInstall != nil {
+			err = s.publishTarpReceiptBaseline(ctx, tarpInstall, marker, release)
+		} else {
+			_, err = s.log.CommitBoundaryWithPostRingPublication(marker, marker.RestoreFloor, release)
+		}
 		if err != nil {
 			if receiptBaselineWALFailureRequiresFailStop(err) {
 				s.markReceiptCommitFaultLocked()

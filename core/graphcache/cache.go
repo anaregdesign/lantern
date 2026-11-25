@@ -17,7 +17,8 @@ import (
 const neighborParallelThreshold = 8
 
 type GraphCache[S comparable, T any] struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
+	storage *storageResidency[S, T]
 	// systemMetadata is an opt-in reserved, nonexpiring image owned by this
 	// cache. It has independent admission and locking; ordinary graph paths,
 	// indexes, snapshots and GC never visit it.

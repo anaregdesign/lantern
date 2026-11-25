@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -16,7 +15,6 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -53,7 +51,7 @@ func TestNewAppRejectsMismatchedGraphWatcherBeforeOtherSetup(t *testing.T) {
 		server := (&service.LanternServer{}).WithShutdownPlan(plan)
 		app, err := newApp(nil, nil, primary, server, plan, candidate,
 			nil, nil, nil, nil, nil, nil, nil, provider.ShutdownConfig{},
-			nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
+			nil, provider.PeerConfig{},
 			nil, data, nil, nil, nil, nil, provider.PeerPlaneConfig{},
 			provider.DomainMetricsWired{}, provider.CacheGCHooksWired{})
 		if err == nil || app != nil {
@@ -89,7 +87,7 @@ func TestNewAppRejectsMismatchedShutdownPlanBeforeOtherSetup(t *testing.T) {
 	for _, candidate := range []*service.ShutdownPlan{nil, other} {
 		app, err := newApp(nil, nil, primary, server, candidate, graphOwner,
 			nil, nil, nil, nil, nil, nil, nil, provider.ShutdownConfig{},
-			nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
+			nil, provider.PeerConfig{},
 			nil, data, nil, nil, nil, nil, provider.PeerPlaneConfig{},
 			provider.DomainMetricsWired{}, provider.CacheGCHooksWired{})
 		if err == nil || app != nil {
@@ -135,11 +133,7 @@ func TestDrainPhaseWithPlanCapturesAfterCancellationBeforeBegin(t *testing.T) {
 	}
 }
 
-func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestAppRunClosesMutationLogOnCanceledStartup(t *testing.T) {
 	log := mutationlog.New(mutationlog.Options{})
 	runtime, err := dataruntime.NewGraphOnlyServingRuntime(
 		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
@@ -149,16 +143,14 @@ func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &App{
-		backupper:  backup.New(nil, backup.Config{RestoreOnStart: true, Dir: path}, nil, nil),
-		restoreReq: true,
-		runtime:    runtime,
-	}
+	app := &App{runtime: runtime}
 	cleanupFailure := errors.New("security abort cleanup failure")
 	lifecycle := &appTestSecurityLifecycle{closeErr: cleanupFailure}
 	app.security = lifecycle
-	if err := app.Run(context.Background()); !errors.Is(err, cleanupFailure) || lifecycle.closed != 1 || lifecycle.orderly != 0 {
-		t.Fatal("required restore failure hid abort cleanup or declared CLEAN", err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := app.Run(ctx); !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupFailure) || lifecycle.closed != 1 || lifecycle.orderly != 0 {
+		t.Fatal("startup cancellation hid abort cleanup or declared CLEAN", err)
 	}
 	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
 		t.Fatalf("Log after failed startup = %v, want closed", err)

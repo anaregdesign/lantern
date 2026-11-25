@@ -14,14 +14,16 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
+	"github.com/anaregdesign/tarp"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -101,7 +103,7 @@ func setDurableRuntimeEnv(t *testing.T, mode, path string, port int) {
 	t.Setenv("LANTERN_PORT", strconv.Itoa(port))
 	t.Setenv("LANTERN_NODE_ID", "31313131313131313131313131313131")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", mode)
-	t.Setenv("LANTERN_RECEIPT_WAL_PATH", path)
+	t.Setenv("LANTERN_DATA_DIR", path)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "42424242424242424242424242424242")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "1h")
 	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "32")
@@ -120,44 +122,23 @@ func reserveRuntimeTestPort(t *testing.T) (net.Listener, int) {
 	return listener, port
 }
 
-func durableRuntimeClockHighWater(t *testing.T, path string) int64 {
+func durableRuntimeCut(t *testing.T, path string) dataruntime.TarpBackupWitness {
 	t.Helper()
-	lease, err := mutationlog.AcquireFileWALLease(path)
+	db, err := graphstore.OpenExisting(t.Context(), path, hlc.NodeID{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := lease.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}()
-	config := mutationreceipt.Config{
-		Epoch: mutationreceipt.Epoch{
-			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
-			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
-		},
-		Retention:  time.Hour,
-		MaxEntries: 32,
-		MaxBytes:   1 << 20,
-	}
-	store, err := mutationreceipt.New(config)
+	defer db.Close()
+	view, err := db.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal, err := mutationreceipt.ResumeClockJournal(
-		lease.Path(),
-		config.Epoch,
-		store.PolicyFingerprint(),
-	)
+	defer view.Close()
+	cut, err := dataruntime.ReadTarpBackupWitness(db.NodeID(), view.Generation, view.Snapshot, keyspace.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := journal.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}()
-	return journal.HighWaterMillis()
+	return cut
 }
 
 func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
@@ -233,7 +214,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		t.Fatal("generated injector does not share one managed GC watcher with LanternServer and App")
 	}
 	if !strings.Contains(text, "provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, executor, backupper, runtimeCertified, publicSecurityCertified)") ||
-		!strings.Contains(text, "backupper, backupConfig, peerConfig") {
+		!strings.Contains(text, "backupper, peerConfig") {
 		t.Fatal("generated injector does not share the certified Backup producer with App")
 	}
 	if strings.Contains(text, "provider.NewLifecycleConfig(") ||
@@ -264,7 +245,7 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	path := filepath.Join(root, "receipts.wal")
+	path := filepath.Join(root, "graph")
 	backupDir := filepath.Join(root, "backups")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 	t.Setenv("LANTERN_BACKUP_ENABLED", "true")
@@ -291,7 +272,7 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	foreignAnti := replication.NewAntiEntropy(replication.AntiEntropyConfig{Pump: foreignPump, SearchConfigFingerprint: fingerprint}, nil, nil, nil)
 	if candidate, err := newApp(nil, nil, app.svc, app.server, app.shutdownPlan, app.graphPolicy,
 		nil, nil, nil, nil, foreignPump, foreignAnti, nil, provider.ShutdownConfig{},
-		nil, backup.Config{}, provider.PeerConfig{}, provider.ReplicationConfig{},
+		nil, provider.PeerConfig{},
 		nil, app.runtime, nil, nil, app.security.(*provider.SecurityRuntime), nil, provider.PeerPlaneConfig{},
 		provider.DomainMetricsWired{}, provider.CacheGCHooksWired{}); err == nil || candidate != nil {
 		t.Fatal("App accepted equal-fingerprint foreign workers before other setup")
@@ -304,24 +285,23 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Members != 3 || stats.Bytes <= 0 {
+	if stats.Members != 2 || stats.Bytes <= 0 {
 		t.Fatalf("production receipt backup stats = %+v", stats)
 	}
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifests int
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".set.json") {
-			manifests++
-		}
-		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
-			t.Fatalf("production durable backup emitted legacy or temporary file %q", entry.Name())
-		}
+	if len(entries) != 1 || !entries[0].IsDir() || !strings.HasPrefix(entries[0].Name(), "lantern-tarp-") {
+		t.Fatalf("private recovery points = %v", entries)
 	}
-	if len(entries) != 4 || manifests != 1 {
-		t.Fatalf("production durable backup files = %+v, want three members and one manifest", entries)
+	point := filepath.Join(backupDir, entries[0].Name())
+	info, err := tarp.VerifyBackup(t.Context(), filepath.Join(point, "image"))
+	if err != nil || info.LastUserSequence == 0 {
+		t.Fatalf("native backup %v, %v", info, err)
+	}
+	if _, err = os.Stat(filepath.Join(point, "cut.json")); err != nil {
+		t.Fatal(err)
 	}
 	capability, err := app.svc.GetReceiptCapability(t.Context(), &pb.GetReceiptCapabilityRequest{})
 	if err != nil {
@@ -345,7 +325,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	if err := probe.Close(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "receipts.wal")
+	path := filepath.Join(t.TempDir(), "graph")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 	t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "2")
 
@@ -359,12 +339,6 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		}
 		t.Fatalf("fresh durable app = %p, cleanup %v", app, cleanup != nil)
 	}
-	generation, err := os.ReadFile(path + ".generation")
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
-
 	ctx := context.Background()
 	future := timestamppb.New(time.Now().Add(time.Hour))
 	for _, key := range []string{"local-live", "local-remove"} {
@@ -467,9 +441,13 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	}
 	cleanup()
 
-	firstHighWater := durableRuntimeClockHighWater(t, path)
+	firstCut := durableRuntimeCut(t, path)
+	firstHighWater := firstCut.ReceiptHighWaterMillis
+	if firstCut.ReceiptGeneration == ([16]byte{}) || firstCut.ReceiptEpoch != productionReceiptEpoch {
+		t.Fatalf("missing persisted receipt identity: %+v", firstCut)
+	}
 	if firstHighWater <= 0 {
-		t.Fatalf("fresh clock journal high-water = %d, want positive", firstHighWater)
+		t.Fatalf("fresh persisted receipt clock high-water = %d, want positive", firstHighWater)
 	}
 	setDurableRuntimeEnv(t, "restart", path, port)
 	t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "2")
@@ -482,15 +460,6 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 			cleanupRestart()
 		}
 		t.Fatalf("restarted durable app = %p, cleanup %v", restarted, cleanupRestart != nil)
-	}
-	restartedGeneration, err := os.ReadFile(path + ".generation")
-	if err != nil {
-		cleanupRestart()
-		t.Fatal(err)
-	}
-	if string(restartedGeneration) != string(generation) {
-		cleanupRestart()
-		t.Fatal("durable generation bytes changed across restart")
 	}
 	if length, capacity, evicted := restarted.runtime.MutationLogStats(); length != 8 ||
 		capacity < length || evicted != 0 {
@@ -558,9 +527,13 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	}
 	cleanupRestart()
 
-	secondHighWater := durableRuntimeClockHighWater(t, path)
+	secondCut := durableRuntimeCut(t, path)
+	if secondCut.ReceiptGeneration != firstCut.ReceiptGeneration || secondCut.ReceiptEpoch != firstCut.ReceiptEpoch || secondCut.ReceiptDigest != firstCut.ReceiptDigest || secondCut.ReceiptCount != firstCut.ReceiptCount || secondCut.LocalSeq != firstCut.LocalSeq || secondCut.Digest != firstCut.Digest {
+		t.Fatalf("persisted receipt or relay binding changed across restart: %+v vs %+v", firstCut, secondCut)
+	}
+	secondHighWater := secondCut.ReceiptHighWaterMillis
 	if secondHighWater < firstHighWater {
-		t.Fatalf("clock journal high-water moved backward across restart: %d < %d", secondHighWater, firstHighWater)
+		t.Fatalf("receipt clock high-water moved backward across restart: %d < %d", secondHighWater, firstHighWater)
 	}
 }
 
@@ -571,7 +544,7 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	path := filepath.Join(t.TempDir(), "receipts.wal")
+	path := filepath.Join(t.TempDir(), "graph")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 
 	app, cleanup, err := initializeApp()
@@ -581,7 +554,7 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 		}
 		t.Fatalf("initializeApp with occupied listener = %p, %v, %v", app, cleanup != nil, err)
 	}
-	lease, err := mutationlog.AcquireFileWALLease(path)
+	lease, err := graphstore.OpenExisting(t.Context(), path, hlc.NodeID{})
 	if err != nil {
 		t.Fatalf("listener construction failure leaked durable lease: %v", err)
 	}
@@ -627,7 +600,7 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 			}
 		}
 	}()
-	lease, err = mutationlog.AcquireFileWALLease(path)
+	lease, err = graphstore.OpenExisting(t.Context(), path, hlc.NodeID{})
 	if err != nil {
 		t.Fatalf("injector cleanup leaked durable lease: %v", err)
 	}
@@ -641,7 +614,7 @@ func TestInitializeAppRejectsUncertifiedRestartBeforeListener(t *testing.T) {
 	if err := probe.Close(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "missing.wal")
+	path := filepath.Join(t.TempDir(), "missing-graph")
 	setDurableRuntimeEnv(t, "restart", path, port)
 
 	app, cleanup, err := initializeApp()
@@ -665,7 +638,7 @@ func TestInitializeAppRejectsImplicitDurableNodeIDBeforeFilesOrListener(t *testi
 	if err := probe.Close(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "receipts.wal")
+	path := filepath.Join(t.TempDir(), "graph")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 	t.Setenv("LANTERN_NODE_ID", "")
 
@@ -677,7 +650,7 @@ func TestInitializeAppRejectsImplicitDurableNodeIDBeforeFilesOrListener(t *testi
 		t.Fatalf("implicit durable node ID = %p, %v, %v", app, cleanup != nil, err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("implicit durable node ID created WAL bytes: %v", err)
+		t.Fatalf("implicit durable node ID created a graph database: %v", err)
 	}
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
@@ -696,7 +669,7 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 	t.Setenv("LANTERN_PORT", strconv.Itoa(port))
 	t.Setenv("LANTERN_NODE_ID", "31313131313131313131313131313131")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
-	t.Setenv("LANTERN_RECEIPT_WAL_PATH", "")
+	t.Setenv("LANTERN_DATA_DIR", filepath.Join(t.TempDir(), "graph"))
 	t.Setenv("LANTERN_RECEIPT_EPOCH", "")
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "0s")
 	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "0")

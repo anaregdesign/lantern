@@ -299,7 +299,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app, err := newApp(config, logger, executor, lanternServer, v10, graphPolicyOwner, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, v8, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
+	app, err := newApp(config, logger, executor, lanternServer, v10, graphPolicyOwner, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, v8, backupper, peerConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
 	if err != nil {
 		cleanup5()
 		cleanup4()

@@ -71,6 +71,9 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	onDelete := func(tailID, headID vertexID, w *weight) {
 		if tail, tailOK := c.edges.resolveID(tailID); tailOK {
 			if head, headOK := c.edges.resolveID(headID); headOK {
+				if c.storage != nil && c.storage.collecting {
+					c.storage.pending.edges = append(c.storage.pending.edges, EdgeKey[S]{tail, head})
+				}
 				// Any physical bucket removal must retain its non-zero Put
 				// floor—not only TTL-zero removal. A zero-weight live Put,
 				// cancelling contributions, or dangling endpoint sweep can also
@@ -320,17 +323,36 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		select {
 		case <-ticker.C:
 			start := time.Now()
-			vExpired := c.flushVertices()
-			if vExpired > 0 {
-				c.mu.RLock()
-				index := c.searchIndex
-				incomplete := index != nil && index.Health() != search.IndexHealthy
-				c.mu.RUnlock()
-				if incomplete {
-					_ = c.RebuildSearchIndex()
+			var vExpired, eExpired, dRemoved int
+			tick := func() error {
+				if c.storage != nil {
+					c.storage.collecting = true
+					defer func() { c.storage.collecting = false }()
 				}
+				vExpired = c.flushVertices()
+				if vExpired > 0 {
+					c.mu.RLock()
+					index := c.searchIndex
+					incomplete := index != nil && index.Health() != search.IndexHealthy
+					c.mu.RUnlock()
+					if incomplete {
+						_ = c.RebuildSearchIndex()
+					}
+				}
+				eExpired, dRemoved = c.flush()
+
+				if c.storage != nil {
+					return c.flushStorage(ctx)
+				}
+				return nil
 			}
-			eExpired, dRemoved := c.flush()
+			if c.storage != nil && c.storage.maintenance != nil {
+				if err := c.storage.maintenance(tick); err != nil {
+					continue
+				}
+			} else if err := tick(); err != nil {
+				continue
+			}
 			d := time.Since(start)
 			onExpire, onGC := c.snapshotHooks()
 			if onExpire != nil {

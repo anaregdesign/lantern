@@ -336,7 +336,7 @@ func (c *edgeContributionDeleteReceiptCoordinator) Commit(
 		return nil, receiptStoreError(err)
 	}
 	graphTx.Apply()
-	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) ||
 			errors.Is(err, errReceiptEdgeContributionDeleteWALCapacity) {
@@ -457,7 +457,7 @@ func (c *edgeContributionDeleteReceiptCoordinator) commitReplicated(
 	}
 	graphTx.Apply()
 	pending.receiptWAL = localEnvelope
-	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) ||
 			errors.Is(err, errReceiptEdgeContributionDeleteWALCapacity) {

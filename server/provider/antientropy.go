@@ -91,6 +91,7 @@ func NewSearchCertifiedAntiEntropyDriver(
 	if !pumpCertified.validFor(certified, manager, svc, cache, search, pump) {
 		return nil, errManagedOperational
 	}
+	rc.NodeID = certified.runtime.NodeID()
 	driver := NewAntiEntropyDriver(pc, resolver, rc, ac, peerTransport, svc, cache, pump, m, logger, installer)
 	if !pumpCertified.validFor(certified, manager, svc, cache, search, pump) ||
 		!driver.UsesPump(pump) || driver.SearchConfigFingerprint() != pumpCertified.fingerprint {

@@ -123,7 +123,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 					t.Fatal("unsafe container configuration", err)
 				}
 				if profile.receipt {
-					if bytes.Contains(config, []byte("LANTERN_GRAPH_SNAPSHOT_SPOOL_")) || node.Environment["LANTERN_RECEIPT_WAL_PATH"] != "/state/receipts.wal" {
+					if bytes.Contains(config, []byte("LANTERN_GRAPH_SNAPSHOT_SPOOL_")) || node.Environment["LANTERN_DATA_DIR"] != "/state/graph" {
 						t.Fatal("receipt Compose configuration acquired graph-only scratch")
 					}
 				} else if mode == "off" && (node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != composeGraphSnapshotSpoolDirectory || node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] != "134217728" || node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"] != "33554432") {

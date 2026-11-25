@@ -71,6 +71,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 			delete(env, "LANTERN_TLS_KEY_FILE")
 			node.PublicOrigin = strings.Replace(node.PublicOrigin, "https://", "http://", 1)
 		}
+		env["LANTERN_DATA_DIR"] = "/state/graph"
 		if mode := env["LANTERN_RECEIPT_WAL_MODE"]; mode == "" || mode == "graph-only" {
 			// The matching graph overlay owns this container-private directory.
 			// Translate before the generic file-copy loop: scratch storage is
@@ -78,9 +79,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 			if env["LANTERN_AUTH_MODE"] != "oidc" {
 				env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = composeGraphSnapshotSpoolDirectory
 			}
-			delete(env, "LANTERN_RECEIPT_WAL_PATH")
 		} else {
-			env["LANTERN_RECEIPT_WAL_PATH"] = "/state/receipts.wal"
 			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR")
 			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES")
 			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES")

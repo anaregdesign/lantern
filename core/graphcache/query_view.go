@@ -3,6 +3,7 @@ package graphcache
 import (
 	"context"
 	"errors"
+	"iter"
 	"sort"
 )
 
@@ -77,6 +78,37 @@ func WithQueryView(ctx context.Context, view *QueryView) context.Context {
 func queryViewFromContext(ctx context.Context) *QueryView {
 	view, _ := ctx.Value(queryViewKey{}).(*QueryView)
 	return view
+}
+
+// AdmittedQueryView exposes the immutable, physical candidate view to disk
+// readers. A nil view is unrestricted.
+func AdmittedQueryView(ctx context.Context) *QueryView { return queryViewFromContext(ctx) }
+
+// Ranges visits the admitted projected intervals intersecting prefix in scan
+// order. Edge iterators must additionally check Edge(tail, head) before
+// loading either endpoint, the Edge header or its sources.
+func (v *QueryView) Ranges(prefix string, edges, reverse bool) iter.Seq[KeyRange] {
+	return func(yield func(KeyRange) bool) {
+		end := binaryPrefixEnd(prefix)
+		if v == nil {
+			yield(KeyRange{Lower: prefix, Upper: end})
+			return
+		}
+		ranges := v.vertices
+		if edges {
+			ranges = v.edges
+		}
+		for step := range ranges {
+			i := step
+			if reverse {
+				i = len(ranges) - 1 - step
+			}
+			interval := KeyRange{Lower: max(prefix, ranges[i].Lower), Upper: earlierEnd(end, ranges[i].Upper)}
+			if (interval.Upper == "" || interval.Lower < interval.Upper) && !yield(interval) {
+				return
+			}
+		}
+	}
 }
 
 func binaryPrefixEnd(prefix string) string {

@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/tarp"
@@ -69,15 +71,21 @@ func (m *manifest) advance() error {
 // DB owns one private Tarp directory. All changes, including generation
 // install, share its writer gate. Close the DB once the serving runtime stops.
 type DB struct {
-	mu       sync.Mutex
-	raw      *tarp.DB
-	node     hlc.NodeID
-	head     manifest
-	staging  *Generation
-	pins     map[uint64]int
-	fault    error
-	closed   bool
-	closeErr error
+	mu            sync.Mutex
+	raw           *tarp.DB
+	node          hlc.NodeID
+	head          manifest
+	staging       *Generation
+	pinMu         sync.Mutex
+	pins          map[uint64]int
+	retiredPins   map[uint64]bool
+	reclaimSignal chan struct{}
+	cancelReclaim context.CancelFunc
+	reclaimDone   chan struct{}
+	closeOnce     sync.Once
+	fault         atomic.Pointer[admissionFailure]
+	closed        bool
+	closeErr      error
 }
 
 // Open creates or reopens a node database. An explicit expected node ID is
@@ -149,30 +157,35 @@ func openDB(raw *tarp.DB, expected hlc.NodeID, initialize bool) (*DB, error) {
 	if expected != (hlc.NodeID{}) && head.node != expected {
 		return nil, ErrNodeMismatch
 	}
-	return &DB{raw: raw, node: head.node, head: head, pins: make(map[uint64]int)}, nil
+	return &DB{raw: raw, node: head.node, head: head, pins: make(map[uint64]int), retiredPins: make(map[uint64]bool), reclaimSignal: make(chan struct{}, 1)}, nil
 }
 
 // NodeID returns the persistent identity bound to this directory.
 func (db *DB) NodeID() hlc.NodeID { return db.node }
 
+type admissionFailure struct{ err error }
+
 func (db *DB) available() error {
-	if db.closed {
-		return tarp.ErrClosed
+	if failure := db.fault.Load(); failure != nil {
+		return failure.err
 	}
-	return db.fault
+	return nil
 }
 
 func (db *DB) apply(batch *tarp.WriteBatch) error {
 	if err := db.available(); err != nil {
 		return err
 	}
-	err := db.raw.Apply(batch)
+	return db.observeWrite(db.raw.Apply(batch))
+}
+
+func (db *DB) observeWrite(err error) error {
 	if err != nil {
 		var op *tarp.OpError
 		if errors.Is(err, tarp.ErrUnhealthy) || (errors.As(err, &op) && op.Outcome != tarp.NotApplied) {
-			// Freeze admission until reopen. Preserve both the operation
-			// outcome and the health signal for later callers.
-			db.fault = errors.Join(tarp.ErrUnhealthy, err)
+			// Only the failing request owns this outcome. Later calls
+			// observe the fence without inheriting its commit result.
+			db.fault.CompareAndSwap(nil, &admissionFailure{fmt.Errorf("%w: prior operation requires recovery: %v", tarp.ErrUnhealthy, err)})
 		}
 	}
 	return err
@@ -229,10 +242,13 @@ type ReadView struct {
 	closeErr   error
 }
 
+// Database returns the node database that owns this view.
+func (v *ReadView) Database() *DB { return v.db }
+
 // Read obtains an active read cut while generation switches and writers run.
 func (db *DB) Read() (*ReadView, error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	db.pinMu.Lock()
+	defer db.pinMu.Unlock()
 	if err := db.available(); err != nil {
 		return nil, err
 	}
@@ -245,24 +261,39 @@ func (db *DB) Read() (*ReadView, error) {
 		snap.Close()
 		return nil, err
 	}
-	if cut != db.head {
+	if cut.node != db.node {
 		snap.Close()
-		db.fault = ErrInvalidManifest
-		return nil, db.fault
+		db.fault.CompareAndSwap(nil, &admissionFailure{ErrInvalidManifest})
+		return nil, ErrInvalidManifest
 	}
 	db.pins[cut.active]++
 	return &ReadView{Generation: cut.active, Revision: cut.revision, Snapshot: snap, db: db, generation: cut.active}, nil
+}
+
+// WithCommittedSnapshot borrows the atomically selected generation and rows.
+// It never takes the writer gate and can run while a writer prepares changes.
+func (db *DB) WithCommittedSnapshot(read func(uint64, *tarp.Snapshot) error) error {
+	view, err := db.Read()
+	if err != nil {
+		return err
+	}
+	defer view.Close()
+	return read(view.Generation, view.Snapshot)
 }
 
 // Close releases the Tarp read view and its generation reclamation pin.
 func (v *ReadView) Close() error {
 	v.closeOnce.Do(func() {
 		v.closeErr = v.Snapshot.Close()
-		v.db.mu.Lock()
-		defer v.db.mu.Unlock()
+		v.db.pinMu.Lock()
+		defer v.db.pinMu.Unlock()
 		v.db.pins[v.generation]--
 		if v.db.pins[v.generation] == 0 {
 			delete(v.db.pins, v.generation)
+			if v.db.retiredPins[v.generation] {
+				delete(v.db.retiredPins, v.generation)
+				v.db.requestReclamation()
+			}
 		}
 	})
 	return v.closeErr
@@ -270,11 +301,19 @@ func (v *ReadView) Close() error {
 
 // Close stops admission and releases the Tarp directory.
 func (db *DB) Close() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	if !db.closed {
+	db.closeOnce.Do(func() {
+		db.mu.Lock()
 		db.closed = true
+		db.fault.Store(&admissionFailure{tarp.ErrClosed})
+		done := db.reclaimDone
+		if db.cancelReclaim != nil {
+			db.cancelReclaim()
+		}
+		db.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		db.closeErr = db.raw.Close()
-	}
+	})
 	return db.closeErr
 }

@@ -128,6 +128,36 @@ func (b *Backupper) retentionCatalog(ctx context.Context, retain int, maxBytes i
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if b.graphStore != nil {
+			prefix := graphPointPrefix(b.cfg.InstanceID)
+			suffix, own := strings.CutPrefix(entry.Name(), prefix)
+			id, valid := parseReceiptBackupSetID(suffix)
+			if !own || !valid || !entry.IsDir() {
+				return nil
+			}
+			validated++
+			if validated > maxCandidates {
+				return ErrRetentionPreviewLimit
+			}
+			path := filepath.Join(b.cfg.Dir, entry.Name())
+			size, err := graphPointBytes(ctx, path)
+			if err != nil {
+				return err
+			}
+			if size > remaining {
+				return ErrRetentionPreviewLimit
+			}
+			remaining -= size
+			cut, raw, _, err := loadGraphPoint(ctx, path, b.cfg.InstanceID, id, b.cfg.NamespaceFormat)
+			if err != nil {
+				return previewCandidateError(err)
+			}
+			if cut.Application.NodeID != b.graphStore.NodeID() {
+				return nil
+			}
+			candidates = append(candidates, retentionPreviewCandidate{name: entry.Name(), stamp: id, size: size, digest: sha256.Sum256(raw)})
+			return nil
+		}
 		if entry.IsDir() {
 			return nil
 		}

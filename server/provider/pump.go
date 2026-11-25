@@ -139,6 +139,7 @@ func NewSearchCertifiedReplicationPump(
 	if !validSearchPeerInstallation(certified, manager, svc, cache, search) {
 		return searchPumpCertified{}, errManagedOperational
 	}
+	rc.NodeID = certified.runtime.NodeID()
 	pump := NewReplicationPump(pc, resolver, rc, peerTransport, svc, cache, m, logger, installer, certified)
 	result := searchPumpCertified{
 		manager: manager, primary: svc, cache: cache, certified: certified, search: search,

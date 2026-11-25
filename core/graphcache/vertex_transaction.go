@@ -530,7 +530,7 @@ func (c *GraphCache[S, T]) planStagedVertexDeleteLocked(
 		if _, seen := present[key]; seen {
 			continue
 		}
-		_, _, present[key] = c.vertices.PeekWithExpiration(key)
+		_, _, present[key], _ = c.vertices.PeekResident(key)
 	}
 	for i, key := range keys {
 		if !c.vertexDeleteWriteAllowedLocked(key, ts) {

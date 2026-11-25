@@ -174,7 +174,11 @@ func (m *stagedGraphMutation[S, T]) prepareLocked(c *GraphCache[S, T], vertices 
 		seen[key] = true
 		if bucket := c.edges.bucket(edge.Tail, edge.Head); bucket != nil {
 			bucket.mu.Lock()
-			rows += len(bucket.values)
+			if bucket.cold {
+				rows += bucket.storedCount
+			} else {
+				rows += len(bucket.values)
+			}
 			bucket.mu.Unlock()
 		}
 		if rows > GraphMutationMaxBucketRows {

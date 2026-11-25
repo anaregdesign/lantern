@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
@@ -81,7 +82,7 @@ func TestManagedBackupBootstrapProvenanceAndActualObservation(t *testing.T) {
 
 func TestManagedBackupPrepareApplyPreviewAndRestoreOwnership(t *testing.T) {
 	dir := t.TempDir()
-	config, owner, registry := managedBackupTestOwner(t, "LANTERN_BACKUP_DIR="+dir, "LANTERN_BACKUP_ENABLED=true", "LANTERN_BACKUP_RETAIN=0", "LANTERN_BACKUP_INTERVAL=1000000007ns")
+	config, owner, _ := managedBackupTestOwner(t, "LANTERN_BACKUP_DIR="+dir, "LANTERN_BACKUP_ENABLED=true", "LANTERN_BACKUP_RETAIN=0", "LANTERN_BACKUP_INTERVAL=1000000007ns")
 	certified, err := NewManagedBackupRuntime(t.Context(), managedBackupTestManager(t, config), owner)
 	if err != nil {
 		t.Fatal(err)
@@ -120,23 +121,16 @@ func TestManagedBackupPrepareApplyPreviewAndRestoreOwnership(t *testing.T) {
 			t.Fatal("managed generation retained env/default source")
 		}
 	}
-	if _, err := owner.RestoreOnStartup(t.Context()); err != nil {
-		t.Fatalf("managed production disable changed bootstrap restoration: %v", err)
+	target := filepath.Join(t.TempDir(), "recovered")
+	if err := backup.RestoreGraphStoreOnStartup(t.Context(), target, hlc.NodeID{}, config.Backup); err != nil {
+		t.Fatal(err)
 	}
-	// Existing newer HLC floors may legitimately supersede restored values;
-	// the completed restore timestamp proves the bootstrap path still ran.
-	metrics, err := registry.Gather()
+	restored, err := graphstore.OpenExisting(t.Context(), target, hlc.NodeID{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored := false
-	for _, metric := range metrics {
-		if metric.GetName() == "lantern_restore_last_timestamp_seconds" && metric.GetMetric()[0].GetGauge().GetValue() > 0 {
-			restored = true
-		}
-	}
-	if !restored {
-		t.Fatal("managed production disable suppressed bootstrap restoration")
+	if err := restored.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := owner.BackupNow(t.Context()); err != nil {
 		t.Fatal(err)
@@ -256,15 +250,21 @@ func TestManagedBackupPreviewLimitIsIncompleteWithoutPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, fmt.Sprintf("lantern-backup-%s-%d.lbk", config.Backup.InstanceID, time.Now().UnixNano()))
+	if _, err := owner.BackupNow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	points, err := os.ReadDir(dir)
+	if err != nil || len(points) != 1 {
+		t.Fatal(points, err)
+	}
+	path := filepath.Join(dir, points[0].Name(), "image", "oversized")
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = file.Truncate(64 << 20)
-	closeErr := file.Close()
-	if err != nil || closeErr != nil {
-		t.Fatal(err, closeErr)
+	if err = errors.Join(err, file.Close()); err != nil {
+		t.Fatal(err)
 	}
 	preview, err := NewManagedBackupPreviewer(certified)(t.Context(), 1)
 	if err != nil || preview.Complete || preview.Fingerprint != "" {
@@ -325,7 +325,7 @@ func TestManagedBackupEnvironmentDisabledProductionRestoresOnNextBoot(t *testing
 	if snapshot := owner.Production(); !snapshot.Config.Enabled || snapshot.Generation != 1 {
 		t.Fatal("managed production did not enable")
 	}
-	if stats, err := owner.BackupNow(t.Context()); err != nil || stats.Vertices != 1 {
+	if stats, err := owner.BackupNow(t.Context()); err != nil || stats.Members != 2 || stats.Bytes <= 0 {
 		t.Fatalf("managed production backup = %+v, %v", stats, err)
 	}
 	for _, test := range []struct {
@@ -342,32 +342,18 @@ func TestManagedBackupEnvironmentDisabledProductionRestoresOnNextBoot(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			data, primary, certification := certifiedSnapshotInstallerRuntime(t, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly})
-			restartedConfig.Backup.NamespaceFormat = data.DataNamespaceFormat()
-			restartedOwner, err := NewBackupper(restartedConfig.Backup, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, data, primary, certification, prometheus.NewRegistry(), nil)
+			store := CacheConfig{DataDir: filepath.Join(t.TempDir(), "graph")}
+			restartedConfig.Backup.NamespaceFormat = config.Backup.NamespaceFormat
+			data, cleanup, err := NewServingRuntime(ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}, store, SearchConfig{}, MutationLogConfig{Capacity: 8, SubscriberBuffer: 2}, ReplicationConfig{}, restartedConfig.Backup, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Restore uses external bootstrap selection before the managed
-			// registry/authority exists on this restarted instance.
-			stats, err := restartedOwner.RestoreOnStartup(t.Context())
+			defer cleanup()
 			_, present := data.GraphCache().GetVertex("preserved")
-			if err != nil || present != test.restore || (stats.Vertices == 1) != test.restore {
-				t.Fatalf("independent restoration = %+v, present %v, %v", stats, present, err)
+			if present != test.restore {
+				t.Fatalf("independent restoration: present %v, want %v", present, test.restore)
 			}
-			restarted, err := NewManagedBackupRuntime(t.Context(), managedBackupTestManager(t, restartedConfig), restartedOwner)
-			if err != nil {
-				t.Fatal(err)
-			}
-			policy.Generation = 2
-			policy.Values.Backup.Enabled = false
-			if err := restarted.adapter.ApplyOperationalPolicy(policy); err != nil {
-				t.Fatal(err)
-			}
-			_, present = data.GraphCache().GetVertex("preserved")
-			if present != test.restore || restartedOwner.Production().Config.Enabled {
-				t.Fatal("managed disable changed selected restoration or restored graph")
-			}
+
 		})
 	}
 }

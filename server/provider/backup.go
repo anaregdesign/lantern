@@ -17,29 +17,21 @@ import (
 
 // loadBackupConfig reads the LANTERN_BACKUP_* contract (#770, #779).
 //
-// With a configured directory and external restore-on-start selection, the
-// newest valid dump is replayed on boot as a graph-only baseline, independent
-// of production enablement and replication topology.
-// When peers exist the subsequent peer bootstrap overlays that baseline
-// through the normal write path, so HLC ordering lets newer peer state win per
-// key. Durable receipt mode restores only at NewServingRuntime, under the WAL
-// lease and before runtime certification.
+// The runtime restores a missing node directory before opening the DB. The
+// scheduler owns periodic native backups independently of this startup policy.
 //
-//   - LANTERN_BACKUP_ENABLED          (default false) master switch for
-//     periodic backup production. Resolved to off when LANTERN_BACKUP_DIR is
-//     empty.
-//   - LANTERN_BACKUP_DIR              mounted directory to write backup files;
-//     graph-only restore also reads it.
+//   - LANTERN_BACKUP_ENABLED          (default false) enable periodic production
+//     when a destination is configured.
+//   - LANTERN_BACKUP_DIR              directory for private recovery points.
 //   - LANTERN_BACKUP_INTERVAL         (default 5m) backup cadence.
 //   - LANTERN_BACKUP_RETAIN           (default 3) keep newest N valid own
 //     dumps/sets; 0 keeps all.
 //   - LANTERN_BACKUP_INSTANCE_ID      (default hostname) per-instance file
 //     token so shared-storage writes never collide.
-//   - LANTERN_BACKUP_RESTORE_ON_START (default true) startup restore of the
-//     newest graph dump or canonical receipt backup set before serving whenever
-//     the directory is configured, independent of production enablement.
-//   - LANTERN_BACKUP_RESTORE_REQUIRED (default false) fail boot when a
-//     restore errors instead of warning and continuing.
+//   - LANTERN_BACKUP_RESTORE_ON_START (default true) select the newest own
+//     recovery point on startup when the data directory is missing.
+//   - LANTERN_BACKUP_RESTORE_REQUIRED (default false) require a backup if
+//     an existing database is unavailable during startup restore.
 func loadBackupConfig(reader *envconfig.Reader) backup.Config {
 	enabled := reader.Bool("LANTERN_BACKUP_ENABLED", false)
 	dir := strings.TrimSpace(reader.String("LANTERN_BACKUP_DIR", ""))
@@ -89,9 +81,9 @@ func sanitizeInstanceID(s string) string {
 // NewBackupConfig is the wire selector for the resolved backup config.
 func NewBackupConfig(c *Config) backup.Config { return c.Backup }
 
-// NewBackupper constructs the snapshot-durability engine from the exact
-// certified runtime. Graph-only mode preserves the historical .lbk path;
-// durable receipt mode selects the certified same-cut receipt source.
+// NewBackupper selects the exact certified node DB used by the serving
+// executor and replication owner. The associated receipt capability remains
+// independently gated by receipt configuration and public authorization.
 func NewBackupper(
 	cfg backup.Config,
 	receiptConfig ReceiptWALConfig,
@@ -106,35 +98,27 @@ func NewBackupper(
 		certified.replication == nil {
 		return nil, errors.New("backup: requires the exact certified serving runtime")
 	}
+	db := runtime.GraphStore()
+	if db == nil {
+		return nil, errors.New("backup: requires the runtime-owned graph store")
+	}
+	if cfg.NamespaceFormat != runtime.DataNamespaceFormat() || cfg.NamespaceFormat != svc.DataNamespaceFormat() {
+		return nil, errors.New("backup: graph storage namespace format differs from certified runtime")
+	}
 	switch receiptConfig.Mode {
 	case ReceiptWALModeGraphOnly:
 		if runtime.DurableReceiptWAL() {
-			return nil, errors.New("backup: graph-only mode received a durable serving runtime")
+			return nil, errors.New("backup: graph-only mode received a receipt runtime")
 		}
-		if cfg.NamespaceFormat != runtime.DataNamespaceFormat() || cfg.NamespaceFormat != svc.DataNamespaceFormat() {
-			return nil, errors.New("backup: graph-only namespace format differs from the certified runtime")
-		}
-		return backup.New(svc, cfg, reg, logger), nil
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 		if !runtime.DurableReceiptWAL() {
-			return nil, errors.New("backup: durable receipt mode received a graph-only serving runtime")
-		}
-		source, policy, err := runtime.ReceiptWholeStateBackupSource(
-			svc,
-			certified.replication,
-		)
-		if err != nil {
-			return nil, err
-		}
-		backupper, err := backup.NewReceipt(svc, source, policy, cfg, reg, logger)
-		if err != nil {
-			return nil, err
+			return nil, errors.New("backup: receipt mode requires an installed receipt runtime")
 		}
 		if err := runtime.CertifyReceiptBackup(svc, certified.replication); err != nil {
 			return nil, err
 		}
-		return backupper, nil
 	default:
-		return nil, errors.New("backup: invalid receipt WAL mode")
+		return nil, errors.New("backup: invalid receipt mode")
 	}
+	return backup.NewGraphStore(svc, db, cfg, reg, logger), nil
 }

@@ -238,6 +238,14 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 		s.snapshotInstallMu.Unlock()
 		return nil, err
 	}
+	if s.runtime != nil && s.runtime.tarp != nil && (s.snapshotInstallFaulted || s.receiptCommitFaulted || s.publicationFaultCount != 0) {
+		// A failed live merge can leave an uncommitted in-memory prefix.
+		// Reopen the last durable generation before retrying collection.
+		gate.Unlock()
+		s.snapshotReadCutMu.Unlock()
+		s.snapshotInstallMu.Unlock()
+		return nil, publicationGapError()
+	}
 	s.snapshotInstallSequence++
 	attemptID := s.snapshotInstallSequence
 	// This names the Snapshot latch, not the first global publication fault.
@@ -318,6 +326,14 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 				result = "publication_gate_rejected"
 				return err
 			}
+			if s.runtime != nil && s.runtime.tarp != nil {
+				if err := s.commitTarpGraphSnapshot(ctx, validate); err != nil {
+					gate.Unlock()
+					s.snapshotReadCutMu.Unlock()
+					result = "storage_install_failed"
+					return err
+				}
+			}
 			s.snapshotInstallFaulted = false
 			s.publicationFaultCount--
 			if s.publicationFaultCount == 0 {
@@ -328,8 +344,19 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 			finishStateKnown = true
 			receiptFaultAfter = s.receiptCommitFaulted
 			finishFaultCount = s.publicationFaultCount
+			var catchupErr error
+			if s.runtime != nil && s.runtime.tarp != nil {
+				for origin := range s.pendingMutations {
+					if catchupErr = s.drainRemoteOrigin(ctx, origin); catchupErr != nil {
+						break
+					}
+				}
+			}
 			gate.Unlock()
 			s.snapshotReadCutMu.Unlock()
+			if catchupErr != nil {
+				return catchupErr
+			}
 		}
 		return nil
 	}, nil
@@ -1136,7 +1163,7 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 			pending.walOp = result.walOp
 		}
 		if s.log != nil {
-			if _, err := s.log.Append(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
+			if err := s.appendGraphLog(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
 				s.markPublicationFault(pending)
 				return connect.NewError(connect.CodeUnavailable, fmt.Errorf("replication: relay log append for origin %x seq %d: %w", origin, seq, err))
 			}
@@ -1151,7 +1178,7 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 				s.receiptOriginCutMu.Unlock()
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: durable origin clock floor: %w", err))
 			}
-		} else if s.clock != nil {
+		} else if s.clock != nil && (s.runtime == nil || s.runtime.tarp == nil) {
 			s.clock.Update(hlcFromProto(m.GetHlc()))
 		}
 		if s.onReplicationApply != nil {

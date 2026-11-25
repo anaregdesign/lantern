@@ -1,4 +1,7 @@
 {{- include "lantern.validateSecurity" . -}}
+{{- if and .Values.runtimeState.persistence.existingClaim (gt (int .Values.replicaCount) 1) }}
+{{- fail "each Lantern node requires its own runtime-state volume; use volumeClaimTemplates for multiple replicas" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -193,6 +196,8 @@ spec:
               value: /run/lantern-public/$(POD_NAME).key
             {{- end }}
             {{- if eq .Values.auth.mode "oidc" }}
+            - name: LANTERN_DATA_DIR
+              value: {{ printf "%s/graph" .Values.runtimeState.dir | quote }}
             - name: LANTERN_AUTH_MODE
               value: oidc
             {{- end }}
@@ -265,7 +270,6 @@ spec:
             successThreshold: {{ .Values.probes.readiness.successThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if or .Values.backup.enabled .Values.publicTLS.existingSecret .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
           volumeMounts:
             {{- if .Values.backup.enabled }}
             - name: backup
@@ -277,9 +281,9 @@ spec:
               subPath: public
               readOnly: true
             {{- end }}
-            {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
             - name: runtime-state
               mountPath: {{ .Values.runtimeState.dir }}
+            {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
             - name: workload-time
               mountPath: /etc/ntp.conf
               subPath: ntp.conf
@@ -308,7 +312,6 @@ spec:
               subPath: operator
               readOnly: true
             {{- end }}
-          {{- end }}
       volumes:
         {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
         - name: workload-time
@@ -353,12 +356,12 @@ spec:
           secret:
             secretName: {{ .Values.peerPlane.operatorKeySecret | quote }}
         {{- end }}
-        {{- if and (or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc")) .Values.runtimeState.persistence.existingClaim }}
+        {{- if .Values.runtimeState.persistence.existingClaim }}
         - name: runtime-state
           persistentVolumeClaim:
             claimName: {{ .Values.runtimeState.persistence.existingClaim | quote }}
         {{- end }}
-  {{- if or (and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim)) (and (or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc")) (not .Values.runtimeState.persistence.existingClaim)) }}
+  {{- if or (and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim)) (not .Values.runtimeState.persistence.existingClaim) }}
   volumeClaimTemplates:
     {{- if and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim) }}
     - metadata:
@@ -373,7 +376,7 @@ spec:
           requests:
             storage: {{ .Values.backup.persistence.size | quote }}
   {{- end }}
-    {{- if and (or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc")) (not .Values.runtimeState.persistence.existingClaim) }}
+    {{- if not .Values.runtimeState.persistence.existingClaim }}
     - metadata:
         name: runtime-state
       spec:

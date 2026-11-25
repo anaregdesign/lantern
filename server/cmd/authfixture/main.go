@@ -519,6 +519,9 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 			return fixture{}, err
 		}
 		env["LANTERN_NODE_ID"] = hex.EncodeToString(nodeID[:])
+		if !compose {
+			env["LANTERN_DATA_DIR"] = filepath.Join(dir, name+"-graph")
+		}
 		node := fixtureNode{Name: name, PublicOrigin: publicOrigin, Environment: env}
 		if mode == "oidc" {
 			env["LANTERN_AUTH_MODE"] = "oidc"

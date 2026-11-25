@@ -1,6 +1,6 @@
 # Lantern — Agent Instructions
 
-Lantern is an in-memory `key-vertex-store` (graph-based KVS). It runs as a Connect/HTTP-2 server (wire-compatible with gRPC and gRPC-Web on the same h2c socket), with both vertices and edges carrying TTLs so they decay over time. See [README.md](README.md) for the full overview.
+Lantern is a Tarp-backed `key-vertex-store` (graph-based KVS). It runs as a Connect/HTTP-2 server (wire-compatible with gRPC and gRPC-Web on the same h2c socket), with both vertices and edges carrying TTLs so they decay over time. See [README.md](README.md) for the full overview.
 
 ## Monorepo layout
 
@@ -54,8 +54,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   OFF accepts no security JSON, even an empty present value.
 
 - **Minimize external dependencies.** Lantern is the database; do not add
-  PostgreSQL as a runtime dependency. Prefer native storage/replication/
-  persistence. ADR 0012 (#1599/#1615) uses internal `sys:` metadata and
+  PostgreSQL as a runtime dependency. Core uses Tarp for durable storage. Server owns replication. ADR 0012 (#1599/#1615) uses internal `sys:` metadata and
   physical `data:` keys behind unchanged logical keys in the in-flight implementation;
   final exact-source runtime qualification is still pending. Namespace isolation does not prove policy
   freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.

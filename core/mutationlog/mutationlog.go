@@ -114,6 +114,14 @@ const (
 	defaultSubscriberBuffer = 512
 )
 
+// EffectiveCapacity returns the retained ring budget after applying defaults.
+func (opts Options) EffectiveCapacity() int {
+	if opts.Capacity > 0 {
+		return opts.Capacity
+	}
+	return defaultCapacity
+}
+
 // Drop-cause labels passed to [Options.OnDrop]. New causes may be added
 // in future revisions; consumers should treat unknown values as opaque
 // strings rather than enumerate (#260).
@@ -203,10 +211,7 @@ type subscription struct {
 // New constructs a [Log] with the given options. It also starts a
 // background dispatcher goroutine; call [Log.Close] to stop it.
 func New(opts Options) *Log {
-	capacity := opts.Capacity
-	if capacity <= 0 {
-		capacity = defaultCapacity
-	}
+	capacity := opts.EffectiveCapacity()
 	subBuf := opts.SubscriberBuffer
 	if subBuf <= 0 {
 		subBuf = defaultSubscriberBuffer

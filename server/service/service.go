@@ -91,6 +91,10 @@ func NewGraphOnlyServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex]
 	return dataruntime.NewGraphOnlyServingRuntime(graph, log, clock, namespaceFormat...)
 }
 
+func OpenReceiptDatabase(ctx context.Context, config DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, error) {
+	return dataruntime.OpenReceiptDatabase(ctx, config, fresh)
+}
+
 func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
 	return dataruntime.CreateDurableReceiptWALServingRuntime(config)
 }

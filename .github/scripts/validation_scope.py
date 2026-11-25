@@ -43,13 +43,6 @@ SDK4_APP_INPUTS = {
     "admin/app/lib/client/usecase/security/security-draft-recovery.ts",
     "admin/app/lib/client/usecase/security/security-management.ts",
 }
-NATIVE_GO = ("core/privatefile/", "core/mutationlog/", "core/mutationreceipt/",
-             "core/hlc/", "server/backup/", "server/provider/", "server/cmd/",
-             "server/internal/security/", "server/internal/authn/",
-             "server/internal/listenerlaunch/", "server/internal/envconfig/",
-             "server/internal/config/",
-             "server/internal/dataruntime/",
-             "server/service/receipt", "server/service/runtime")
 NATIVE_RUST = ("sdks/rust/src/transport", "sdks/rust/src/test_server.rs",
                "sdks/rust/src/value", "sdks/rust/src/smoke.rs")
 
@@ -135,7 +128,7 @@ def harness_required(result):
 def full(reason):
     return dict(full=True, reason=reason, families=sorted(LANGUAGES),
                 go_modules=list(GO_CONSUMERS), generation=True,
-                windows_required=True, windows_rust_required=True, harness_contracts=[], fixture_contracts=[], semantic={})
+                windows_required=True, harness_contracts=[], fixture_contracts=[], semantic={})
 
 
 def affected(changes, semantic=None, dependency_owners=()):
@@ -148,7 +141,7 @@ def affected(changes, semantic=None, dependency_owners=()):
         modules.update(GO_CONSUMERS[module])
     generation = False
     backend_dependencies = bool(set(dependency_owners) & {"core", "pb", "server"})
-    native_go = native_rust = backend_dependencies
+    native_rust = backend_dependencies
     for path, status in changes.items():
         value = PurePosixPath(path)
         if (path != value.as_posix() or value.is_absolute() or ".." in value.parts
@@ -179,7 +172,7 @@ def affected(changes, semantic=None, dependency_owners=()):
             # The ordinary publisher is production code and keeps that closure.
             if path == "server/internal/membershippublisher/publisher.go":
                 modules |= GO_CONSUMERS["server"]
-            native_go = native_rust = True
+            native_rust = True
             continue
         if path in PRODUCT_FIXTURE_INPUTS:
             return full("new or deleted product fixture input")
@@ -201,7 +194,7 @@ def affected(changes, semantic=None, dependency_owners=()):
         if path.startswith("proto/") or path in {"generate.go", "buf.lock"}:
             families |= LANGUAGES
             modules |= set(GO_CONSUMERS)
-            generation = native_go = native_rust = True
+            generation = native_rust = True
         elif path.startswith("sdks/node/"):
             families |= {"node", "admin"}
         elif path.startswith("admin/"):
@@ -231,15 +224,14 @@ def affected(changes, semantic=None, dependency_owners=()):
             modules |= GO_CONSUMERS[owner]
             if owner == "pb":
                 families |= LANGUAGES
-                generation = native_go = native_rust = True
-            native_go |= path.startswith(NATIVE_GO) or "_windows" in value.name or status != "M"
+                generation = native_rust = True
             # Backend native composition also changes the Windows Rust fixture.
             native_rust |= path.startswith(("server/provider/", "server/cmd/", "server/internal/listenerlaunch/",
                                             "server/internal/config/"))
     return dict(full=False, reason="mapped affected inputs", semantic=semantic, families=sorted(families),
                 backend_dependencies=backend_dependencies, dependency_owners=sorted(dependency_owners),
                 go_modules=sorted(modules), generation=generation,
-                windows_required=native_go or native_rust, windows_rust_required=native_rust,
+                windows_required=native_rust,
                 harness_contracts=sorted(harness), fixture_contracts=sorted(fixtures))
 
 

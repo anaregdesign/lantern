@@ -156,7 +156,6 @@ class QualificationScopeTest(unittest.TestCase):
                     native = json.loads(result.stdout)
                     self.assertTrue(native["full"])
                     self.assertTrue(native["windows_required"])
-                    self.assertTrue(native["windows_rust_required"])
                     if case.startswith("missing-"):
                         self.assertEqual(native["reason"], reason)
 

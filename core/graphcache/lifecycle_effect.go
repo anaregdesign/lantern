@@ -38,7 +38,7 @@ func (c *GraphCache[S, T]) vertexLifecycleReductionsLocked(items []VertexItem[S,
 		item := items[index]
 		old, known := previous[item.Key]
 		if !known {
-			_, expiration, present := c.vertices.PeekWithExpiration(item.Key)
+			_, expiration, present, _ := c.vertices.PeekResident(item.Key)
 			old = lifetimeBefore{expiration: expiration, live: present && cache.IsLiveAt(expiration, now)}
 		}
 		result[index] = item.CaptureLifecycleReduction && lifecycleReduction(old, item.Expiration, now)
@@ -63,7 +63,7 @@ func (c *GraphCache[S, T]) validateVertexLifecycleLocked(items []VertexItem[S, T
 		item := items[i]
 		old, known := previous[item.Key]
 		if !known {
-			_, expiration, present := c.vertices.PeekWithExpiration(item.Key)
+			_, expiration, present, _ := c.vertices.PeekResident(item.Key)
 			old = lifetimeBefore{expiration: expiration, live: present && cache.IsLiveAt(expiration, now)}
 		}
 		if item.DenyLifecycleReduction && lifecycleReduction(old, item.Expiration, now) {
@@ -156,6 +156,10 @@ func (c *GraphCache[S, T]) edgeLifetimeLocked(key EdgeKey[S], now time.Time) lif
 	}
 	weight.mu.Lock()
 	defer weight.mu.Unlock()
+	if !weight.loadLocked(now) {
+		return lifetimeBefore{}
+	}
+	defer weight.releaseReadLocked()
 	var old lifetimeBefore
 	for _, value := range weight.values {
 		if !cache.IsLiveAt(value.expiration, now) {

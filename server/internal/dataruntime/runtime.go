@@ -27,6 +27,7 @@ import (
 // runtime alone does not enable receipt capability, status, or receipt-bearing
 // mutation RPCs; production activation requires the final certified barrier.
 type ServingRuntime struct {
+	tarp                      *tarpRelay
 	graph                     *graphcache.GraphCache[string, *pb.Vertex]
 	log                       *mutationlog.Log
 	clock                     *hlc.Clock
@@ -548,6 +549,9 @@ func certifyReceiptWALServingRuntime(
 }
 
 // GraphCache returns the exact cache installed into every runtime consumer.
+// NodeID is the origin used by both local mutation stamps and replication.
+func (r *ServingRuntime) NodeID() hlc.NodeID { return r.clock.NodeID() }
+
 func (r *ServingRuntime) GraphCache() *graphcache.GraphCache[string, *pb.Vertex] {
 	return r.graph
 }
@@ -633,6 +637,16 @@ func (r *ServingRuntime) NewExecutor(onAppend func()) *Executor {
 	svc := NewExecutor(r.graph)
 	svc.origins = r.origins
 	svc.runtime = r
+	if r.GraphStore() != nil {
+		r.graph.SetStorageMaintenance(func(tick func() error) error {
+			gate := svc.lockPublicationGate("gc", false)
+			defer gate.Unlock()
+			if svc.publicGraphFaultLocked() {
+				return publicationGapError()
+			}
+			return tick()
+		})
+	}
 	if r.namespaceFormat != "" {
 		svc.WithDataNamespace()
 	}

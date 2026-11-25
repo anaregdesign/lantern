@@ -1,8 +1,13 @@
-# Lantern — the in-memory Key-Vertex-Store
+# Lantern — the Key-Vertex-Store
 
-Lantern is an in-memory database for **live relationships**: typed values live
+Lantern is a Tarp-backed database for **live relationships**: typed values live
 at keys, directed weighted edges connect them, and both can expire. Read a
 value, query its neighborhood, and search its content through the same API.
+
+Each Server node stores Vertex and Edge rows, replication progress and optional
+receipts in one Tarp database. Set `LANTERN_DATA_DIR` to a private, writable
+directory on a persistent volume. Reuse that volume on restart and give every
+replica its own volume. The local default is `./lantern-data`.
 
 ## Try it in the Admin UI
 

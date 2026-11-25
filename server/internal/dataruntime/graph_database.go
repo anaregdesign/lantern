@@ -1,0 +1,70 @@
+package dataruntime
+
+import (
+	"context"
+	"errors"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/graphstore"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/graphstorage"
+	"github.com/anaregdesign/tarp"
+)
+
+// RestoreGraphStorage reconstructs derived graph state and returns the writer
+// used to stage mutations into that same database.
+func RestoreGraphStorage(ctx context.Context, graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB) (TarpGraphStager, error) {
+	rows, err := graphstorage.Rows()
+	if err != nil {
+		return nil, err
+	}
+	view, err := db.Read()
+	if err != nil {
+		return nil, err
+	}
+	err = graph.RestoreStorage(ctx, rows, view)
+	if err = errors.Join(err, view.Close()); err != nil {
+		return nil, err
+	}
+	stage := func(ctx context.Context, gen uint64, snap *tarp.Snapshot, batch graphstore.Writer, keys graphcache.StorageKeys[string], writer graphcache.StorageRowWriter[string, *pb.Vertex]) error {
+		if writer == nil {
+			writer = graph
+		}
+		return writer.StoreRows(ctx, rows, snap, batch, gen, keys)
+	}
+	return stage, nil
+}
+
+// OpenReceiptDatabase opens a receipt-enabled runtime for an embedded Server.
+// Fresh mode initializes the application records, while restart requires the
+// existing node, namespace and immutable receipt policy to match.
+func OpenReceiptDatabase(ctx context.Context, cfg DurableReceiptWALRuntimeConfig, fresh bool) (*ServingRuntime, error) {
+	if err := validateDurableReceiptWALRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
+	if cfg.StartupRestore != nil {
+		return nil, errors.New("restore the physical database before opening it")
+	}
+	open := graphstore.OpenExisting
+	if fresh {
+		open = graphstore.Open
+	}
+	db, err := open(ctx, cfg.Path, cfg.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](cfg.DefaultTTL)
+	if err := durableRuntimeGraphPolicy(cfg)(graph); err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	stage, err := RestoreGraphStorage(ctx, graph, db)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	rt, err := NewTarpReceiptServingRuntime(graph, db, stage, cfg, fresh)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	db.StartReclamation()
+	return rt, nil
+}

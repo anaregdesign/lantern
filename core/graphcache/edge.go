@@ -25,15 +25,27 @@ type weightValue struct {
 	// dedup; local non-replicated writes always use the zero value so two
 	// distinct local Add calls remain distinct.
 	contribID ContribID
+	// ordinal preserves physical identity and order for distinct local Adds.
+	// The Put base and replicated contributions have ordinal zero.
+	ordinal uint64
 }
 
 // weight aggregates additive contributions to an edge, each with its own
 // expiration. It is safe for concurrent use; the cached sum lets readers avoid
 // re-scanning the slice on every call.
 type weight struct {
-	mu     sync.Mutex
-	values []weightValue
-	sum    float32
+	// Cold buckets keep their lookup and causal metadata in RAM. Source
+	// payloads are borrowed from the active Tarp generation per operation.
+	load           func() ([]weightValue, error)
+	cold           bool
+	storedCount    int
+	storedExpiry   time.Time
+	storedExplicit bool
+	storedZero     bool
+	lastOrdinal    uint64
+	mu             sync.Mutex
+	values         []weightValue
+	sum            float32
 	// lastFlushLen is len(values) immediately after the most recent
 	// flushLocked. It anchors the amortized-compaction trigger in
 	// addWithExpiration: a flush fires when len(values) exceeds
@@ -93,6 +105,10 @@ func (w *weight) noteExpirationLocked(expiration time.Time) {
 func (w *weight) value() float32 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.loadLocked(time.Now()) {
+		return 0
+	}
+	defer w.releaseReadLocked()
 	w.flushLocked()
 	return w.sum
 }
@@ -103,6 +119,10 @@ func (w *weight) value() float32 {
 func (w *weight) latestExpiration() time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.loadLocked(time.Now()) {
+		return time.Time{}
+	}
+	defer w.releaseReadLocked()
 	w.flushLocked()
 	var latest time.Time
 	for _, v := range w.values {
@@ -155,6 +175,9 @@ func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time,
 func (w *weight) addWithExpirationContribHLCAt(value float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (applied bool, effective float32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.editLocked(now) {
+		return false, 0
+	}
 	// Reconcile before we read sum back: once now reaches the earliest
 	// expiration, at least one contribution has decayed and sum is stale.
 	// This is a single compare when nothing has expired (minExp in the
@@ -172,7 +195,18 @@ func (w *weight) addWithExpirationContribHLCAt(value float32, expiration time.Ti
 			}
 		}
 	}
+	var ordinal uint64
+	if contribID.IsZero() {
+		// A uint64 cannot be exhausted by practical workloads. Refuse a
+		// saturated restored bucket without reusing an existing identity.
+		if w.lastOrdinal == ^uint64(0) {
+			return false, w.sum
+		}
+		w.lastOrdinal++
+		ordinal = w.lastOrdinal
+	}
 	w.values = append(w.values, weightValue{
+		ordinal:    ordinal,
 		value:      value,
 		expiration: expiration,
 		contribID:  contribID,
@@ -212,6 +246,9 @@ func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hl
 func (w *weight) putWithExpirationHLCMode(value float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate bool) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.editLocked(time.Now()) {
+		return false
+	}
 	if ts.Less(w.lastHLC) {
 		return false
 	}
@@ -230,6 +267,9 @@ func (w *weight) putWithExpirationHLCMode(value float32, expiration time.Time, t
 func (w *weight) resetWithoutPutHLC(ts hlc.Timestamp) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.editLocked(time.Now()) {
+		return true
+	}
 	if ts.Less(w.lastHLC) {
 		return len(w.values) > 0
 	}
@@ -244,6 +284,9 @@ func (w *weight) resetWithoutPutHLC(ts hlc.Timestamp) bool {
 func (w *weight) resetDeleteHLC(ts hlc.Timestamp) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.editLocked(time.Now()) {
+		return true
+	}
 	w.retainAddsNewerThanLocked(ts)
 	w.lastHLC = hlc.Timestamp{}
 	w.flushLockedAt(time.Now())
@@ -266,6 +309,9 @@ func (w *weight) retainAddsNewerThanLocked(ts hlc.Timestamp) {
 func (w *weight) removeContributionAt(id ContribID, now time.Time) (existed, empty bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.editLocked(now) {
+		return false, false
+	}
 	w.flushLockedAt(now)
 	for i := 0; i < len(w.values); {
 		if w.values[i].contribID != id {
@@ -305,7 +351,18 @@ func (w *weight) isZero() bool {
 func (w *weight) isZeroAndPruned() (bool, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	now := time.Now()
+	if w.cold && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
+		return w.storedZero && !w.storedExplicit, 0
+	}
+	if !w.loadLocked(now) {
+		return false, 0
+	}
+	defer w.releaseReadLocked()
 	before := len(w.values)
+	if w.cold {
+		before = w.storedCount
+	}
 	w.flushLocked()
 	pruned := before - len(w.values)
 	if w.sum != 0 {
@@ -336,6 +393,7 @@ func (w *weight) isZeroAndPruned() (bool, int) {
 func (w *weight) replace(value float32, expiration time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.cold = false
 	w.values = w.values[:0]
 	w.values = append(w.values, weightValue{value: value, expiration: expiration})
 	w.sum = value
@@ -370,6 +428,10 @@ func (w *weight) snapshotAt(now time.Time) (sum float32, latest time.Time, nonZe
 // that has locked all of its buckets before sampling one observation time.
 // Caller must hold w.mu.
 func (w *weight) snapshotLockedAt(now time.Time) (sum float32, latest time.Time, nonZero bool) {
+	if !w.loadLocked(now) {
+		return 0, time.Time{}, false
+	}
+	defer w.releaseReadLocked()
 	w.flushLockedAt(now)
 	for _, v := range w.values {
 		if v.expiration.After(latest) {
@@ -390,6 +452,10 @@ func (w *weight) snapshotLockedAt(now time.Time) (sum float32, latest time.Time,
 func (w *weight) snapshotEntry(now time.Time) ([]SnapshotContribution, hlc.Timestamp, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.loadLocked(now) {
+		return nil, w.lastHLC, false
+	}
+	defer w.releaseReadLocked()
 	out := make([]SnapshotContribution, 0, len(w.values))
 	for _, v := range w.values {
 		if !cache.IsLiveAt(v.expiration, now) {
@@ -459,6 +525,8 @@ func (w *weight) flushLockedAt(now time.Time) {
 // edge releases both. Bumping the weight of an existing edge is refcount-
 // neutral.
 type edgeCache[S comparable] struct {
+	onPruned func(vertexID, vertexID)
+
 	mu         sync.RWMutex
 	defaultTTL time.Duration
 	dict       *dictionary[S]
@@ -1143,6 +1211,9 @@ func (c *edgeCache[S]) sweepHeadsLocked(tailID vertexID, heads map[vertexID]*wei
 			}
 		default:
 			stats.CompactedContributionsInLiveBuckets += pruned
+			if pruned > 0 && c.onPruned != nil {
+				c.onPruned(tailID, headID)
+			}
 		}
 	}
 	return

@@ -601,6 +601,16 @@ func (s *Replication) Snapshot(ctx context.Context, req *pb.SnapshotRequest, str
 	if s.backend == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
+	streamTarp := func(format pb.SnapshotFormat) error {
+		var reserve func(uint64, map[string]uint64, <-chan struct{}) error
+		if reserveTail {
+			reserve = openTail
+		}
+		if err := s.streamTarpSnapshot(ctx, format, reserve, stream); err != nil {
+			return err
+		}
+		return finishTail()
+	}
 	if s.receiptSnapshotRequired {
 		switch req.GetRequiredFormat() {
 		case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
@@ -611,6 +621,9 @@ func (s *Replication) Snapshot(ctx context.Context, req *pb.SnapshotRequest, str
 		}
 		if s.receiptSnapshotSource == nil {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot producer is not configured"))
+		}
+		if s.runtime.GraphStore() != nil {
+			return streamTarp(pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT)
 		}
 		var capture ReceiptWholeStateCapture
 		var err error
@@ -644,6 +657,9 @@ func (s *Replication) Snapshot(ctx context.Context, req *pb.SnapshotRequest, str
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
 	}
 
+	if s.runtime.GraphStore() != nil {
+		return streamTarp(pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1)
+	}
 	var cutoffPerOrigin map[string]uint64
 	var cutoffHLC hlc.Timestamp
 	var cutoffLocalSeq uint64

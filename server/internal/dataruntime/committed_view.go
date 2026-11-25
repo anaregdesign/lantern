@@ -25,7 +25,7 @@ func (s *Executor) withPublicGraphRead(capture func() error) error {
 		return err
 	}
 	started := s.publicationCaptureStart()
-	captureErr := capture()
+	captureErr := s.captureGraphStorage(capture)
 	finished := s.publicationCaptureStart()
 	after, err := s.graphReadGeneration()
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *Executor) withPublicGraphReadRetry(ctx context.Context, capture func() 
 			return publicationGapError()
 		}
 		started := s.publicationCaptureStart()
-		captureErr := capture()
+		captureErr := s.captureGraphStorage(capture)
 		finished := s.publicationCaptureStart()
 		after := s.replicationCutMu.readCertificate.Load()
 		if after.stable() && after.faulted {
@@ -172,7 +172,7 @@ func (s *Executor) withCommittedViewNamed(category string, capture func() error)
 	if s.publicGraphFaultLocked() {
 		return publicationGapError()
 	}
-	return capture()
+	return s.captureGraphStorage(capture)
 }
 
 // withExclusiveCommittedView also excludes server-owned receipt lookups,
@@ -185,5 +185,5 @@ func (s *Executor) withExclusiveCommittedView(capture func() error) error {
 	if s.publicGraphFaultLocked() {
 		return publicationGapError()
 	}
-	return capture()
+	return s.captureGraphStorage(capture)
 }

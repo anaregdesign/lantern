@@ -50,7 +50,10 @@ func (c *GraphCache[S, T]) planStagedEdgeAddLocked(
 				continue
 			}
 			if before := c.edges.bucket(item.Tail, item.Head); before != nil {
-				after := cloneWeightForStaging(before)
+				after := cloneWeightForStaging(before, now)
+				if err := c.StorageError(); err != nil {
+					return nil, nil, nil, err
+				}
 				effective[i], _, _ = after.snapshotAt(now)
 			}
 			if rejectedEffective == nil {
@@ -62,7 +65,10 @@ func (c *GraphCache[S, T]) planStagedEdgeAddLocked(
 		plan := byKey[key]
 		if plan == nil {
 			before := c.edges.bucket(item.Tail, item.Head)
-			after := cloneWeightForStaging(before)
+			after := cloneWeightForStaging(before, now)
+			if err := c.StorageError(); err != nil {
+				return nil, nil, nil, err
+			}
 			if after == nil {
 				after = newWeight()
 			}

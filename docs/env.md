@@ -50,6 +50,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_CDC_ENABLED` | string | `true` | Exact true or false. Enables public scoped WatchChanges; never enables private Subscribe on the public listener. |
 | `LANTERN_COMMIT` | string | (empty) | Overrides the commit label reported in lantern_build_info. |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | string | (empty) | Comma-separated browser origins allowed by CORS (e.g. the admin SPA origin); empty disables CORS. |
+| `LANTERN_DATA_DIR` | string | `lantern-data` | Node-owned Tarp database directory for graph, replication and optional receipts. Reuse the same volume on restart. Each node needs a separate directory. |
 | `LANTERN_DEFAULT_TTL_SECONDS` | int | `60` | Reported in GetServerStatus and startup logs only; RPC writes without an expiration are permanent (decay is opt-in per write, #523). |
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` | uint32 | `10000` | Deletion cap used when DeleteVerticesByPrefix leaves limit unset. |
 | `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | uint32 | `100000` | Ceiling DeleteVerticesByPrefix's limit is clamped to. |
@@ -87,7 +88,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_MUTATION_LOG_CAPACITY` | int | `100000` | Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds. |
 | `LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER` | int | `512` | Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped. |
 | `LANTERN_MUTEX_PROFILE_FRACTION` | int | `0` | runtime.SetMutexProfileFraction sampling rate (0 = disabled; has runtime cost). |
-| `LANTERN_NODE_ID` | string | (empty) | Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes. |
+| `LANTERN_NODE_ID` | string | (empty) | Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; generated and persisted on first open in graph-only mode. Receipt-enabled nodes require an explicit matching identity. |
 | `LANTERN_PEERS` | string | (empty) | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_CA_FILE` | string | (empty) | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_CERT_FILE` | string | (empty) | Absolute workload certificate with the approved URI SAN and pinned SPKI. Separate from public TLS identity. |
@@ -117,7 +118,6 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_RECEIPT_MAX_ENTRIES` | int | `0` | Positive retained-receipt entry cap required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_RETENTION` | duration | `0s` | Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart. |
 | `LANTERN_RECEIPT_WAL_MODE` | string | `graph-only` | Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only after runtime, recovery, replication, Snapshot, and backup certification. |
-| `LANTERN_RECEIPT_WAL_PATH` | string | (empty) | Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary. |
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |
 | `LANTERN_SCAN_MAX_LIMIT` | uint32 | `10000` | Ceiling a Scan* request's limit is clamped to. |

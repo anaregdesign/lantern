@@ -695,7 +695,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	backupDir := t.TempDir()
 	t.Setenv("LANTERN_STRICT_CONFIG", "false")
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "fresh")
-	t.Setenv("LANTERN_RECEIPT_WAL_PATH", walPath)
+	t.Setenv("LANTERN_DATA_DIR", walPath)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", strings.Repeat("42", 16))
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "1h")
 	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "32")
@@ -796,99 +796,25 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		outcome != client.PutOutcomeAppliedAndLive {
 		t.Fatalf("wire PutVertex = (%v, %v)", outcome, err)
 	}
-	source, policy, err := runtime.ReceiptWholeStateBackupSource(primary, replicationService)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected, err := source.CaptureForBackup(ctx, policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if expected.WALTip.Seq == 0 {
-		t.Fatal("wire mutation did not advance the durable WAL")
-	}
-
-	evidence, manifestPath := waitForDurableReceiptBackupSet(
-		t,
-		ctx,
-		backupDir,
-		cfg.Backup.InstanceID,
-	)
-	if evidence.NodeID != expected.NodeID ||
-		evidence.Generation != expected.Generation ||
-		evidence.WALCut != expected.WALTip {
-		t.Fatalf(
-			"loaded durable evidence identity/cut = %x/%x/%+v, want %x/%x/%+v",
-			evidence.NodeID,
-			evidence.Generation,
-			evidence.WALCut,
-			expected.NodeID,
-			expected.Generation,
-			expected.WALTip,
-		)
-	}
-	if evidence.SetID == 0 || evidence.BackupTimestamp.IsZero() ||
-		evidence.Stats.Vertices != 1 || evidence.Stats.Members != 3 ||
-		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 ||
-		len(evidence.RetiredCatalog) == 0 {
-		t.Fatalf("loaded durable backup evidence = %+v", evidence)
-	}
 	if err := stopAndJoin(); err != nil {
-		t.Fatalf("stop durable backup scheduler: %v", err)
+		t.Fatal(err)
 	}
-	for _, entry := range mustReadDir(t, backupDir) {
-		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
-			t.Fatalf("durable scheduler emitted legacy/temporary path %q", entry.Name())
-		}
-	}
-	if filepath.Ext(manifestPath) != ".json" {
-		t.Fatalf("loaded manifest path = %q", manifestPath)
-	}
-}
-
-func waitForDurableReceiptBackupSet(
-	t *testing.T,
-	ctx context.Context,
-	dir, instance string,
-) (backup.ReceiptBackupSetEvidence, string) {
-	t.Helper()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	var lastErr error
-	for {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			lastErr = err
-		} else {
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".set.json") {
-					continue
-				}
-				manifestPath := filepath.Join(dir, entry.Name())
-				evidence, loadErr := backup.LoadReceiptBackupSet(dir, instance, manifestPath)
-				if loadErr == nil && evidence.Stats.Vertices == 1 {
-					return evidence, manifestPath
-				}
-				if loadErr != nil {
-					lastErr = loadErr
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for complete durable receipt backup set: %v (last validation: %v)", ctx.Err(), lastErr)
-		case <-ticker.C:
-		}
-	}
-}
-
-func mustReadDir(t *testing.T, path string) []os.DirEntry {
-	t.Helper()
-	entries, err := os.ReadDir(path)
+	cleanup()
+	cfg.Cache.DataDir = filepath.Join(t.TempDir(), "restored")
+	cfg.ReceiptWAL.Mode = provider.ReceiptWALModeRestart
+	cfg.Backup.RestoreOnStart = true
+	cfg.Backup.RestoreRequired = true
+	restoredRuntime, closeRestore, err := provider.NewServingRuntime(cfg.ReceiptWAL, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return entries
+	defer closeRestore()
+	restoredService := restoredRuntime.NewExecutor(nil)
+	restoredServer := newConnectTestServer(t, restoredService, nil)
+	got, err := newConnectClientFor(t, restoredServer.url).GetVertex(ctx, "durable/backup-wire")
+	if err != nil || got.GetString_() != "persisted" || restoredService.LocalSeq(runtime.NodeID()) != 1 || restoredRuntime.NodeID() != runtime.NodeID() {
+		t.Fatalf("restored graph or replication cut differs: %v, %v", got, err)
+	}
 }
 
 func newDurableReceiptSnapshotInstaller(
@@ -2516,7 +2442,7 @@ func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRun
 		t.Fatal(err)
 	}
 	receiptConfig := provider.ReceiptWALConfig{
-		Mode: mode, Path: config.Path,
+		Mode:  mode,
 		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
 		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
 	}

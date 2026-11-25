@@ -194,7 +194,6 @@ sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
 
     def test_windows_retains_native_mtls_without_requesting_unsupported_oidc(self):
         import windows_native
-        self.assertIn("TestAuthorityTimeUnsupportedNativeProfile", windows_native.GO_TESTS)
         self.assertIn("transport::tests::real_wire_off_mtls_requires_client_identity", windows_native.RUST_TESTS)
         self.assertNotIn("transport::tests::real_wire_mtls_and_bearer_rotation", windows_native.RUST_TESTS)
         source = (ROOT / "sdks/rust/src/transport/tests.rs").read_text()
@@ -298,10 +297,10 @@ exit 1
         self.assertNotIn("go test ./tests/integration", job(release, "conformance"))
         self.assertNotIn("--include-scoped", workflow("current-sdk4"))
         go = workflow("go")
-        self.assertIn("receipt-backup-windows]", job(go, "build"))
-        self.assertIn("WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}", job(go, "build"))
-        self.assertIn("windows_native.py", job(go, "receipt-backup-windows"))
-        self.assertIn("windows_rust_required", job(go, "receipt-backup-windows"))
+        self.assertIn("rust-windows]", job(go, "build"))
+        self.assertIn("WINDOWS_RESULT: ${{ needs.rust-windows.result }}", job(go, "build"))
+        self.assertIn("windows_native.py", job(go, "rust-windows"))
+        self.assertIn("windows_required", job(go, "rust-windows"))
 
     def test_retained_app_wire_rejects_missing_skipped_and_incomplete_execution(self):
         body = job(workflow("dart-sdk"), "offline-sqlite")

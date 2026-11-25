@@ -119,30 +119,45 @@ func (r *Rows[K, V]) decodeFloorKey(kind FloorKind, key []byte) (FloorKey[K], er
 func (r *Rows[K, V]) Floors(ctx context.Context, snap *tarp.Snapshot, gen uint64) iter.Seq2[FloorEntry[K], error] {
 	return func(yield func(FloorEntry[K], error) bool) {
 		for kind := VertexBarrier; kind <= ContributionTombstone; kind++ {
-			p, err := familyPrefix(gen, byte(kind))
+			for row, err := range r.FloorsOfKind(ctx, snap, gen, kind) {
+				if !yield(row, err) || err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+// FloorsOfKind walks one causal family in logical identity order on the pinned generation.
+func (r *Rows[K, V]) FloorsOfKind(ctx context.Context, snap *tarp.Snapshot, gen uint64, kind FloorKind) iter.Seq2[FloorEntry[K], error] {
+	return func(yield func(FloorEntry[K], error) bool) {
+		if kind < VertexBarrier || kind > ContributionTombstone {
+			yield(FloorEntry[K]{}, ErrInvalidRow)
+			return
+		}
+		p, err := familyPrefix(gen, byte(kind))
+		if err != nil {
+			yield(FloorEntry[K]{}, err)
+			return
+		}
+		lo, hi := tarp.PrefixRange(p)
+		for row, err := range snap.ScanRange(ctx, lo, hi) {
 			if err != nil {
 				yield(FloorEntry[K]{}, err)
 				return
 			}
-			lo, hi := tarp.PrefixRange(p)
-			for row, err := range snap.ScanRange(ctx, lo, hi) {
-				if err != nil {
-					yield(FloorEntry[K]{}, err)
-					return
-				}
-				key, err := r.decodeFloorKey(kind, row.Key)
-				if err != nil {
-					yield(FloorEntry[K]{}, fmt.Errorf("%w: decode causal key: %w", ErrInvalidRow, err))
-					return
-				}
-				floor, err := decodeFloor(kind, row.Value)
-				if err != nil {
-					yield(FloorEntry[K]{}, err)
-					return
-				}
-				if !yield(FloorEntry[K]{key, floor}, nil) {
-					return
-				}
+			key, err := r.decodeFloorKey(kind, row.Key)
+			if err != nil {
+				yield(FloorEntry[K]{}, fmt.Errorf("%w: decode causal key: %w", ErrInvalidRow, err))
+				return
+			}
+			floor, err := decodeFloor(kind, row.Value)
+			if err != nil {
+				yield(FloorEntry[K]{}, err)
+				return
+			}
+			if !yield(FloorEntry[K]{key, floor}, nil) {
+				return
 			}
 		}
 	}

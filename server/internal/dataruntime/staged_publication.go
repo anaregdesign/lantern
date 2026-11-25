@@ -4,9 +4,11 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
 // stagedPublication owns one caller's WAL attempt, not its typed graph plan or
@@ -42,15 +44,28 @@ func (p *stagedPublication) commit(
 	store *mutationreceipt.Tx,
 	releaseGraph func(),
 	origin *originRowStage,
+	staged ...graphcache.StorageRowWriter[string, *pb.Vertex],
 ) error {
 	p.attempted = true
-	_, err := p.service.log.CommitWithPostRingPublication(op, ts, func(mutationlog.Entry) {
+	release := func(mutationlog.Entry) {
 		if store != nil {
 			store.Commit()
 		}
 		releaseGraph()
 		origin.Commit()
-	})
+	}
+	var err error
+	if p.service.runtime != nil && p.service.runtime.tarp != nil {
+		write := func(w mutationlog.WAL, entry mutationlog.Entry) error {
+			if w != p.service.runtime.tarp || len(staged) != 1 || staged[0] == nil {
+				return &mutationlog.DefiniteWALAbort{Cause: errors.New("Tarp publication requires the exact staged graph and owner")}
+			}
+			return p.service.runtime.tarp.write(entry, staged[0])
+		}
+		_, err = p.service.log.CommitPrepared(op, ts, write, release)
+	} else {
+		_, err = p.service.log.CommitWithPostRingPublication(op, ts, release)
+	}
 	if err != nil && stagedPublicationRequiresRecovery(err) {
 		p.service.markReceiptCommitFaultLocked()
 	}

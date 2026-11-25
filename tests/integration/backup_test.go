@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -409,9 +408,6 @@ func TestBackupper_ProductionOFF_FinalDumpRestart_RealConnectWire(t *testing.T) 
 		cfg := productionOFFBackupConfig(t, dir)
 		var logs bytes.Buffer
 		runtime, svc, producer := productionOFFBackupper(t, cfg, &logs)
-		if stats, err := producer.RestoreOnStartup(ctx); err != nil || stats.Vertices != 0 {
-			t.Fatalf("initial empty restore = %+v, %v", stats, err)
-		}
 		srv := newConnectTestServer(t, svc, nil)
 		sdk := newConnectClientFor(t, srv.url)
 		expiration := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
@@ -439,13 +435,13 @@ func TestBackupper_ProductionOFF_FinalDumpRestart_RealConnectWire(t *testing.T) 
 		if err := producer.Run(shutdown); err != nil {
 			t.Fatal(err)
 		}
-		if text := logs.String(); !strings.Contains(text, `"msg":"backup: wrote dump"`) ||
+		if text := logs.String(); !strings.Contains(text, `"msg":"backup: wrote private graph storage recovery point"`) ||
 			!strings.Contains(text, `"source":"shutdown"`) || strings.Contains(text, "dump on shutdown failed") {
 			t.Fatalf("final dump did not complete: %s", text)
 		}
 		entries, err := os.ReadDir(dir)
-		if err != nil || len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".lbk") {
-			t.Fatalf("final dump files = %v, %v; want one .lbk", entries, err)
+		if err != nil || len(entries) != 1 || !entries[0].IsDir() || !strings.HasPrefix(entries[0].Name(), "lantern-tarp-") {
+			t.Fatalf("final dump files = %v, %v; want one private Tarp recovery point", entries, err)
 		}
 		srv.srv.Close()
 		if err := runtime.Close(); err != nil {
@@ -454,16 +450,9 @@ func TestBackupper_ProductionOFF_FinalDumpRestart_RealConnectWire(t *testing.T) 
 
 		// No cache/service from the first instance participates in this restore.
 		freshCfg := productionOFFBackupConfig(t, dir)
-		freshRuntime, freshSvc, consumer := productionOFFBackupper(t, freshCfg, &logs)
+		freshRuntime, freshSvc, _ := productionOFFBackupper(t, freshCfg, &logs)
 		if freshRuntime.GraphCache() == runtime.GraphCache() {
 			t.Fatal("restart reused the original cache")
-		}
-		stats, err := consumer.RestoreOnStartup(ctx)
-		if err != nil || stats.Vertices != len(keys) || stats.Edges != 1 {
-			t.Fatalf("fresh restore = %+v, %v", stats, err)
-		}
-		if !strings.Contains(logs.String(), `"msg":"backup: restored from dump"`) {
-			t.Fatalf("restore success missing from logs: %s", logs.String())
 		}
 		fresh := newConnectTestServer(t, freshSvc, nil)
 		freshSDK := newConnectClientFor(t, fresh.url)
@@ -496,86 +485,22 @@ func TestBackupper_ProductionOFF_FinalDumpRestart_RealConnectWire(t *testing.T) 
 		}
 	})
 
-	t.Run("LegacyDumpRejectedWithoutGraphOrIndexEffects", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-		defer cancel()
+	t.Run("RequiredRestoreRejectsLegacyArchive", func(t *testing.T) {
 		dir := t.TempDir()
-		legacySvc := service.NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
-		legacy := newConnectTestServer(t, legacySvc, nil)
-		legacySDK := newConnectClientFor(t, legacy.url)
-		for _, key := range []string{"data:ordinary", "data:injected"} {
-			if _, err := legacySDK.PutVertexAt(ctx, key, "legacyterm", time.Time{}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		fixture := backup.New(legacySvc, backup.Config{Dir: dir, InstanceID: "legacy-fixture"}, nil, nil)
-		if _, err := fixture.BackupNow(ctx); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "snapshot.lbk"), []byte("archived export"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		legacy.srv.Close()
-		entries, err := os.ReadDir(dir)
-		if err != nil || len(entries) != 1 {
-			t.Fatalf("legacy fixture files = %v, %v", entries, err)
-		}
-		path := filepath.Join(dir, entries[0].Name())
-		before, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-
 		cfg := productionOFFBackupConfig(t, dir)
-		var logs bytes.Buffer
-		_, svc, consumer := productionOFFBackupper(t, cfg, &logs)
-		// This already-mounted observer is deliberately a test fixture. A real
-		// startup must return the restore error before mounting its listener.
-		observer := newConnectTestServer(t, svc, nil)
-		sdk := newConnectClientFor(t, observer.url)
-		if _, err := sdk.PutVertexAt(ctx, "ordinary", "survivorterm", time.Time{}); err != nil {
-			t.Fatal(err)
+		cfg.Backup.RestoreRequired = true
+		runtime, cleanup, err := provider.NewServingRuntime(cfg.ReceiptWAL, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
+		if cleanup != nil {
+			defer cleanup()
 		}
-		raw := graphv1connect.NewLanternServiceClient(h2cClient(), observer.url)
-		statusBefore, err := raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
-		if err != nil {
-			t.Fatal(err)
+		if err == nil || runtime != nil {
+			t.Fatal("required private restore admitted an uninitialized database")
 		}
-		// Search queries are not exact value filters; preserve the observed
-		// ranked signatures for both the live and legacy content.
-		searchBefore := make(map[string][]searchHitSignature)
-		for _, query := range []string{"survivorterm", "legacyterm"} {
-			signature, err := wireSearchSignature(ctx, raw, query, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			searchBefore[query] = signature
-		}
-		stats, err := consumer.RestoreOnStartup(ctx)
-		if err == nil || !strings.Contains(err.Error(), "incompatible physical namespace format") || stats.Vertices != 0 || stats.Edges != 0 {
-			t.Fatalf("legacy dump was accepted or partially applied: %+v, %v", stats, err)
-		}
-		if vertex, err := sdk.GetVertex(ctx, "ordinary"); err != nil || vertex.GetString_() != "survivorterm" {
-			t.Fatalf("failed restore changed live value: %v, %v", vertex, err)
-		}
-		if _, err := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "injected"})); connect.CodeOf(err) != connect.CodeNotFound {
-			t.Fatalf("failed restore injected a legacy record: %v", err)
-		}
-		statusAfter, err := raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		beforeIndex := statusBefore.Msg.GetSearch().GetIndexStats()
-		afterIndex := statusAfter.Msg.GetSearch().GetIndexStats()
-		if beforeIndex == nil || afterIndex.GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY ||
-			afterIndex.GetDocuments() != beforeIndex.GetDocuments() || afterIndex.GetLiveTerms() != beforeIndex.GetLiveTerms() {
-			t.Fatalf("failed restore changed search index: before=%v after=%v", beforeIndex, afterIndex)
-		}
-		for query, signature := range searchBefore {
-			if matches, err := wireSearchSignature(ctx, raw, query, nil); err != nil || !slices.Equal(matches, signature) {
-				t.Fatalf("failed restore changed search %q: before=%v after=%v err=%v", query, signature, matches, err)
-			}
-		}
-		after, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(before, after) {
-			t.Fatalf("failed restore rewrote the legacy archive: %v", err)
+		if _, err := os.Stat(cfg.Cache.DataDir); !os.IsNotExist(err) {
+			t.Fatalf("restore created target: %v", err)
 		}
 	})
 }
@@ -583,6 +508,7 @@ func TestBackupper_ProductionOFF_FinalDumpRestart_RealConnectWire(t *testing.T) 
 func productionOFFBackupConfig(t *testing.T, dir string) *provider.Config {
 	t.Helper()
 	t.Setenv("LANTERN_AUTH_MODE", "off")
+	t.Setenv("LANTERN_DATA_DIR", filepath.Join(t.TempDir(), "graph"))
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "graph-only")
 	t.Setenv("LANTERN_BACKUP_ENABLED", "true")
 	t.Setenv("LANTERN_BACKUP_DIR", dir)

@@ -107,7 +107,7 @@ func (s *Executor) commitReplicatedGraphMutation(ctx context.Context, origin hlc
 	if err := graphTx.CheckBeforeWAL(); err != nil {
 		return graphMutationError(err)
 	}
-	if err := publication.commit(local, ts, storeTx, graphTx.Commit, originTx); err != nil {
+	if err := publication.commit(local, ts, storeTx, graphTx.Commit, originTx, graphTx); err != nil {
 		return graphMutationPublicationError(err)
 	}
 	if err := s.clock.RestoreFloor(ts); err != nil {

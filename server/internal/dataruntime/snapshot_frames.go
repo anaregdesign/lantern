@@ -174,58 +174,9 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
 		}
-		if len(e.Contributions) == 0 {
-			return fmt.Errorf("snapshot: live edge %q->%q has no contributions", e.Tail, e.Head)
-		}
-		contribs := make([]*pb.SnapshotEdgeContribution, 0, len(e.Contributions))
-		var aggregate *pb.SnapshotEdgeDerivedAggregate
-		for _, c := range e.Contributions {
-			if c.DerivedAggregate {
-				if format != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 ||
-					aggregate != nil || !c.ContribID.IsZero() ||
-					c.HLC != (hlc.Timestamp{}) || e.HLC != (hlc.Timestamp{}) ||
-					edgeweight.IsFiniteSource(c.Weight) {
-					return fmt.Errorf("snapshot: invalid derived aggregate on edge %q->%q", e.Tail, e.Head)
-				}
-				aggregate = &pb.SnapshotEdgeDerivedAggregate{Weight: c.Weight}
-				if !c.Expiration.IsZero() {
-					aggregate.Expiration = timestamppb.New(c.Expiration)
-				}
-				continue
-			}
-			if !edgeweight.IsFiniteSource(c.Weight) {
-				return fmt.Errorf("snapshot: non-finite source contribution on edge %q->%q", e.Tail, e.Head)
-			}
-			contribution := &pb.SnapshotEdgeContribution{
-				Weight:    c.Weight,
-				ContribId: contribIDBytes(c.ContribID),
-				Hlc:       hlcToProto(c.HLC),
-			}
-			if !c.Expiration.IsZero() {
-				contribution.Expiration = timestamppb.New(c.Expiration)
-			}
-			contribs = append(contribs, contribution)
-		}
-		if aggregate != nil {
-			for _, add := range contribs {
-				if len(add.GetContribId()) == 0 || add.GetHlc() == nil {
-					return fmt.Errorf("snapshot: derived aggregate on edge %q->%q has an unidentified Add", e.Tail, e.Head)
-				}
-			}
-			aggregate.Adds = contribs
-			contribs = nil
-		}
-		entry := &pb.SnapshotResponse{
-			Entry: &pb.SnapshotResponse_Edge{
-				Edge: &pb.SnapshotEdge{
-					NoEndpointCreation: cut.namespaceFormat != "",
-					Tail:               e.Tail,
-					Head:               e.Head,
-					Hlc:                hlcToProto(e.HLC),
-					Contributions:      contribs,
-					DerivedAggregate:   aggregate,
-				},
-			},
+		entry, err := snapshotEdgeFrame(e, format, cut.namespaceFormat)
+		if err != nil {
+			return err
 		}
 		if err := stream.Send(entry); err != nil {
 			return err
@@ -247,6 +198,63 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 		},
 	}
 	return stream.Send(footer)
+}
+
+func snapshotEdgeFrame(e graphcache.SnapshotEdge[string], format pb.SnapshotFormat, namespace string) (*pb.SnapshotResponse, error) {
+	if len(e.Contributions) == 0 {
+		return nil, fmt.Errorf("snapshot: live edge %q->%q has no contributions", e.Tail, e.Head)
+	}
+	contribs := make([]*pb.SnapshotEdgeContribution, 0, len(e.Contributions))
+	var aggregate *pb.SnapshotEdgeDerivedAggregate
+	for _, c := range e.Contributions {
+		if c.DerivedAggregate {
+			if format != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 ||
+				aggregate != nil || !c.ContribID.IsZero() ||
+				c.HLC != (hlc.Timestamp{}) || e.HLC != (hlc.Timestamp{}) ||
+				edgeweight.IsFiniteSource(c.Weight) {
+				return nil, fmt.Errorf("snapshot: invalid derived aggregate on edge %q->%q", e.Tail, e.Head)
+			}
+			aggregate = &pb.SnapshotEdgeDerivedAggregate{Weight: c.Weight}
+			if !c.Expiration.IsZero() {
+				aggregate.Expiration = timestamppb.New(c.Expiration)
+			}
+			continue
+		}
+		if !edgeweight.IsFiniteSource(c.Weight) {
+			return nil, fmt.Errorf("snapshot: non-finite source contribution on edge %q->%q", e.Tail, e.Head)
+		}
+		contribution := &pb.SnapshotEdgeContribution{
+			Weight:    c.Weight,
+			ContribId: contribIDBytes(c.ContribID),
+			Hlc:       hlcToProto(c.HLC),
+		}
+		if !c.Expiration.IsZero() {
+			contribution.Expiration = timestamppb.New(c.Expiration)
+		}
+		contribs = append(contribs, contribution)
+	}
+	if aggregate != nil {
+		for _, add := range contribs {
+			if len(add.GetContribId()) == 0 || add.GetHlc() == nil {
+				return nil, fmt.Errorf("snapshot: derived aggregate on edge %q->%q has an unidentified Add", e.Tail, e.Head)
+			}
+		}
+		aggregate.Adds = contribs
+		contribs = nil
+	}
+	entry := &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Edge{
+			Edge: &pb.SnapshotEdge{
+				NoEndpointCreation: namespace != "",
+				Tail:               e.Tail,
+				Head:               e.Head,
+				Hlc:                hlcToProto(e.HLC),
+				Contributions:      contribs,
+				DerivedAggregate:   aggregate,
+			},
+		},
+	}
+	return entry, nil
 }
 
 // PrepareReceiptSnapshotFrames converts one detached publication cut into a

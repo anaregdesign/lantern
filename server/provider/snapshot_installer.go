@@ -3,7 +3,7 @@ package provider
 import (
 	"errors"
 	"log/slog"
-	"path/filepath"
+
 	"time"
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
@@ -68,7 +68,7 @@ func NewSnapshotInstallerSelection(
 	}
 	maxFrames := 2 + maxReceipts + maxReceipts + receiptSnapshotInstallerMaxGraphFrames
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
-		TempDir: filepath.Dir(config.Path),
+		TempDir: cacheConfig.DataDir,
 		Limits: backup.ReceiptSnapshotCollectorLimits{
 			MaxFrameBytes:          receiptSnapshotInstallerMaxFrameBytes,
 			MaxFrames:              maxFrames,

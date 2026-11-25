@@ -41,7 +41,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	if len(os.Args) == 1 || os.Args[1] == listenerlaunch.Argument || os.Args[1] == "init-security" || os.Args[1] == "provision-security" || os.Args[1] == "renew-security" || os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
+	if len(os.Args) == 1 || os.Args[1] == listenerlaunch.Argument || os.Args[1] == "init-security" || os.Args[1] == "provision-security" || os.Args[1] == "renew-security" || os.Args[1] == "restore-graph-store" || os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
 		if err := runFunctionalMain(len(os.Args) == 1, runMain, os.Stderr); err != nil {
 			decisiontrace.WriteStartupFailure(os.Stderr, err)
 			slog.Error("functional server exited with error", slog.Any("err", err))

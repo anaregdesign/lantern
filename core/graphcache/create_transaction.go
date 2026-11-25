@@ -209,6 +209,10 @@ func (c *GraphCache[S, T]) beginEdgeCreate(items []EdgeItem[S], ts hlc.Timestamp
 func (w *weight) hasLiveContributionAt(now time.Time) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.loadLocked(now) {
+		return false
+	}
+	defer w.releaseReadLocked()
 	for _, value := range w.values {
 		if cache.IsLiveAt(value.expiration, now) {
 			return true

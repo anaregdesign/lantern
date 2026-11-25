@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +32,6 @@ const (
 // ReceiptWALConfig is the durable-runtime contract.
 //
 //   - LANTERN_RECEIPT_WAL_MODE        graph-only (default), fresh, or restart
-//   - LANTERN_RECEIPT_WAL_PATH        absolute FileWAL path; required in durable modes
 //   - LANTERN_RECEIPT_EPOCH           nonzero 32-hex-character deployment epoch
 //   - LANTERN_RECEIPT_RETENTION       immutable one-hour to 30-day Go duration
 //   - LANTERN_RECEIPT_MAX_ENTRIES     positive retained-receipt entry cap
@@ -43,10 +41,9 @@ const (
 // Durable construction alone does not enable a public receipt surface. Final
 // activation additionally requires runtime, backup, recovery, and bearer-auth
 // certification. Fresh never overwrites existing bytes; restart requires the
-// WAL and every bound sidecar.
+// matching Tarp database and receipt policy.
 type ReceiptWALConfig struct {
 	Mode       ReceiptWALMode
-	Path       string
 	Epoch      mutationreceipt.Epoch
 	Retention  time.Duration
 	MaxEntries int
@@ -55,7 +52,6 @@ type ReceiptWALConfig struct {
 
 func loadReceiptWALConfig(reader *envconfig.Reader) ReceiptWALConfig {
 	mode := ReceiptWALMode(strings.TrimSpace(reader.String("LANTERN_RECEIPT_WAL_MODE", string(ReceiptWALModeGraphOnly))))
-	path := strings.TrimSpace(reader.String("LANTERN_RECEIPT_WAL_PATH", ""))
 	epochText := strings.TrimSpace(reader.String("LANTERN_RECEIPT_EPOCH", ""))
 	retention := reader.Duration("LANTERN_RECEIPT_RETENTION", 0)
 	maxEntries := reader.Int("LANTERN_RECEIPT_MAX_ENTRIES", 0)
@@ -71,7 +67,7 @@ func loadReceiptWALConfig(reader *envconfig.Reader) ReceiptWALConfig {
 		}
 	}
 	return ReceiptWALConfig{
-		Mode: mode, Path: path, Epoch: epoch, Retention: retention,
+		Mode: mode, Epoch: epoch, Retention: retention,
 		MaxEntries: maxEntries, MaxBytes: maxBytes,
 	}
 }
@@ -81,9 +77,12 @@ func validateReceiptWALConfig(
 	backups backup.Config,
 	replication ReplicationConfig,
 ) error {
+	if replication.nodeIDExplicit && replication.NodeID == (hlc.NodeID{}) {
+		return errors.New("LANTERN_NODE_ID must be a nonzero 32-hex-character value")
+	}
 	switch config.Mode {
 	case ReceiptWALModeGraphOnly:
-		if config.Path != "" || config.Epoch != (mutationreceipt.Epoch{}) ||
+		if config.Epoch != (mutationreceipt.Epoch{}) ||
 			config.Retention != 0 || config.MaxEntries != 0 || config.MaxBytes != 0 {
 			return errors.New("LANTERN_RECEIPT_WAL_MODE=graph-only cannot be combined with durable receipt WAL settings")
 		}
@@ -91,9 +90,6 @@ func validateReceiptWALConfig(
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 	default:
 		return fmt.Errorf("LANTERN_RECEIPT_WAL_MODE must be exactly graph-only, fresh, or restart")
-	}
-	if config.Path == "" || !filepath.IsAbs(config.Path) {
-		return errors.New("LANTERN_RECEIPT_WAL_PATH must be an absolute path in durable receipt WAL mode")
 	}
 	if config.Epoch == (mutationreceipt.Epoch{}) {
 		return errors.New("LANTERN_RECEIPT_EPOCH must be a nonzero 32-hex-character value in durable receipt WAL mode")
@@ -127,8 +123,8 @@ func (c ReceiptWALConfig) receiptConfig(clockHighWater time.Time) mutationreceip
 func NewReceiptWALConfig(c *Config) ReceiptWALConfig { return c.ReceiptWAL }
 
 // NewServingRuntime is the sole production state-composition boundary. It
-// creates the historical in-memory graph-only runtime or certifies one
-// lease-owned durable fresh/restart bundle before any selector exposes state.
+// opens the node-owned graph database and binds the selected receipt policy
+// before any selector exposes state.
 func NewServingRuntime(
 	config ReceiptWALConfig,
 	cacheConfig CacheConfig,
@@ -150,109 +146,11 @@ func NewServingRuntime(
 		metrics.SetMutationLogCapacity(logConfig.Capacity)
 	}
 
-	var runtime *dataruntime.ServingRuntime
-	switch config.Mode {
-	case ReceiptWALModeGraphOnly:
-		graph := NewGraphCache(cacheConfig, searchConfig)
-		log := mutationlog.New(options)
-		runtime, err = dataruntime.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig), cacheConfig.namespaceFormat)
-		if err != nil {
-			_ = log.Close()
-			return nil, nil, err
-		}
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
-		now := time.Now()
-		runtimeConfig := dataruntime.DurableReceiptWALRuntimeConfig{
-			Path:            config.Path,
-			NamespaceFormat: cacheConfig.namespaceFormat,
-			Receipt:         config.receiptConfig(now),
-			Log:             options,
-			DefaultTTL:      cacheConfig.TTL,
-			ConfigureGraph:  receiptWALGraphConfigurator(cacheConfig, searchConfig),
-			NodeID:          replicationConfig.NodeID,
-			Now:             now,
-			BaselineCodec:   backup.ReceiptBaselineCodec{},
-		}
-		if config.Mode == ReceiptWALModeFresh {
-			restore, restoreErr := prepareFreshReceiptStartupRestore(
-				backups,
-				runtimeConfig.Receipt,
-				now,
-			)
-			if restoreErr != nil {
-				return nil, nil, restoreErr
-			}
-			runtimeConfig.StartupRestore = restore
-			runtime, err = dataruntime.CreateDurableReceiptWALServingRuntime(runtimeConfig)
-		} else {
-			runtime, err = dataruntime.OpenDurableReceiptWALServingRuntime(runtimeConfig)
-			if err != nil &&
-				errors.Is(err, dataruntime.ErrDurableReceiptWALBackupFallbackEligible) &&
-				backups.RestoreOnStart {
-				normalErr := err
-				restore, restoreErr := loadRestartReceiptStartupRestore(
-					backups,
-					runtimeConfig.Receipt,
-				)
-				if restoreErr != nil {
-					return nil, nil, errors.Join(normalErr, restoreErr)
-				}
-				runtimeConfig.StartupRestore = restore
-				runtime, err = dataruntime.OpenDurableReceiptWALServingRuntimeFromBackup(
-					runtimeConfig,
-				)
-				if err != nil {
-					return nil, nil, errors.Join(normalErr, err)
-				}
-			}
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-
-	default:
-		return nil, nil, fmt.Errorf("unsupported receipt WAL mode %q", config.Mode)
-	}
-
-	cleanup = func() { _ = runtime.Close() }
-	return runtime, cleanup, nil
-}
-
-func prepareFreshReceiptStartupRestore(
-	backups backup.Config,
-	config mutationreceipt.Config,
-	now time.Time,
-) (*dataruntime.ReceiptStartupRestore, error) {
-	if !backups.RestoreOnStart {
-		return nil, nil
-	}
-	evidence, err := backup.LoadLatestReceiptBackupSet(backups.Dir, backups.InstanceID)
-	if errors.Is(err, backup.ErrReceiptBackupSetNotFound) && !backups.RestoreRequired {
-		return nil, nil
-	}
+	runtime, err := newTarpServingRuntime(context.Background(), config, cacheConfig, searchConfig, replicationConfig, options, backups)
 	if err != nil {
-		return nil, fmt.Errorf("load fresh receipt startup backup: %w", err)
+		return nil, nil, err
 	}
-	restore, err := backup.PrepareFreshReceiptStartupRestore(evidence, config, now)
-	if err != nil {
-		return nil, fmt.Errorf("prepare fresh receipt startup restore: %w", err)
-	}
-	return &restore, nil
-}
-
-func loadRestartReceiptStartupRestore(
-	backups backup.Config,
-	config mutationreceipt.Config,
-) (*dataruntime.ReceiptStartupRestore, error) {
-	evidence, err := backup.LoadLatestReceiptBackupSet(backups.Dir, backups.InstanceID)
-	if err != nil {
-		return nil, fmt.Errorf("load restart receipt startup backup: %w", err)
-	}
-	restore, err := backup.PrepareRestartReceiptStartupRestore(evidence, config)
-	if err != nil {
-		return nil, fmt.Errorf("prepare restart receipt startup restore: %w", err)
-	}
-	return &restore, nil
+	return runtime, func() { _ = runtime.Close() }, nil
 }
 
 func receiptWALGraphConfigurator(

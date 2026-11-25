@@ -176,6 +176,9 @@ func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
 			firstErr = yield(key, c.searchExtract(key, value), expiration)
 			return firstErr == nil
 		})
+		if err := c.StorageError(); err != nil {
+			return err
+		}
 		return firstErr
 	})
 }
@@ -273,6 +276,9 @@ func (c *GraphCache[S, T]) SearchVerticesSnapshotContext(ctx context.Context, qu
 			snapshot = append(snapshot, SearchSnapshotHit[S, T]{Result: result, Value: value, Found: found})
 		}
 	})
+	if err == nil {
+		err = c.StorageError()
+	}
 	return snapshot, stats, err
 }
 

@@ -62,10 +62,11 @@ func (s *Executor) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest)
 	vertices := make([]*pb.Vertex, 0, limit)
 	var lastKey string
 	var more bool
-	if err := s.withPublicGraphReadRetry(ctx, func() error {
+	if err := s.withGraphRows(ctx, func(read graphRead) error {
 		vertices = vertices[:0]
 		lastKey = ""
-		more, _ = s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, v *pb.Vertex) bool {
+		var readErr error
+		more, readErr = read.vertexPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(key string, v *pb.Vertex) {
 			// Normalise nil-valued vertices the same way GetVertex does so
 			// callers see a uniform shape.
 			if v == nil {
@@ -74,9 +75,8 @@ func (s *Executor) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest)
 				vertices = append(vertices, detachedGraphVertex(v))
 			}
 			lastKey = key
-			return true
 		})
-		return nil
+		return readErr
 	}); err != nil {
 		return nil, err
 	}
@@ -137,15 +137,15 @@ func (s *Executor) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKeysRequ
 	keys := make([]string, 0, limit)
 	var lastKey string
 	var more bool
-	if err := s.withPublicGraphReadRetry(ctx, func() error {
+	if err := s.withGraphRows(ctx, func(read graphRead) error {
 		keys = keys[:0]
 		lastKey = ""
-		more, _ = s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, _ *pb.Vertex) bool {
+		var readErr error
+		more, readErr = read.vertexPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(key string, _ *pb.Vertex) {
 			keys = append(keys, key)
 			lastKey = key
-			return true
 		})
-		return nil
+		return readErr
 	}); err != nil {
 		return nil, err
 	}
@@ -441,20 +441,20 @@ func (s *Executor) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest) (*pb.
 	edges := make([]*pb.Edge, 0, limit)
 	var lastTail, lastHead string
 	var more bool
-	if err := s.withPublicGraphReadRetry(ctx, func() error {
+	if err := s.withGraphRows(ctx, func(read graphRead) error {
 		edges = edges[:0]
 		lastTail, lastHead = "", ""
-		more, _ = s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), cursor.LastTail, cursor.LastHead, int(limit),
-			func(_ string, tail string, _ string, head string, weight float32, exp time.Time) bool {
+		var readErr error
+		more, readErr = read.edgePage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), cursor.LastTail, cursor.LastHead, int(limit),
+			func(tail, head string, weight float32, exp time.Time) {
 				edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
 				if !exp.IsZero() {
 					edge.Expiration = timestamppb.New(exp)
 				}
 				edges = append(edges, edge)
 				lastTail, lastHead = tail, head
-				return true
 			})
-		return nil
+		return readErr
 	}); err != nil {
 		return nil, err
 	}

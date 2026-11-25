@@ -45,6 +45,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/encoding/protodelim"
 
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
@@ -116,6 +117,7 @@ type Stats struct {
 // Backupper owns periodic/manual/final production and graph-only startup restore.
 type Backupper struct {
 	svc               Service
+	graphStore        *graphstore.DB
 	receiptSource     ReceiptSource
 	receiptPolicy     mutationreceipt.Config
 	cfg               Config
@@ -185,7 +187,7 @@ func NewReceipt(
 // not an error. A directory that contains only corrupt files returns an
 // error so RestoreRequired callers can fail boot.
 func (b *Backupper) RestoreOnStartup(ctx context.Context) (Stats, error) {
-	if b.receiptSource != nil {
+	if b.graphStore != nil || b.receiptSource != nil {
 		// Durable restore is completed before this periodic producer can be
 		// constructed; App.Run must never replay receipt state.
 		return Stats{}, nil
@@ -291,6 +293,9 @@ func (b *Backupper) backupOnceWithSource(ctx context.Context, source string) (St
 	policy := b.Production()
 	if source != "manual" && (!policy.Config.Enabled || policy.Config.Interval <= 0) {
 		return Stats{}, nil
+	}
+	if b.graphStore != nil {
+		return b.backupGraphStore(ctx, source, policy)
 	}
 	if b.receiptSource != nil {
 		return b.backupReceiptSetWithSource(ctx, source, policy)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
@@ -525,16 +526,25 @@ func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string,
 func (c *GraphCache[S, T]) sweepExpiredTombstonesLocked(now time.Time) {
 	for k, t := range c.vertexTombstones {
 		if !t.expiration.IsZero() && !now.Before(t.expiration) {
+			if c.storage != nil && c.storage.collecting {
+				c.storage.pending.floors = append(c.storage.pending.floors, graphstore.FloorKey[S]{Kind: graphstore.VertexTombstone, Key: k})
+			}
 			c.clearVertexTombstoneLocked(k)
 		}
 	}
 	for k, t := range c.edgeTombstones {
 		if !t.expiration.IsZero() && !now.Before(t.expiration) {
+			if c.storage != nil && c.storage.collecting {
+				c.storage.pending.floors = append(c.storage.pending.floors, graphstore.FloorKey[S]{Kind: graphstore.EdgeTombstone, Tail: k.Tail, Head: k.Head})
+			}
 			c.clearEdgeTombstoneLocked(k.Tail, k.Head)
 		}
 	}
 	for k, t := range c.edgeContributionTombstones {
 		if !t.expiration.IsZero() && !now.Before(t.expiration) {
+			if c.storage != nil && c.storage.collecting {
+				c.storage.pending.floors = append(c.storage.pending.floors, graphstore.FloorKey[S]{Kind: graphstore.ContributionTombstone, Tail: k.Tail, Head: k.Head, ContribID: k.ContribID})
+			}
 			c.clearEdgeContributionTombstoneLocked(k)
 		}
 	}

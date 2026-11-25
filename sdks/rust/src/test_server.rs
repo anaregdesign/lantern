@@ -365,10 +365,12 @@ impl GoServer {
         }) {
             return Err("port and startup logging are fixture-owned settings".into());
         }
+        let data_dir = tempfile::tempdir()?;
         let startup_log = StartupLog(tempfile::NamedTempFile::new()?);
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut command = Command::new(binary);
         command
+            .env("LANTERN_DATA_DIR", data_dir.path())
             .env("LANTERN_PORT", "0")
             .env("LANTERN_LOG_LEVEL", "info")
             .env("LANTERN_LOG_FORMAT", "json")
@@ -389,7 +391,7 @@ impl GoServer {
             child: command.spawn()?,
             port: 0,
             native: None,
-            _files: None,
+            _files: Some(data_dir),
             _startup_log: Some(startup_log),
             startup_deadline: Some(deadline),
         };
