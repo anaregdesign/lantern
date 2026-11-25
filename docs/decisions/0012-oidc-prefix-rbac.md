@@ -682,10 +682,9 @@ hard memory bound.
 Private `SnapshotEdge.no_endpoint_creation` permits missing explicit endpoints
 and restores only Edge sources. Public reads, counts, traversal and graph export
 continue to require live endpoints. Private archive V4 pins the reachable
-Snapshot descriptor to
-`a8c8af1e98800f47365f1b25711019315f07bef319490243401e9b1e4ed6d662`.
-V3 archives and V8 WAL unions require explicit offline migration and fail closed;
-there is no silent reinterpretation of existing persisted bytes.
+Snapshot descriptor, including the CreateEdge receipt kind, to
+`7b648ad4d5661106d70b364ce6cfbd1560e10d415f4badac90a8f7c281659bf5`.
+The Tarp serving runtime requires the current storage format.
 
 ### Consumer presentation of undisclosed handling (#1626)
 
