@@ -1,8 +1,9 @@
 # server — Lantern Connect server
 
-The `lantern` server: a Tarp-backed `key-vertex-store` (graph-based KVS)
-with replication, exposed on **`:6380`** by default. This module produces
-the `lantern` binary; the root module's `Dockerfile` builds and ships it.
+The `lantern` server exposes a replicated graph key-value store on **`:6380`**
+by default. Each node stores vertices, edges and replication progress in one
+local [Tarp](https://github.com/anaregdesign/tarp) database. This module
+produces the `lantern` binary shipped by the root module's `Dockerfile`.
 
 The primary listener speaks **Connect** (Connect protocol, gRPC, and
 gRPC-Web all multiplexed on the same h2c port). The pre-#347 split
@@ -25,7 +26,8 @@ go build -o lantern ./cmd
 go run ./cmd
 
 # Container image (published per root tag)
-docker run --rm -p 6380:6380 -p 9090:9090 ghcr.io/anaregdesign/lantern:latest
+docker run --rm -p 6380:6380 -p 9090:9090 \
+  -v lantern-data:/var/lib/lantern/runtime ghcr.io/anaregdesign/lantern:latest
 ```
 
 The server listens on:
@@ -191,6 +193,7 @@ failure (#847). The most common knobs:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LANTERN_PORT` | `6380` | Primary Lantern RPC listen port (Connect / gRPC / gRPC-Web multiplexed on h2c). |
+| `LANTERN_DATA_DIR` | `tarp.db` (`/var/lib/lantern/runtime/graph` in the container image) | Node-owned database directory. Reuse it when restarting the same node. |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes (omitted TTL/expiration ⇒ permanent; decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
 | `LANTERN_GC_EDGE_BUDGET` | `0` | Maximum tail buckets swept per tick; `0` keeps the full sweep. A high-degree tail can still dominate a bounded tick. Monitor tail backlog and reclamation lag when enabling. |

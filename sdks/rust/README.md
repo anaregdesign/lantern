@@ -350,9 +350,10 @@ keys/edges are not deleted. Use an empty destination for an exact
 fully validated earlier Put response counts; its failed batch might have
 applied, and an expiration may lapse before a later pass.
 
-Backup contains neither per-contribution identities nor decay history,
-causal frontiers, removal floors, receipt Store/WAL, or mutation receipts.
-It cannot reconstruct those from a folded Edge. Finite folded weights
+This public backup contains vertices and folded edges. The Server's
+[private node backup](../../docs/backup.md) preserves retained contributions,
+causal frontiers and removal floors, plus mutation receipts on receipt-enabled
+nodes. Finite folded weights
 are restorable through public Put; a server can fold finite contributions
 into **NaN or infinity**, but public `PutEdges` rejects nonfinite source
 weights. Restore therefore returns `UnsupportedBackup` **before any Put**
@@ -464,7 +465,7 @@ receipt fails acceptance. See the [SDK4 qualification contract](../../CONTRIBUTI
 
 Tests exercise the explicit single-instance h2c exception, verified TLS,
 mTLS, bearer rotation, authenticated two-node HA streaming, retained-log
-gaps, receipt-WAL envelope negotiation, subscriber cancellation, graph
+gaps, receipt envelope negotiation, subscriber cancellation, graph
 backup/restore, structured search failures, a response above Tonic's
 4-MiB default, all exact values/expiration boundaries, bounded CRUD
 chunks, failure reporting, and retained-ID Add semantics over the

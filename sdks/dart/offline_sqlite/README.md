@@ -249,8 +249,9 @@ real Lantern server after a proxy drops committed responses. The crash probe
 kills a separate process at transaction boundaries; it is distinct from a Dart
 exception or an in-memory snapshot test.
 
-The `--receipt` crash gate requires a live local authenticated receipt-WAL
-server and fails if either the endpoint or token is missing. CI starts a
+The `--receipt` crash gate requires a live authenticated local Server that
+persists receipts in [Tarp](https://github.com/anaregdesign/tarp). The gate
+fails if either the endpoint or token is missing. CI starts a
 separate fixture with `testbed/scripts/dart_receipt_fixture.sh` and passes its
 temporary token to the test; the local command above expects `RECEIPT_TOKEN`
 to be set from that file. The graph-only server remains available for existing

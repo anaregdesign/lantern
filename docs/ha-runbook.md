@@ -296,32 +296,23 @@ the request (smaller k/step, larger epsilon) rather than retrying as-is.
 
 ## 5. Capacity planning
 
-Two truisms:
+Every replica stores the complete graph, retained relay and optional receipts on
+its own Tarp volume. Size each node for its live data and history plus temporary
+space for generation installs and compaction. Provision space separately for
+private backups and the graph-only Snapshot spool. A recovering peer transfers
+a retained suffix when available, or a Snapshot and tail when history has
+expired.
 
-1. **Memory ≈ working set, on every pod.** Lantern is full-replica.
-   3 replicas storing 1 GiB of graph use 3 × 1 GiB of RAM total, not
-   1 GiB. Plan for the largest single pod plus headroom.
-2. **Replication adds network, not storage.** Each write fans out to
-   every peer once. With `R` replicas and write rate `W`, peer egress
-   is `(R − 1) × W` per pod. Snapshots are O(N+E) per peer on cold
-   bootstrap.
+Measure peak RSS with representative data, queries, writes, catch-up and backup
+on one replica. Include the resident graph metadata, optional search index,
+Tarp caches and temporary allocations when setting the pod memory limit.
+The [storage guide](backup.md#compacting-the-node-database) describes disk
+headroom for physical maintenance.
 
-**Sizing checklist:**
-
-- Estimate working set: avg vertex size × vertex count + avg edge
-  payload × edge count. Add causal-barrier and D4 tombstone metadata, then
-  ~20% for radix trie / index overhead.
-- Multiply by 1 (memory per pod). Add ~30% headroom for transient
-  GC and snapshot serialisation buffers.
-- Set the chart's `resources.limits.memory` to that number. Hitting
-  the limit OOM-kills the pod, which forces a re-bootstrap from
-  peers — disruptive, do not undersize.
-- For `ANTI_ENTROPY_INTERVAL_MS`: the tighter, the smaller the
-  recovery window after a hiccup, the higher the steady-state load.
-  Default `30000` (30s) is sane.
-- For `MAX_REPLICATION_LAG`: must be larger than the lag a peer can
-  accumulate during one snapshot pause. Default `10000` (entries)
-  works for write rates up to a few thousand mut/s.
+`LANTERN_ANTI_ENTROPY_INTERVAL_MS` controls the reconciliation cadence
+(default 30 seconds). `LANTERN_MAX_REPLICATION_LAG` is the readiness threshold
+(default 10,000 entries). Choose the threshold using the write rate and the
+lag your application tolerates during catch-up.
 
 **Saturation guard (`LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES`, #848):**
 
@@ -524,11 +515,10 @@ deploys:
    `max(lantern_replication_lag_seq) == 0` across the cluster.
 2. **Drain one pod:** stop or evict it. Set the PDB to the required serving minimum for this cohort
    (for example `minAvailable: 2` with three replicas); its chart default is 1.
-3. **Restart with the new image.** Graph-only mode bootstraps from a
-   remaining peer's Snapshot and tails `Subscribe`. A compatible durable
-   `restart` first verifies its own WAL; a peer gap requires a `RECEIPT`
-   Snapshot and tail, never a graph-only downgrade. Do not use this
-   rolling procedure across incompatible private receipt formats.
+3. **Restart with a compatible image on the same volume.** Both modes reopen the
+   committed Tarp generation and resume from the retained origin frontiers.
+   A gap beyond peer replay history requires a Snapshot and tail in the node's
+   negotiated format. Receipt mode requires a `RECEIPT` Snapshot.
 4. **Wait for `/readyz` = 200** on the new pod. Allow for data catch-up, current signed membership and policy
    acquisition. An OIDC authority restart also waits for the full 35s clock
    fence; elapsed time alone does not establish readiness. If the pod remains
@@ -611,23 +601,16 @@ security recovery each require their original continuity evidence. See §9.4 and
 
 ## 9. Recovery procedures
 
-### 9.1 Force a re-snapshot
+### 9.1 Recover a gap after a partition
 
-Symptom: anti-entropy keeps incrementing `gaps_found` on the same
-peer, or you suspect divergence after a long partition. In graph-only
-mode, verify another peer has the trusted complete graph before replacing
-the suspect pod:
-
-```sh
-# Graph-only: restart only the suspect pod to bootstrap from a healthy peer.
-kubectl delete pod lantern-2 -n <ns>
-```
-
-The new pod starts in `NOT_SERVING` until snapshot+tail completes. In durable
-receipt-WAL mode, the pump automatically requests `RECEIPT` on a gap and a
-restart first verifies its committed Tarp generation. Do not delete that database, force `fresh`
-under the old epoch, or substitute a graph-only Snapshot to bypass a failed
-receipt install; diagnose the proof failure before serving.
+When anti-entropy repeatedly reports a gap, compare the committed origin
+frontiers and retained history on the affected node and its healthy peers.
+The pump requests a Snapshot when retained replay cannot cover the missing
+prefix. Restarting a pod with its existing volume resumes from its durable cut.
+Inspect the signed peer configuration, Snapshot staging capacity and install
+errors if recovery stalls. Receipt mode requires a verified `RECEIPT` Snapshot
+and a contiguous tail. For a lost or damaged volume, use the
+[private recovery procedure](backup.md#private-recovery-for-tarp-storage).
 
 ### 9.2 Subscribe ring buffer overflow
 
@@ -656,7 +639,7 @@ and frame limit. The directory must already exist with mode 0700 and be owned
 by the server identity. Supply its canonical resolved absolute path; symlink
 components are rejected. Each attempt takes its dedicated owner lease. Supply
 separate writable staging capacity when running with a read-only root filesystem.
-The server does not infer `/tmp`, the Receipt WAL directory or a backup/PVC path.
+Set the spool directory explicitly on a private volume.
 An unconfigured single-node server can start, but Snapshot installation fails
 before receiving source data.
 
@@ -667,7 +650,7 @@ state mount; ordinary startup retains it and its owner lease. With
 `persistence_root=/state`, the active path is `/state/<node>/snapshot-spool`,
 not `/var/lib/lantern-snapshot-spool`. Current human JSON remains required, and
 separate `LANTERN_GRAPH_SNAPSHOT_SPOOL_*` variables are rejected by presence.
-OIDC receipt-WAL mode validates the retained metadata but has no active graph
+OIDC receipt mode validates the retained metadata but has no active graph
 spool. Receipt-mode collection is unchanged.
 
 The local native fixture explicitly chooses a 128 MiB staging budget and a
@@ -765,7 +748,7 @@ bounded count, byte, or seq-distance limit, the pump logs
 `replication: pending mutation buffer full` or `seq gap exceeds` and retries;
 it does not publish a higher cutoff over the hole. Check the source's
 `PeerStatus` for the missing origin. If the gap persists, restart the affected
-replica to bootstrap from a healthy peer's Snapshot.
+replica with its existing Tarp volume and check whether a healthy peer can supply the missing suffix or Snapshot.
 
 Tarp commits an accepted graph change and its relay position together. A
 definite rejection leaves the prior committed cut in place. An indeterminate
@@ -867,7 +850,7 @@ operator actions.
 | Ambiguous storage commit / runtime uncertified | Startup refuses the listener, or committed graph/status reads fail after an indeterminate Tarp commit | Repair storage or restore a verifiable exact cut. Do not infer non-execution from `NOT_YET_OBSERVED`, restart in `fresh` under the old epoch, or retry on a different endpoint. Disabled capability alone may instead mean graph-only mode or missing auth. |
 | NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
-| Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
+| Network partition > tombstone TTL | Same signals + possible resurrection | Verify the authoritative surviving state before readmitting the affected node. Check [gap recovery](#91-recover-a-gap-after-a-partition) and the [private recovery procedure](backup.md). |
 | Causal metadata approaches its budget | For a non-zero limit, guarded `lantern_causal_metadata_entries / limit` rises; rejects or `over_limit` become non-zero | Stop new identity churn, inspect oldest retention deadline and high-water, then raise the per-kind causal budget or shorten D4 only after validating the resurrection window. Exact Delete changes barrier→tombstone but retains the slot until that floor expires/supersedes. |
 | Mixed Put/Add or Delete/Add edge weights differ after lag reaches zero | Compare active D4 floors and mutation history | A floor may have expired during a long partition; reconcile that edge from an authoritative snapshot. |
 | Search config mismatch | `search_config_match{peer}=0`, readiness 503 | Make search-affecting env identical; graph replication is intentionally still active. |

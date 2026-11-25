@@ -195,7 +195,7 @@ are **not** metered here — they are visible only as listener-level spans (§7)
 and via the subscribe/snapshot domain metrics (§5.4). That asymmetry is a known
 gap (§8).
 
-### 5.3 Graph state & TTL decay — "what's in memory, and what's leaving?"
+### 5.3 Graph state & TTL decay — "how large is the live graph, and what is expiring?"
 
 *Persona P3, P4 · role: capacity + RCA.* `lantern_vertices`, `lantern_edges`
 (live counts),
@@ -206,9 +206,10 @@ floors), and the canonical
 families (the complete retained causal-identity budget),
 `lantern_ttl_expirations_total{kind=vertex|edge|dangling_edge}`
 (the decay rate — a sudden spike means a TTL cliff), and
-`lantern_gc_duration_seconds` (the cost of reaping). Together they answer "is
-the working set growing, decaying, or churning, and is GC keeping up?". The
-legacy soft-cap footprint is conservatively the matching live gauge plus Put-
+`lantern_gc_duration_seconds` (the cost of reaping). These metrics show
+whether the live graph is growing or decaying and whether GC is keeping up.
+For process memory, track `go_memstats_heap_inuse_bytes` and
+`process_resident_memory_bytes`. The legacy soft-cap footprint is conservatively the matching live gauge plus Put-
 barrier gauge; a live additive edge coexisting with a barrier counts twice.
 This intentional charge prevents born-expired Put from bypassing the old cap.
 Causal capacity is the distinct `causal_metadata_entries / limit` ratio only
@@ -528,13 +529,12 @@ terminal outcome/reason, deterministic work counts, and
 creating hot-path child spans. Other RPCs still answer only "which RPC was
 slow"; selective phase attributes or child spans remain a §8 candidate.
 
-**When tracing earns its keep — and when it doesn't.** Lantern's hot paths are
-sub-millisecond in-memory operations; a span per internal hop would cost more
-than it reveals and inflate export volume. The high-value targets are the
-**slow, branchy paths** (illuminate traversal+optimize, snapshot replay) and the
-**cross-peer propagation** path, sampled at a low rate. The steady-state
-per-mutation apply loop is explicitly **not** a tracing target (§9) — its health
-is a counter (`lantern_replication_apply_total`), not a span.
+**Where to trace.** One traversal can examine many Edge candidates. A span
+for each candidate would make trace volume grow with the scanned neighborhood.
+Use the request span and available phase measurements to locate slow operations.
+Sample expensive paths such as `Illuminate` traversal and reduction, Snapshot
+replay and cross-peer propagation. Monitor steady-state replication apply with
+`lantern_replication_apply_total` (§9).
 
 ---
 
@@ -575,9 +575,9 @@ purpose:
   count is not. New labels must be justified against a fixed, small domain.
 - **Full keys or values in logs.** Cardinality *and* sensitivity. Log a prefix
   or a hash; never the payload.
-- **A span per internal hot-path hop.** For sub-millisecond in-memory ops the
-  span overhead and export volume dwarf the insight. Trace the slow, branchy
-  paths only (§7).
+- **A span per internal hot-path hop.** Trace request phases and cross-peer
+  propagation (§7). Per-row spans would make export volume depend on how many
+  candidates each query examines.
 - **Metrics with no owner and no action.** If no persona in §2 would alert or
   dashboard on it, it is noise that still costs ingestion. Every signal needs a
   question from §3.

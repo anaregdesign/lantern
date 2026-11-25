@@ -1046,7 +1046,7 @@ Tag order matters because each downstream module pins its upstream tag:
 4. Bump the matching `require`/`replace` lines in the root `go.mod` to the freshly-tagged
    versions.
 5. Before tagging the reviewed root commit, run the untruncated eight-scenario
-   sweep and four independent fresh-WAL receipt families locally on one
+   sweep and four independent receipt scenarios with fresh node databases on one
    exact-source image. One complete pass on a chosen suitable environment
    (ARM or x86) is mandatory; a second-architecture run is not. Retain the
    source SHA, image ID, platform, host/CPU conditions, per-scenario verdicts,

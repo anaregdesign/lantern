@@ -1,8 +1,8 @@
 # core
 
-Shared core building blocks reused across the Lantern monorepo (server, client,
-CLI). Collects general-purpose data structures and algorithms that are not
-specific to the gRPC/transport layer.
+Core implements Lantern's graph storage, TTL handling, queries, and reusable
+Go data structures. Each server node persists its graph and replication state
+in a local database backed by [Tarp](https://github.com/anaregdesign/tarp).
 
 ## Subpackages
 
@@ -12,7 +12,8 @@ specific to the gRPC/transport layer.
 | `collection/` | Generic collections: priority queue (`pq`), set, slice helpers. |
 | `concurrent/` | Concurrency primitives, including a typed pub/sub (`concurrent/pubsub`). |
 | `graph/` | In-memory graph model and traversal/scoring helpers. |
-| `graphcache/` | Graph-specialized cache: TTL'd vertices and additive decaying edges, with an optional prefix index. The server's primary store. |
+| `graphcache/` | Applies Vertex and Edge TTLs, additive Edge contributions and causal ordering. Maintains derived indexes for queries. |
+| [`graphstore/`](graphstore/) | Stores ordered Vertex, Edge, contribution and service records in Tarp. Provides atomic updates, snapshots and recovery. |
 | `llm/` | Backend-agnostic abstractions for single-shot, structured-output language models. |
 | `model/function/` | Functional-style type aliases used across the other packages. |
 | `mutationlog/` | Ordered retained mutation history, bounded live subscriptions and WAL publication boundaries. |

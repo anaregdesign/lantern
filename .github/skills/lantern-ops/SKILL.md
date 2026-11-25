@@ -10,9 +10,9 @@ Lantern server through the official `lantern-cli` CLI. Read it before issuing an
 data command so the arguments, flags, output shape, and exit codes are correct
 without reading server source.
 
-Lantern is an in-memory graph KVS ("key-vertex-store"). Every **vertex** (a
-keyed, typed value) and every **edge** (a directed, weighted `tail -> head`
-pair) carries a **TTL** and decays on its own. The CLI wraps every server RPC
+Lantern stores its graph in a node-local Tarp database. A **vertex** is a keyed,
+typed value. An **edge** is a directed, weighted `tail -> head` pair. Vertices
+and individual edge contributions can expire by **TTL**. The CLI wraps every server RPC
 as a scriptable subcommand plus an interactive REPL.
 
 ## Invoking the CLI

@@ -5,10 +5,11 @@ exposes a remote [Lantern](https://github.com/anaregdesign/lantern) endpoint as
 a **shared working context for multi-agent fleets**: presence, advisory claims,
 activity heat, and a blackboard, all built on decaying state.
 
-Lantern models activity rather than durable knowledge. A stale claim should
-vanish, recent activity should outweigh old activity, and a crashed agent's
-presence should expire. One Lantern cluster per fleet is the shared-context
-unit. Choose the upstream Server's public authentication mode separately:
+The MCP tools model activity with TTLs. The upstream Lantern server persists
+the graph and its expiration times in [Tarp](https://github.com/anaregdesign/tarp).
+Claims and presence retain their original deadlines across restarts. One
+Lantern cluster per fleet is the shared-context unit. Choose the upstream
+Server's public authentication mode separately:
 
 - **OFF:** leave `LANTERN_TOKEN` unset; the Server accepts public data RPCs
   without authentication.
