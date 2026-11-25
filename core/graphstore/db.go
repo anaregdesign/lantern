@@ -81,6 +81,7 @@ type DB struct {
 	retiredPins   map[uint64]bool
 	reclaimSignal chan struct{}
 	cancelReclaim context.CancelFunc
+	ordering      *layoutTask // guarded by mu; maintenance holds no graph lock during Compact
 	reclaimDone   chan struct{}
 	closeOnce     sync.Once
 	fault         atomic.Pointer[admissionFailure]
@@ -309,9 +310,14 @@ func (db *DB) Close() error {
 		if db.cancelReclaim != nil {
 			db.cancelReclaim()
 		}
+		task := db.ordering
+		db.interruptKeyOrder()
 		db.mu.Unlock()
 		if done != nil {
 			<-done
+		}
+		if task != nil {
+			<-task.done
 		}
 		db.closeErr = db.raw.Close()
 	})

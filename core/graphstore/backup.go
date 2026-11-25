@@ -28,6 +28,7 @@ func (db *DB) Backup(ctx context.Context, destination string, serialize bool, bi
 		db.mu.Unlock()
 		return tarp.BackupInfo{}, err
 	}
+	db.interruptKeyOrder()
 	view, err := db.Read()
 	if err != nil {
 		db.mu.Unlock()

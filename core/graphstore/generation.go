@@ -61,6 +61,7 @@ func (db *DB) BeginGeneration() (*Generation, error) {
 	if db.head.allocated == math.MaxUint64 {
 		return nil, errors.New("graphstore: exhausted generation IDs")
 	}
+	db.interruptKeyOrder()
 	next := db.head
 	next.allocated++
 	var batch tarp.WriteBatch
@@ -279,10 +280,11 @@ func (db *DB) reclaimChunk(ctx context.Context, id uint64) (bool, error) {
 	return true, db.apply(&batch)
 }
 
-// StartReclamation starts generation cleanup for a serving DB. Inspection
-// and staged restore can open a store without adjusting its physical cut.
+// StartMaintenance starts generation cleanup and idle key-ordered compaction
+// for a serving DB. Inspection and staged restore can open a store without
+// scheduling this work.
 // Close stops the worker and joins it before releasing directory ownership.
-func (db *DB) StartReclamation() {
+func (db *DB) StartMaintenance() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.closed || db.cancelReclaim != nil {
@@ -291,7 +293,8 @@ func (db *DB) StartReclamation() {
 	ctx, cancel := context.WithCancel(context.Background())
 	db.cancelReclaim = cancel
 	db.reclaimDone = make(chan struct{})
-	go db.reclaimLoop(ctx)
+	sample := db.layoutSample()
+	go db.reclaimLoop(ctx, sample)
 	if db.head.allocated > 1 {
 		db.requestReclamation()
 	}
@@ -304,12 +307,19 @@ func (db *DB) requestReclamation() {
 	}
 }
 
-func (db *DB) reclaimLoop(ctx context.Context) {
+func (db *DB) reclaimLoop(ctx context.Context, initial layoutSample) {
 	defer close(db.reclaimDone)
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	layout := newLayoutSchedule(initial, time.Now(), 2*time.Minute, uint64(storageOptions().TargetSegmentBytes))
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			// Reclamation can delay delivery. Date the actual observation.
+			db.maintainKeyOrder(ctx, time.Now(), &layout)
+			continue
 		case <-db.reclaimSignal:
 		}
 		if err := db.Reclaim(ctx); err != nil && ctx.Err() == nil {

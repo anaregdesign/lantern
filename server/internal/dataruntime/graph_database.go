@@ -64,7 +64,7 @@ func OpenReceiptDatabase(ctx context.Context, cfg ReceiptDatabaseConfig, fresh b
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	db.StartReclamation()
+	db.StartMaintenance()
 	return rt, nil
 }
 
@@ -86,6 +86,6 @@ func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	db.StartReclamation()
+	db.StartMaintenance()
 	return rt, nil
 }

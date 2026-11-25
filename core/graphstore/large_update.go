@@ -154,6 +154,7 @@ func (db *DB) replaceRows(ctx context.Context, snap *tarp.Snapshot, p rowUpdate,
 	if allocation.allocated == math.MaxUint64 {
 		return errors.New("graphstore: exhausted generation IDs")
 	}
+	db.interruptKeyOrder()
 	allocation.allocated++
 	id := allocation.allocated
 	var marker tarp.WriteBatch

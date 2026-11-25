@@ -49,7 +49,7 @@ func newTarpServingRuntime(ctx context.Context, receipt ReceiptConfig, cacheConf
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	db.StartReclamation()
+	db.StartMaintenance()
 	return rt, nil
 }
 
