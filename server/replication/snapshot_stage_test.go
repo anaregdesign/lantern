@@ -138,11 +138,13 @@ func (s *snapshotStageObservedStream) Receive() bool {
 }
 
 type snapshotStageCancelApplier struct {
+	started func() bool
 	*snapshotLifecycleMutationApplier
 	cancel context.CancelFunc
 }
 
 func (a *snapshotStageCancelApplier) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	a.started = SnapshotReplayStarted(ctx)
 	finish, err := a.snapshotLifecycleMutationApplier.BeginSnapshotInstallChecked(ctx, check)
 	if err == nil && a.cancel != nil {
 		a.cancel()
@@ -201,6 +203,9 @@ func TestGraphSnapshotStagingCancellationKeepsLiveAdmissionBoundary(t *testing.T
 			}
 			if len(apply.finishes) != 1 || apply.finishes[0] || len(apply.cutoffs) != 0 || strings.Contains(strings.Join(events, ","), "finish:true") {
 				t.Fatalf("interrupted live replay was verified or left unfinished: events=%v finishes=%v cutoffs=%v", events, apply.finishes, apply.cutoffs)
+			}
+			if apply.started == nil || apply.started() != (phase == "after first live write") {
+				t.Fatal("native replay witness does not match the first live write")
 			}
 			if phase == "after first live write" && !strings.Contains(strings.Join(events, ","), "vertex") {
 				t.Fatal("live interruption control did not apply its first vertex")

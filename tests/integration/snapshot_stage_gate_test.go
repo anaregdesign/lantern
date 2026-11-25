@@ -492,6 +492,12 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 				fixture.primary[1].SnapshotInstallActive() || fixture.primary[1].SnapshotRepairRequired() != (tc.priorFault || tc.expireFinish) {
 				t.Fatal("synthetic disk-owner check changed native case state")
 			}
+			if tc.expireFinish {
+				finish, retryErr := fixture.primary[1].BeginSnapshotInstallChecked(ctx, func() error { return nil })
+				if finish != nil || connect.CodeOf(retryErr) != connect.CodeFailedPrecondition {
+					t.Fatalf("retry admitted a native replay with uncommitted effects: %v", retryErr)
+				}
+			}
 			assertGraphSnapshotSpoolReleased(t, spool)
 		})
 	}

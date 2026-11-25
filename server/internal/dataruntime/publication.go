@@ -16,6 +16,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
+	"github.com/anaregdesign/lantern/server/replication"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -239,13 +240,22 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 		return nil, err
 	}
 	if s.runtime != nil && s.runtime.tarp != nil && (s.snapshotInstallFaulted || s.receiptCommitFaulted || s.publicationFaultCount != 0) {
-		// A failed live merge can leave an uncommitted in-memory prefix.
-		// Reopen the last durable generation before retrying collection.
-		gate.Unlock()
-		s.snapshotReadCutMu.Unlock()
-		s.snapshotInstallMu.Unlock()
-		return nil, publicationGapError()
+		retryable, err := s.canRetryTarpSnapshot(ctx)
+		if retryable && err == nil {
+			err = validate()
+		}
+		if !retryable || err != nil {
+			gate.Unlock()
+			s.snapshotReadCutMu.Unlock()
+			s.snapshotInstallMu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			return nil, publicationGapError()
+		}
 	}
+	s.snapshotReplayStarted = replication.SnapshotReplayStarted(ctx)
+	s.snapshotGenerationAttempted = false
 	s.snapshotInstallSequence++
 	attemptID := s.snapshotInstallSequence
 	// This names the Snapshot latch, not the first global publication fault.
@@ -327,6 +337,7 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 				return err
 			}
 			if s.runtime != nil && s.runtime.tarp != nil {
+				s.snapshotGenerationAttempted = true
 				if err := s.commitTarpGraphSnapshot(ctx, validate); err != nil {
 					gate.Unlock()
 					s.snapshotReadCutMu.Unlock()

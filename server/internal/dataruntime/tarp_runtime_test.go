@@ -172,6 +172,55 @@ func TestTarpFailedGraphSnapshotReopensOldCut(t *testing.T) {
 	}
 }
 
+func TestTarpSnapshotRetryProvesCleanCut(t *testing.T) {
+	for _, mutation := range []string{"none", "overwrite", "delete", "watermark"} {
+		t.Run(mutation, func(t *testing.T) {
+			rt, s := openTarpTestRuntime(t, filepath.Join(t.TempDir(), "graph"), 3)
+			ctx := t.Context()
+			if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "before"}}); err != nil {
+				t.Fatal(err)
+			}
+			end, err := s.BeginSnapshotInstallChecked(ctx, func() error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := hlc.Timestamp{NodeID: hlc.NodeID{3}, WallNs: time.Now().Add(time.Second).UnixNano()}
+			switch mutation {
+			case "overwrite":
+				rt.graph.PutVertexWithExpirationHLC("before", &pb.Vertex{Key: "before", Value: &pb.Vertex_String_{String_: "partial"}}, time.Time{}, now)
+			case "delete":
+				rt.graph.DeleteVertexHLC("before", now, time.Now().Add(time.Minute))
+			case "watermark":
+				if err := s.ApplySnapshotWatermarks(map[string]uint64{hex.EncodeToString(now.NodeID[:]): 3}, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := end(false); err != nil {
+				t.Fatal(err)
+			}
+			retry, err := s.BeginSnapshotInstallChecked(ctx, func() error { return nil })
+			if mutation != "none" {
+				if err == nil {
+					t.Fatal("retry accepted partial live state")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "before"}); err == nil {
+				t.Fatal("clean retry reopened reads before verified publication")
+			}
+			if err := retry(true); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "before"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 // Kill the process with an older relay view held. The first crash occurs in
 // the generation's final validator, after every staged row has reached disk;
 // the second occurs after publication but before clean DB or pin shutdown.

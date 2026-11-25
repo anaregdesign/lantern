@@ -82,6 +82,15 @@ func TestTarpReceiptsSurviveRelayEvictionAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A trusted caller can fence the receiver, but a graph-only generation
+	// must never replace the durable receipt catalog.
+	finish, err := s.BeginSnapshotInstallChecked(t.Context(), func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(true); err == nil {
+		t.Fatal("graph-only Snapshot replaced the receipt database")
+	}
 	if err = rt.Close(); err != nil {
 		t.Fatal(err)
 	}

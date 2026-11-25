@@ -4237,7 +4237,10 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 	for _, ringCapacity := range []int{4, 10000} {
 		t.Run(fmt.Sprintf("ring_%d", ringCapacity), func(t *testing.T) {
 
-			ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+			// Two overflow cycles each require 513 separately acknowledged disk
+			// commits. The pump and each native request retain their own
+			// original deadlines while the fixture drives these durable writes.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			sourceID := hlc.NodeID{3}
 			drops := make(chan struct{}, 4)
@@ -4878,7 +4881,10 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		}
 	}
 	claimSources := []int{0, 1}
-	wantSnapshots := [2]int32{1, 1}
+	// Installing a Tarp generation closes its predecessor's relay ring. Each
+	// source must send exactly one replacement for an invalidated transfer
+	// or for sequences 9–10 missing from the ordinary resume cursor.
+	wantSnapshots := [2]int32{2, 2}
 	if !asymmetric {
 		for source := range 2 {
 			close(body[source])
@@ -4943,12 +4949,15 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		close(retry[1])
 		waitVerified(1)
 		claimSources = []int{1} // Source0's retry owns a new, valid reservation.
-		wantSnapshots[0] = 2
 	}
-	for receiver := range 2 {
-		close(stages[receiver].resume)
+	if asymmetric {
+		close(stages[1].resume) // Source0's replacement is already verified.
 	}
 	for _, source := range claimSources {
+		// Release one replacement at a time. Otherwise either receiver could
+		// invalidate its opposite transfer a second time at an unrelated cut.
+		receiver := 1 - source
+		close(stages[receiver].resume)
 		select {
 		case err := <-peers[source].claims:
 			if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "Snapshot tail unavailable") {
@@ -4965,6 +4974,11 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		case <-ctx.Done():
 			t.Fatal("mutual ordinary Subscribe resume", ctx.Err())
 		}
+		// The predecessor's relay ring was retired, so origin 9–10 require
+		// a replacement image. Release its verified installer before testing
+		// the new generation's ordinary live subscription.
+		waitVerified(receiver)
+		close(stages[receiver].resume)
 	}
 	for receiver := range 2 {
 		for origin := range 2 {

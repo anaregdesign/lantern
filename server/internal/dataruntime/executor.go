@@ -94,6 +94,9 @@ type Executor struct {
 	// mutation to this replica's log. Serialize installs so a successful one
 	// cannot clear another install's CDC gap while it is still applying.
 	snapshotInstallMu sync.Mutex
+	// Held under installer custody until the next admitted attempt.
+	snapshotReplayStarted       func() bool
+	snapshotGenerationAttempted bool
 	// Completion belongs to one admitted live install. Public unary callers
 	// may wait for that attempt, then run their original admission checks.
 	activeSnapshotInstall atomic.Pointer[snapshotInstallCompletion]

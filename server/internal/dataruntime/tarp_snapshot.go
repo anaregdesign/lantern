@@ -17,11 +17,67 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// A failed attempt may have closed the publication gate before changing any
+// graph or origin rows. Retry only after proving the still-fenced live state
+// equals the active durable cut. Partial merges and uncertain commits stay
+// unavailable until the process reopens the durable generation.
+func (s *Executor) canRetryTarpSnapshot(ctx context.Context) (bool, error) {
+	if !s.snapshotInstallFaulted || s.receiptCommitFaulted || s.publicationFaultCount != 1 || s.snapshotGenerationAttempted || s.storageFault() != nil {
+		return false, nil
+	}
+	// Native replay marks the first live write before invoking its applier.
+	// Header-only cancellation leaves the fault closed but can retry immediately.
+	if s.snapshotReplayStarted != nil {
+		return !s.snapshotReplayStarted(), ctx.Err()
+	}
+	// Trusted in-process users can mutate GraphCache directly. Certify their
+	// raw physical state when the native replay marker is unavailable.
+	r := s.runtime.tarp
+	view, err := r.db.Read()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = view.Close() }()
+	cut, err := r.readCut(view.Snapshot, view.Generation)
+	if err != nil {
+		return false, err
+	}
+	origins := s.origins.States()
+	last, _ := s.log.LastSeq()
+	if cut.last != last || cut.origins != uint64(len(origins)) {
+		return false, nil
+	}
+	for _, row := range origins {
+		raw, err := view.Snapshot.Get(tarpOriginKey(view.Generation, row.Origin))
+		if errors.Is(err, tarp.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		stored, err := readTarpOrigin(raw, row.Origin)
+		if err != nil {
+			return false, err
+		}
+		if stored != row {
+			return false, nil
+		}
+	}
+	rows, err := diskRows()
+	if err != nil {
+		return false, err
+	}
+	return s.runtime.graph.MatchesStorageGeneration(ctx, rows, view)
+}
+
 // The snapshot guard has completed the graph-only HLC merge, checked EOF
 // and original authority, and holds the publication gate. No incoming frame
 // was written to the active database during replay. A crash leaves the old
 // state until the complete candidate graph and origin cut publish together.
 func (s *Executor) commitTarpGraphSnapshot(ctx context.Context, check func() error) error {
+	if s.runtime.ReceiptsEnabled() {
+		return errors.New("receipt database requires a whole-state Snapshot")
+	}
 	r := s.runtime.tarp
 	target, err := r.db.BeginGeneration()
 	if err != nil {
