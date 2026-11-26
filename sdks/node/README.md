@@ -1,7 +1,7 @@
 # lantern-sdk (Node.js / TypeScript)
 
 Official Node.js / TypeScript client for [Lantern](https://github.com/anaregdesign/lantern) —
-an in-memory graph KVS with prefix scan, neighborhood traversal (`Illuminate`), and TTL.
+a graph KVS backed by [Tarp](https://github.com/anaregdesign/tarp), with prefix scan, neighborhood traversal (`Illuminate`), and TTL.
 
 - Transport: `@connectrpc/connect-node` v2 (Connect protocol over HTTP/2)
 - Module formats: ESM + CJS, with full TypeScript `.d.ts`

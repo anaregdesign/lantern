@@ -40,7 +40,7 @@ func TestGraphMutationWireRoundTrip(t *testing.T) {
 		t.Fatal(size, err, frameErr)
 	}
 	legacy := append([]byte(nil), raw...)
-	copy(legacy[:8], receiptWALUnionMagicV9)
+	legacy[4] = 9
 	if _, err := decodeReceiptWALUnion(legacy); err == nil {
 		t.Fatal("V9 accepted mixed kind")
 	}

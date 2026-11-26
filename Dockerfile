@@ -42,7 +42,8 @@ RUN addgroup -S lantern && adduser -S -G lantern lantern
 
 ARG VERSION=
 ARG COMMIT=
-ENV LANTERN_DEFAULT_TTL_SECONDS=3600 \
+ENV LANTERN_DATA_DIR=/var/lib/lantern/runtime/graph \
+    LANTERN_DEFAULT_TTL_SECONDS=3600 \
     LANTERN_PORT=6380 \
     LANTERN_METRICS_ADDR=127.0.0.1:9090 \
     LANTERN_LOG_FORMAT=json \

@@ -454,6 +454,9 @@ func (s *stagedVertexMutation[S, T]) rollbackLocked() {
 		before := s.slots[key]
 		if before.present {
 			c.vertices.UpsertWithExpiration(key, before.value, before.expiration)
+			if before.cold {
+				c.vertices.ReleaseValue(key)
+			}
 		} else {
 			c.vertices.Delete(key)
 		}

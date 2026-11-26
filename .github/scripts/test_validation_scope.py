@@ -8,7 +8,7 @@ from unittest.mock import patch
 from local_gate_plan import steps, affected_steps
 import local_gate_preflight as preflight
 import validation_scope as scope
-from windows_native import GO_PACKAGES, GO_TESTS, RUST_TESTS, require_go, require_rust
+from windows_native import RUST_TESTS, require_rust
 
 
 class ValidationScopeTest(unittest.TestCase):
@@ -83,14 +83,14 @@ class ValidationScopeTest(unittest.TestCase):
     def test_shared_native_generic_files_and_portable_computation(self):
         for path in ("core/privatefile/file.go", "server/backup/receipt_backup_rename_other.go",
                      "core/mutationlog/filewal.go", "server/service/receipt_directory_sync.go"):
-            self.assertTrue(scope.affected({path: "M"})["windows_required"], path)
+            self.assertFalse(scope.affected({path: "M"})["windows_required"], path)
         for path in ("core/search/index.go", "admin/app/a.tsx", "sdks/rust/src/scans.rs"):
             self.assertFalse(scope.affected({path: "M"})["windows_required"], path)
         for path in ("sdks/rust/src/transport/tests.rs", "sdks/rust/src/test_server.rs", "sdks/rust/src/value.rs"):
-            self.assertTrue(scope.affected({path: "M"})["windows_rust_required"], path)
-        self.assertTrue(scope.affected({"tests/integration/auth_test.go": "M"})["windows_rust_required"])
-        self.assertTrue(scope.affected({"core/search/new_windows.go": "M"})["windows_required"])
-        self.assertTrue(scope.affected({"core/search/new.go": "A"})["windows_required"])
+            self.assertTrue(scope.affected({path: "M"})["windows_required"], path)
+        self.assertTrue(scope.affected({"tests/integration/auth_test.go": "M"})["windows_required"])
+        self.assertFalse(scope.affected({"core/search/new_windows.go": "M"})["windows_required"])
+        self.assertFalse(scope.affected({"core/search/new.go": "A"})["windows_required"])
 
     def test_data_runtime_retains_native_and_module_obligations(self):
         for path in ("server/internal/dataruntime/runtime.go",
@@ -102,7 +102,7 @@ class ValidationScopeTest(unittest.TestCase):
                 result = scope.affected({path: "M"})
                 self.assertFalse(result["full"])
                 self.assertEqual(set(result["go_modules"]), {"server", "."})
-                self.assertTrue(result["windows_required"])
+                self.assertFalse(result["windows_required"])
                 self.assertIn("go-test-server", self.names(path))
                 self.assertIn("go-test-cli", self.names(path))
         self.assertTrue(scope.affected({"server/internal/dataruntime/runtime.go": "M",
@@ -116,7 +116,7 @@ class ValidationScopeTest(unittest.TestCase):
         for status in ("T", "R100", "U", ""):
             self.assertTrue(scope.affected({"admin/app/a.tsx": status})["full"])
         for status in ("A", "D"):
-            self.assertTrue(scope.affected({"core/privatefile/file.go": status})["windows_required"])
+            self.assertFalse(scope.affected({"core/privatefile/file.go": status})["windows_required"])
         self.assertTrue(scope.local_scope(Path("/nonexistent"), "missing")["full"])
         full = steps(Path("/tmp/evidence"))
         fallback = {s.name for s in affected_steps(full, scope.full("unknown"))}
@@ -147,7 +147,6 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertFalse(result["full"])
                 self.assertEqual(set(result["go_modules"]), {"server", "."})
                 self.assertTrue(result["windows_required"])
-                self.assertTrue(result["windows_rust_required"])
                 self.assertIn("go-test-server", self.names(path))
                 self.assertIn("go-test-cli", self.names(path))
         for path in ("server/internal/config/config.go", "server/internal/config/security_config.go",
@@ -177,7 +176,7 @@ class ValidationScopeTest(unittest.TestCase):
                                  "server/internal/security/control.go": "M"})
         self.assertFalse(result["full"])
         self.assertEqual(result["harness_contracts"], ["bench-time", "release-binaries"])
-        self.assertTrue(result["windows_required"])
+        self.assertFalse(result["windows_required"])
         self.assertEqual(set(result["go_modules"]), {"server", "."})
         for path in ("testbed/bench/local_time.sh", "testbed/bench/owned_compose.sh",
                      "testbed/bench/scenarios/broad_rw.yaml", ".github/workflows/go.yml",
@@ -204,7 +203,6 @@ class ValidationScopeTest(unittest.TestCase):
                 production = path == "server/internal/membershippublisher/publisher.go"
                 self.assertEqual(set(result["go_modules"]), {"server", "."} if production else set())
                 self.assertTrue(result["windows_required"])
-                self.assertTrue(result["windows_rust_required"])
                 plan = affected_steps(full, result)
                 names = [s.name for s in plan]
                 self.assertEqual(len(plan), 7 if production else 5)
@@ -342,8 +340,7 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertFalse(result["full"])
                 self.assertEqual(set(result["families"]), {"docs"})
                 self.assertEqual(set(result["go_modules"]), modules)
-                self.assertEqual(result["windows_required"], native)
-                self.assertFalse(result["windows_rust_required"])
+                self.assertFalse(result["windows_required"])
                 self.assertFalse(result["generation"])
                 self.assertFalse(scope.harness_required(result))
                 names = {s.name for s in affected_steps(steps(Path("/tmp/evidence")), result)}
@@ -375,7 +372,7 @@ class ValidationScopeTest(unittest.TestCase):
         result = scope.affected({"sdks/rust/src/value.rs": "D", "admin/app/a.tsx": "A"})
         self.assertEqual(set(result["families"]), {"rust", "admin"})
         self.assertTrue(result["windows_required"])
-        self.assertTrue(scope.affected({"core/privatefile/file.go": "D", "docs/a.md": "A"})["windows_required"])
+        self.assertFalse(scope.affected({"core/privatefile/file.go": "D", "docs/a.md": "A"})["windows_required"])
 
     def test_exact_rust_native_selectors_match_existing_module_and_function(self):
         root = Path(__file__).resolve().parents[2] / "sdks/rust/src"
@@ -386,24 +383,7 @@ class ValidationScopeTest(unittest.TestCase):
             body = owner if file == "test_server" else (root / file / "tests.rs").read_text()
             self.assertIn("async fn " + function + "(", body)
 
-    def test_native_go_selectors_include_the_current_test_owners(self):
-        root = Path(__file__).resolve().parents[2]
-        available = set()
-        for package in GO_PACKAGES:
-            directory = root / package
-            self.assertTrue(directory.is_dir(), package)
-            for source in directory.glob("*_test.go"):
-                available.update(re.findall(r"^func (Test\w+)\(", source.read_text(), re.MULTILINE))
-        self.assertTrue(set(GO_TESTS) <= available, sorted(set(GO_TESTS) - available))
-
-    def test_native_verifiers_refuse_empty_skipped_and_failed_tests(self):
-        events = "\n".join(json.dumps(dict(Action="pass", Test=name)) for name in GO_TESTS)
-        require_go(events, GO_TESTS)
-        for bad in ("", json.dumps(dict(Action="pass")), json.dumps(dict(Action="skip", Test=GO_TESTS[0]))):
-            with self.assertRaises(ValueError):
-                require_go(bad, GO_TESTS)
-        with self.assertRaises(ValueError):
-            require_go(events + '\n{"Action":"fail"}', GO_TESTS)
+    def test_native_rust_verifier_rejects_missing_or_failed_tests(self):
         for name in RUST_TESTS:
             summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 110 filtered out; finished in 0.15s\n"
             require_rust("test " + name + " ... ok\n" + summary, name)

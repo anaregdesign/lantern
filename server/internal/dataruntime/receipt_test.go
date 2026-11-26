@@ -26,10 +26,10 @@ func newActivatedReceiptServiceWithLimits(
 	maxBytes uint64,
 ) (*ServingRuntime, *Executor, *Replication) {
 	t.Helper()
-	config := durableRuntimeTestConfig(t.TempDir() + "/receipts.wal")
+	config := durableRuntimeTestConfig(t.TempDir() + "/graph.db")
 	config.Receipt.MaxEntries = maxEntries
 	config.Receipt.MaxBytes = maxBytes
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,15 +14,16 @@ func (c *GraphCache[S, T]) SnapshotGraphContext(ctx context.Context) (GraphSnaps
 	}
 	view := queryViewFromContext(ctx)
 	if view == nil {
-		return c.SnapshotGraph(), nil
+		snapshot := c.SnapshotGraph()
+		return snapshot, c.StorageError()
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	now := time.Now()
 	var snapshot GraphSnapshot[S, T]
 	visible := make(map[S]bool)
-	if c.prefixIndex != nil {
-		walkVisiblePrefix(ctx, c.prefixIndex, "", "", true, false, false, func(projected string) bool {
+	if c.prefixExtract != nil {
+		c.walkVertexPrefix(ctx, "", "", true, false, false, func(projected string) bool {
 			if ctx.Err() != nil {
 				return false
 			}
@@ -53,6 +54,9 @@ func (c *GraphCache[S, T]) SnapshotGraphContext(ctx context.Context) (GraphSnaps
 		return true
 	})
 	if err := ctx.Err(); err != nil {
+		return GraphSnapshot[S, T]{}, err
+	}
+	if err := c.StorageError(); err != nil {
 		return GraphSnapshot[S, T]{}, err
 	}
 	return snapshot, nil

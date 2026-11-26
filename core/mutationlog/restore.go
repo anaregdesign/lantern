@@ -7,6 +7,36 @@ import (
 	"math"
 )
 
+// ResumeRetained starts a Log at an application store's verified local
+// frontier. Entries are the contiguous retained suffix ending at tip. An
+// empty suffix at a nonzero tip represents a Snapshot installation boundary.
+// No entry is published or written again. The application owns validation of
+// payloads and the atomicity of the graph and origin cut containing this tip.
+func ResumeRetained(opts Options, tip uint64, entries []Entry) (*Log, error) {
+	if uint64(len(entries)) > tip || (len(entries) == 0 && tip == math.MaxUint64) {
+		return nil, fmt.Errorf("mutationlog: invalid retained suffix length %d at tip %d", len(entries), tip)
+	}
+	first := tip - uint64(len(entries)) + 1
+	for i, entry := range entries {
+		if entry.Seq != first+uint64(i) {
+			return nil, fmt.Errorf("mutationlog: retained seq %d, expected %d", entry.Seq, first+uint64(i))
+		}
+	}
+	log := New(opts)
+	log.mu.Lock()
+	log.evicted = tip - uint64(len(entries))
+	log.lastSeq = tip
+	log.hasEntries = tip != 0
+	if tip != 0 {
+		log.firstSeq = first
+	}
+	for _, entry := range entries {
+		log.storeLocked(entry)
+	}
+	log.mu.Unlock()
+	return log, nil
+}
+
 // CreateLeasedLogWithFileWAL creates a new durable Log while holding one
 // exclusive path lease from file creation through shutdown. An existing WAL is
 // never overwritten or silently resumed. The returned owner closes the Log
@@ -144,10 +174,8 @@ func (c *leasedFileWALTipLogCloser) Close() error {
 // On any error, neither a Log nor a closer is returned, and restore's partial
 // application state must be discarded by the caller.
 //
-// This helper certifies only the Log/WAL sequence and replay window. The
-// caller owns graph, receipt, origin epoch, policy, and highwater recovery and
-// must not serve application traffic until those states match the WAL. The
-// production server does not wire FileWAL recovery yet.
+// This helper certifies the Log sequence and replay window. The owner
+// validates the resulting application state before admitting new work.
 func ResumeLogFromFileWAL(
 	path string,
 	opts Options,

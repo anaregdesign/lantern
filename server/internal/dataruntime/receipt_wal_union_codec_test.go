@@ -893,35 +893,14 @@ func TestReceiptWALUnionCodecFrameHLCMismatch(t *testing.T) {
 	}
 }
 
-func TestReceiptWALUnionV9FrozenSchemaAndReadableOldKind(t *testing.T) {
-	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	file := protodesc.ToFileDescriptorProto(current.ParentFile())
-	for _, m := range file.MessageType {
-		if m.GetName() == "MutationOp" {
-			fields := m.Field[:0]
-			for _, f := range m.Field {
-				if f.GetNumber() != 24 {
-					fields = append(fields, f)
-				}
-			}
-			m.Field = fields
-		}
-	}
-	legacy, err := protodesc.NewFile(file, protoregistry.GlobalFiles)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := protoschema.Fingerprint(legacy.Messages().ByName("Mutation")); got != receiptWALGraphSchemaFingerprintV9 {
-		t.Fatalf("V9 reachable schema changed: %s", got)
-	}
+func TestReceiptWALUnionRejectsObsoleteVersion(t *testing.T) {
 	m := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "legacy"}}}})
 	raw, err := encodeReceiptWALUnion(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	copy(raw[:8], receiptWALUnionMagicV9)
-	got, err := decodeReceiptWALUnion(raw)
-	if err != nil || !proto.Equal(got.(*pb.Mutation), m) {
-		t.Fatal("V9 read changed", err)
+	raw[4] = 9
+	if _, err := decodeReceiptWALUnion(raw); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("obsolete relay version: %v", err)
 	}
 }

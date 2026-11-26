@@ -1,7 +1,8 @@
 # lantern_client
 
 Official pure-Dart package for [Lantern](https://github.com/anaregdesign/lantern),
-an in-memory graph key-vertex store with TTL-aware vertices and edges.
+a graph key-vertex store that persists vertices and edges in
+[Tarp](https://github.com/anaregdesign/tarp) and supports per-item TTLs.
 
 The package includes exact vertex values, strict TTL handling, bounded core
 CRUD, and the reusable transport foundation used by later query and traversal

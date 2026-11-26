@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +14,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/backup"
@@ -327,7 +327,9 @@ func TestContributionDelete_ReceiptUnactivatedRealConnectWire(t *testing.T) {
 func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	wire := newReceiptProtocolWireServer(t, hlc.NodeID{0xe5}, 32)
+	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "graph"), hlc.NodeID{0xe5})
+	config.NamespaceFormat = "namespaced-v1"
+	wire := newClusterRecoveryReceiptProtocolServer(t, config)
 	capability := receiptProtocolCapability(t, wire)
 	if !slices.Contains(capability.GetSupportedMutations(),
 		pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION) {
@@ -386,12 +388,12 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 	restartConfig := wire.config
 	restartConfig.Now = time.Now()
 	restartConfig.Receipt.ClockHighWater = restartConfig.Now
-	restartedRuntime, err := service.OpenDurableReceiptWALServingRuntime(restartConfig)
+	restartedRuntime, err := service.OpenReceiptDatabase(t.Context(), restartConfig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeRestart)
 	if current := receiptProtocolCapability(t, restarted); !proto.Equal(current.GetEndpoint(), endpoint) {
 		t.Fatalf("receipt endpoint changed across clean WAL restart: before=%+v after=%+v", endpoint, current.GetEndpoint())
 	}
@@ -416,35 +418,16 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 		t.Fatalf("WAL restart lost contribution tombstones: (%+v, %v)", edge, err)
 	}
 
-	source, policy, err := restarted.runtime.ReceiptWholeStateBackupSource(
-		restarted.server.svc, restarted.server.rep,
-	)
-	if err != nil {
+	cfg := backup.Config{Dir: t.TempDir(), InstanceID: "contribution-delete", Interval: time.Hour, NamespaceFormat: restarted.runtime.DataNamespaceFormat()}
+	var audit bytes.Buffer
+	backupper := backup.NewGraphStore(restarted.server.svc, restarted.runtime.GraphStore(), cfg, nil, slog.New(slog.NewJSONHandler(&audit, nil)))
+	if _, err := backupper.BackupNow(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	const instance = "contribution-delete"
-	producer, err := backup.NewReceipt(restarted.server.svc, source, policy, backup.Config{
-		Enabled: true, Dir: dir, Interval: time.Hour, Retain: 1, InstanceID: instance,
-	}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats, err := producer.BackupNow(ctx); err != nil || stats.Receipts != 2 {
-		t.Fatalf("certified backup after per-ID delete = (%+v, %v)", stats, err)
-	}
-	evidence, err := backup.LoadLatestReceiptBackupSet(dir, instance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	freshConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "restored.wal"), hlc.NodeID{0xd2})
-	freshConfig.Receipt.Epoch = mutationreceipt.Epoch{0xd2}
-	restore, err := backup.PrepareFreshReceiptStartupRestore(evidence, freshConfig.Receipt, freshConfig.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	freshConfig.StartupRestore = &restore
-	fresh := newClusterRecoveryReceiptProtocolServer(t, freshConfig)
+	freshConfig := restartConfig
+	freshConfig.Path = filepath.Join(t.TempDir(), "restored")
+	restoreFinalPoint(t, ctx, audit.Bytes(), cfg, freshConfig.Path, freshConfig.NodeID)
+	fresh := openClusterRecoveryReceiptProtocolServer(t, freshConfig)
 	freshStatuses := receiptProtocolStatuses(t, ctx, fresh, receipt.GetOperationIds())
 	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: statuses},
 		&pb.GetReceiptStatusesResponse{Statuses: freshStatuses}) {

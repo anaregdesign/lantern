@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/anaregdesign/tarp"
 )
@@ -51,12 +52,16 @@ func generationMarker(id uint64) []byte {
 func (db *DB) BeginGeneration() (*Generation, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if err := db.available(); err != nil {
+		return nil, err
+	}
 	if db.staging != nil {
 		return nil, ErrGenerationBusy
 	}
 	if db.head.allocated == math.MaxUint64 {
 		return nil, errors.New("graphstore: exhausted generation IDs")
 	}
+	db.interruptKeyOrder()
 	next := db.head
 	next.allocated++
 	var batch tarp.WriteBatch
@@ -72,10 +77,11 @@ func (db *DB) BeginGeneration() (*Generation, error) {
 type generationWriter struct {
 	id    uint64
 	batch tarp.WriteBatch
+	bytes uint64
 	err   error
 }
 
-func (w *generationWriter) accepts(key []byte) bool {
+func (w *generationWriter) accepts(key, value []byte) bool {
 	if w.err != nil {
 		return false
 	}
@@ -87,15 +93,21 @@ func (w *generationWriter) accepts(key []byte) bool {
 		w.err = fmt.Errorf("graphstore: too many operations in generation chunk: %w", tarp.ErrTooLarge)
 		return false
 	}
+	cost := uint64(len(key)) + uint64(len(value)) + 48
+	if cost > uint64(storageOptions().MaxRecordBytes) || cost > uint64(storageOptions().TargetSegmentBytes)-64-w.bytes {
+		w.err = fmt.Errorf("graphstore: oversized generation chunk: %w", tarp.ErrTooLarge)
+		return false
+	}
+	w.bytes += cost
 	return true
 }
 func (w *generationWriter) Put(key, value []byte) {
-	if w.accepts(key) {
+	if w.accepts(key, value) {
 		w.batch.Put(key, value)
 	}
 }
 func (w *generationWriter) Delete(key []byte) {
-	if w.accepts(key) {
+	if w.accepts(key, nil) {
 		w.batch.Delete(key)
 	}
 }
@@ -164,6 +176,7 @@ func (g *Generation) Publish(ctx context.Context, validate func(active, staged u
 		return err
 	}
 	db.staging = nil
+	db.requestReclamation()
 	return nil
 }
 
@@ -174,6 +187,7 @@ func (g *Generation) Abort() {
 	defer db.mu.Unlock()
 	if db.staging == g {
 		db.staging = nil
+		db.requestReclamation()
 	}
 }
 
@@ -230,7 +244,16 @@ func (db *DB) reclaimChunk(ctx context.Context, id uint64) (bool, error) {
 	if id == 0 || id > db.head.allocated {
 		return false, ErrInvalidManifest
 	}
-	if id == db.head.active || (db.staging != nil && db.staging.id == id) || db.pins[id] != 0 {
+	if id == db.head.active || (db.staging != nil && db.staging.id == id) {
+		return true, nil
+	}
+	db.pinMu.Lock()
+	pinned := db.pins[id] != 0
+	if pinned {
+		db.retiredPins[id] = true
+	}
+	db.pinMu.Unlock()
+	if pinned {
 		return true, nil
 	}
 	var batch tarp.WriteBatch
@@ -255,4 +278,58 @@ func (db *DB) reclaimChunk(ctx context.Context, id uint64) (bool, error) {
 	// The marker is last, even when there are no rows.
 	batch.Delete(generationMarker(id))
 	return true, db.apply(&batch)
+}
+
+// StartMaintenance starts generation cleanup and idle key-ordered compaction
+// for a serving DB. Inspection and staged restore can open a store without
+// scheduling this work.
+// Close stops the worker and joins it before releasing directory ownership.
+func (db *DB) StartMaintenance() {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.closed || db.cancelReclaim != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	db.cancelReclaim = cancel
+	db.reclaimDone = make(chan struct{})
+	sample := db.layoutSample()
+	go db.reclaimLoop(ctx, sample)
+	if db.head.allocated > 1 {
+		db.requestReclamation()
+	}
+}
+
+func (db *DB) requestReclamation() {
+	select {
+	case db.reclaimSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (db *DB) reclaimLoop(ctx context.Context, initial layoutSample) {
+	defer close(db.reclaimDone)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	layout := newLayoutSchedule(initial, time.Now(), 2*time.Minute, uint64(storageOptions().TargetSegmentBytes))
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Reclamation can delay delivery. Date the actual observation.
+			db.maintainKeyOrder(ctx, time.Now(), &layout)
+			continue
+		case <-db.reclaimSignal:
+		}
+		if err := db.Reclaim(ctx); err != nil && ctx.Err() == nil {
+			// Disk space may be restored independently of new foreground work.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Minute):
+				db.requestReclamation()
+			}
+		}
+	}
 }

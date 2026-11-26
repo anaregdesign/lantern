@@ -86,5 +86,5 @@ func (g *publicationGate) completePublicationLocked() {
 // Caller holds the publication read/write cut, or is the unshared constructor.
 // Certificates derive this predicate; fault setters retain sole authority.
 func (s *Executor) publicGraphFaultLocked() bool {
-	return s.publicationFaultCount != 0 || s.receiptCommitFaulted
+	return s.publicationFaultCount != 0 || s.receiptCommitFaulted || s.storageFault() != nil
 }

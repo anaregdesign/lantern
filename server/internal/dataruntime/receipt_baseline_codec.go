@@ -10,8 +10,8 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// ReceiptBaselineFormat identifies the private content-addressed sidecar
-// representation referenced by a WAL baseline marker.
+// ReceiptBaselineFormat identifies the canonical whole-state representation
+// whose digest is bound to the published receipt generation.
 type ReceiptBaselineFormat uint32
 
 const (

@@ -133,7 +133,7 @@ func (l *Log) markUnusableLocked(cause error) {
 // [ErrLegacyWALUncertain]; mixing it into that history would not restore the
 // unique durable sequence that Append's retry semantics cannot prove.
 func (l *Log) CommitWithPublication(op MutationOp, ts hlc.Timestamp, publish func(Entry), stampers ...SeqStamper) (Entry, error) {
-	return l.commitWithPublication(op, ts, publish, nil, false, stampers...)
+	return l.commitWithPublication(op, ts, nil, publish, nil, false, stampers...)
 }
 
 // CommitWithPostRingPublication keeps external staged state hidden until the
@@ -149,7 +149,19 @@ func (l *Log) CommitWithPublication(op MutationOp, ts hlc.Timestamp, publish fun
 // WAL write. It does not by itself supply recovery or a fail-closed read API
 // for a WAL error whose commit outcome is indeterminate.
 func (l *Log) CommitWithPostRingPublication(op MutationOp, ts hlc.Timestamp, release func(Entry), stampers ...SeqStamper) (Entry, error) {
-	return l.commitWithPublication(op, ts, nil, release, false, stampers...)
+	return l.commitWithPublication(op, ts, nil, nil, release, false, stampers...)
+}
+
+// CommitPrepared carries operation-local state into the same WAL publication as
+// the assigned entry. The supplied write must commit through the configured
+// WAL and obey its durability and DefiniteWALAbort contract. For example, a
+// graph store can include rows from an open graph transaction in the commit.
+// The release callback has the same contract as CommitWithPostRingPublication.
+func (l *Log) CommitPrepared(op MutationOp, ts hlc.Timestamp, write func(WAL, Entry) error, release func(Entry)) (Entry, error) {
+	if write == nil {
+		return Entry{}, &DefiniteWALAbort{Cause: errors.New("mutationlog: missing prepared write")}
+	}
+	return l.commitWithPublication(op, ts, write, nil, release, false)
 }
 
 // CommitBoundaryWithPostRingPublication commits a private durable boundary
@@ -164,10 +176,21 @@ func (l *Log) CommitWithPostRingPublication(op MutationOp, ts hlc.Timestamp, rel
 // and recover the committed marker before serving after an interrupted
 // publication.
 func (l *Log) CommitBoundaryWithPostRingPublication(op MutationOp, ts hlc.Timestamp, release func(Entry)) (Entry, error) {
-	return l.commitWithPublication(op, ts, nil, release, true)
+	return l.commitWithPublication(op, ts, nil, nil, release, true)
 }
 
-func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBeforeRing, releaseAfterRing func(Entry), boundary bool, stampers ...SeqStamper) (Entry, error) {
+// CommitPreparedBoundary publishes a validated application snapshot through
+// the configured WAL and invalidates pre-install subscriptions and replay.
+// The owner must preserve the same durable, all-or-nothing contract as
+// CommitPrepared. An ambiguous install faults the log until recovery.
+func (l *Log) CommitPreparedBoundary(op MutationOp, ts hlc.Timestamp, write func(WAL, Entry) error, release func(Entry)) (Entry, error) {
+	if write == nil {
+		return Entry{}, &DefiniteWALAbort{Cause: errors.New("mutationlog: missing prepared boundary")}
+	}
+	return l.commitWithPublication(op, ts, write, nil, release, true)
+}
+
+func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, write func(WAL, Entry) error, publishBeforeRing, releaseAfterRing func(Entry), boundary bool, stampers ...SeqStamper) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.commitReadyLocked(); err != nil {
@@ -196,7 +219,10 @@ func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBefo
 			}
 		}
 	}()
-	if err := l.wal.Write(entry); err != nil {
+	if write == nil {
+		write = WAL.Write
+	}
+	if err := write(l.wal, entry); err != nil {
 		walReturned = true
 		classified := l.classifyWALFailureLocked(err)
 		resolved = true

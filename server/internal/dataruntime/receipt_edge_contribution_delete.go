@@ -336,7 +336,7 @@ func (c *edgeContributionDeleteReceiptCoordinator) Commit(
 		return nil, receiptStoreError(err)
 	}
 	graphTx.Apply()
-	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) ||
 			errors.Is(err, errReceiptEdgeContributionDeleteWALCapacity) {
@@ -438,7 +438,7 @@ func (c *edgeContributionDeleteReceiptCoordinator) commitReplicated(
 	if err := s.validateReplicationFrame(localEnvelope); err != nil {
 		return err
 	}
-	if prior, ok := pending.receiptWAL.(*edgeContributionDeleteReceiptEnvelope); ok &&
+	if prior, ok := pending.receipts.(*edgeContributionDeleteReceiptEnvelope); ok &&
 		sameReceiptEdgeContributionDeleteIntent(prior, localEnvelope) &&
 		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
@@ -456,8 +456,8 @@ func (c *edgeContributionDeleteReceiptCoordinator) commitReplicated(
 		return receiptStoreError(err)
 	}
 	graphTx.Apply()
-	pending.receiptWAL = localEnvelope
-	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx)
+	pending.receipts = localEnvelope
+	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) ||
 			errors.Is(err, errReceiptEdgeContributionDeleteWALCapacity) {

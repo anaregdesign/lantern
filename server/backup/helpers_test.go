@@ -1,12 +1,9 @@
 package backup
 
 import (
-	"context"
-	"crypto/sha256"
-	"errors"
 	"io"
 	"os"
-	"sync/atomic"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -45,19 +42,6 @@ func (d *receiptBackupStaticReadDir) ReadDir(n int) ([]os.DirEntry, error) {
 
 func (d *receiptBackupStaticReadDir) Close() error {
 	return d.closeErr
-}
-
-func producerWALTipWitness(seq uint64) mutationlog.FileWALTipWitness {
-	offset := receiptArchiveWALZeroOffset
-	if seq != 0 {
-		offset += int64(seq)
-	}
-	return mutationlog.FileWALTipWitness{
-		Seq:         seq,
-		Offset:      offset,
-		SHA256:      sha256.Sum256([]byte("producer WAL prefix")),
-		ChainSHA256: sha256.Sum256([]byte("producer WAL chain")),
-	}
 }
 
 func producerCapture(a wholeStateArchive) dataruntime.ReceiptWholeStateCapture {
@@ -179,74 +163,17 @@ func producerEmptyRetiredSnapshot(
 	return state
 }
 
-func producerBackupCapture(a wholeStateArchive) dataruntime.ReceiptWholeStateBackupCapture {
-	var seq uint64
-	var nodeID hlc.NodeID
-	if len(a.Graph) != 0 && a.Graph[0].GetHeader() != nil {
-		seq = a.Graph[0].GetHeader().GetCutoffLocalSeq()
-		copy(nodeID[:], a.Graph[0].GetHeader().GetCutoffHlc().GetNodeId())
-	}
-	return dataruntime.ReceiptWholeStateBackupCapture{
-		WholeState: producerCapture(a),
-		WALTip:     producerWALTipWitness(seq),
-		NodeID:     nodeID,
-		Generation: [16]byte{0x7f},
-	}
-}
-
-type receiptBackupSetSource struct {
-	capture dataruntime.ReceiptWholeStateBackupCapture
-	hook    func(context.Context) error
-	calls   atomic.Int64
-	active  atomic.Int64
-	max     atomic.Int64
-}
-
-func (s *receiptBackupSetSource) CaptureForBackup(
-	ctx context.Context,
-	policy mutationreceipt.Config,
-) (dataruntime.ReceiptWholeStateBackupCapture, error) {
-	s.calls.Add(1)
-	active := s.active.Add(1)
-	defer s.active.Add(-1)
-	for {
-		maximum := s.max.Load()
-		if active <= maximum || s.max.CompareAndSwap(maximum, active) {
-			break
-		}
-	}
-	if policy != s.capture.WholeState.Policy {
-		return dataruntime.ReceiptWholeStateBackupCapture{}, errors.New("test source policy mismatch")
-	}
-	if s.hook != nil {
-		if err := s.hook(ctx); err != nil {
-			return dataruntime.ReceiptWholeStateBackupCapture{}, err
-		}
-	}
-	return s.capture, nil
-}
-
-func newReceiptBackupSetTestBackupper(
-	t *testing.T,
-	dir, instance string,
-	retain int,
-	source ReceiptSource,
-	policy mutationreceipt.Config,
-) *Backupper {
+func testBackupper(t *testing.T, cfg Config) *Backupper {
 	t.Helper()
-	b, err := NewReceipt(
-		&fakeService{},
-		source,
-		policy,
-		Config{
-			Enabled: true, Dir: dir, Interval: time.Hour,
-			Retain: retain, InstanceID: instance,
-		},
-		nil,
-		nil,
-	)
+	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	rt, err := dataruntime.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "data"), hlc.NodeID{7}, graph, mutationlog.Options{Capacity: 8}, cfg.NamespaceFormat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b
+	t.Cleanup(func() { _ = rt.Close() })
+	return NewGraphStore(rt.NewExecutor(nil), rt.GraphStore(), cfg, nil, nil)
+}
+
+func testConfig(dir string) Config {
+	return Config{Enabled: true, Dir: dir, Interval: time.Hour, Retain: 3, InstanceID: "node-a", RestoreOnStart: true}
 }

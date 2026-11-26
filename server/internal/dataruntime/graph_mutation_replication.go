@@ -86,7 +86,7 @@ func (s *Executor) commitReplicatedGraphMutation(ctx context.Context, origin hlc
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	if prior, ok := pending.receiptWAL.(*graphMutationEnvelope); ok && proto.Equal(prior.Mutation, local.Mutation) {
+	if prior, ok := pending.receipts.(*graphMutationEnvelope); ok && proto.Equal(prior.Mutation, local.Mutation) {
 		local = prior
 	}
 	if err := s.validateReplicationFrame(local); err != nil {
@@ -103,11 +103,11 @@ func (s *Executor) commitReplicatedGraphMutation(ctx context.Context, origin hlc
 	if err := storeTx.Stage(); err != nil {
 		return receiptStoreError(err)
 	}
-	pending.receiptWAL = local
+	pending.receipts = local
 	if err := graphTx.CheckBeforeWAL(); err != nil {
 		return graphMutationError(err)
 	}
-	if err := publication.commit(local, ts, storeTx, graphTx.Commit, originTx); err != nil {
+	if err := publication.commit(local, ts, storeTx, graphTx.Commit, originTx, graphTx); err != nil {
 		return graphMutationPublicationError(err)
 	}
 	if err := s.clock.RestoreFloor(ts); err != nil {

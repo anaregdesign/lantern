@@ -360,8 +360,9 @@ be generically retried. Token rotation alone does not change endpoint
 continuity: rotate credentials, then call `resume` to perform status-first
 reconciliation.
 
-CI runs the real-wire receipt matrix against a separate authenticated
-receipt-WAL server while retaining the graph-only fixture for older Put tests.
+CI runs the real-wire receipt matrix against a separate authenticated Server
+that persists mutation receipts in [Tarp](https://github.com/anaregdesign/tarp).
+The graph-only fixture still exercises Put without receipts.
 The receipt endpoint and ephemeral token are required for that CI run; the
 three-replica ambiguity case needs three absolute same-source binary inputs:
 `LANTERN_DART_RECEIPT_HA_BINARY`, `LANTERN_DART_RECEIPT_HA_FIXTURE`, and

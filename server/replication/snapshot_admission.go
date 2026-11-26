@@ -68,6 +68,12 @@ func (c *snapshotAdmissionClient) Do(request *http.Request) (*http.Response, err
 	return response, nil
 }
 
+// CheckSnapshotAdmission revalidates the original response authority at the
+// durable publication boundary after a detached Snapshot has been staged.
+func CheckSnapshotAdmission(ctx context.Context) error {
+	return checkSnapshotContext(ctx)
+}
+
 // checkSnapshotContext intentionally uses the install caller's context. The
 // workload body closes and cancels its internal transport context at EOF, but
 // its captured Admission still checks the same original native/absolute budget.

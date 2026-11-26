@@ -199,14 +199,14 @@ func decodeReceiptEdgeContributionDeleteWAL(raw []byte) (mutationlog.MutationOp,
 
 func validateReceiptEdgeContributionDeleteWALEntry(entry mutationlog.Entry) error {
 	if entry.Seq == 0 {
-		return receiptEdgeContributionDeleteWALError("zero FileWAL local seq")
+		return receiptEdgeContributionDeleteWALError("zero relay sequence")
 	}
 	e, ok := entry.Op.(*edgeContributionDeleteReceiptEnvelope)
 	if !ok {
 		return receiptEdgeContributionDeleteWALError("unexpected operation type %T", entry.Op)
 	}
 	if !entry.HLC.Equal(e.HLC) {
-		return receiptEdgeContributionDeleteWALError("FileWAL HLC differs from envelope HLC")
+		return receiptEdgeContributionDeleteWALError("relay HLC differs from envelope HLC")
 	}
 	_, err := validateReceiptEdgeContributionDeleteWALEnvelope(e)
 	return err

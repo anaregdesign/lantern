@@ -8,29 +8,18 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/graphstore"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// BackupSnapshot streams a whole-graph, point-in-time backup: every live
-// vertex and a folded live edge as a BackupSnapshotResponse. It is the dump half of
-// the backup/restore pair (#685). Server startup restore uses the direct
-// RestoreVertices / RestoreEdges helpers; external restores use public Puts,
-// whose source-weight validation also applies to folded backup edges.
-//
-// BackupSnapshot also works without replication. Its in-memory capture checks
-// the publication generation around a point-in-time GraphCache copy, retries
-// boundedly on overlap, and fails closed during an incomplete Snapshot install
-// or WAL publication fault. The whole graph is materialised once under
-// the GraphCache lock via SnapshotGraph
-// (#689), so vertices and edges share one instant; records are sent off-lock.
-//
-// vertex_prefix, when non-empty, scopes the backup to the induced subgraph
-// over vertices whose key has the prefix: a vertex is emitted only if it
-// matches, and an edge only if BOTH endpoints match, so a restore of the
-// partial dump stays referentially closed.
+// BackupSnapshot streams the live subgraph induced by the requested prefix.
+// The database generation and expiration time are pinned before sending.
 func (s *Executor) BackupSnapshot(ctx context.Context, request *pb.BackupSnapshotRequest, stream Sender[pb.BackupSnapshotResponse]) error {
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
+	}
+	if db := s.runtime.GraphStore(); db != nil {
+		return s.backupStoredGraph(ctx, db, request.GetVertexPrefix(), stream)
 	}
 	var snap graphcache.GraphSnapshot[string, *pb.Vertex]
 	if err := s.withPublicGraphReadRetry(ctx, func() error {
@@ -92,6 +81,107 @@ func (s *Executor) BackupSnapshot(ctx context.Context, request *pb.BackupSnapsho
 		}
 	}
 	return nil
+}
+
+func (s *Executor) backupStoredGraph(ctx context.Context, db *graphstore.DB, prefix string, stream Sender[pb.BackupSnapshotResponse]) error {
+	rows, err := diskRows()
+	if err != nil {
+		return graphReadError(err)
+	}
+	var cut *graphstore.ReadView
+	var now time.Time
+	defer func() {
+		if cut != nil {
+			_ = cut.Close()
+		}
+	}()
+	if err := s.withCommittedViewNamed("backup", func() error {
+		var err error
+		cut, err = db.Read()
+		now = time.Now()
+		return graphReadError(err)
+	}); err != nil {
+		return err
+	}
+
+	// Retain only a bounded set of live endpoint identities. Nodes outside
+	// the set are checked against the same pinned cut when the set fills.
+	const endpointBudget = 4 << 20
+	remaining := endpointBudget
+	live := make(map[string]struct{})
+	scope := graphcache.AdmittedQueryView(ctx)
+	for interval := range scope.Ranges(prefix, false, false) {
+		for row, err := range rows.LiveVertexRange(ctx, cut.Snapshot, cut.Generation, interval.Lower, interval.Upper, nil, false, false, now) {
+			if err != nil {
+				return graphReadError(err)
+			}
+
+			if scope == nil && remaining > 0 {
+				remaining -= len(row.Key) + 48
+				if remaining > 0 {
+					live[row.Key] = struct{}{}
+				}
+			}
+			v := row.Vertex.Value
+			if v == nil {
+				v = &pb.Vertex{Key: row.Key, Value: &pb.Vertex_Nil{Nil: true}}
+				if !row.Vertex.Expiration.IsZero() {
+					v.Expiration = timestamppb.New(row.Vertex.Expiration)
+				}
+			} else if v.GetKey() != row.Key {
+				return graphReadError(graphstore.ErrInvalidRow)
+			}
+			if err := stream.Send(&pb.BackupSnapshotResponse{Record: &pb.BackupSnapshotResponse_Vertex{Vertex: v}}); err != nil {
+				return err
+			}
+		}
+	}
+	hasEndpoint := func(key string) (bool, error) {
+		if _, ok := live[key]; ok {
+			return true, nil
+		}
+		if remaining > 0 {
+			return false, nil
+		}
+		return rows.HasVertexAt(cut.Snapshot, cut.Generation, key, now)
+	}
+	edges := rows.FoldedEdges(ctx, cut.Snapshot, cut.Generation, prefix, now)
+	if scope != nil {
+		reader := graphRead{cut: cut, rows: rows, now: now}
+		edges = reader.scopedEdges(ctx, prefix, prefix, "", "")
+	}
+	for e, err := range edges {
+		if err != nil {
+			return graphReadError(err)
+		}
+		if scope == nil {
+			if !strings.HasPrefix(e.Key.Head, prefix) {
+				continue
+			}
+			tail, err := hasEndpoint(e.Key.Tail)
+			if err != nil {
+				return graphReadError(err)
+			}
+			if !tail {
+				continue
+			}
+			head, err := hasEndpoint(e.Key.Head)
+			if err != nil {
+				return graphReadError(err)
+			}
+			if !head {
+				continue
+			}
+		}
+		edge := &pb.Edge{Tail: e.Key.Tail, Head: e.Key.Head, Weight: e.Detail.Weight}
+		if !e.Detail.Expiration.IsZero() {
+			edge.Expiration = timestamppb.New(e.Detail.Expiration)
+		}
+		if err := stream.Send(&pb.BackupSnapshotResponse{Record: &pb.BackupSnapshotResponse_Edge{Edge: edge}}); err != nil {
+			return err
+		}
+	}
+	return ctxToConnect(ctx.Err())
 }
 
 // foldBackupEdge collapses a snapshot edge's per-contribution

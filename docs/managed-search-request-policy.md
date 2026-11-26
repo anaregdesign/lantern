@@ -87,11 +87,11 @@ which uses those certified constructors internally; its checked selectors supply
 the same actual worker pair to App. Workers retain their original fingerprint
 during a live staged change.
 
-This operation does not automatically restart processes or establish a new
-data-restoration mechanism. Durable restart uses the existing WAL recovery
-contract. A graph-only process with volatile data needs its existing external
-backup/restore or other supported data-preserving restart procedure before
-an operator stops it; staging Search policy does not make that data durable.
+The operator restarts each process with its existing node-local Tarp data
+directory to activate the staged Search policy. Both graph-only and receipt
+modes reopen the committed graph and rebuild the derived Search index.
+Recovery from a lost directory follows the mode-specific procedure in the
+[backup and restore guide](backup.md).
 Existing peer fingerprint mismatch warns and marks readiness unavailable while
 graph replication continues. Management/private control and non-search data
 remain reachable during a search transition. Zero-downtime rolling process

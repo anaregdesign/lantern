@@ -9,10 +9,8 @@ import (
 
 // ACID-style quality gate for the GraphCache.
 //
-// Lantern is an in-memory key-vertex-store: there is no on-disk log, so the
-// classical "D" (Durability) leg of ACID is intentionally out of scope and is
-// only documented here. The remaining legs are exercised as discrete sub-tests
-// so that a regression in any one property surfaces independently in CI.
+// This suite exercises atomicity, consistency and isolation of GraphCache
+// operations. The graphstore and Server recovery suites cover durability.
 //
 // Run with -race to also catch any data race that would, in practice, break
 // the isolation property even when the higher-level invariants happen to hold.

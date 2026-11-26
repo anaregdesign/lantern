@@ -127,8 +127,10 @@ Before first setup, prepare distinct empty private `state/lantern-N`,
 `backup/lantern-N` and `spool/lantern-N` directories owned by the selected UID/GID
 (mode 0700). The canonical stack binds them without host-path creation. It
 never changes ownership or initializes a missing directory at startup.
-OFF retains this dedicated state, backup and graph-snapshot spool per node. The bounded spool is 128 MiB with a
-32 MiB frame cap. Graph snapshots restore data, not original receipt continuity.
+Each node keeps its [Tarp](https://github.com/anaregdesign/tarp) database in
+`/state/graph` and writes private backups to a separate volume. Its 128 MiB peer Snapshot spool accepts
+frames up to 32 MiB. See the [private recovery procedure](../../docs/backup.md)
+for receipt continuity.
 Never include `off-initialize.yml` during ordinary restart or recover by deleting
 volumes. Missing/partial/mismatched native state is a failure to diagnose.
 
@@ -144,7 +146,7 @@ Follow the existing [three-node preparation and lifecycle guide](oidc-ha/README.
 using canonical `-f docker-compose.oidc.yml`. It reuses the existing HA
 implementation, not a second replication framework. The guide covers complete
 current startup JSON on provision/init/every start, distinct node custody,
-separate application WAL creation, retained membership publication, exact HTTPS
+separate graph database initialization, retained membership publication, exact HTTPS
 origin, verified upstream TLS, scoped MCP credentials and clean restart.
 
 The default HTTPS edge is <https://localhost:8443>. Browser/auth/control traffic

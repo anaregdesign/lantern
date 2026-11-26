@@ -1,8 +1,8 @@
 # Lantern — Copilot instructions
 
-Lantern is an in-memory graph KVS (`key-vertex-store`) served over Connect/HTTP-2
-(wire-compatible with gRPC and gRPC-Web on a single h2c socket); both vertices and
-edges carry TTLs and decay over time. The repo is a monorepo: a multi-module Go
+Lantern is a graph KVS (`key-vertex-store`) that stores vertices and edges in a
+node-local Tarp database. It serves Connect/HTTP-2, gRPC and gRPC-Web on the
+same h2c socket. Vertices and edge contributions can expire by TTL. The repo is a monorepo: a multi-module Go
 workspace (`go.work`), a pure-Dart SDK (`sdks/dart/`), a native Rust crate
 (`sdks/rust/`), and standalone TypeScript packages, with every non-Go package
 **outside** `go.work`.

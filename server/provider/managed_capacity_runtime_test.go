@@ -20,7 +20,7 @@ func managedCapacityTestOwner(t *testing.T, input ...string) (*Config, *datarunt
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly})
+	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, ReceiptConfig{Mode: ReceiptModeGraphOnly})
 	if _, err := primary.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "restored-a"}, {Key: "restored-b"}}}); err != nil {
 		t.Fatal(err)
 	}

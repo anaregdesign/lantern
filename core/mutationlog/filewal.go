@@ -23,12 +23,9 @@ import (
 // big-endian body length, CRC32C over that length and body, local seq, HLC,
 // and caller-encoded payload. Frames are capped at 32 MiB. There is no
 // compaction or whole-file capacity policy.
-// It provides durable bytes, not application recovery: a restored server must
-// replay the complete mutation envelope into graph, receipts, origin state,
-// and the in-memory Log before serving. Production receipt runtimes retain the
-// exact leased FileWAL and must not reopen its mutating path for live evidence.
-// The caller must ensure no other process writes the path. A production owner
-// can hold AcquireFileWALLease across all audit, replay, and append passes.
+// A caller supplies the entry codec and owns application replay. Lantern's
+// security control journals bind their native FileWAL tip and keep a path
+// lease across creation, verification, recovery and append.
 type FileWAL struct {
 	mu        sync.Mutex
 	file      fileWALWriter

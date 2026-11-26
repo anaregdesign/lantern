@@ -86,16 +86,16 @@ jobs:
         run: |
           go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
-          env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
+          env LANTERN_PORT=6380 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6380" LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-enabled.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
-          env LANTERN_PORT=6381 LANTERN_METRICS_ADDR=:9091 LANTERN_SEARCH_ENABLED=false \
+          env LANTERN_PORT=6381 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6381" LANTERN_METRICS_ADDR=:9091 LANTERN_SEARCH_ENABLED=false \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-disabled.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
-          env LANTERN_PORT=6382 LANTERN_METRICS_ADDR=:9092 LANTERN_SEARCH_POSITIONS=false \
+          env LANTERN_PORT=6382 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6382" LANTERN_METRICS_ADDR=:9092 LANTERN_SEARCH_POSITIONS=false \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-positions.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
-          env LANTERN_PORT=6383 LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
+          env LANTERN_PORT=6383 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6383" LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
             LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"

@@ -15,9 +15,11 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
@@ -157,14 +159,26 @@ func TestReceiptWholeStateArchiveStageRejectsDerivedAggregate(t *testing.T) {
 }
 
 func TestReceiptWholeStateArchiveStageReconstructsCausalGraphAndIndexes(t *testing.T) {
-	f := newReceiptArchiveFixture(t, nil)
+	policy := mutationreceipt.Config{Epoch: mutationreceipt.Epoch{0x71}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 32})
+	defer func() { _ = log.Close() }()
+	svc := dataruntime.NewExecutor(cache).WithReplication(log, hlc.New(hlc.NodeID{0x72}, hlc.Options{}), nil).WithTombstoneTTL(time.Hour)
+	source, err := dataruntime.NewReceiptWholeStateSource(svc, store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	future := time.Now().Add(2 * time.Hour)
 	past := time.Now().Add(-time.Hour)
 	base := time.Now().Add(-time.Minute).UnixNano()
 	origin := hlc.NodeID{0x92}
 	stamp := func(n int64) hlc.Timestamp { return hlc.Timestamp{WallNs: base + n, NodeID: origin} }
 	frontier := stamp(10)
-	if err := f.service.ApplyMutation(context.Background(), &pb.Mutation{
+	if err := svc.ApplyMutation(context.Background(), &pb.Mutation{
 		Seq: 1, Origin: origin[:], Hlc: &pb.HLCTimestamp{
 			WallNs: frontier.WallNs, Logical: frontier.Logical, NodeId: frontier.NodeID[:],
 		},
@@ -178,40 +192,43 @@ func TestReceiptWholeStateArchiveStageReconstructsCausalGraphAndIndexes(t *testi
 	}); err != nil {
 		t.Fatalf("seed origin frontier: %v", err)
 	}
-	if !f.cache.PutVertexWithExpirationHLC("barrier-endpoint", &pb.Vertex{Key: "barrier-endpoint"}, past, stamp(1)) {
+	if !cache.PutVertexWithExpirationHLC("barrier-endpoint", &pb.Vertex{Key: "barrier-endpoint"}, past, stamp(1)) {
 		t.Fatal("failed to seed vertex barrier")
 	}
-	if !f.cache.AddEdgeWithExpirationContribHLC("barrier-endpoint", "other", 1, future, graphcache.ContribID{1}, stamp(2)) {
+	if !cache.AddEdgeWithExpirationContribHLC("barrier-endpoint", "other", 1, future, graphcache.ContribID{1}, stamp(2)) {
 		t.Fatal("failed to revive endpoint above barrier")
 	}
-	f.cache.DeleteEdgeHLC("barrier-endpoint", "other", stamp(3), future)
-	f.cache.DeleteVertexHLC("tombstone-endpoint", stamp(4), future)
-	if !f.cache.AddEdgeWithExpirationContribHLC("tombstone-endpoint", "other", 1, future, graphcache.ContribID{2}, stamp(5)) {
+	cache.DeleteEdgeHLC("barrier-endpoint", "other", stamp(3), future)
+	cache.DeleteVertexHLC("tombstone-endpoint", stamp(4), future)
+	if !cache.AddEdgeWithExpirationContribHLC("tombstone-endpoint", "other", 1, future, graphcache.ContribID{2}, stamp(5)) {
 		t.Fatal("failed to revive endpoint after Vertex Delete")
 	}
-	f.cache.DeleteEdgeHLC("tombstone-endpoint", "other", stamp(6), future)
-	if !f.cache.PutEdgeWithExpirationHLC("tail", "head", 1, past, stamp(7)) ||
-		!f.cache.AddEdgeWithExpirationContribHLC("tail", "head", 2, future, graphcache.ContribID{3}, stamp(8)) {
+	cache.DeleteEdgeHLC("tombstone-endpoint", "other", stamp(6), future)
+	if !cache.PutEdgeWithExpirationHLC("tail", "head", 1, past, stamp(7)) ||
+		!cache.AddEdgeWithExpirationContribHLC("tail", "head", 2, future, graphcache.ContribID{3}, stamp(8)) {
 		t.Fatal("failed to seed edge barrier and newer Add")
 	}
-	if !f.cache.PutEdgeWithExpirationHLC("put-tail", "put-head", 4, future, stamp(9)) ||
-		!f.cache.AddEdgeWithExpirationContribHLC("put-tail", "put-head", 5, future, graphcache.ContribID{4}, stamp(10)) {
+	if !cache.PutEdgeWithExpirationHLC("put-tail", "put-head", 4, future, stamp(9)) ||
+		!cache.AddEdgeWithExpirationContribHLC("put-tail", "put-head", 5, future, graphcache.ContribID{4}, stamp(10)) {
 		t.Fatal("failed to seed live Put plus newer Add")
 	}
-	product, err := produceReceiptWholeStateArchive(context.Background(), f.backupSource, f.policy)
+	capture, err := source.Capture(t.Context(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _, _ := product.bytes()
+	before := wholeStateArchive{Graph: capture.Graph, Receipts: capture.Receipts, Policy: capture.Policy, Origins: capture.Origins}
+	var raw bytes.Buffer
+	if err := encodeWholeStateArchive(&raw, before); err != nil {
+		t.Fatal(err)
+	}
 	configure := func(c *graphcache.GraphCache[string, *pb.Vertex]) error {
 		c.EnableSearchIndex(func(key string, _ *pb.Vertex) search.Document { return search.Text(key) }, strings.Compare)
 		return nil
 	}
-	stage, err := stageReceiptWholeStateArchive(context.Background(), bytes.NewReader(raw), f.policy, time.Hour, configure)
+	stage, err := stageReceiptWholeStateArchive(context.Background(), bytes.NewReader(raw.Bytes()), policy, time.Hour, configure)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := decodedProducerArchive(t, raw)
 	if stage.cutoffLocalSeq != before.Graph[0].GetHeader().GetCutoffLocalSeq() || len(stage.origins) != len(before.Origins) {
 		t.Fatalf("staged cutoff/origins drift: %+v", stage)
 	}

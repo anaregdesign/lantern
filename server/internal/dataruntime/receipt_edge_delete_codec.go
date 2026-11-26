@@ -19,13 +19,11 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// This is a private, unwired FileWAL payload codec for the Edge Delete
-// prerequisite. The FileWAL frame owns the checksum and the local log seq;
-// this payload owns the origin seq, receipt metadata, and graph projection.
-// Neither this format nor its decoder establishes replay or peer transport.
+// The Edge Delete payload records the origin sequence, exact receipt and
+// accepted graph effects. The containing relay row supplies its local sequence.
 const (
 	receiptEdgeDeleteWALMagic      = "LRED\x01\x00\x00\x00"
-	receiptEdgeDeleteWALMaxBytes   = 8 << 20 // below FileWAL's 32 MiB frame cap
+	receiptEdgeDeleteWALMaxBytes   = 8 << 20
 	receiptEdgeDeleteWALHeaderSize = 8 + 16 + 8 + 8 + 4 + 16 + 16 + 32 + 8 + 8 + 4 + 4
 	receiptEdgeDeleteWALItemSize   = 49 + 16 + 4 + 4 + 1 + 32 + 8 + 1 + 4 + 4
 	receiptEdgeDeleteWALAcceptSize = 4 + 4 + 4
@@ -72,7 +70,6 @@ func validateReceiptEdgeDeleteWALRequestCapacity(keys []graphcache.EdgeKey[strin
 	return nil
 }
 
-// encodeReceiptEdgeDeleteWAL matches FileWAL's payload encoder signature.
 // Fixed-width big-endian scalars and uint32 length-prefixed strings have one
 // representation. The graph-only Mutation is checked and reconstructed from
 // accepted indexed keys; protobuf wire serialization is not part of this
@@ -125,9 +122,7 @@ func encodeReceiptEdgeDeleteWAL(op mutationlog.MutationOp) ([]byte, error) {
 	return b, nil
 }
 
-// decodeReceiptEdgeDeleteWAL matches FileWAL's payload decoder signature.
-// FileWAL verifies its frame CRC before invoking this decoder. All counts and
-// string lengths are bounded before allocation; trailing bytes fail closed.
+// Decode bounds counts and strings before allocation and rejects trailing bytes.
 func decodeReceiptEdgeDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) < receiptEdgeDeleteWALHeaderSize || len(raw) > receiptEdgeDeleteWALMaxBytes {
 		return nil, receiptEdgeDeleteWALError("invalid payload size %d", len(raw))
@@ -204,18 +199,18 @@ func decodeReceiptEdgeDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 }
 
 // validateReceiptEdgeDeleteWALEntry checks metadata that belongs to the
-// enclosing FileWAL frame. Entry.Seq is relay-local and must not be compared
+// enclosing relay record. Entry.Seq is replica-local and must not be compared
 // with the origin-local OriginSeq.
 func validateReceiptEdgeDeleteWALEntry(entry mutationlog.Entry) error {
 	if entry.Seq == 0 {
-		return receiptEdgeDeleteWALError("zero FileWAL local seq")
+		return receiptEdgeDeleteWALError("zero relay sequence")
 	}
 	envelope, ok := entry.Op.(*edgeDeleteReceiptEnvelope)
 	if !ok {
 		return receiptEdgeDeleteWALError("unexpected operation type %T", entry.Op)
 	}
 	if !entry.HLC.Equal(envelope.HLC) {
-		return receiptEdgeDeleteWALError("FileWAL HLC differs from envelope HLC")
+		return receiptEdgeDeleteWALError("relay HLC differs from envelope HLC")
 	}
 	_, err := validateReceiptEdgeDeleteWALEnvelope(envelope)
 	return err

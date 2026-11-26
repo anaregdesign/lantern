@@ -18,14 +18,13 @@ import (
 // consumers outside server's internal-package boundary. They add no state or
 // ownership; provider and backup consume dataruntime directly.
 type (
+	TarpBackupWitness               = dataruntime.TarpBackupWitness
 	LanternService                  = dataruntime.Executor
 	LanternReplicationService       = dataruntime.Replication
 	Backend                         = dataruntime.Backend
 	ServingRuntime                  = dataruntime.ServingRuntime
-	DurableReceiptWALRuntimeConfig  = dataruntime.DurableReceiptWALRuntimeConfig
-	ReceiptStartupRestore           = dataruntime.ReceiptStartupRestore
+	ReceiptDatabaseConfig           = dataruntime.ReceiptDatabaseConfig
 	ReceiptWholeStateCapture        = dataruntime.ReceiptWholeStateCapture
-	ReceiptWholeStateBackupCapture  = dataruntime.ReceiptWholeStateBackupCapture
 	ReceiptWholeStateSource         = dataruntime.ReceiptWholeStateSource
 	ReceiptBaselineFormat           = dataruntime.ReceiptBaselineFormat
 	ReceiptBaselineArchiveCodec     = dataruntime.ReceiptBaselineArchiveCodec
@@ -67,8 +66,6 @@ const (
 	ReceiptBaselineFormatCombined = dataruntime.ReceiptBaselineFormatCombined
 )
 
-var ErrDurableReceiptWALBackupFallbackEligible = dataruntime.ErrDurableReceiptWALBackupFallbackEligible
-
 func ResolveSearchPolicy(baseline SearchLimits, generation uint64, policy SearchRequestPolicy) (SearchPolicySnapshot, error) {
 	return dataruntime.ResolveSearchPolicy(baseline, generation, policy)
 }
@@ -87,20 +84,12 @@ func NewLanternReplicationService(log *mutationlog.Log, backend Backend, clock *
 	return dataruntime.NewReplication(log, backend, clock)
 }
 
-func NewGraphOnlyServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], log *mutationlog.Log, clock *hlc.Clock, namespaceFormat ...string) (*ServingRuntime, error) {
-	return dataruntime.NewGraphOnlyServingRuntime(graph, log, clock, namespaceFormat...)
+func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *graphcache.GraphCache[string, *pb.Vertex], log mutationlog.Options, namespace string) (*ServingRuntime, error) {
+	return dataruntime.OpenGraphDatabase(ctx, dir, node, graph, log, namespace)
 }
 
-func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
-	return dataruntime.CreateDurableReceiptWALServingRuntime(config)
-}
-
-func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
-	return dataruntime.OpenDurableReceiptWALServingRuntime(config)
-}
-
-func OpenDurableReceiptWALServingRuntimeFromBackup(config DurableReceiptWALRuntimeConfig) (*ServingRuntime, error) {
-	return dataruntime.OpenDurableReceiptWALServingRuntimeFromBackup(config)
+func OpenReceiptDatabase(ctx context.Context, config ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
+	return dataruntime.OpenReceiptDatabase(ctx, config, fresh)
 }
 
 func NewReceiptWholeStateSource(executor *LanternService, store *mutationreceipt.Store) (*ReceiptWholeStateSource, error) {

@@ -508,7 +508,7 @@ func TestDeleteVerticesByPrefix_ReplicationFrameRejectedBeforeDelete(t *testing.
 		}
 	}
 	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
-	runtime, err := NewGraphOnlyServingRuntime(cache, log, hlc.New(hlc.NodeID{0xC0}, hlc.Options{}))
+	runtime, err := newGraphRuntime(cache, log, hlc.New(hlc.NodeID{0xC0}, hlc.Options{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,7 +863,7 @@ func TestDeleteEdgesByPrefix_ReplicationFrameRejectedBeforeDelete(t *testing.T) 
 		cache.PutEdgeWithExpiration(key.Tail, key.Head, 1, time.Now().Add(time.Hour))
 	}
 	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
-	runtime, err := NewGraphOnlyServingRuntime(cache, log, hlc.New(hlc.NodeID{0xC4}, hlc.Options{}))
+	runtime, err := newGraphRuntime(cache, log, hlc.New(hlc.NodeID{0xC4}, hlc.Options{}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -731,6 +731,27 @@ func TestReceiptSnapshotDeleteContributionReceiptPreservesFalse(t *testing.T) {
 	}
 }
 
+func TestReceiptSnapshotCreateEdgePreservesOriginalOutcome(t *testing.T) {
+	capture, policy := receiptSnapshotTestCapture(t, true, false)
+	row := &capture.Receipts.Receipts[0]
+	row.Kind = mutationreceipt.CreateEdge
+	row.HasContrib = false
+	row.ContribID = mutationreceipt.ContribID{}
+	row.Result = []byte{byte(pb.CreateEdgeOutcome_CREATE_EDGE_OUTCOME_CREATED_AND_LIVE)}
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(frames, policy, receiptSnapshotTestCatalogConfig(capture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decoded.Receipts.Receipts[0]
+	if got.Kind != row.Kind || got.ID != row.ID || !bytes.Equal(got.Result, row.Result) {
+		t.Fatalf("Create receipt round trip = %+v", got)
+	}
+}
+
 func TestReceiptSnapshotRejectsMalformedRetiredEvidence(t *testing.T) {
 	capture, policy := receiptSnapshotTestCaptureWithRetired(t)
 	valid, err := PrepareReceiptSnapshotFrames(capture, policy)

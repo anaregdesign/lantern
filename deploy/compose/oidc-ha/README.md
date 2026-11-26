@@ -108,14 +108,15 @@ dc --profile init run --rm --no-deps init-node-2
 dc stop -t 45 membershippublisher
 ```
 
-Native initialization must finish successfully with CLEAN state. It does not
-start application serving or initialize a data WAL. `prepare-state` only assigns
+Finish native security initialization with CLEAN state before initializing the
+graph databases. `prepare-state` only assigns
 the mounted persistence roots; it never creates final native node directories,
 repairs ownership on retained state or removes existing files. On an interrupted
 or failed step, retain the output and diagnose the failure. Never delete it and
 rerun automatically.
 
-Create each **new, empty application WAL** with this separate one-time ceremony:
+Initialize each node's new [Tarp](https://github.com/anaregdesign/tarp)
+database in `/state/graph` once:
 
 ```sh
 dc -f oidc-ha/initialize-data.yml up -d --no-build --wait --wait-timeout 120 \
@@ -132,7 +133,7 @@ requires status `200` within two seconds, and follows no redirect or proxy.
 The edge root filesystem stays read-only.
 
 Do not include `initialize-data.yml` again. Normal configuration always requires
-the existing WAL, stable node ID/epoch, original identity and native custody;
+the existing graph database, stable node ID/epoch, original identity and native custody;
 missing/partial/mismatched state fails closed. State is durable in three distinct
 named volumes, bound to the corresponding node. Keep all three receipt env files,
 volumes, identity material and operator journal. Prometheus history uses bounded

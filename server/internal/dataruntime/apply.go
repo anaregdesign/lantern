@@ -226,7 +226,7 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
 
-	// Reuse the origin's absolute deadline. A delayed relay or FileWAL replay
+	// Reuse the origin's absolute deadline. A delayed relay or replay
 	// must not renew a Delete floor from its own wall clock.
 	useTomb := s.tombstoneTTL > 0
 	tombExp, err := s.validateIncomingTombstoneExpiration(m)

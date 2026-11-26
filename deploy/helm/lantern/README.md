@@ -29,7 +29,7 @@ only signed private origins; they do not authorize membership.
 The peer Service uses its own port (6381), includes bootstrapping pods and
 never exposes the public APIs. The client Service remains readiness gated.
 Choose `peerPlane.mode=fresh` only for first enrollment and `resume` afterward.
-Per-pod `runtime-state` PVCs retain anti-rollback enrollment and sys: state.
+Per-pod `runtime-state` PVCs retain the graph database, replication progress, optional receipts, anti-rollback enrollment and sys: state.
 Never use an emptyDir or copied state file as proof of continuity.
 
 Private peers (including OFF) and OIDC require `nativeTime.configMap`. Supply its
@@ -152,9 +152,12 @@ and scrape permissions scoped separately.
 ## Runtime and recovery
 
 The chart retains cache/capacity/backup settings, drain delay, startup budget,
-resource limits and `runtime.goMemoryLimit`. Graph backups and sys:/membership
-PVCs are separate. Receipt-WAL configuration is an additional certified runtime
-choice; graph snapshots never certify receipt or security continuity.
+resource limits and `runtime.goMemoryLimit`. Each replica keeps its
+[Tarp](https://github.com/anaregdesign/tarp) database on its own runtime-state
+PVC. Keep that PVC attached to the same replica when restarting. A separate
+backup destination protects against loss
+of the data volume. [Private recovery](../../../docs/backup.md) describes
+receipt continuity. Native security and membership keep their own bindings.
 
 The optional MCP deployment is a separate application. Protected deployments
 must supply an approved machine Role, credential and verified public transport;

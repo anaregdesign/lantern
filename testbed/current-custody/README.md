@@ -10,8 +10,9 @@ directory defines no alternate startup configuration or provisioning path.
 Provision identity/trust once, run explicit `init-security` on each actual
 target once, then supply the same complete current JSON on every ordinary start
 and restart. Preserve node identity, fixed topology, historical trust, all native
-history/custody, application WALs, stable data node IDs/epoch and operator
-journal. Initial administrator input never resets later policy. Missing or
+history/custody, each node's [Tarp](https://github.com/anaregdesign/tarp)
+database, stable data node IDs/epoch and the operator journal. Initial
+administrator input never resets later policy. Missing or
 partial state, an identity-binding mismatch or inconsistent custody fails closed;
 an existing deployment is never repaired by fresh initialization or trust
 regeneration.
@@ -43,8 +44,8 @@ supplies each node's required `startup.json` through
 initialization and serving, and keeps operator keys outside Server mounts. It
 uses real public/private TLS, orderly restart, partition/reconnect and isolated
 resume, and verifies that a pre-CLEAN kill is refused. Its `--mixed-ha` variant
-requires a new `lantern-1610-` name and additionally exercises independent data
-WALs and private replication; it is a separate bounded functional campaign.
+requires a new `lantern-1610-` name and additionally exercises private
+replication between nodes with independent graph databases.
 Original logs, failed phases and private volumes are retained. No image pulls,
 host clock/trust changes, deployment or shared-resource pruning are performed.
 

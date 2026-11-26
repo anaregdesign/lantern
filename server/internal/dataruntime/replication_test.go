@@ -505,7 +505,7 @@ func TestLanternReplicationService_CursorCoveredEntriesDoNotOverflowLiveSubscrib
 			clock := hlc.New(localID, hlc.Options{})
 			remoteClock := hlc.New(remoteID, hlc.Options{})
 			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-			runtime, err := NewGraphOnlyServingRuntime(cache, log, clock)
+			runtime, err := newGraphRuntime(cache, log, clock)
 			if err != nil {
 				t.Fatal(err)
 			}

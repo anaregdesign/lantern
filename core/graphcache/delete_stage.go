@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"errors"
+	"maps"
 	"sync/atomic"
 	"time"
 
@@ -253,8 +254,11 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLockedWithCapacity(
 			before := c.edges.bucket(key.Tail, key.Head)
 			projection, hasProjection := projected[key]
 			plan = &stagedEdgeDeletePlan[S]{
-				key: key, before: before, after: cloneWeightForStaging(before),
+				key: key, before: before, after: cloneWeightForStaging(before, now),
 				headProjected: projection,
+			}
+			if err := c.StorageError(); err != nil {
+				return nil, err
 			}
 			if before != nil {
 				var ok bool
@@ -315,19 +319,33 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLockedWithCapacity(
 	return stage, nil
 }
 
-func cloneWeightForStaging(before *weight) *weight {
+func cloneWeightForStaging(before *weight, now time.Time) *weight {
 	if before == nil {
 		return nil
 	}
 	before.mu.Lock()
 	defer before.mu.Unlock()
+	if before.cold {
+		values, err := before.load()
+		if err != nil {
+			return nil
+		}
+		// The detached candidate owns the decoded buffer. Its first fold
+		// also journals any expired sources to remove if this stage commits.
+		after := &weight{values: values, lastHLC: before.lastHLC, lastOrdinal: before.lastOrdinal, needsSort: true, changes: make(sourceChanges), load: before.load}
+		after.flushLockedAt(now)
+		return after
+	}
 	return &weight{
+		load:         before.load,
+		changes:      maps.Clone(before.changes),
 		values:       append([]weightValue(nil), before.values...),
 		sum:          before.sum,
 		lastFlushLen: before.lastFlushLen,
 		minExp:       before.minExp,
 		needsSort:    before.needsSort,
 		lastHLC:      before.lastHLC,
+		lastOrdinal:  before.lastOrdinal,
 	}
 }
 

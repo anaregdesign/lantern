@@ -20,8 +20,8 @@ sweep or qualify final performance, provider login or #1608 admission integratio
 > every stage status, and the scenario report.
 >
 > **Pre-tag performance evidence is local.** On the exact reviewed source,
-> run `./testbed/bench/release.sh` plus four separate fresh-WAL receipt
-> scenarios before tagging. One complete passing run on a chosen suitable
+> run `./testbed/bench/release.sh` plus four receipt scenarios, each with new
+> node databases, before tagging. One complete passing run on a chosen suitable
 > environment (ARM or x86) is required, not one run on each architecture. Each
 > scenario owns a fresh Compose lifecycle so data, retained high-water state,
 > and scenario-specific cluster env cannot leak into its successor (#1097). To
@@ -44,8 +44,8 @@ sweep or qualify final performance, provider login or #1608 admission integratio
 > [#262], [#573], [#708], [#1063], [#1097], [#1556].
 >
 > **Receipt qualification uses the same local image.** Run four sequential
-> fresh-WAL, three-replica scenarios after the canonical sweep: conditional
-> Vertex Put, absent Vertex Delete, absent Edge Delete, and contribution-keyed
+> three-replica scenarios with fresh node databases after the canonical sweep:
+> conditional Vertex Put, absent Vertex Delete, absent Edge Delete, and contribution-keyed
 > Edge Add. None is in
 > `release-scenarios.txt`. Historical Edge-only synthetic-parent runs support
 > provisional thresholds, **not final merged-stack evidence**; the four-family
@@ -407,8 +407,8 @@ export TAG=local-qualification COMMIT="$SOURCE_SHA"
 ./testbed/bench/release.sh --out "$EVIDENCE_DIR/bench-report.md" |
   tee "$EVIDENCE_DIR/canonical.log"
 
-# Each run.sh invocation starts a fresh Compose cluster and WAL. A failed
-# command stops the qualification; keep its raw files for diagnosis.
+# Each run.sh invocation starts a new Compose cluster with fresh node databases.
+# A failed command stops the qualification; keep its raw files for diagnosis.
 for scenario in receipt_vertex_put_admission_lookup \
   receipt_vertex_delete_admission_lookup receipt_admission_lookup \
   receipt_edge_add_admission_lookup; do
@@ -597,8 +597,9 @@ become non-OK outcomes and fail the run.
 ghz cannot safely generate one canonical binary operation ID and reuse it in
 another producer, so each scenario selects one of the four allow-listed
 receipt family drivers. Each emits the ghz summary shape consumed by the
-existing perf evaluator and report renderer. The harness provisions a fresh
-authenticated durable-WAL cluster with fresh per-replica origin IDs and rejects
+existing perf evaluator and report renderer. The harness provisions an
+authenticated cluster with a new [Tarp](https://github.com/anaregdesign/tarp)
+database and origin ID for each replica. It rejects
 `SKIP_UP=1`. Before any reset, startup proves the named bench Compose project
 has no existing containers, volumes or network. An existing project, including
 a preceding `KEEP_UP=1` run, is refused without deleting its resources; choose a
@@ -720,7 +721,7 @@ The 128 ceiling is an engineering allocation per process: 32 resident owners,
 32 reserve. The four families share one cluster-wide pool of 12 serial
 admission/status pair workers and the same three-node traffic profile. Admission
 binds those three endpoints, 200 aggregate requested RPC/s, warmup10s/steady45s/
-cooldown10s, and the existing WAL, performance and native configuration. A changed
+cooldown10s, and the receipt storage, performance and native configuration. A changed
 profile cannot inherit the ceiling by scenario name. The families retain
 different mutation, indexing and retained-state behavior, which each require
 fresh family-specific results. The allocation is neither a proven
@@ -871,7 +872,7 @@ the harness's ≥2x shared-runner rule. These are step-change gates, not
 production capacity claims.
 
 Paired direct service benchmarks for all four families compare receipt-less
-and admitted receipt writes in the same durable FileWAL runtime, with request
+and admitted receipt writes in the same Tarp-backed runtime, with request
 construction outside timed work. Vertex Put uses unique conditional live
 keys; both Delete families use absent identities; Add uses explicit finite
 contributions on unique edges. Four matching confirmed-status lookup
@@ -887,7 +888,7 @@ runs qualify the final integrated receipt/SDK stack; fresh uncontended
 exact-image measurements are required for #1399.
 
 ```bash
-(cd server && go test ./service -run '^$' \
+(cd server && go test ./internal/dataruntime -run '^$' \
   -bench 'Benchmark(PublicReceipt(VertexPut|VertexDelete|EdgeDelete|EdgeAdd)Admission|ReceiptStatusLookup)$' \
   -benchmem -benchtime=500ms -count=5)
 ```
@@ -958,7 +959,7 @@ retire or rename a wire field, migrate every scenario that sends it in the
 same PR. The receipt driver's template-less calls still resolve against the
 wire descriptors, and a dedicated contract test pins its driver, two RPCs,
 capacity, bounded phases, perf gates, fresh-cluster restriction, manual-workflow
-wiring, image provenance, sequential fresh-WAL scheduling, and release-list
+wiring, image provenance, sequential runs with fresh databases, and release-list
 exclusion for all four families.
 
 `broad_illuminate` additionally has a semantic topology gate. Before warmup,

@@ -146,3 +146,51 @@ func TestDBApplyErrorAdmission(t *testing.T) {
 		t.Fatal("failed batch advanced revision")
 	}
 }
+
+func TestDBWriteOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		outcome tarp.Outcome
+		blocked bool
+	}{{tarp.NotApplied, false}, {tarp.Committed, true}, {tarp.Unknown, true}} {
+		t.Run(string(test.outcome), func(t *testing.T) {
+			db := new(DB)
+			failure := &tarp.OpError{Operation: "apply", Phase: "publication", Outcome: test.outcome, Err: errors.New("I/O")}
+			if err := db.observeWrite(failure); err != failure {
+				t.Fatalf("original outcome lost: %v", err)
+			}
+			err := db.available()
+			if errors.Is(err, tarp.ErrUnhealthy) != test.blocked {
+				t.Fatal(err)
+			}
+			var op *tarp.OpError
+			if errors.As(err, &op) {
+				t.Fatal("previous operation's outcome attributed to a later write")
+			}
+		})
+	}
+}
+
+func TestReadCutDuringWritePreparation(t *testing.T) {
+	db, err := Open(t.Context(), filepath.Join(t.TempDir(), "store"), hlc.NodeID{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	err = db.Update(func(id uint64, _ *tarp.Snapshot, b *tarp.WriteBatch) error {
+		key := append(ServicePrefix(id), 7)
+		b.Put(key, []byte("pending"))
+		return db.WithCommittedSnapshot(func(gen uint64, s *tarp.Snapshot) error {
+			if gen != id {
+				t.Error("unexpected generation")
+			}
+			_, err := s.Get(key)
+			if !errors.Is(err, tarp.ErrNotFound) {
+				t.Fatalf("observed pending data: %v", err)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

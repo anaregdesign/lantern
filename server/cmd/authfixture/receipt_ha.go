@@ -212,7 +212,7 @@ func restartReceiptHAC(ctx context.Context, result *fixture, binary, directory s
 		node.Environment["LANTERN_PEER_LISTEN_ADDR"] = net.JoinHostPort("127.0.0.1", strconv.Itoa(launch.peer))
 		node.Environment["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
 	}
-	node.Environment["LANTERN_RECEIPT_WAL_MODE"] = "restart"
+	node.Environment["LANTERN_RECEIPT_MODE"] = "restart"
 	if err = checkFixtureLaunchNode(launch, node); err != nil {
 		return err
 	}

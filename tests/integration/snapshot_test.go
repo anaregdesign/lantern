@@ -508,7 +508,7 @@ func TestReceiptSnapshotProducer_RealConnectWire(t *testing.T) {
 	epoch := mutationreceipt.Epoch{0x51}
 	config.Receipt.Epoch = epoch
 	config.Receipt.MaxEntries = 16
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}

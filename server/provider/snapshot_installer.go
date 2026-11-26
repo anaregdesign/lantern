@@ -3,7 +3,7 @@ package provider
 import (
 	"errors"
 	"log/slog"
-	"path/filepath"
+
 	"time"
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
@@ -27,7 +27,7 @@ type SnapshotInstallerSelection struct {
 }
 
 func NewSnapshotInstallerSelection(
-	config ReceiptWALConfig,
+	config ReceiptConfig,
 	graphSpool GraphSnapshotSpoolConfig,
 	peers PeerPlaneConfig,
 	cacheConfig CacheConfig,
@@ -46,15 +46,15 @@ func NewSnapshotInstallerSelection(
 		return nil, err
 	}
 	switch config.Mode {
-	case ReceiptWALModeGraphOnly:
-		if runtime.DurableReceiptWAL() {
+	case ReceiptModeGraphOnly:
+		if runtime.ReceiptsEnabled() {
 			return nil, errors.New("graph-only Snapshot installer selection received a durable runtime")
 		}
 		return &SnapshotInstallerSelection{
 			installer: replication.NewGraphOnlySnapshotInstaller(primary, runtime.GraphCache(), graphSpool),
 		}, nil
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
-		if !runtime.DurableReceiptWAL() {
+	case ReceiptModeFresh, ReceiptModeRestart:
+		if !runtime.ReceiptsEnabled() {
 			return nil, errors.New("receipt Snapshot installer selection received a graph-only runtime")
 		}
 	default:
@@ -68,7 +68,7 @@ func NewSnapshotInstallerSelection(
 	}
 	maxFrames := 2 + maxReceipts + maxReceipts + receiptSnapshotInstallerMaxGraphFrames
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
-		TempDir: filepath.Dir(config.Path),
+		TempDir: cacheConfig.DataDir,
 		Limits: backup.ReceiptSnapshotCollectorLimits{
 			MaxFrameBytes:          receiptSnapshotInstallerMaxFrameBytes,
 			MaxFrames:              maxFrames,
@@ -87,7 +87,7 @@ func NewSnapshotInstallerSelection(
 			MaxBytes:    uint64(config.MaxBytes),
 		},
 		DefaultTTL:     cacheConfig.TTL,
-		ConfigureGraph: receiptWALGraphConfigurator(cacheConfig, searchConfig),
+		ConfigureGraph: receiptGraphConfigurator(cacheConfig, searchConfig),
 	})
 	if err != nil {
 		return nil, err

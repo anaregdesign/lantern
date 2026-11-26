@@ -41,7 +41,7 @@ func operationalPublicTestRequest(t *testing.T, manager *ManagedOperationalRunti
 
 func operationalPublicTestBackup(t *testing.T, manager *ManagedOperationalRuntime, primary *dataruntime.Executor, config *Config) managedBackupCertified {
 	t.Helper()
-	owner := backup.New(primary, config.Backup, nil, nil)
+	owner := backup.NewGraphStore(primary, manager.runtime.data.GraphStore(), config.Backup, nil, nil)
 	marker, err := NewManagedBackupRuntime(t.Context(), manager, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -93,11 +93,7 @@ func operationalPublicTestDataCertification(t *testing.T, manager *ManagedOperat
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(data, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certified, err := NewRuntimeCertified(data, primary, peer, restored, NetConfig{})
+	certified, err := NewRuntimeCertified(data, primary, peer, NetConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +276,7 @@ func TestManagedOperationalCertificationRequiresExactOwners(t *testing.T) {
 		"manager":       func(c *managedBackupCertified) { c.manager = &ManagedOperationalRuntime{} },
 		"missing owner": func(c *managedBackupCertified) { c.owner = nil },
 		"foreign owner": func(c *managedBackupCertified) {
-			c.owner = backup.New(runtime.data.NewExecutor(nil), cfg.Backup, nil, nil)
+			c.owner = backup.NewGraphStore(runtime.data.NewExecutor(nil), runtime.data.GraphStore(), cfg.Backup, nil, nil)
 		},
 		"missing adapter": func(c *managedBackupCertified) { c.adapter = nil },
 		"foreign adapter": func(c *managedBackupCertified) { c.adapter = &managedBackupRuntime{owner: c.owner} },

@@ -99,7 +99,7 @@ func (c *GraphCache[S, T]) TopVerticesByDegreeContext(ctx context.Context, prefi
 	var buckets []bucketRef
 
 	c.mu.RLock()
-	if c.prefixIndex == nil {
+	if c.prefixExtract == nil {
 		c.mu.RUnlock()
 		return nil
 	}
@@ -107,7 +107,7 @@ func (c *GraphCache[S, T]) TopVerticesByDegreeContext(ctx context.Context, prefi
 	// 1. Enumerate the live vertices under prefix as ranking candidates.
 	// resolveProjected confirms liveness against the vertex cache, so a stale
 	// radix posting for an expired-but-unflushed vertex is not a candidate.
-	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
+	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
 		if key, ok := c.resolveProjected(projected); ok {
 			if _, seen := accum[key]; !seen {
 				accum[key] = degreeAcc{}

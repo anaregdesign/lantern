@@ -42,12 +42,13 @@ in the root module instead of under `server/`.
   in `internal/envconfig/`. `provider.NewConfig` completes all loaders before the
   unknown-key/strict sweep. Runtime material and private ownership certification
   remain provider/security concerns, including the cache namespace selection.
-- `provider.NewServingRuntime` is the sole graph-only versus private durable
-  receipt-WAL composition boundary. It must finish lease acquisition, full-cut
-  validation, replay/index rebuild, HLC restoration, and exact service
-  installation before the private certification dependency permits listeners,
-  metrics serving, or the replication pump to be constructed. Keep legacy
-  graph-only restore mutually exclusive with durable mode.
+- `provider.NewServingRuntime` opens the node-owned Tarp database in graph-only
+  or receipt mode. Restore the active graph generation, derived indexes, relay
+  and origin frontiers, HLC floor and any receipt state before certifying the
+  exact runtime and services for network use. Graph-only startup can recover a
+  missing directory from its configured private backup. Receipt restart requires
+  an existing matching database. Recover a lost receipt volume explicitly using
+  an independently witnessed final cut. See [private recovery](../docs/backup.md).
 - **wire cannot handle generic type arguments**, so the cache provider returns the
   concrete `GraphCache[string, *Vertex]`. Re-check this before trying to introduce
   generics in the provider graph.

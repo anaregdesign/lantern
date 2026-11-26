@@ -195,6 +195,18 @@ func (l *Log) projectOwnedReplayEntry(state *Subscription, live *subscription, b
 		return Entry{}, true, nil
 	}
 	index := (l.head + int(next-l.firstSeq)) % l.capacity
-	owned, err := project(l.ring[index])
+	entry := l.ring[index]
+	if l.retained != nil {
+		reader, err := l.retained.Pin()
+		if err != nil {
+			return Entry{}, false, err
+		}
+		defer reader.Close()
+		entry, err = reader.Read(entry)
+		if err != nil {
+			return Entry{}, false, err
+		}
+	}
+	owned, err := project(entry)
 	return owned, false, err
 }

@@ -233,7 +233,7 @@ func (s *Executor) MutateGraph(ctx context.Context, request *pb.MutateGraphReque
 	}
 	// Entering this boundary is not proof of either commit or nonexecution.
 	observation.mark(ctx, "publication_enter")
-	if err := publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx); err != nil {
+	if err := publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx); err != nil {
 		return nil, graphMutationPublicationError(err)
 	}
 	observation.mark(ctx, "publication_complete")

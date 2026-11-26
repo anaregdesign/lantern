@@ -73,6 +73,8 @@ Commands:
   provision-security  Generate fixed-topology identity material from operator intent
   init-security       Initialize one new node on its actual target platform
   renew-security      Prepare certificate and next-window maintenance candidates
+  compact-graph-store Repack a stopped node's graph data in key order
+  restore-graph-store Restore a verified private recovery point into a new directory
 
 Use provision-security --help or renew-security --help for options. Supply the same
 complete JSON with LANTERN_AUTH_MODE=oidc for provisioning, initialization and every

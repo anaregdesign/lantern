@@ -7,10 +7,12 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/tarp"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -134,7 +136,7 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 	t.Run("graph-only namespace mismatch fails before file effects", func(t *testing.T) {
 		for _, mismatch := range []string{"configuration", "service"} {
 			t.Run(mismatch, func(t *testing.T) {
-				receiptConfig := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+				receiptConfig := ReceiptConfig{Mode: ReceiptModeGraphOnly}
 				runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
 				dir := filepath.Join(t.TempDir(), "not-created")
 				cfg := backup.Config{Enabled: true, Dir: dir, Interval: time.Hour}
@@ -154,100 +156,62 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 		}
 	})
 
-	t.Run("graph-only behavior remains lbk", func(t *testing.T) {
-		receiptConfig := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
-		runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
-		dir := t.TempDir()
-		backupper, err := NewBackupper(
-			backup.Config{
-				Enabled: true, Dir: dir, Interval: time.Hour,
-				Retain: 1, InstanceID: "graph-owner", RestoreOnStart: true,
-			},
-			receiptConfig,
-			runtime,
-			primary,
-			certified,
-			prometheus.NewRegistry(),
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stats, err := backupper.BackupNow(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if stats.Members != 0 || stats.Receipts != 0 || stats.Origins != 0 {
-			t.Fatalf("graph-only backup emitted receipt-set stats: %+v", stats)
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".lbk") {
-			t.Fatalf("graph-only backup files = %+v, want one .lbk", entries)
-		}
-	})
-
-	t.Run("durable mode produces a committed set", func(t *testing.T) {
-		receiptConfig := validReceiptWALProviderConfig(
-			filepath.Join(t.TempDir(), "receipts.wal"),
-			ReceiptWALModeFresh,
-		)
-		runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
-		dir := t.TempDir()
-		backupper, err := NewBackupper(
-			backup.Config{
-				Enabled: true, Dir: dir, Interval: time.Hour,
-				Retain: 1, InstanceID: "receipt-owner",
-			},
-			receiptConfig,
-			runtime,
-			primary,
-			certified,
-			prometheus.NewRegistry(),
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stats, err := backupper.BackupNow(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if stats.Members != 3 || stats.Bytes <= 0 {
-			t.Fatalf("durable receipt backup stats = %+v", stats)
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var manifests int
-		for _, entry := range entries {
-			if strings.HasSuffix(entry.Name(), ".set.json") {
-				manifests++
+	for _, mode := range []ReceiptMode{ReceiptModeGraphOnly, ReceiptModeFresh} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := ReceiptConfig{Mode: mode}
+			if mode == ReceiptModeFresh {
+				cfg = validReceiptProviderConfig(mode)
 			}
-			if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
-				t.Fatalf("durable receipt backup emitted legacy or temporary file %q", entry.Name())
+			rt, primary, cert := certifiedSnapshotInstallerRuntime(t, cfg)
+			dir := t.TempDir()
+			points := backup.Config{Enabled: true, Dir: dir, Interval: time.Hour, Retain: 1, InstanceID: "owner", NamespaceFormat: rt.DataNamespaceFormat(), RestoreOnStart: true}
+			owner, err := NewBackupper(points, cfg, rt, primary, cert, prometheus.NewRegistry(), nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if len(entries) != 4 || manifests != 1 {
-			t.Fatalf("durable receipt backup files = %+v, want three members and one manifest", entries)
-		}
-	})
+			stats, err := owner.BackupNow(t.Context())
+			if err != nil || stats.Members != 2 || stats.Bytes <= 0 {
+				t.Fatalf("private backup: %+v, %v", stats, err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 1 || !entries[0].IsDir() || !strings.HasPrefix(entries[0].Name(), "lantern-tarp-") {
+				t.Fatalf("private backup points: %v, %v", entries, err)
+			}
+			if _, err := tarp.VerifyBackup(t.Context(), filepath.Join(dir, entries[0].Name(), "image")); err != nil {
+				t.Fatal(err)
+			}
+			if mode == ReceiptModeFresh {
+				if _, err := primary.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "acknowledged-after-backup"}}); err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(t.TempDir(), "lost")
+				if err := backup.RestoreGraphStoreOnStartup(t.Context(), target, rt.NodeID(), points); err == nil {
+					t.Fatal("automatic graph-only discovery accepted a private receipt image")
+				}
+				cfg.Mode = ReceiptModeRestart
+				_, cleanup, err := NewServingRuntime(cfg,
+					CacheConfig{CacheSettings: CacheSettings{TTL: time.Hour, DataDir: target}},
+					SearchConfig{}, MutationLogConfig{Capacity: 8, SubscriberBuffer: 2},
+					ReplicationConfig{NodeID: rt.NodeID(), nodeIDExplicit: true}, points, nil)
+				if cleanup != nil {
+					cleanup()
+				}
+				if err == nil {
+					t.Fatal("receipt restart accepted a discoverable backup older than an acknowledged write")
+				}
+				if _, err := os.Lstat(target); !os.IsNotExist(err) {
+					t.Fatalf("receipt restart populated the missing target: %v", err)
+				}
+			}
+		})
+	}
 }
 
 func TestNewBackupperRejectsForeignCertification(t *testing.T) {
-	receiptConfig := validReceiptWALProviderConfig(
-		filepath.Join(t.TempDir(), "receipts-a.wal"),
-		ReceiptWALModeFresh,
-	)
+	receiptConfig := validReceiptProviderConfig(ReceiptModeFresh)
 	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
 
-	foreignConfig := validReceiptWALProviderConfig(
-		filepath.Join(t.TempDir(), "receipts-b.wal"),
-		ReceiptWALModeFresh,
-	)
+	foreignConfig := validReceiptProviderConfig(ReceiptModeFresh)
 	foreignRuntime, foreignPrimary, _ := certifiedSnapshotInstallerRuntime(t, foreignConfig)
 	cfg := backup.Config{
 		Enabled: true, Dir: t.TempDir(), Interval: time.Hour,

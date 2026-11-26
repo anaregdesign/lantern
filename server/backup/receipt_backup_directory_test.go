@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+var errInjectedDirectorySync = errors.New("injected directory sync error")
+
 type receiptBackupRepeatingReadDir struct {
 	entry     os.DirEntry
 	remaining int
@@ -45,15 +47,7 @@ func canonicalReceiptBackupTestPath(t *testing.T, path string) string {
 func TestEnsureReceiptBackupDirectoryCreatesDurablePath(t *testing.T) {
 	root := canonicalReceiptBackupTestPath(t, t.TempDir())
 	target := filepath.Join(root, "one", "two", "backups")
-	archive := wholeStateArchiveFixture(t)
-	b := newReceiptBackupSetTestBackupper(
-		t,
-		target,
-		"durable-directory-owner",
-		0,
-		&receiptBackupSetSource{capture: producerBackupCapture(archive)},
-		archive.Policy,
-	)
+	b := testBackupper(t, testConfig(target))
 	baseFS := b.fs
 	var events []string
 	b.fs.mkdir = func(path string, mode os.FileMode) error {
@@ -101,25 +95,17 @@ func TestEnsureReceiptBackupDirectoryCreatesDurablePath(t *testing.T) {
 
 func TestReceiptBackupSetPublishesIntoNewNestedDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "one", "two", "backups")
-	archive := wholeStateArchiveFixture(t)
-	b := newReceiptBackupSetTestBackupper(
-		t,
-		dir,
-		"new-directory-owner",
-		0,
-		&receiptBackupSetSource{capture: producerBackupCapture(archive)},
-		archive.Policy,
-	)
+	b := testBackupper(t, testConfig(dir))
 	b.now = func() time.Time { return time.Unix(0, 50).UTC() }
 	if _, err := b.BackupNow(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := LoadLatestReceiptBackupSet(dir, b.cfg.InstanceID)
+	evidence, err := b.graphPoints(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evidence.SetID != 50 {
-		t.Fatalf("first nested-directory set ID = %d, want 50", evidence.SetID)
+	if len(evidence) != 1 || evidence[0].id != 50 {
+		t.Fatalf("first nested-directory point = %v, want 50", evidence)
 	}
 }
 
@@ -133,16 +119,7 @@ func TestEnsureReceiptBackupDirectoryFailsClosedAtParentSyncBoundaries(t *testin
 			t.Run(position+" parent sync "+string(rune('1'+syncIndex)), func(t *testing.T) {
 				root := t.TempDir()
 				target := filepath.Join(root, "one", "two", "backups")
-				archive := wholeStateArchiveFixture(t)
-				source := &receiptBackupSetSource{capture: producerBackupCapture(archive)}
-				b := newReceiptBackupSetTestBackupper(
-					t,
-					target,
-					"directory-fault-owner",
-					0,
-					source,
-					archive.Policy,
-				)
+				b := testBackupper(t, testConfig(target))
 				baseFS := b.fs
 				var syncCalls int
 				b.fs.syncDir = func(path string) error {
@@ -152,16 +129,16 @@ func TestEnsureReceiptBackupDirectoryFailsClosedAtParentSyncBoundaries(t *testin
 					}
 					syncCalls++
 					if !after {
-						return errInjectedReceiptBackupFS
+						return errInjectedDirectorySync
 					}
 					if err := baseFS.syncDir(path); err != nil {
 						return err
 					}
-					return errInjectedReceiptBackupFS
+					return errInjectedDirectorySync
 				}
 
 				stats, err := b.BackupNow(t.Context())
-				if !errors.Is(err, errInjectedReceiptBackupFS) || stats != (Stats{}) {
+				if !errors.Is(err, errInjectedDirectorySync) || stats != (Stats{}) {
 					t.Fatalf("backup at parent-sync fault = %+v, %v", stats, err)
 				}
 				if syncCalls != syncIndex+1 {
@@ -171,7 +148,7 @@ func TestEnsureReceiptBackupDirectoryFailsClosedAtParentSyncBoundaries(t *testin
 					if err != nil {
 						return err
 					}
-					if strings.HasPrefix(entry.Name(), receiptBackupSetPrefix) {
+					if strings.HasPrefix(entry.Name(), "lantern-tarp-") {
 						t.Fatalf("directory durability failure created backup path %s", path)
 					}
 					return nil
@@ -180,18 +157,11 @@ func TestEnsureReceiptBackupDirectoryFailsClosedAtParentSyncBoundaries(t *testin
 					t.Fatal(walkErr)
 				}
 
-				restarted := newReceiptBackupSetTestBackupper(
-					t,
-					target,
-					"directory-fault-owner",
-					0,
-					source,
-					archive.Policy,
-				)
+				restarted := testBackupper(t, testConfig(target))
 				if _, err := restarted.BackupNow(t.Context()); err != nil {
 					t.Fatalf("retry after parent-sync fault: %v", err)
 				}
-				if _, err := LoadLatestReceiptBackupSet(target, restarted.cfg.InstanceID); err != nil {
+				if points, err := restarted.graphPoints(t.Context()); err != nil || len(points) != 1 {
 					t.Fatalf("discover retry after parent-sync fault: %v", err)
 				}
 			})
@@ -234,15 +204,7 @@ func TestEnsureReceiptBackupDirectoryRejectsNonDirectoryComponents(t *testing.T)
 			}
 			component := filepath.Join(root, "component")
 			tc.create(t, component, real)
-			archive := wholeStateArchiveFixture(t)
-			b := newReceiptBackupSetTestBackupper(
-				t,
-				filepath.Join(component, "backups"),
-				"invalid-directory-owner",
-				0,
-				&receiptBackupSetSource{capture: producerBackupCapture(archive)},
-				archive.Policy,
-			)
+			b := testBackupper(t, testConfig(filepath.Join(component, "backups")))
 			if err := b.ensureReceiptBackupDirectory(); err == nil {
 				t.Fatal("non-directory backup path component was accepted")
 			}
@@ -260,49 +222,12 @@ func TestReceiptBackupDirectoryScansAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, tc := range []struct {
-		name string
-		run  func(*Backupper) error
-	}{
-		{
-			name: "latest discovery",
-			run: func(b *Backupper) error {
-				_, err := b.loadLatestReceiptBackupSet()
-				return err
-			},
-		},
-		{
-			name: "ID allocation",
-			run: func(b *Backupper) error {
-				_, err := b.nextReceiptBackupSetID(time.Unix(0, 1))
-				return err
-			},
-		},
-		{
-			name: "retention",
-			run:  func(b *Backupper) error { return b.pruneReceiptBackupSets(1) },
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			archive := wholeStateArchiveFixture(t)
-			b := newReceiptBackupSetTestBackupper(
-				t,
-				t.TempDir(),
-				"bounded-scan-owner",
-				1,
-				&receiptBackupSetSource{capture: producerBackupCapture(archive)},
-				archive.Policy,
-			)
-			b.fs.openDir = func(string) (receiptBackupReadDir, error) {
-				return &receiptBackupRepeatingReadDir{
-					entry:     entries[0],
-					remaining: receiptBackupDirectoryMaxEntries + 1,
-				}, nil
-			}
-			if err := tc.run(b); !errors.Is(err, errReceiptBackupDirectoryLimit) {
-				t.Fatalf("entry-limit error = %v, want %v", err, errReceiptBackupDirectoryLimit)
-			}
-		})
+	b := testBackupper(t, testConfig(t.TempDir()))
+	b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+		return &receiptBackupRepeatingReadDir{entry: entries[0], remaining: receiptBackupDirectoryMaxEntries + 1}, nil
+	}
+	if _, err := b.graphPoints(t.Context()); !errors.Is(err, errReceiptBackupDirectoryLimit) {
+		t.Fatalf("entry-limit error = %v", err)
 	}
 }
 
@@ -317,15 +242,7 @@ func TestReceiptBackupDirectoryScanReportsReadAndCloseErrors(t *testing.T) {
 	}
 	readErr := errors.New("injected directory read failure")
 	closeErr := errors.New("injected directory close failure")
-	archive := wholeStateArchiveFixture(t)
-	b := newReceiptBackupSetTestBackupper(
-		t,
-		t.TempDir(),
-		"scan-errors-owner",
-		0,
-		&receiptBackupSetSource{capture: producerBackupCapture(archive)},
-		archive.Policy,
-	)
+	b := testBackupper(t, testConfig(t.TempDir()))
 	b.fs.openDir = func(string) (receiptBackupReadDir, error) {
 		return &receiptBackupStaticReadDir{
 			entries:  entries,
@@ -343,73 +260,5 @@ func TestReceiptBackupDirectoryScanReportsReadAndCloseErrors(t *testing.T) {
 	}
 	if !errors.Is(err, readErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("scan error = %v, want joined read and close errors", err)
-	}
-}
-
-func TestReceiptBackupDirectoryScanIgnoresManyForeignAndOrphanEntries(t *testing.T) {
-	dir := t.TempDir()
-	archive := wholeStateArchiveFixture(t)
-	b := newReceiptBackupSetTestBackupper(
-		t,
-		dir,
-		"many-entries-owner",
-		0,
-		&receiptBackupSetSource{capture: producerBackupCapture(archive)},
-		archive.Policy,
-	)
-	valid := writeReceiptBackupSetAt(t, b, 100)
-	for i := 0; i < 512; i++ {
-		if err := os.WriteFile(
-			filepath.Join(dir, "foreign-"+receiptBackupSetIDString(uint64(i+1))),
-			[]byte("foreign"),
-			0o600,
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-	orphanBase := filepath.Join(dir, receiptBackupSetBase(b.cfg.InstanceID, 900))
-	for _, suffix := range []string{
-		receiptBackupSetArchiveSuffix,
-		receiptBackupSetWALCutSuffix + receiptBackupSetTempSuffix,
-		receiptBackupSetRetiredCatalogSuffix,
-	} {
-		if err := os.WriteFile(orphanBase+suffix, []byte("orphan"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	evidence, err := LoadLatestReceiptBackupSet(dir, b.cfg.InstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if evidence.SetID != valid.id {
-		t.Fatalf("many-entry discovery selected %d, want %d", evidence.SetID, valid.id)
-	}
-	obsoleteV1Name, obsoleteV1Raw := historicalReceiptBackupSetManifest(t, b.cfg.InstanceID, 950)
-	if err := os.WriteFile(
-		filepath.Join(dir, obsoleteV1Name),
-		obsoleteV1Raw,
-		receiptBackupSetFilePermissions,
-	); err != nil {
-		t.Fatal(err)
-	}
-	obsoleteV2Name := obsoleteReceiptBackupSetMarker(
-		receiptBackupSetUnsupportedPrefixes[1],
-		b.cfg.InstanceID,
-		960,
-	)
-	if err := os.WriteFile(
-		filepath.Join(dir, obsoleteV2Name),
-		[]byte(`{"format":"lantern-receipt-backup-set","version":2}`),
-		receiptBackupSetFilePermissions,
-	); err != nil {
-		t.Fatal(err)
-	}
-	next, err := b.nextReceiptBackupSetID(time.Unix(0, 1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next != 961 {
-		t.Fatalf("ID after owned obsolete markers = %d, want 961", next)
 	}
 }

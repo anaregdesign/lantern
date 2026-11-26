@@ -17,6 +17,21 @@ const (
 
 var errReceiptBackupDirectoryLimit = errors.New("backup: receipt backup directory entry limit exceeded")
 
+type receiptBackupReadDir interface {
+	ReadDir(int) ([]os.DirEntry, error)
+	Close() error
+}
+type receiptBackupFS struct {
+	mkdir   func(string, os.FileMode) error
+	openDir func(string) (receiptBackupReadDir, error)
+	lstat   func(string) (os.FileInfo, error)
+	syncDir func(string) error
+}
+
+func newReceiptBackupFS() receiptBackupFS {
+	return receiptBackupFS{mkdir: os.Mkdir, openDir: func(path string) (receiptBackupReadDir, error) { return os.Open(path) }, lstat: os.Lstat, syncDir: syncReceiptBackupDirectory}
+}
+
 func (b *Backupper) ensureReceiptBackupDirectory() error {
 	components, err := receiptBackupDirectoryComponents(b.cfg.Dir)
 	if err != nil {
@@ -58,7 +73,7 @@ func (b *Backupper) ensureReceiptBackupDirectory() error {
 	}
 	for _, path := range missing {
 		parent := filepath.Dir(path)
-		if err := b.fs.mkdir(path, receiptBackupSetDirectoryPerms); err != nil &&
+		if err := b.fs.mkdir(path, 0o755); err != nil &&
 			!errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("backup: create receipt backup directory %s: %w", path, err)
 		}

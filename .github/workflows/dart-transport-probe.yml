@@ -101,7 +101,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          env LANTERN_PORT=6433 LANTERN_METRICS_ADDR=:9143 \
+          env LANTERN_PORT=6433 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6433" LANTERN_METRICS_ADDR=:9143 \
             LANTERN_LOG_LEVEL=warn nohup "$PROBE_APP" \
             >"$RUNNER_TEMP/plain.log" 2>&1 &
           plain_pid=$!

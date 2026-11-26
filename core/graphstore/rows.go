@@ -1,6 +1,7 @@
 package graphstore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -28,6 +29,12 @@ func NewRows[K comparable, V any](keys tarp.Codec[K], values tarp.Codec[V]) (*Ro
 		return nil, fmt.Errorf("%w: nil graph codec", ErrInvalidRow)
 	}
 	return &Rows[K, V]{keys, values}, nil
+}
+
+// ValueMatches compares an application value to its exact stored representation.
+func (r *Rows[K, V]) ValueMatches(value V, stored []byte) (bool, error) {
+	encoded, err := r.values.Encode(value)
+	return err == nil && bytes.Equal(encoded, stored), err
 }
 
 func nilCodec(c any) bool {
@@ -134,7 +141,14 @@ func (r *Rows[K, V]) PutVertex(b Writer, gen uint64, k K, v Vertex[V]) error {
 	if err != nil {
 		return err
 	}
+	// The small projection shares the entire commit (including generation
+	// switches), and can answer TTL without ever loading a Vertex payload.
+	projection, err := r.vertexKey(gen, vertexMetadataFamily, k)
+	if err != nil {
+		return err
+	}
 	b.Put(key, data)
+	b.Put(projection, data[:metadataSize])
 	return nil
 }
 
@@ -143,7 +157,12 @@ func (r *Rows[K, V]) DeleteVertex(b Writer, gen uint64, k K) error {
 	if err != nil {
 		return err
 	}
+	projection, err := r.vertexKey(gen, vertexMetadataFamily, k)
+	if err != nil {
+		return err
+	}
 	b.Delete(key)
+	b.Delete(projection)
 	return nil
 }
 

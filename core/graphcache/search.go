@@ -176,6 +176,9 @@ func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
 			firstErr = yield(key, c.searchExtract(key, value), expiration)
 			return firstErr == nil
 		})
+		if err := c.StorageError(); err != nil {
+			return err
+		}
 		return firstErr
 	})
 }
@@ -273,6 +276,9 @@ func (c *GraphCache[S, T]) SearchVerticesSnapshotContext(ctx context.Context, qu
 			snapshot = append(snapshot, SearchSnapshotHit[S, T]{Result: result, Value: value, Found: found})
 		}
 	})
+	if err == nil {
+		err = c.StorageError()
+	}
 	return snapshot, stats, err
 }
 
@@ -336,7 +342,14 @@ func (c *GraphCache[S, T]) searchVerticesContext(ctx context.Context, query stri
 	if view := queryViewFromContext(ctx); view != nil {
 		// Restrict matching posting IDs before score/top-k selection. This
 		// does not enumerate the complete visible corpus or derive new DF/N.
-		ctx = search.WithCandidateFilter(ctx, func(id S) bool { return view.Vertex(c.queryProjection(id)) })
+		ctx = search.WithCandidateFilter(ctx, func(id S) bool {
+			return view.Vertex(c.queryProjection(id)) && (keyPrefix == "" || keyHasPrefix(prefixExtract, id, keyPrefix))
+		})
+		execute(nil)
+	} else if keyPrefix != "" && prefixIndex == nil && c.storagePrefixOrder && c.storage != nil {
+		// Intersect matching postings with the requested scope before scoring.
+		// A broad namespace can have many unindexed vertices and non-matches.
+		ctx = search.WithCandidateFilter(ctx, func(id S) bool { return keyHasPrefix(prefixExtract, id, keyPrefix) })
 		execute(nil)
 	} else if keyPrefix != "" && prefixIndex != nil {
 		// Establish radix -> inverted-index lock order and retain the radix read

@@ -339,7 +339,7 @@ func (c *edgeAddReceiptCoordinator) Commit(
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
@@ -467,7 +467,7 @@ func (c *edgeAddReceiptCoordinator) commitReplicated(
 	if err := s.validateReplicationFrame(localEnvelope); err != nil {
 		return err
 	}
-	if prior, ok := pending.receiptWAL.(*graphAddEffectEnvelope); ok &&
+	if prior, ok := pending.receipts.(*graphAddEffectEnvelope); ok &&
 		prior.receiptBearing() && slices.Equal(prior.AcceptedIndexes, localEnvelope.AcceptedIndexes) {
 		localEnvelope = prior
 	}
@@ -483,8 +483,8 @@ func (c *edgeAddReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
-	pending.receiptWAL = localEnvelope
-	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx)
+	pending.receipts = localEnvelope
+	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return connect.NewError(connect.CodeResourceExhausted, err)

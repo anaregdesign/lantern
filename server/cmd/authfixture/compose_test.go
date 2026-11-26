@@ -31,7 +31,7 @@ func TestComposeRestartSeparatesWorkloadAndGraphContinuity(t *testing.T) {
 			for _, node := range metadata.Nodes {
 				env := node.Environment
 				if receipt {
-					if env["LANTERN_RECEIPT_WAL_PATH"] != "/state/receipts.wal" {
+					if env["LANTERN_DATA_DIR"] != "/state/graph" {
 						t.Fatal("receipt Compose fixture lost its durable state path")
 					}
 					for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"} {
@@ -39,7 +39,7 @@ func TestComposeRestartSeparatesWorkloadAndGraphContinuity(t *testing.T) {
 							t.Fatal("receipt fixture retained graph Snapshot storage", key)
 						}
 					}
-				} else if env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != "" || node.StartupFile == "" || env["LANTERN_RECEIPT_WAL_PATH"] != "" {
+				} else if env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != "" || node.StartupFile == "" || env["LANTERN_DATA_DIR"] != "/state/graph" {
 					t.Fatal("graph fixture mixed private scratch with receipt storage")
 				}
 				if _, err := os.Lstat(filepath.Join(dir, node.Name+"-graph-snapshot-spool")); !os.IsNotExist(err) {
@@ -62,8 +62,8 @@ func TestComposeRestartSeparatesWorkloadAndGraphContinuity(t *testing.T) {
 			if env["LANTERN_PEER_WORKLOAD_ID"] != metadata.Nodes[1].Environment["LANTERN_PEER_WORKLOAD_ID"] {
 				t.Fatal("explicit runtime continuity changed workload authority")
 			}
-			if (env["LANTERN_NODE_ID"] == original) != receipt || receipt && env["LANTERN_RECEIPT_WAL_MODE"] != "restart" {
-				t.Fatal("graph origin and WAL continuity were conflated")
+			if env["LANTERN_NODE_ID"] != original || receipt && env["LANTERN_RECEIPT_MODE"] != "restart" {
+				t.Fatal("restart lost its durable graph origin or receipt mode")
 			}
 			if err := prepareComposeRestart(dir, "lantern-1"); err == nil {
 				t.Fatal("restart was silently prepared twice")
@@ -95,7 +95,7 @@ func TestGraphComposeFixtureMapsSnapshotStorageBeforeMountedFileExport(t *testin
 				// copier tries to open it. No such source file/directory exists.
 				env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = filepath.Join(directory, fmt.Sprintf("must-not-copy-spool-%d", i))
 				if mode != "" {
-					env["LANTERN_RECEIPT_WAL_MODE"] = mode
+					env["LANTERN_RECEIPT_MODE"] = mode
 				}
 			}
 			if err := exportComposeFixture(&result, directory); err != nil {
@@ -107,7 +107,7 @@ func TestGraphComposeFixtureMapsSnapshotStorageBeforeMountedFileExport(t *testin
 				if err != nil || !strings.Contains(string(config), "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR='"+composeGraphSnapshotSpoolDirectory+"'") || strings.Contains(string(config), directory) {
 					t.Fatal("graph Compose environment retained host scratch", err)
 				}
-				if node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != composeGraphSnapshotSpoolDirectory || node.Environment["LANTERN_RECEIPT_WAL_PATH"] != "" {
+				if node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != composeGraphSnapshotSpoolDirectory || node.Environment["LANTERN_DATA_DIR"] != "/state/graph" {
 					t.Fatal("export did not preserve the graph-only storage boundary")
 				}
 				for _, path := range []string{filepath.Join(directory, fmt.Sprintf("must-not-copy-spool-%d", i)), filepath.Join(directory, service, "lantern-snapshot-spool")} {

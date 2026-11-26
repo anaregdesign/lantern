@@ -37,6 +37,7 @@ import (
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Capture only the eleven selected request fields into the actual engine's
@@ -76,9 +77,48 @@ type oidcControlWireFixture struct {
 	data           graphv1connect.LanternServiceClient
 	changes        graphv1connect.LanternChangeServiceClient
 	dataRuntime    *service.ServingRuntime
+	seedExecutor   *service.LanternService
+	seedTTL        time.Duration
 	runtime        *provider.SecurityRuntime
 	publicCA       string
 	accessIssuedAt time.Time
+}
+
+// Seeds share the serving Executor's publication gate and use physical data identities.
+func (f *oidcControlWireFixture) seedVertex(t *testing.T, key, text string) {
+	t.Helper()
+	vertex := &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: text}, Expiration: timestamppb.New(time.Now().Add(f.seedTTL))}
+	if _, err := f.seedExecutor.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: vertex}); err != nil {
+		t.Fatalf("seed vertex %q: %v", key, err)
+	}
+}
+
+func (f *oidcControlWireFixture) seedEdges(t *testing.T, edges []*pb.Edge) {
+	t.Helper()
+	seen := make(map[string]bool)
+	var missing []*pb.Vertex
+	physical := make([]*pb.Edge, 0, len(edges))
+	for _, edge := range edges {
+		tail, head := "data:"+edge.Tail, "data:"+edge.Head
+		for _, key := range []string{tail, head} {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if _, exists := f.graph.GetVertex(key); !exists {
+				missing = append(missing, &pb.Vertex{Key: key, Expiration: edge.Expiration})
+			}
+		}
+		physical = append(physical, &pb.Edge{Tail: tail, Head: head, Weight: edge.Weight, Expiration: edge.Expiration})
+	}
+	if len(missing) > 0 {
+		if _, err := f.seedExecutor.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: missing}); err != nil {
+			t.Fatalf("seed edge endpoints: %v", err)
+		}
+	}
+	if _, err := f.seedExecutor.AddEdges(t.Context(), &pb.AddEdgesRequest{Edges: physical}); err != nil {
+		t.Fatalf("seed edges: %v", err)
+	}
 }
 
 type oidcWireCode struct {
@@ -289,14 +329,16 @@ func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBoot
 	if durableReceipts {
 		durable := durableReceiptWireConfig(filepath.Join(dir, "receipts.wal"), hlc.NodeID{8})
 		durable.NamespaceFormat = "namespaced-v1"
+		f.seedTTL = durable.DefaultTTL
 		durable.ConfigureGraph = configureGraph
-		data, err = service.CreateDurableReceiptWALServingRuntime(durable)
+		data, err = service.OpenReceiptDatabase(t.Context(), durable, true)
 	} else {
-		graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		f.seedTTL = time.Minute
+		graph := graphcache.NewGraphCache[string, *pb.Vertex](f.seedTTL)
 		if err := configureGraph(graph); err != nil {
 			t.Fatal(err)
 		}
-		data, err = service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{8}, hlc.Options{}), "namespaced-v1")
+		data, err = service.OpenGraphDatabase(t.Context(), filepath.Join(dir, "graph"), hlc.NodeID{8}, graph, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -327,6 +369,7 @@ func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBoot
 		WithScanLimits(service.ScanLimits(startup.Scan)).
 		WithTraversalTimeout(startup.Traversal.Timeout).
 		WithTraversalLimits(service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: startup.Traversal.MaxPushes, MaxTouchedEdges: startup.Traversal.MaxTouchedEdges}, MaxResults: startup.Traversal.MaxResults})
+	f.seedExecutor = dataService
 	dataService.WithSearchLimits(capturedOperationalSearchLimits(t, startup.Search, dataService.SearchPolicyBaseline()))
 	if durableReceipts {
 		dataService.WithTombstoneTTL(time.Hour)
@@ -335,18 +378,14 @@ func newAuthorityWireFixtureSeeded(t *testing.T, configure func(*oidcFixtureBoot
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := provider.NewRuntimeRestored(data, dataService)
-	if err != nil {
-		t.Fatal(err)
-	}
 	limits := provider.NetConfig{MaxRecvMsgBytes: 8 << 20, MaxSendMsgBytes: 8 << 20, MaxConcurrentStreams: 16}
-	certified, err := provider.NewRuntimeCertified(data, dataService, peer, restored, limits)
+	certified, err := provider.NewRuntimeCertified(data, dataService, peer, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptConfig := provider.ReceiptWALConfig{Mode: provider.ReceiptWALModeGraphOnly}
+	receiptConfig := provider.ReceiptConfig{Mode: provider.ReceiptModeGraphOnly}
 	if durableReceipts {
-		receiptConfig.Mode = provider.ReceiptWALModeFresh
+		receiptConfig.Mode = provider.ReceiptModeFresh
 	}
 	// Destination and restore selection are isolated external fixture inputs.
 	// The production values retain the same captured startup provenance.

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -29,7 +28,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 		return errors.New("compose requires three nodes")
 	}
 	for _, node := range result.Nodes {
-		mode := node.Environment["LANTERN_RECEIPT_WAL_MODE"]
+		mode := node.Environment["LANTERN_RECEIPT_MODE"]
 		if (mode == "" || mode == "graph-only") && node.Environment["LANTERN_AUTH_MODE"] != "oidc" {
 			for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"} {
 				if node.Environment[key] == "" {
@@ -71,16 +70,15 @@ func exportComposeFixture(result *fixture, dir string) error {
 			delete(env, "LANTERN_TLS_KEY_FILE")
 			node.PublicOrigin = strings.Replace(node.PublicOrigin, "https://", "http://", 1)
 		}
-		if mode := env["LANTERN_RECEIPT_WAL_MODE"]; mode == "" || mode == "graph-only" {
+		env["LANTERN_DATA_DIR"] = "/state/graph"
+		if mode := env["LANTERN_RECEIPT_MODE"]; mode == "" || mode == "graph-only" {
 			// The matching graph overlay owns this container-private directory.
 			// Translate before the generic file-copy loop: scratch storage is
 			// never host configuration material or part of its read-only mount.
 			if env["LANTERN_AUTH_MODE"] != "oidc" {
 				env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = composeGraphSnapshotSpoolDirectory
 			}
-			delete(env, "LANTERN_RECEIPT_WAL_PATH")
 		} else {
-			env["LANTERN_RECEIPT_WAL_PATH"] = "/state/receipts.wal"
 			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR")
 			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES")
 			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES")
@@ -321,16 +319,9 @@ func prepareComposeRestart(dir, service string) error {
 	if env["LANTERN_AUTH_MODE"] != "oidc" {
 		env["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
 	}
-	if env["LANTERN_RECEIPT_WAL_MODE"] == "fresh" {
-		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"
-	} else {
-		// A retained workload identity does not prove ephemeral application log
-		// continuity. Give graph-only restart a new origin even with durable sys.
-		nodeID, err := randomID()
-		if err != nil {
-			return err
-		}
-		env["LANTERN_NODE_ID"] = hex.EncodeToString(nodeID[:])
+	if env["LANTERN_RECEIPT_MODE"] == "fresh" {
+		env["LANTERN_RECEIPT_MODE"] = "restart"
+
 	}
 	if metadata.Nodes[index].StartupFile != "" {
 		raw, err := os.ReadFile(metadata.Nodes[index].StartupFile)

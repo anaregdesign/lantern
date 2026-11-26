@@ -3,13 +3,13 @@ package integration_test
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -139,9 +139,9 @@ func TestReceiptReadSurface_RealConnectWire(t *testing.T) {
 	}
 }
 
-func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.DurableReceiptWALRuntimeConfig {
+func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.ReceiptDatabaseConfig {
 	now := time.Now()
-	return service.DurableReceiptWALRuntimeConfig{
+	return service.ReceiptDatabaseConfig{
 		Path: path,
 		Receipt: mutationreceipt.Config{
 			Epoch:          mutationreceipt.Epoch{0x42},
@@ -301,7 +301,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x31})
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestDurableReceiptSnapshot_RetiredUnionTailAndRestartRealConnectWire(t *tes
 		[]byte("local"),
 	)
 
-	sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+	sourceRuntime, err := service.OpenReceiptDatabase(t.Context(), sourceConfig, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestDurableReceiptSnapshot_RetiredUnionTailAndRestartRealConnectWire(t *tes
 	defer closeDurableReceiptWireRuntime(t, source, sourceSDK, sourceRuntime)
 	installRuntimeRetiredEvidence(t, ctx, sourceRuntime, source, incoming)
 
-	targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+	targetRuntime, err := service.OpenReceiptDatabase(t.Context(), targetConfig, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +524,7 @@ func TestDurableReceiptSnapshot_RetiredUnionTailAndRestartRealConnectWire(t *tes
 	targetClosed = true
 	targetConfig.Now = time.Now()
 	targetConfig.Receipt.ClockHighWater = targetConfig.Now
-	restartedRuntime, err := service.OpenDurableReceiptWALServingRuntime(targetConfig)
+	restartedRuntime, err := service.OpenReceiptDatabase(t.Context(), targetConfig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +611,7 @@ func TestDurableReceiptSnapshot_RetiredUnionRejectsBeforeMutationRealConnectWire
 				tc.targetResult,
 			)
 
-			sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+			sourceRuntime, err := service.OpenReceiptDatabase(t.Context(), sourceConfig, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -622,7 +622,7 @@ func TestDurableReceiptSnapshot_RetiredUnionRejectsBeforeMutationRealConnectWire
 				t.Fatal(err)
 			}
 
-			targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+			targetRuntime, err := service.OpenReceiptDatabase(t.Context(), targetConfig, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -694,8 +694,8 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	walPath := filepath.Join(t.TempDir(), "receipts.wal")
 	backupDir := t.TempDir()
 	t.Setenv("LANTERN_STRICT_CONFIG", "false")
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "fresh")
-	t.Setenv("LANTERN_RECEIPT_WAL_PATH", walPath)
+	t.Setenv("LANTERN_RECEIPT_MODE", "fresh")
+	t.Setenv("LANTERN_DATA_DIR", walPath)
 	t.Setenv("LANTERN_RECEIPT_EPOCH", strings.Repeat("42", 16))
 	t.Setenv("LANTERN_RECEIPT_RETENTION", "1h")
 	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "32")
@@ -717,7 +717,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	}
 
 	runtime, cleanup, err := provider.NewServingRuntime(
-		cfg.ReceiptWAL,
+		cfg.Receipts,
 		cfg.Cache,
 		cfg.Search,
 		cfg.MutationLog,
@@ -736,28 +736,24 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := provider.NewRuntimeRestored(runtime, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
 	certified, err := provider.NewRuntimeCertified(
 		runtime,
 		primary,
 		replicationService,
-		restored,
 		provider.NetConfig{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var audit bytes.Buffer
 	backupper, err := provider.NewBackupper(
 		cfg.Backup,
-		cfg.ReceiptWAL,
+		cfg.Receipts,
 		runtime,
 		primary,
 		certified,
 		prometheus.NewRegistry(),
-		nil,
+		slog.New(slog.NewJSONHandler(&audit, nil)),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -796,104 +792,35 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		outcome != client.PutOutcomeAppliedAndLive {
 		t.Fatalf("wire PutVertex = (%v, %v)", outcome, err)
 	}
-	source, policy, err := runtime.ReceiptWholeStateBackupSource(primary, replicationService)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected, err := source.CaptureForBackup(ctx, policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if expected.WALTip.Seq == 0 {
-		t.Fatal("wire mutation did not advance the durable WAL")
-	}
-
-	evidence, manifestPath := waitForDurableReceiptBackupSet(
-		t,
-		ctx,
-		backupDir,
-		cfg.Backup.InstanceID,
-	)
-	if evidence.NodeID != expected.NodeID ||
-		evidence.Generation != expected.Generation ||
-		evidence.WALCut != expected.WALTip {
-		t.Fatalf(
-			"loaded durable evidence identity/cut = %x/%x/%+v, want %x/%x/%+v",
-			evidence.NodeID,
-			evidence.Generation,
-			evidence.WALCut,
-			expected.NodeID,
-			expected.Generation,
-			expected.WALTip,
-		)
-	}
-	if evidence.SetID == 0 || evidence.BackupTimestamp.IsZero() ||
-		evidence.Stats.Vertices != 1 || evidence.Stats.Members != 3 ||
-		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 ||
-		len(evidence.RetiredCatalog) == 0 {
-		t.Fatalf("loaded durable backup evidence = %+v", evidence)
-	}
 	if err := stopAndJoin(); err != nil {
-		t.Fatalf("stop durable backup scheduler: %v", err)
+		t.Fatal(err)
 	}
-	for _, entry := range mustReadDir(t, backupDir) {
-		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
-			t.Fatalf("durable scheduler emitted legacy/temporary path %q", entry.Name())
-		}
+	cleanup()
+	cfg.Cache.DataDir = filepath.Join(t.TempDir(), "restored")
+	cfg.Receipts.Mode = provider.ReceiptModeRestart
+	cfg.Backup.RestoreOnStart = true
+	cfg.Backup.RestoreRequired = true
+	if _, cleanup, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil); err == nil {
+		cleanup()
+		t.Fatal("receipt restart resumed an unwitnessed backup")
 	}
-	if filepath.Ext(manifestPath) != ".json" {
-		t.Fatalf("loaded manifest path = %q", manifestPath)
-	}
-}
-
-func waitForDurableReceiptBackupSet(
-	t *testing.T,
-	ctx context.Context,
-	dir, instance string,
-) (backup.ReceiptBackupSetEvidence, string) {
-	t.Helper()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	var lastErr error
-	for {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			lastErr = err
-		} else {
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".set.json") {
-					continue
-				}
-				manifestPath := filepath.Join(dir, entry.Name())
-				evidence, loadErr := backup.LoadReceiptBackupSet(dir, instance, manifestPath)
-				if loadErr == nil && evidence.Stats.Vertices == 1 {
-					return evidence, manifestPath
-				}
-				if loadErr != nil {
-					lastErr = loadErr
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for complete durable receipt backup set: %v (last validation: %v)", ctx.Err(), lastErr)
-		case <-ticker.C:
-		}
-	}
-}
-
-func mustReadDir(t *testing.T, path string) []os.DirEntry {
-	t.Helper()
-	entries, err := os.ReadDir(path)
+	restoreFinalPoint(t, ctx, audit.Bytes(), cfg.Backup, cfg.Cache.DataDir, runtime.NodeID())
+	restoredRuntime, closeRestore, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return entries
+	defer closeRestore()
+	restoredService := restoredRuntime.NewExecutor(nil)
+	restoredServer := newConnectTestServer(t, restoredService, nil)
+	got, err := newConnectClientFor(t, restoredServer.url).GetVertex(ctx, "durable/backup-wire")
+	if err != nil || got.GetString_() != "persisted" || restoredService.LocalSeq(runtime.NodeID()) != 1 || restoredRuntime.NodeID() != runtime.NodeID() {
+		t.Fatalf("restored graph or replication cut differs: %v, %v", got, err)
+	}
 }
 
 func newDurableReceiptSnapshotInstaller(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	target *connectTestServer,
 ) *backup.ReceiptSnapshotInstaller {
 	t.Helper()
@@ -902,7 +829,7 @@ func newDurableReceiptSnapshotInstaller(
 
 func newDurableReceiptSnapshotInstallerWithTarget(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	target backup.ReceiptSnapshotInstallTarget,
 ) *backup.ReceiptSnapshotInstaller {
 	t.Helper()
@@ -916,7 +843,7 @@ func newDurableReceiptSnapshotInstallerWithTarget(
 
 func newDurableReceiptSnapshotInstallerWithTargetLimits(
 	t *testing.T,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	target backup.ReceiptSnapshotInstallTarget,
 	limits backup.ReceiptSnapshotCollectorLimits,
 ) *backup.ReceiptSnapshotInstaller {
@@ -949,7 +876,7 @@ func startDurableReceiptPump(
 	t *testing.T,
 	parent context.Context,
 	name string,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	targetRuntime *service.ServingRuntime,
 	target *connectTestServer,
 	sourceURL string,
@@ -965,7 +892,7 @@ func startDurableReceiptPumpWithApplier(
 	t *testing.T,
 	parent context.Context,
 	name string,
-	config service.DurableReceiptWALRuntimeConfig,
+	config service.ReceiptDatabaseConfig,
 	targetRuntime *service.ServingRuntime,
 	target *connectTestServer,
 	source replicationTestPeer,
@@ -1390,7 +1317,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireOutOfOrderDuplicatePump(t *test
 	defer cancel()
 
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "target.wal"), hlc.NodeID{0x64})
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1503,7 +1430,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "target.wal"), hlc.NodeID{0x65})
 	config.Receipt.MaxEntries = 1
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1661,7 +1588,7 @@ func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 
 	aConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "a.wal"), hlc.NodeID{0x61})
 	aConfig.Log.Capacity = 3
-	aRuntime, err := service.CreateDurableReceiptWALServingRuntime(aConfig)
+	aRuntime, err := service.OpenReceiptDatabase(t.Context(), aConfig, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1669,7 +1596,7 @@ func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 	defer closeDurableReceiptWireRuntime(t, a, aSDK, aRuntime)
 
 	bConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "b.wal"), hlc.NodeID{0x62})
-	bRuntime, err := service.CreateDurableReceiptWALServingRuntime(bConfig)
+	bRuntime, err := service.OpenReceiptDatabase(t.Context(), bConfig, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1777,7 +1704,7 @@ func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 	cConfig.Path = filepath.Join(t.TempDir(), "c.wal")
 	cConfig.NodeID = hlc.NodeID{0x63}
 	cConfig.Log.Capacity = 16
-	cRuntime, err := service.CreateDurableReceiptWALServingRuntime(cConfig)
+	cRuntime, err := service.OpenReceiptDatabase(t.Context(), cConfig, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1845,27 +1772,21 @@ func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 	}
 	stopCB()
 
-	generation, err := os.ReadFile(cConfig.Path + ".generation")
-	if err != nil {
-		t.Fatal(err)
-	}
+	generation := storageWitness(t, cRuntime).ReceiptGeneration
 	beforeRestartLength, beforeRestartCapacity, beforeRestartEvicted := cRuntime.MutationLogStats()
 	closeDurableReceiptWireRuntime(t, c, cSDK, cRuntime)
 	cClosed = true
 
 	cConfig.Now = time.Now()
 	cConfig.Receipt.ClockHighWater = cConfig.Now
-	restartedRuntime, err := service.OpenDurableReceiptWALServingRuntime(cConfig)
+	restartedRuntime, err := service.OpenReceiptDatabase(t.Context(), cConfig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	restarted, restartedSDK := mountDurableReceiptWireRuntime(t, restartedRuntime)
 	defer closeDurableReceiptWireRuntime(t, restarted, restartedSDK, restartedRuntime)
-	restartedGeneration, err := os.ReadFile(cConfig.Path + ".generation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(restartedGeneration, generation) {
+	restartedGeneration := storageWitness(t, restartedRuntime).ReceiptGeneration
+	if restartedGeneration != generation {
 		t.Fatal("C durable receipt restart changed generation bytes")
 	}
 	if length, capacity, evicted := restartedRuntime.MutationLogStats(); length != beforeRestartLength ||
@@ -1928,7 +1849,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 				hlc.NodeID{0x51},
 			)
 			sourceConfig.Log.Capacity = 2
-			sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+			sourceRuntime, err := service.OpenReceiptDatabase(t.Context(), sourceConfig, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1960,7 +1881,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			targetConfig := sourceConfig
 			targetConfig.Path = filepath.Join(t.TempDir(), "target.wal")
 			targetConfig.NodeID = hlc.NodeID{0x52}
-			targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+			targetRuntime, err := service.OpenReceiptDatabase(t.Context(), targetConfig, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2067,395 +1988,11 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 	}
 }
 
-// TestDurableReceiptWALRuntime_RealConnectWireRecovery is the external-surface
-// gate for ordinary restart plus same-epoch backup repair and fresh
-// total-cluster restore. Public writes and post-restore reads traverse h2c.
-func TestDurableReceiptWALRuntime_RealConnectWireRecovery(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	path := filepath.Join(t.TempDir(), "receipts.wal")
-	nodeID := hlc.NodeID{0x31}
-	config := durableReceiptWireConfig(path, nodeID)
-
-	fresh, err := service.CreateDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("startup restore", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-
-		root := t.TempDir()
-		sourcePath := filepath.Join(root, "source.wal")
-		backupDir := filepath.Join(root, "backups")
-		instance := "startup-restore-wire"
-		sourceConfig := durableReceiptWireConfig(sourcePath, hlc.NodeID{0x61})
-		sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sourceServer, sourceSDK := mountDurableReceiptWireRuntime(t, sourceRuntime)
-		if outcome, err := sourceSDK.PutVertex(
-			ctx,
-			"startup/restore",
-			"restored over h2c",
-			time.Hour,
-		); err != nil || outcome != client.PutOutcomeAppliedAndLive {
-			closeDurableReceiptWireRuntime(
-				t,
-				sourceServer,
-				sourceSDK,
-				sourceRuntime,
-			)
-			t.Fatalf("source wire PutVertex = (%v, %v)", outcome, err)
-		}
-		source, policy, err := sourceRuntime.ReceiptWholeStateBackupSource(
-			sourceServer.svc,
-			sourceServer.rep,
-		)
-		if err != nil {
-			closeDurableReceiptWireRuntime(
-				t,
-				sourceServer,
-				sourceSDK,
-				sourceRuntime,
-			)
-			t.Fatal(err)
-		}
-		capture, err := source.Capture(ctx, policy)
-		if err != nil {
-			closeDurableReceiptWireRuntime(
-				t,
-				sourceServer,
-				sourceSDK,
-				sourceRuntime,
-			)
-			t.Fatal(err)
-		}
-		if err := sourceServer.svc.InstallReceiptBaseline(ctx, capture); err != nil {
-			closeDurableReceiptWireRuntime(
-				t,
-				sourceServer,
-				sourceSDK,
-				sourceRuntime,
-			)
-			t.Fatal(err)
-		}
-		backupConfig := backup.Config{
-			Enabled: true, Dir: backupDir, Interval: time.Hour,
-			Retain: 3, InstanceID: instance,
-		}
-		backupper, err := backup.NewReceipt(
-			sourceServer.svc,
-			source,
-			policy,
-			backupConfig,
-			nil,
-			nil,
-		)
-		if err != nil {
-			closeDurableReceiptWireRuntime(
-				t,
-				sourceServer,
-				sourceSDK,
-				sourceRuntime,
-			)
-			t.Fatal(err)
-		}
-		for i := 0; i < 2; i++ {
-			if _, err := backupper.BackupNow(ctx); err != nil {
-				closeDurableReceiptWireRuntime(
-					t,
-					sourceServer,
-					sourceSDK,
-					sourceRuntime,
-				)
-				t.Fatal(err)
-			}
-		}
-		if outcome, err := sourceSDK.PutVertex(
-			ctx,
-			"startup/post-backup-suffix",
-			"replayed only by restart",
-			time.Hour,
-		); err != nil || outcome != client.PutOutcomeAppliedAndLive {
-			closeDurableReceiptWireRuntime(
-				t,
-				sourceServer,
-				sourceSDK,
-				sourceRuntime,
-			)
-			t.Fatalf("source suffix PutVertex = (%v, %v)", outcome, err)
-		}
-		closeDurableReceiptWireRuntime(
-			t,
-			sourceServer,
-			sourceSDK,
-			sourceRuntime,
-		)
-
-		t.Run("restart repairs missing current baseline", func(t *testing.T) {
-			sidecars, err := filepath.Glob(sourcePath + ".receipt.*.baseline")
-			if err != nil || len(sidecars) != 1 {
-				t.Fatalf("source baseline sidecars = %v, %v; want one", sidecars, err)
-			}
-			if err := os.Remove(sidecars[0]); err != nil {
-				t.Fatal(err)
-			}
-			sourceConfig.Now = time.Now()
-			sourceConfig.Receipt.ClockHighWater = sourceConfig.Now
-			if current, err := service.OpenDurableReceiptWALServingRuntime(sourceConfig); current != nil ||
-				!errors.Is(err, service.ErrDurableReceiptWALBackupFallbackEligible) {
-				if current != nil {
-					_ = current.Close()
-				}
-				t.Fatalf("missing-sidecar normal restart = %p, %v", current, err)
-			}
-			evidence, err := backup.LoadLatestReceiptBackupSet(backupDir, instance)
-			if err != nil {
-				t.Fatal(err)
-			}
-			restore, err := backup.PrepareRestartReceiptStartupRestore(
-				evidence,
-				sourceConfig.Receipt,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			sourceConfig.StartupRestore = &restore
-			restarted, err := service.OpenDurableReceiptWALServingRuntimeFromBackup(
-				sourceConfig,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			restorePrimary := restarted.NewExecutor(nil).
-				WithTombstoneTTL(2 * time.Hour)
-			if err := restarted.CompleteStartupRestore(ctx, restorePrimary); err != nil {
-				_ = restarted.Close()
-				t.Fatal(err)
-			}
-			restartedServer, restartedSDK := mountDurableReceiptWireRuntime(t, restarted)
-			defer closeDurableReceiptWireRuntime(
-				t,
-				restartedServer,
-				restartedSDK,
-				restarted,
-			)
-			vertex, err := restartedSDK.GetVertex(ctx, "startup/restore")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if value, err := client.StringValue(vertex); err != nil ||
-				value != "restored over h2c" {
-				t.Fatalf("restart restored value = %q, %v", value, err)
-			}
-			suffix, err := restartedSDK.GetVertex(ctx, "startup/post-backup-suffix")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if value, err := client.StringValue(suffix); err != nil ||
-				value != "replayed only by restart" {
-				t.Fatalf("restart replayed suffix = %q, %v", value, err)
-			}
-		})
-
-		t.Run("fresh rotates active epoch", func(t *testing.T) {
-			evidence, err := backup.LoadLatestReceiptBackupSet(backupDir, instance)
-			if err != nil {
-				t.Fatal(err)
-			}
-			targetConfig := durableReceiptWireConfig(
-				filepath.Join(root, "fresh-target.wal"),
-				hlc.NodeID{0x62},
-			)
-			targetConfig.Receipt.Epoch[0] ^= 0xff
-			restore, err := backup.PrepareFreshReceiptStartupRestore(
-				evidence,
-				targetConfig.Receipt,
-				targetConfig.Now,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			targetConfig.StartupRestore = &restore
-			fresh, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
-			if err != nil {
-				t.Fatal(err)
-			}
-			restorePrimary := fresh.NewExecutor(nil).
-				WithTombstoneTTL(2 * time.Hour)
-			if err := fresh.CompleteStartupRestore(ctx, restorePrimary); err != nil {
-				_ = fresh.Close()
-				t.Fatal(err)
-			}
-			freshServer, freshSDK := mountDurableReceiptWireRuntime(t, fresh)
-			vertex, err := freshSDK.GetVertex(ctx, "startup/restore")
-			if err != nil {
-				closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
-				t.Fatal(err)
-			}
-			if value, err := client.StringValue(vertex); err != nil ||
-				value != "restored over h2c" {
-				closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
-				t.Fatalf("fresh restored value = %q, %v", value, err)
-			}
-			if _, err := freshSDK.GetVertex(
-				ctx,
-				"startup/post-backup-suffix",
-			); !errors.Is(err, client.ErrNotFound) {
-				closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
-				t.Fatalf("fresh restore included post-backup suffix: %v", err)
-			}
-			closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
-
-			targetConfig.StartupRestore = nil
-			targetConfig.Now = time.Now()
-			targetConfig.Receipt.ClockHighWater = targetConfig.Now
-			normal, err := service.OpenDurableReceiptWALServingRuntime(targetConfig)
-			if err != nil {
-				t.Fatal(err)
-			}
-			normalServer, normalSDK := mountDurableReceiptWireRuntime(t, normal)
-			defer closeDurableReceiptWireRuntime(
-				t,
-				normalServer,
-				normalSDK,
-				normal,
-			)
-			if _, err := normalSDK.GetVertex(ctx, "startup/restore"); err != nil {
-				t.Fatalf("fresh restore canonical restart: %v", err)
-			}
-		})
-
-		t.Run("corrupt newest never falls back", func(t *testing.T) {
-			archives, err := filepath.Glob(filepath.Join(backupDir, "*.active.lar"))
-			if err != nil || len(archives) != 2 {
-				t.Fatalf("backup archives = %v, %v; want two", archives, err)
-			}
-			sort.Strings(archives)
-			if err := os.WriteFile(archives[len(archives)-1], []byte("corrupt"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if evidence, err := backup.LoadLatestReceiptBackupSet(
-				backupDir,
-				instance,
-			); err == nil || evidence.SetID != 0 {
-				t.Fatalf("corrupt newest startup evidence = %+v, %v", evidence, err)
-			}
-		})
-	})
-	server, sdk := mountDurableReceiptWireRuntime(t, fresh)
-	for _, key := range []string{"durable/live", "durable/deleted"} {
-		if outcome, err := sdk.PutVertex(ctx, key, key, time.Hour); err != nil ||
-			outcome != client.PutOutcomeAppliedAndLive {
-			closeDurableReceiptWireRuntime(t, server, sdk, fresh)
-			t.Fatalf("PutVertex(%q) = (%v, %v)", key, outcome, err)
-		}
-	}
-	expiresAt := time.Now().Add(500 * time.Millisecond)
-	if outcome, err := sdk.PutVertexAt(ctx, "durable/expired", "expired", expiresAt); err != nil ||
-		outcome != client.PutOutcomeAppliedAndLive {
-		closeDurableReceiptWireRuntime(t, server, sdk, fresh)
-		t.Fatalf("PutVertexAt(expired) = (%v, %v)", outcome, err)
-	}
-	if existed, err := sdk.DeleteVertex(ctx, "durable/deleted"); err != nil || !existed {
-		closeDurableReceiptWireRuntime(t, server, sdk, fresh)
-		t.Fatalf("DeleteVertex = (%v, %v), want true, nil", existed, err)
-	}
-	if length, _, evicted := fresh.MutationLogStats(); length != 4 || evicted != 0 {
-		closeDurableReceiptWireRuntime(t, server, sdk, fresh)
-		t.Fatalf("fresh mutation Log = len %d evicted %d, want 4, 0", length, evicted)
-	}
-	generation, err := os.ReadFile(path + ".generation")
-	if err != nil {
-		closeDurableReceiptWireRuntime(t, server, sdk, fresh)
-		t.Fatal(err)
-	}
-	closeDurableReceiptWireRuntime(t, server, sdk, fresh)
-	if wait := time.Until(expiresAt) + 10*time.Millisecond; wait > 0 {
-		time.Sleep(wait)
-	}
-
-	clockBeforeRejectedRestart, err := os.ReadFile(path + ".clock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrongNode := config
-	wrongNode.NodeID[0] ^= 0xff
-	wrongNode.Now = time.Now()
-	wrongNode.Receipt.ClockHighWater = wrongNode.Now
-	if runtime, err := service.OpenDurableReceiptWALServingRuntime(wrongNode); runtime != nil ||
-		err == nil || !strings.Contains(err.Error(), "generation binding mismatch") {
-		if runtime != nil {
-			_ = runtime.Close()
-		}
-		t.Fatalf("changed-NodeID restart = %p, %v", runtime, err)
-	}
-	clockAfterRejectedRestart, err := os.ReadFile(path + ".clock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(clockAfterRejectedRestart, clockBeforeRejectedRestart) {
-		t.Fatal("changed-NodeID restart modified the clock journal before rejection")
-	}
-
-	config.Now = time.Now()
-	config.Receipt.ClockHighWater = config.Now
-	restarted, err := service.OpenDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restartedGeneration, err := os.ReadFile(path + ".generation")
-	if err != nil {
-		_ = restarted.Close()
-		t.Fatal(err)
-	}
-	if !bytes.Equal(restartedGeneration, generation) {
-		_ = restarted.Close()
-		t.Fatal("same-epoch restart changed durable generation bytes")
-	}
-	restartedServer, restartedSDK := mountDurableReceiptWireRuntime(t, restarted)
-	defer closeDurableReceiptWireRuntime(t, restartedServer, restartedSDK, restarted)
-
-	vertex, err := restartedSDK.GetVertex(ctx, "durable/live")
-	if err != nil {
-		t.Fatalf("GetVertex(live): %v", err)
-	}
-	if value, err := client.StringValue(vertex); err != nil || value != "durable/live" {
-		t.Fatalf("recovered live value = %q, %v", value, err)
-	}
-	for _, key := range []string{"durable/deleted", "durable/expired"} {
-		if _, err := restartedSDK.GetVertex(ctx, key); !errors.Is(err, client.ErrNotFound) {
-			t.Fatalf("GetVertex(%q) after restart = %v, want ErrNotFound", key, err)
-		}
-	}
-	if length, _, evicted := restarted.MutationLogStats(); length != 4 || evicted != 0 {
-		t.Fatalf("restarted mutation Log = len %d evicted %d, want 4, 0", length, evicted)
-	}
-	status, err := newReplicationRawClient(t, restartedServer.url).PeerStatus(
-		ctx,
-		connect.NewRequest(&pb.PeerStatusRequest{}),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(status.Msg.GetSelfOrigin(), nodeID[:]) ||
-		len(status.Msg.GetOrigins()) != 1 ||
-		status.Msg.GetOrigins()[0].GetLastSeq() != 4 {
-		t.Fatalf("restarted PeerStatus = %+v", status.Msg)
-	}
-}
-
-// receiptProtocolWireServer is a lower-level real-Connect fixture. Explicit
-// receipt activation proves runtime/receipt mechanics, never public admission.
-// Current OFF/OIDC and workload authentication use their own selected fixtures.
 type receiptProtocolWireServer struct {
 	runtime *service.ServingRuntime
 	server  *connectTestServer
 	raw     graphv1connect.LanternServiceClient
-	config  service.DurableReceiptWALRuntimeConfig
+	config  service.ReceiptDatabaseConfig
 }
 
 func newReceiptProtocolWireServer(t *testing.T, nodeID hlc.NodeID, maxEntries int) receiptProtocolWireServer {
@@ -2468,21 +2005,21 @@ func newReceiptProtocolWireServerWithNet(t *testing.T, nodeID hlc.NodeID, maxEnt
 
 func newReceiptProtocolWireServerWithNetAndTombstoneTTL(t *testing.T, nodeID hlc.NodeID, maxEntries int, netConfig provider.NetConfig, tombstoneTTL time.Duration) receiptProtocolWireServer {
 	runtime, config := newReceiptProtocolRuntime(t, nodeID, maxEntries)
-	return mountReceiptProtocolWireRuntime(t, runtime, config, netConfig, tombstoneTTL, provider.ReceiptWALModeFresh)
+	return mountReceiptProtocolWireRuntime(t, runtime, config, netConfig, tombstoneTTL, provider.ReceiptModeFresh)
 }
 
 func newUnactivatedReceiptProtocolWireServer(t *testing.T, nodeID hlc.NodeID, maxEntries int) receiptProtocolWireServer {
 	runtime, config := newReceiptProtocolRuntime(t, nodeID, maxEntries)
-	primary, peer := prepareReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeFresh)
+	primary, peer := prepareReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeFresh)
 	// Deliberately do not activate receipts. Credential absence is not a policy.
 	return serveReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, primary, peer)
 }
 
-func newReceiptProtocolRuntime(t *testing.T, nodeID hlc.NodeID, maxEntries int) (*service.ServingRuntime, service.DurableReceiptWALRuntimeConfig) {
+func newReceiptProtocolRuntime(t *testing.T, nodeID hlc.NodeID, maxEntries int) (*service.ServingRuntime, service.ReceiptDatabaseConfig) {
 	t.Helper()
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), nodeID)
 	config.Receipt.MaxEntries = maxEntries
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2490,7 +2027,7 @@ func newReceiptProtocolRuntime(t *testing.T, nodeID hlc.NodeID, maxEntries int) 
 	return runtime, config
 }
 
-func mountReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.DurableReceiptWALRuntimeConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptWALMode) receiptProtocolWireServer {
+func mountReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.ReceiptDatabaseConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptMode) receiptProtocolWireServer {
 	t.Helper()
 	primary, peer := prepareReceiptProtocolWireRuntime(t, runtime, config, netConfig, tombstoneTTL, mode)
 	if err := runtime.ActivatePublicReceipts(primary, peer); err != nil {
@@ -2499,7 +2036,7 @@ func mountReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRunti
 	return serveReceiptProtocolWireRuntime(t, runtime, config, netConfig, primary, peer)
 }
 
-func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.DurableReceiptWALRuntimeConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptWALMode) (*service.LanternService, *service.LanternReplicationService) {
+func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.ReceiptDatabaseConfig, netConfig provider.NetConfig, tombstoneTTL time.Duration, mode provider.ReceiptMode) (*service.LanternService, *service.LanternReplicationService) {
 	t.Helper()
 	primary := runtime.NewExecutor(nil).WithTombstoneTTL(tombstoneTTL)
 	peer, err := runtime.NewReplication(primary)
@@ -2507,26 +2044,22 @@ func prepareReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRun
 		t.Fatal(err)
 	}
 	peer.WithSearchConfig(primary)
-	restored, err := provider.NewRuntimeRestored(runtime, primary)
+	certified, err := provider.NewRuntimeCertified(runtime, primary, peer, netConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	certified, err := provider.NewRuntimeCertified(runtime, primary, peer, restored, netConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	receiptConfig := provider.ReceiptWALConfig{
-		Mode: mode, Path: config.Path,
+	receiptConfig := provider.ReceiptConfig{
+		Mode:  mode,
 		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
 		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
 	}
-	if _, err := provider.NewBackupper(backup.Config{}, receiptConfig, runtime, primary, certified, prometheus.NewRegistry(), nil); err != nil {
+	if _, err := provider.NewBackupper(backup.Config{NamespaceFormat: runtime.DataNamespaceFormat()}, receiptConfig, runtime, primary, certified, prometheus.NewRegistry(), nil); err != nil {
 		t.Fatal(err)
 	}
 	return primary, peer
 }
 
-func serveReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.DurableReceiptWALRuntimeConfig, netConfig provider.NetConfig, primary *service.LanternService, peer *service.LanternReplicationService) receiptProtocolWireServer {
+func serveReceiptProtocolWireRuntime(t *testing.T, runtime *service.ServingRuntime, config service.ReceiptDatabaseConfig, netConfig provider.NetConfig, primary *service.LanternService, peer *service.LanternReplicationService) receiptProtocolWireServer {
 	t.Helper()
 	server := newConnectTestServerWithOptions(t, primary, peer,
 		connect.WithReadMaxBytes(netConfig.MaxRecvMsgBytes),
@@ -2564,13 +2097,8 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 				Tail: fmt.Sprintf("replication-frame-tail-%02d-%s", i, strings.Repeat("t", 96)),
 				Head: fmt.Sprintf("replication-frame-head-%02d-%s", i, strings.Repeat("h", 96)),
 			}
-			wire.runtime.GraphCache().AddEdgeWithExpiration(
-				edges[i].GetTail(),
-				edges[i].GetHead(),
-				1,
-				time.Now().Add(time.Hour),
-			)
 		}
+		putReceiptProtocolEdges(t, wire.raw, edges...)
 		request := &pb.DeleteEdgesRequest{
 			Edges:          edges,
 			ReceiptContext: receiptContext,
@@ -2589,7 +2117,7 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 		stream, err := newReplicationRawClient(t, call.wire.server.url).Subscribe(
 			context.Background(),
 			connect.NewRequest(&pb.SubscribeRequest{
-				FromLocalSeq:           1,
+				FromLocalSeq:           storageWitness(t, call.wire.runtime).LocalSeq,
 				AcceptReceiptEnvelopes: true,
 			}),
 		)
@@ -2624,11 +2152,8 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 	}
 
 	rejected := prepare(frameSize-1, 0x66)
-	beforeWAL, err := os.Stat(rejected.wire.config.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = rejected.wire.raw.DeleteEdges(
+	beforeCut := mutationCut(t, rejected.wire.runtime)
+	_, err := rejected.wire.raw.DeleteEdges(
 		context.Background(),
 		connect.NewRequest(rejected.request),
 	)
@@ -2649,18 +2174,14 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 	if stats := rejected.wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
 		t.Fatalf("rejected receipt mutation changed Store: %+v", stats)
 	}
-	if length, _, _ := rejected.wire.runtime.MutationLogStats(); length != 0 {
+	if length, _, _ := rejected.wire.runtime.MutationLogStats(); uint64(length) != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt mutation retained %d log entries", length)
 	}
-	if seq := rejected.wire.server.svc.LocalSeq(nodeID); seq != 0 {
+	if seq := rejected.wire.server.svc.LocalSeq(nodeID); seq != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt mutation advanced origin seq to %d", seq)
 	}
-	afterWAL, err := os.Stat(rejected.wire.config.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if afterWAL.Size() != beforeWAL.Size() {
-		t.Fatalf("rejected receipt mutation changed WAL size from %d to %d", beforeWAL.Size(), afterWAL.Size())
+	if after := mutationCut(t, rejected.wire.runtime); after != beforeCut {
+		t.Fatalf("rejected operation changed the durable mutation cut: before=%+v after=%+v", beforeCut, after)
 	}
 	status, err := rejected.wire.raw.GetReceiptStatus(
 		context.Background(),
@@ -2694,6 +2215,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
 		)
 		edges := make([]*pb.EdgeKey, itemCount)
+		var liveEdges []*pb.EdgeKey
 		for i := range edges {
 			key := fmt.Sprintf("receipt-relay-%02d-%s", i, strings.Repeat("k", 48))
 			edges[i] = &pb.EdgeKey{Tail: key, Head: "head"}
@@ -2704,8 +2226,9 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 				}
 				continue
 			}
-			wire.runtime.GraphCache().AddEdgeWithExpiration(key, "head", 1, time.Now().Add(time.Hour))
+			liveEdges = append(liveEdges, edges[i])
 		}
+		putReceiptProtocolEdges(t, wire.raw, liveEdges...)
 		result := call{
 			wire: wire,
 			request: &pb.DeleteEdgesRequest{
@@ -2730,7 +2253,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 		stream, err := newReplicationRawClient(t, wire.server.url).Subscribe(
 			ctx,
 			connect.NewRequest(&pb.SubscribeRequest{
-				FromLocalSeq: 1, AcceptReceiptEnvelopes: true,
+				FromLocalSeq: storageWitness(t, wire.runtime).LocalSeq, AcceptReceiptEnvelopes: true,
 			}),
 		)
 		if err != nil {
@@ -2771,11 +2294,8 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	rejected := prepare(sendLimit-1, 0x42)
 	beforeGraph := rejected.wire.runtime.GraphCache().SnapshotReplication()
 	canonicalizeReceiptWireGraph(&beforeGraph)
-	beforeWAL, err := os.Stat(rejected.wire.config.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = deleteCall(rejected)
+	beforeCut := mutationCut(t, rejected.wire.runtime)
+	err := deleteCall(rejected)
 	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
 		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
 		t.Fatalf("one-byte-under maximal relay frame = %v, want ResourceExhausted", err)
@@ -2793,18 +2313,14 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	if stats := rejected.wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
 		t.Fatalf("rejected receipt Delete changed Store: %+v", stats)
 	}
-	if length, _, _ := rejected.wire.runtime.MutationLogStats(); length != 0 {
+	if length, _, _ := rejected.wire.runtime.MutationLogStats(); uint64(length) != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt Delete retained %d log entries", length)
 	}
-	if seq := rejected.wire.server.svc.LocalSeq(origin); seq != 0 {
+	if seq := rejected.wire.server.svc.LocalSeq(origin); seq != beforeCut.LocalSeq {
 		t.Fatalf("rejected receipt Delete advanced origin seq to %d", seq)
 	}
-	afterWAL, err := os.Stat(rejected.wire.config.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if afterWAL.Size() != beforeWAL.Size() {
-		t.Fatalf("rejected receipt Delete changed WAL from %d to %d", beforeWAL.Size(), afterWAL.Size())
+	if after := mutationCut(t, rejected.wire.runtime); after != beforeCut {
+		t.Fatalf("rejected operation changed the durable mutation cut: before=%+v after=%+v", beforeCut, after)
 	}
 	operationID := rejected.request.GetReceiptContext().GetOperationIds()[0]
 	status, err := rejected.wire.raw.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{OperationId: operationID}))
@@ -2828,7 +2344,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 		follower.server, newVerifiedReplicationPeer(t, exact.wire.server), follower.server.svc, nil,
 	)
 	defer stopAB()
-	cut := map[string]uint64{hex.EncodeToString(origin[:]): 1}
+	cut := map[string]uint64{hex.EncodeToString(origin[:]): exact.wire.server.svc.LocalSeq(origin)}
 	waitForDurableReceiptCut(t, ctx, "dense follower", follower.server, follower.runtime, cut, 5*time.Second)
 	dense := readFrame(follower)
 	if !proto.Equal(dense, exactMaximal) || proto.Size(dense) != sendLimit {
@@ -2846,7 +2362,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	})); err != nil {
 		t.Fatalf("post-boundary mutation: %v", err)
 	}
-	cut[hex.EncodeToString(origin[:])] = 2
+	cut[hex.EncodeToString(origin[:])] = exact.wire.server.svc.LocalSeq(origin)
 	waitForDurableReceiptCut(t, ctx, "downstream after exact cap", downstream.server, downstream.runtime, cut, 5*time.Second)
 	if _, err := downstream.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "receipt-relay/after"})); err != nil {
 		t.Fatalf("Pump pinned at accepted receipt frame: %v", err)
@@ -3108,12 +2624,12 @@ func TestPublicEdgeAddReceipts_RealConnectWire(t *testing.T) {
 	restartConfig := wire.config
 	restartConfig.Now = time.Now()
 	restartConfig.Receipt.ClockHighWater = restartConfig.Now
-	restartedRuntime, err := service.OpenDurableReceiptWALServingRuntime(restartConfig)
+	restartedRuntime, err := service.OpenReceiptDatabase(t.Context(), restartConfig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeRestart)
 	restartedCapability := receiptProtocolCapability(t, restarted)
 	if !proto.Equal(restartedCapability.GetEndpoint(), originalEndpoint) {
 		t.Fatalf("receipt endpoint changed across restart: before=%+v after=%+v",
@@ -3631,12 +3147,12 @@ func TestPublicEdgeAddReceipts_ConfirmedThenExpiredStatus(t *testing.T) {
 	restartConfig := wire.config
 	restartConfig.Now = time.UnixMilli(int64(deadline) + 1)
 	restartConfig.Receipt.ClockHighWater = restartConfig.Now
-	restartedRuntime, err := service.OpenDurableReceiptWALServingRuntime(restartConfig)
+	restartedRuntime, err := service.OpenReceiptDatabase(t.Context(), restartConfig, false)
 	if err != nil {
 		t.Fatalf("reopen same epoch past confirmed deadline: %v", err)
 	}
 	t.Cleanup(func() { _ = restartedRuntime.Close() })
-	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptWALModeRestart)
+	restarted := mountReceiptProtocolWireRuntime(t, restartedRuntime, restartConfig, provider.NetConfig{}, 2*time.Hour, provider.ReceiptModeRestart)
 	restartedCapability := receiptProtocolCapability(t, restarted)
 	if !proto.Equal(restartedCapability.GetEndpoint(), capability.GetEndpoint()) {
 		t.Fatalf("restart changed receipt endpoint: before=%+v after=%+v",
@@ -3768,11 +3284,8 @@ func TestPublicReceiptEdgeAddRelayMaximalFrame_RealConnectWire(t *testing.T) {
 	rejected := prepare(sendLimit-1, 0x52)
 	beforeGraph := rejected.wire.runtime.GraphCache().SnapshotReplication()
 	canonicalizeReceiptWireGraph(&beforeGraph)
-	beforeWAL, err := os.Stat(rejected.wire.config.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = addCall(rejected)
+	beforeCut := mutationCut(t, rejected.wire.runtime)
+	err := addCall(rejected)
 	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
 		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
 		t.Fatalf("one-byte-under maximal Add relay frame = %v, want ResourceExhausted", err)
@@ -3790,13 +3303,8 @@ func TestPublicReceiptEdgeAddRelayMaximalFrame_RealConnectWire(t *testing.T) {
 		t.Fatalf("rejected receipt Add changed log or origin: len=%d seq=%d",
 			length, rejected.wire.server.svc.LocalSeq(origin))
 	}
-	afterWAL, err := os.Stat(rejected.wire.config.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if afterWAL.Size() != beforeWAL.Size() {
-		t.Fatalf("rejected receipt Add changed WAL from %d to %d",
-			beforeWAL.Size(), afterWAL.Size())
+	if after := mutationCut(t, rejected.wire.runtime); after != beforeCut {
+		t.Fatalf("rejected operation changed the durable mutation cut: before=%+v after=%+v", beforeCut, after)
 	}
 	status, err := rejected.wire.raw.GetReceiptStatus(
 		ctx,
@@ -4092,7 +3600,7 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 			filepath.Join(t.TempDir(), "receipts.wal"),
 			hlc.NodeID{0x50},
 		)
-		runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+		runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4233,7 +3741,11 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 			t.Fatalf("closed receipt mutation = %v, want FailedPrecondition", err)
 		}
-		requireReceiptProtocolEdge(t, closed.raw, protected)
+		if _, err := closed.raw.GetEdge(t.Context(), connect.NewRequest(&pb.GetEdgeRequest{Tail: protected.Tail, Head: protected.Head})); connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("closed database read: %v", err)
+		}
+		reopened := openClusterRecoveryReceiptProtocolServer(t, closed.config)
+		requireReceiptProtocolEdge(t, reopened.raw, protected)
 	})
 }
 
@@ -5662,7 +5174,7 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		}
 		return proto.Clone(stream.Msg()).(*pb.SubscribeResponse)
 	}
-	checkRejected := func(t *testing.T, wire receiptProtocolWireServer, receiptContext *pb.MutationReceiptContext, beforeWAL int64, origin hlc.NodeID) {
+	checkRejected := func(t *testing.T, wire receiptProtocolWireServer, receiptContext *pb.MutationReceiptContext, beforeCut service.TarpBackupWitness, origin hlc.NodeID) {
 		t.Helper()
 		if stats := wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
 			t.Fatalf("rejected Vertex receipt changed Store: %+v", stats)
@@ -5672,12 +5184,8 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 			t.Fatalf("rejected Vertex receipt changed log or origin: len=%d seq=%d",
 				length, wire.server.svc.LocalSeq(origin))
 		}
-		afterWAL, err := os.Stat(wire.config.Path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if afterWAL.Size() != beforeWAL {
-			t.Fatalf("rejected Vertex receipt changed WAL from %d to %d", beforeWAL, afterWAL.Size())
+		if after := mutationCut(t, wire.runtime); after != beforeCut {
+			t.Fatalf("rejected operation changed the durable mutation cut: before=%+v after=%+v", beforeCut, after)
 		}
 		status, err := wire.raw.GetReceiptStatus(
 			context.Background(),
@@ -5757,15 +5265,12 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		}
 
 		rejected, request := prepare(sendLimit-1, 0x32)
-		beforeWAL, err := os.Stat(rejected.config.Path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		beforeCut := mutationCut(t, rejected.runtime)
 		if _, err := put(rejected, request); connect.CodeOf(err) != connect.CodeResourceExhausted ||
 			!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
 			t.Fatalf("one-byte-under Vertex Put frame = %v, want ResourceExhausted", err)
 		}
-		checkRejected(t, rejected, request.GetReceiptContext(), beforeWAL.Size(), node)
+		checkRejected(t, rejected, request.GetReceiptContext(), beforeCut, node)
 		if _, err := rejected.raw.GetVertex(context.Background(),
 			connect.NewRequest(&pb.GetVertexRequest{Key: "frame/live"}),
 		); connect.CodeOf(err) != connect.CodeNotFound {
@@ -5843,15 +5348,12 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 			}
 
 			rejected, request := prepare(sendLimit-1, 0x35)
-			beforeWAL, err := os.Stat(rejected.config.Path)
-			if err != nil {
-				t.Fatal(err)
-			}
+			beforeCut := mutationCut(t, rejected.runtime)
 			if _, err := deleteVertices(rejected, request); connect.CodeOf(err) != connect.CodeResourceExhausted ||
 				!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
 				t.Fatalf("one-byte-under maximal Vertex Delete relay = %v, want ResourceExhausted", err)
 			}
-			checkRejected(t, rejected, request.GetReceiptContext(), beforeWAL.Size(), node)
+			checkRejected(t, rejected, request.GetReceiptContext(), beforeCut, node)
 			graph := rejected.runtime.GraphCache().SnapshotReplication()
 			if len(graph.Barriers.Vertices) != 1 || len(graph.Tombstones.Vertices) != 0 ||
 				len(graph.Graph.Vertices) != 0 {
@@ -6432,13 +5934,20 @@ func (c *initialMixedWireTransport) CloseIdleConnections() {
 	}
 }
 
+type mixedReceiptCut struct {
+	WholeState service.ReceiptWholeStateCapture
+	NodeID     hlc.NodeID
+	Generation [16]byte
+	Seq        uint64
+	Digest     [32]byte
+}
+
 type initialMixedWireState struct {
-	cut                    service.ReceiptWholeStateBackupCapture
+	cut                    mixedReceiptCut
 	graph                  graphcache.ReplicationSnapshot[string, *pb.Vertex]
 	stats                  mutationreceipt.Stats
 	logLength, logCapacity int
 	logEvicted             uint64
-	wal                    []byte
 }
 
 func captureInitialMixedWireState(ctx context.Context, wire receiptProtocolWireServer) (initialMixedWireState, error) {
@@ -6446,19 +5955,34 @@ func captureInitialMixedWireState(ctx context.Context, wire receiptProtocolWireS
 	if err != nil {
 		return initialMixedWireState{}, err
 	}
-	cut, err := source.CaptureForBackup(ctx, policy)
+	before, err := wire.runtime.GraphStore().Read()
 	if err != nil {
 		return initialMixedWireState{}, err
 	}
-	wal, err := os.ReadFile(wire.config.Path)
+	witness, err := wire.runtime.TarpBackupWitness(before.Snapshot, before.Generation)
+	if err := errors.Join(err, before.Close()); err != nil {
+		return initialMixedWireState{}, err
+	}
+	whole, err := source.Capture(ctx, policy)
 	if err != nil {
 		return initialMixedWireState{}, err
 	}
+	after, err := wire.runtime.GraphStore().Read()
+	if err != nil {
+		return initialMixedWireState{}, err
+	}
+	if err := after.Close(); err != nil {
+		return initialMixedWireState{}, err
+	}
+	if before.Revision != after.Revision {
+		return initialMixedWireState{}, errors.New("concurrent mutation during receipt capture")
+	}
+	cut := mixedReceiptCut{WholeState: whole, NodeID: witness.NodeID, Generation: witness.ReceiptGeneration, Seq: witness.LocalSeq, Digest: witness.Digest}
 	length, capacity, evicted := wire.runtime.MutationLogStats()
 	graph := wire.runtime.GraphCache().SnapshotReplication()
 	canonicalizeReceiptWireGraph(&graph)
 	return initialMixedWireState{cut: cut, graph: graph, stats: wire.runtime.ReceiptStats(),
-		logLength: length, logCapacity: capacity, logEvicted: evicted, wal: wal}, nil
+		logLength: length, logCapacity: capacity, logEvicted: evicted}, nil
 }
 
 // This proof is deliberately restricted to this fixture's empty initial cut.
@@ -6469,8 +5993,7 @@ func (s initialMixedWireState) emptyHeader() (*pb.SnapshotHeader, error) {
 	if len(frames) != 2 || frames[0].GetHeader() == nil || frames[1].GetFooter() == nil ||
 		!proto.Equal(frames[1].GetFooter(), &pb.SnapshotFooter{}) ||
 		s.cut.NodeID == (hlc.NodeID{}) || s.cut.Generation == ([16]byte{}) ||
-		s.cut.WALTip.Seq != 0 || s.cut.WALTip.Offset != int64(len(s.wal)) ||
-		s.cut.WALTip.SHA256 != sha256.Sum256(s.wal) ||
+		s.cut.Seq != 0 || s.cut.Digest != ([32]byte{}) ||
 		s.logLength != 0 || s.logCapacity <= 0 || s.logEvicted != 0 ||
 		len(s.cut.WholeState.Origins) != 0 || len(s.cut.WholeState.Receipts.Receipts) != 0 ||
 		len(s.cut.WholeState.Retired.Epochs) != 0 || s.stats.Entries != 0 || s.stats.Bytes != 0 ||
@@ -6500,8 +6023,8 @@ func unchangedInitialMixedWireState(before, after initialMixedWireState) error {
 	if err != nil {
 		return err
 	}
-	if before.cut.WALTip != after.cut.WALTip || before.cut.NodeID != after.cut.NodeID ||
-		before.cut.Generation != after.cut.Generation || !bytes.Equal(before.wal, after.wal) ||
+	if before.cut.Seq != after.cut.Seq || before.cut.Digest != after.cut.Digest || before.cut.NodeID != after.cut.NodeID ||
+		before.cut.Generation != after.cut.Generation ||
 		before.logLength != after.logLength || before.logCapacity != after.logCapacity || before.logEvicted != after.logEvicted ||
 		!reflect.DeepEqual(before.graph, after.graph) || !reflect.DeepEqual(before.cut.WholeState.Origins, after.cut.WholeState.Origins) {
 		return errors.New("mixed refusal changed WAL/graph/log/origin/runtime state")
@@ -6646,17 +6169,17 @@ func TestInitialMixedWireAdmissionProof(t *testing.T) {
 			t.Fatal(err)
 		}
 		node := hlc.NodeID{0x65}
-		wal := []byte("empty fixture WAL")
+
 		// CaptureForBackup returns intermediate graph frames; receipt metadata
 		// is attached only by the later PrepareReceiptSnapshotFrames step.
 		header := &pb.SnapshotHeader{CutoffHlc: &pb.HLCTimestamp{WallNs: highWater * int64(time.Millisecond), NodeId: node[:]},
 			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}
-		return initialMixedWireState{cut: service.ReceiptWholeStateBackupCapture{
+		return initialMixedWireState{cut: mixedReceiptCut{
 			WholeState: service.ReceiptWholeStateCapture{Graph: []*pb.SnapshotResponse{
 				{Entry: &pb.SnapshotResponse_Header{Header: header}}, {Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{}}},
 			}, Receipts: receipts, Retired: retired, Policy: policy},
-			WALTip: mutationlog.FileWALTipWitness{Offset: int64(len(wal)), SHA256: sha256.Sum256(wal)},
-			NodeID: node, Generation: [16]byte{1}}, stats: store.Stats(), logCapacity: 16, wal: wal}
+
+			NodeID: node, Generation: [16]byte{1}}, stats: store.Stats(), logCapacity: 16}
 	}
 	for _, tc := range []struct {
 		name      string
@@ -6775,8 +6298,7 @@ func TestInitialMixedWireAdmissionProof(t *testing.T) {
 					case "capture":
 						return initialMixedWireState{}, errors.New("capture failed")
 					case "wal":
-						s.wal[0]++
-						s.cut.WALTip.SHA256 = sha256.Sum256(s.wal)
+						s.cut.Digest[0]++
 					case "generation":
 						s.cut.Generation[0]++
 					case "accounting":
@@ -6861,7 +6383,7 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 		t.Fatal(first, err)
 	}
 	admitted, err := captureInitialMixedWireState(ctx, wire)
-	if err != nil || admitted.cut.WALTip.Seq != 1 || admitted.logLength != 1 || admitted.logEvicted != 0 ||
+	if err != nil || admitted.cut.Seq != 1 || admitted.logLength != 1 || admitted.logEvicted != 0 ||
 		len(admitted.cut.WholeState.Receipts.Receipts) != 3 || len(admitted.cut.WholeState.Origins) != 1 ||
 		admitted.cut.WholeState.Origins[0].LastSeq != 1 {
 		t.Fatal("initial SDK call did not publish exactly one complete group", err)
@@ -6898,15 +6420,12 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 			t.Fatal(status, err)
 		}
 	}
-	source, policy, err := wire.runtime.ReceiptWholeStateBackupSource(wire.server.svc, wire.server.rep)
+	captured, err := captureInitialMixedWireState(t.Context(), wire)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capture, err := source.CaptureForBackup(t.Context(), policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(capture.WholeState.Receipts.Receipts) != 3 || capture.WALTip.Seq != 1 || len(capture.WholeState.Origins) != 1 || capture.WholeState.Origins[0].LastSeq != 1 {
+	capture := captured.cut
+	if len(capture.WholeState.Receipts.Receipts) != 3 || capture.Seq != 1 || len(capture.WholeState.Origins) != 1 || capture.WholeState.Origins[0].LastSeq != 1 {
 		t.Fatal("incomplete mixed cut")
 	}
 	// Existing V4 whole-state archive validation must accept heterogeneous rows
@@ -6915,7 +6434,7 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := (backup.ReceiptBaselineCodec{}).StageCombinedReceiptBaseline(t.Context(), staged, policy, wire.config.DefaultTTL, wire.config.ConfigureGraph)
+	candidate, err := (backup.ReceiptBaselineCodec{}).StageCombinedReceiptBaseline(t.Context(), staged, capture.WholeState.Policy, wire.config.DefaultTTL, wire.config.ConfigureGraph)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6926,7 +6445,7 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 	if err := wire.runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := service.OpenDurableReceiptWALServingRuntime(wire.config)
+	recovered, err := service.OpenReceiptDatabase(t.Context(), wire.config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7075,7 +6594,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 	observe := func() (provider.PeerTimeObservation, error) {
 		return peerWireObservation{clockOwner, qualifiedUTC, qualifiedUTC, time.Since(began)}, nil
 	}
-	var configs [2]service.DurableReceiptWALRuntimeConfig
+	var configs [2]service.ReceiptDatabaseConfig
 	var durable [2]*service.ServingRuntime
 	var replicas [2]*service.LanternReplicationService
 	var source *nativeReceiptTailPeer
@@ -7100,7 +6619,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 				}
 			}
 			config.Now, config.Receipt.ClockHighWater = qualifiedUTC, qualifiedUTC
-			runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+			runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7391,7 +6910,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 	}
 	restartConfig := configs[1]
 	restartConfig.Now = time.Now()
-	restarted, err := service.OpenDurableReceiptWALServingRuntime(restartConfig)
+	restarted, err := service.OpenReceiptDatabase(t.Context(), restartConfig, false)
 	if err != nil {
 		t.Fatal("reopen follower FileWAL", err)
 	}
@@ -7438,4 +6957,49 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 		t.Fatal("rejected duplicate changed restarted frontier or Store")
 	}
 	t.Logf("native mTLS RECEIPT Snapshot cut%d + receipt tail%d..%d converged with one install/claim; queue_full=%t; FileWAL restart preserved graph/origins/results; no external time-source calls", seedWrites, seedWrites+1, seedWrites+tailWrites, queueFull)
+}
+
+func storageWitness(t testing.TB, rt *service.ServingRuntime) service.TarpBackupWitness {
+	t.Helper()
+	view, err := rt.GraphStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := rt.TarpBackupWitness(view.Snapshot, view.Generation)
+	if err := errors.Join(err, view.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// Receipt time advances independently during admission and status reads.
+func mutationCut(t testing.TB, rt *service.ServingRuntime) service.TarpBackupWitness {
+	t.Helper()
+	w := storageWitness(t, rt)
+	w.ReceiptHighWaterMillis = 0
+	return w
+}
+
+func restoreFinalPoint(t testing.TB, ctx context.Context, log []byte, cfg backup.Config, target string, node hlc.NodeID) {
+	t.Helper()
+	var point, hash string
+	for _, line := range bytes.Split(bytes.TrimSpace(log), []byte{'\n'}) {
+		var event struct {
+			Point string
+			Cut   string `json:"cut_sha256"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Point != "" {
+			point, hash = event.Point, event.Cut
+		}
+	}
+	digest, err := hex.DecodeString(hash)
+	if err != nil || len(digest) != 32 || point == "" || filepath.Base(point) != point {
+		t.Fatal("no witnessed backup")
+	}
+	if err := backup.RestoreGraphStore(ctx, filepath.Join(cfg.Dir, point), target, cfg.InstanceID, node, [32]byte(digest)); err != nil {
+		t.Fatal(err)
+	}
 }

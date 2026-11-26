@@ -52,17 +52,17 @@ func validateRetainedOriginResume(cursor, frontier map[string]uint64, retained [
 		}
 	}
 	for _, entry := range retained {
-		m, ok := graphMutationFromLog(entry.Op)
-		if !ok || len(m.GetOrigin()) != 16 || m.GetSeq() == 0 {
+		id, seq, ok := retainedOrigin(entry)
+		if !ok || seq == 0 {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("subscription found malformed log entry %d", entry.Seq))
 		}
-		origin := hex.EncodeToString(m.GetOrigin())
+		origin := hex.EncodeToString(id[:])
 		next, needed := need[origin]
-		if !needed || m.GetSeq() < cursorNext(cursor, origin) {
+		if !needed || seq < cursorNext(cursor, origin) {
 			continue
 		}
-		if m.GetSeq() != next {
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("gapped: origin %s needs seq %d, retained seq %d", origin, next, m.GetSeq()))
+		if seq != next {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("gapped: origin %s needs seq %d, retained seq %d", origin, next, seq))
 		}
 		need[origin] = next + 1
 	}

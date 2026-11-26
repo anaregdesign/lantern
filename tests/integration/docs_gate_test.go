@@ -2127,7 +2127,7 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 	for index := range 3 {
 		name := fmt.Sprintf("lantern-%d", index)
 		node, found := rendered.Services[name]
-		if !found || node.User != "65532:65532" || !node.ReadOnly || !reflect.DeepEqual(node.Entrypoint, []string{"/bin/sh", "/example/read-config.sh"}) || len(node.Command) != 0 || node.Environment["LANTERN_AUTH_MODE"] != "oidc" || node.Environment["LANTERN_RECEIPT_WAL_MODE"] != "restart" || node.Environment["LANTERN_RECEIPT_WAL_PATH"] != "/state/receipts.wal" || node.Environment["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" || len(node.Ports) != 0 {
+		if !found || node.User != "65532:65532" || !node.ReadOnly || !reflect.DeepEqual(node.Entrypoint, []string{"/bin/sh", "/example/read-config.sh"}) || len(node.Command) != 0 || node.Environment["LANTERN_AUTH_MODE"] != "oidc" || node.Environment["LANTERN_RECEIPT_MODE"] != "restart" || node.Environment["LANTERN_DATA_DIR"] != "/state/graph" || node.Environment["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" || len(node.Ports) != 0 {
 			t.Fatal("OIDC HA ordinary process lost its input/receipt/private diagnostic boundary", name)
 		}
 		for key := range node.Environment {

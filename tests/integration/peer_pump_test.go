@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,16 +41,17 @@ import (
 // helper the pre-#363 suite used; the migration to Connect is
 // observationally equivalent at the wire level.
 type pumpNode struct {
-	url    string // full http://host:port URL (used by pump dialer + replication client)
-	server *connectTestServer
-	cache  *graphcache.GraphCache[string, *pb.Vertex]
-	clock  *hlc.Clock
-	log    *mutationlog.Log
-	svc    *service.LanternService
-	sdk    *client.Lantern
-	raw    graphv1connect.LanternServiceClient
-	pump   *replication.Pump
-	nodeID hlc.NodeID
+	runtime *service.ServingRuntime
+	url     string // full http://host:port URL (used by pump dialer + replication client)
+	server  *connectTestServer
+	cache   *graphcache.GraphCache[string, *pb.Vertex]
+	clock   *hlc.Clock
+	log     *mutationlog.Log
+	svc     *service.LanternService
+	sdk     *client.Lantern
+	raw     graphv1connect.LanternServiceClient
+	pump    *replication.Pump
+	nodeID  hlc.NodeID
 }
 
 // This covers the owned-client bridge in isolation. The complete operator
@@ -207,11 +209,10 @@ func newCertifiedPumpNode(
 	maxSendBytes int,
 ) *pumpNode {
 	t.Helper()
-	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16})
-	clock := hlc.New(nodeID, hlc.Options{})
+	opts := mutationlog.Options{Capacity: 16, SubscriberBuffer: 16}
 	limits := productionSearchLimits(true, true)
 	cache := newProductionSearchCache(time.Minute, true, true, limits.AnalysisLimits)
-	runtime, err := service.NewGraphOnlyServingRuntime(cache, log, clock)
+	runtime, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "graph"), nodeID, cache, opts, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,14 +238,13 @@ func newCertifiedPumpNode(
 		connect.WithInterceptors(validation.ConnectInterceptor()),
 	)
 	return &pumpNode{
-		url:    server.url,
-		cache:  cache,
-		clock:  clock,
-		log:    log,
-		svc:    svc,
-		sdk:    newConnectClientFor(t, server.url),
-		raw:    graphv1connect.NewLanternServiceClient(h2cClient(), server.url),
-		nodeID: nodeID,
+		url:     server.url,
+		cache:   cache,
+		runtime: runtime,
+		svc:     svc,
+		sdk:     newConnectClientFor(t, server.url),
+		raw:     graphv1connect.NewLanternServiceClient(h2cClient(), server.url),
+		nodeID:  nodeID,
 	}
 }
 
@@ -314,7 +314,7 @@ func TestPumpIsNotPinnedByRejectedUnstreamableLocalMutation(t *testing.T) {
 	if _, ok := source.cache.GetVertex("too-large-to-replicate"); ok {
 		t.Fatal("rejected unstreamable mutation changed source graph")
 	}
-	if length := source.log.Len(); length != 0 {
+	if length, _, _ := source.runtime.MutationLogStats(); length != 0 {
 		t.Fatalf("rejected unstreamable mutation retained %d log entries", length)
 	}
 	if seq := source.svc.LocalSeq(sourceID); seq != 0 {
@@ -525,7 +525,7 @@ func TestFollowerRelayStreamsExactBoundaryAcrossMultipleHops_RealConnectWire(t *
 	if _, ok := tooSmall.cache.GetVertex("multi-hop-exact-frame"); ok {
 		t.Fatal("one-byte-oversize follower changed graph state")
 	}
-	if length := tooSmall.log.Len(); length != 0 {
+	if length, _, _ := tooSmall.runtime.MutationLogStats(); length != 0 {
 		t.Fatalf("one-byte-oversize follower retained %d log entries", length)
 	}
 	if seq := tooSmall.svc.LocalSeq(remoteOrigin); seq != 0 {
@@ -3027,7 +3027,7 @@ func TestPeerPump_SnapshotTailWireContinuity(t *testing.T) {
 				t.Fatal("native source header barrier not reached", ctx.Err())
 			}
 			put("tail")
-			first, _ := fixture.logs[0].FirstSeq()
+			first, _ := fixture.firstSeq(0)
 			if first != 13 {
 				t.Fatalf("native retained first=%d, want 13", first)
 			}
@@ -3193,7 +3193,7 @@ func TestPeerPump_SnapshotTailHandoffDuringInstall(t *testing.T) {
 					for index := range 8 {
 						put(fmt.Sprintf("data:tail-%d", index))
 					}
-					if first, _ := fixture.logs[0].FirstSeq(); first <= header.header.GetCutoffLocalSeq()+1 {
+					if first, _ := fixture.firstSeq(0); first <= header.header.GetCutoffLocalSeq()+1 {
 						t.Fatalf("tail was not actually evicted: first=%d cut=%d", first, header.header.GetCutoffLocalSeq())
 					}
 					header.release <- nil
@@ -4237,7 +4237,10 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 	for _, ringCapacity := range []int{4, 10000} {
 		t.Run(fmt.Sprintf("ring_%d", ringCapacity), func(t *testing.T) {
 
-			ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+			// Two overflow cycles each require 513 separately acknowledged disk
+			// commits. The pump and each native request retain their own
+			// original deadlines while the fixture drives these durable writes.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			sourceID := hlc.NodeID{3}
 			drops := make(chan struct{}, 4)
@@ -4377,7 +4380,7 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 						t.Fatal("513 writes did not trigger actual queue overflow", ctx.Err())
 					}
 				}
-				first, _ := fixture.logs[0].FirstSeq()
+				first, _ := fixture.firstSeq(0)
 				if cycle < 2 && (first <= header.header.GetCutoffLocalSeq()+1) != (ringCapacity == 10000) {
 					t.Fatalf("ring control capacity=%d first=%d captured_next=%d", ringCapacity, first, header.header.GetCutoffLocalSeq()+1)
 				}
@@ -4755,36 +4758,44 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		}
 	}
 	for source := range 2 {
-		// The observer projects no retained payload. Seeing seq10 and then
-		// joining its Close proves the single dispatcher completed fan-out of
-		// seq9 and seq10 to the pre-existing native reservation as well. Thus
-		// failure cleanup reclaims real charged frames, not only empty owners.
-		projected := make(chan struct{}, 1)
-		observer, err := fixture.logs[source].SubscribeTail(9, 2, func(entry mutationlog.Entry) (mutationlog.Entry, error) {
-			if entry.Seq == 10 {
-				select {
-				case projected <- struct{}{}:
-				default:
-				}
-			}
-			return mutationlog.Entry{Seq: entry.Seq, HLC: entry.HLC}, nil
-		})
+		// Register a second reader before either post-cut mutation and join its
+		// completed Subscribe call. Both mutations traversed the real live
+		// dispatcher while the original Snapshot reservation was owned.
+		observer, err := fixture.data[source].NewReplication(fixture.primary[source])
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = observer.Close() })
+		started := make(chan struct{}, 1)
+		observer.WithMetrics(&signalSubscribeMetrics{started: started})
+		finished := make(chan error, 1)
+		reached := errors.New("observed second post-cut frame")
+		go func() {
+			finished <- observer.Subscribe(ctx, &pb.SubscribeRequest{FromLocalSeq: 9, NamespaceFormat: "namespaced-v1"}, mixedRelayObserver(func(r *pb.SubscribeResponse) error {
+				if r.GetMutation().GetSeq() == 10 {
+					return reached
+				}
+				return nil
+			}))
+		}()
+		select {
+		case <-started:
+		case err := <-finished:
+			t.Fatal("observer registration failed", err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 		put(source, fmt.Sprintf("mutual-%d-tail-9", source))
 		put(source, fmt.Sprintf("mutual-%d-tail-10", source))
 		select {
-		case <-projected:
+		case err := <-finished:
+			if !errors.Is(err, reached) {
+				t.Fatal(err)
+			}
 		case <-ctx.Done():
 			t.Fatal("post-cut charged-frame barrier", ctx.Err())
 		}
-		if err := observer.Close(); err != nil {
-			t.Fatal(err)
-		}
-		first, hasFirst := fixture.logs[source].FirstSeq()
-		last, hasLast := fixture.logs[source].LastSeq()
+		first, hasFirst := fixture.firstSeq(source)
+		last, hasLast := fixture.lastSeq(source)
 		origin := hlc.NodeID{byte(source + 3)}
 		cut := cuts[source].header
 		if !hasFirst || !hasLast || first != 7 || last != 10 ||
@@ -4870,7 +4881,10 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		}
 	}
 	claimSources := []int{0, 1}
-	wantSnapshots := [2]int32{1, 1}
+	// Installing a Tarp generation closes its predecessor's relay ring. Each
+	// source must send exactly one replacement for an invalidated transfer
+	// or for sequences 9–10 missing from the ordinary resume cursor.
+	wantSnapshots := [2]int32{2, 2}
 	if !asymmetric {
 		for source := range 2 {
 			close(body[source])
@@ -4935,12 +4949,15 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		close(retry[1])
 		waitVerified(1)
 		claimSources = []int{1} // Source0's retry owns a new, valid reservation.
-		wantSnapshots[0] = 2
 	}
-	for receiver := range 2 {
-		close(stages[receiver].resume)
+	if asymmetric {
+		close(stages[1].resume) // Source0's replacement is already verified.
 	}
 	for _, source := range claimSources {
+		// Release one replacement at a time. Otherwise either receiver could
+		// invalidate its opposite transfer a second time at an unrelated cut.
+		receiver := 1 - source
+		close(stages[receiver].resume)
 		select {
 		case err := <-peers[source].claims:
 			if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "Snapshot tail unavailable") {
@@ -4957,6 +4974,11 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		case <-ctx.Done():
 			t.Fatal("mutual ordinary Subscribe resume", ctx.Err())
 		}
+		// The predecessor's relay ring was retired, so origin 9–10 require
+		// a replacement image. Release its verified installer before testing
+		// the new generation's ordinary live subscription.
+		waitVerified(receiver)
+		close(stages[receiver].resume)
 	}
 	for receiver := range 2 {
 		for origin := range 2 {

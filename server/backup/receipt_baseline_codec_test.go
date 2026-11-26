@@ -439,8 +439,8 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 		archive.Receipts.ClockHighWaterMillis,
 		0x75,
 	)
-	path := filepath.Join(t.TempDir(), "receipts.wal")
-	config := dataruntime.DurableReceiptWALRuntimeConfig{
+	path := filepath.Join(t.TempDir(), "graph")
+	config := dataruntime.ReceiptDatabaseConfig{
 		Path:       path,
 		Receipt:    archive.Policy,
 		Log:        mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
@@ -457,7 +457,7 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 		Now:           archive.Policy.ClockHighWater,
 		BaselineCodec: ReceiptBaselineCodec{},
 	}
-	runtime, err := dataruntime.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := dataruntime.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +499,7 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 	}
 
 	config.Now = archive.Policy.ClockHighWater
-	restarted, err := dataruntime.OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := dataruntime.OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,8 +582,8 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 		)
 		archive.Graph[len(archive.Graph)-1].GetFooter().EdgeTombstoneCount = 1
 
-		path := filepath.Join(t.TempDir(), "receipts.wal")
-		config := dataruntime.DurableReceiptWALRuntimeConfig{
+		path := filepath.Join(t.TempDir(), "graph")
+		config := dataruntime.ReceiptDatabaseConfig{
 			Path: path, Receipt: archive.Policy,
 			Log:        mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
 			DefaultTTL: time.Hour,
@@ -593,7 +593,7 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 			},
 			NodeID: hlc.NodeID{0x44}, Now: issued, BaselineCodec: ReceiptBaselineCodec{},
 		}
-		runtime, err := dataruntime.CreateDurableReceiptWALServingRuntime(config)
+		runtime, err := dataruntime.OpenReceiptDatabase(t.Context(), config, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -617,7 +617,7 @@ func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T)
 		}
 
 		config.Now = expiration.Add(time.Second)
-		restarted, err := dataruntime.OpenDurableReceiptWALServingRuntime(config)
+		restarted, err := dataruntime.OpenReceiptDatabase(t.Context(), config, false)
 		if err != nil {
 			t.Fatal(err)
 		}

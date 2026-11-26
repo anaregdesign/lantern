@@ -32,10 +32,13 @@ type GCSweepStats struct {
 // checks into one walk eliminates that O(E) snapshot allocation and roughly
 // halves the c.mu.Lock hold time on large graphs.
 func (c *GraphCache[S, T]) flush() (zero, dangling int) {
+	return c.flushAt(c.applicationTime())
+}
+
+func (c *GraphCache[S, T]) flushAt(now time.Time) (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
 	c.sweepExpiredTombstonesLocked(now)
 	c.sweepStaleVertexHLCLocked(now)
 
@@ -57,7 +60,7 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 			return live
 		}
 		key, ok := c.edges.resolveID(id)
-		live := ok && c.vertices.Has(key)
+		live := ok && c.vertices.HasAt(key, now)
 		liveByID[id] = live
 		return live
 	}
@@ -71,6 +74,9 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	onDelete := func(tailID, headID vertexID, w *weight) {
 		if tail, tailOK := c.edges.resolveID(tailID); tailOK {
 			if head, headOK := c.edges.resolveID(headID); headOK {
+				if c.storage != nil {
+					c.storage.pending.edges = append(c.storage.pending.edges, EdgeKey[S]{tail, head})
+				}
 				// Any physical bucket removal must retain its non-zero Put
 				// floor—not only TTL-zero removal. A zero-weight live Put,
 				// cancelling contributions, or dangling endpoint sweep can also
@@ -90,12 +96,12 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 		// that guarantees every expired/dangling edge is reclaimed each tick.
 		c.gcSweepPlan = nil
 		c.gcSweepPos = 0
-		zero, dangling, stats := c.edges.flushFunc(keep, onDelete)
+		zero, dangling, stats := c.edges.flushFuncAt(keep, onDelete, now)
 		stats.ZeroRemoved, stats.DanglingRemoved = zero, dangling
 		c.gcLastSweep = stats
 		return zero, dangling
 	}
-	return c.flushIncrementalLocked(keep, onDelete)
+	return c.flushIncrementalLocked(keep, onDelete, now)
 }
 
 // migrateExpiredVertexHLCToBarriersLocked moves a live Put watermark into the
@@ -167,6 +173,7 @@ func (c *GraphCache[S, T]) migrateExpiredEdgeHLCToBarriersLocked(now time.Time) 
 func (c *GraphCache[S, T]) flushIncrementalLocked(
 	keep func(tailID, headID vertexID) bool,
 	onDelete func(tailID, headID vertexID, w *weight),
+	now time.Time,
 ) (zero, dangling int) {
 	if c.gcSweepPos >= len(c.gcSweepPlan) {
 		c.gcSweepPlan = c.edges.tailIDs()
@@ -178,7 +185,7 @@ func (c *GraphCache[S, T]) flushIncrementalLocked(
 	batch := c.gcSweepPlan[c.gcSweepPos:end]
 	c.gcSweepPos = end
 	var stats GCSweepStats
-	zero, dangling, stats = c.edges.flushTails(batch, keep, onDelete)
+	zero, dangling, stats = c.edges.flushTails(batch, keep, onDelete, now)
 	if c.gcSweepPos >= len(c.gcSweepPlan) {
 		// Cycle consumed: drop the plan so its backing array can be GC'd and
 		// the next tick rebuilds the cursor against the current tail set.
@@ -307,9 +314,20 @@ func (c *GraphCache[S, T]) snapshotHooks() (func(string, int), func(time.Duratio
 // barrier. Letting Cache.Flush bypass c.mu could remove a value between that
 // classification and materialization, causing the snapshot to carry neither.
 func (c *GraphCache[S, T]) flushVertices() int {
+	return c.flushVerticesAt(c.applicationTime())
+}
+
+func (c *GraphCache[S, T]) flushVerticesAt(now time.Time) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.vertices.Flush()
+	if c.storage != nil {
+		c.vertices.SetOnEvictMany(func(keys []S) {
+			c.storage.pending.vertices = append(c.storage.pending.vertices, keys...)
+			c.onVerticesEvicted(keys)
+		})
+		defer c.vertices.SetOnEvictMany(c.onVerticesEvicted)
+	}
+	return c.vertices.FlushAt(now)
 }
 
 func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
@@ -320,17 +338,39 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		select {
 		case <-ticker.C:
 			start := time.Now()
-			vExpired := c.flushVertices()
-			if vExpired > 0 {
-				c.mu.RLock()
-				index := c.searchIndex
-				incomplete := index != nil && index.Health() != search.IndexHealthy
-				c.mu.RUnlock()
-				if incomplete {
-					_ = c.RebuildSearchIndex()
+			var vExpired, eExpired, dRemoved int
+			tick := func() error {
+				now := c.applicationTime()
+				vExpired = c.flushVerticesAt(now)
+				if vExpired > 0 {
+					c.mu.RLock()
+					index := c.searchIndex
+					incomplete := index != nil && index.Health() != search.IndexHealthy
+					c.mu.RUnlock()
+					if incomplete {
+						_ = c.RebuildSearchIndex()
+					}
 				}
+				eExpired, dRemoved = c.flushAt(now)
+
+				if c.storage != nil {
+					return c.flushStorage(ctx, now)
+				}
+				return nil
 			}
-			eExpired, dRemoved := c.flush()
+			var maintenance func(func() error) error
+			c.hookMu.RLock()
+			if c.storage != nil {
+				maintenance = c.storage.maintenance
+			}
+			c.hookMu.RUnlock()
+			if maintenance != nil {
+				if err := maintenance(tick); err != nil {
+					continue
+				}
+			} else if err := tick(); err != nil {
+				continue
+			}
 			d := time.Since(start)
 			onExpire, onGC := c.snapshotHooks()
 			if onExpire != nil {

@@ -317,14 +317,14 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "0.5.1"
+    version: "0.5.2"
   lantern_client_offline:
     dependency: "direct main"
     description:
       path: "../offline"
       relative: true
     source: path
-    version: "0.6.0"
+    version: "0.6.1"
   lantern_client_offline_sqlite:
     dependency: "direct main"
     description:

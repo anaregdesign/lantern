@@ -1,9 +1,7 @@
 package provider
 
 import (
-	"crypto/rand"
 	"encoding/hex"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -38,11 +36,8 @@ type MutationLogConfig struct {
 // outbound origin tag on every appended mutation.
 //
 //   - LANTERN_NODE_ID                    32-char hex (16 bytes); when unset
-//     a cryptographically random NodeID is generated at process start so
-//     two unrelated nodes never collide. Operators that want a stable
-//     graph-only identity across restarts must set this explicitly. Private
-//     durable receipt-WAL modes require an explicit nonzero value and bind it
-//     into the persistent generation metadata.
+//     the graph database generates and persists an identity on first open.
+//     Receipt-enabled nodes require an explicit matching identity.
 //   - LANTERN_TOMBSTONE_TTL              max retention window for delete
 //     tombstones and the upper bound on caller-supplied Expiration on
 //     Add*/Put* RPCs. Default 1 year (8760h). Set to a value larger than
@@ -75,35 +70,15 @@ func loadReplicationConfig(reader *envconfig.Reader) ReplicationConfig {
 	ttl := reader.Duration("LANTERN_TOMBSTONE_TTL", 365*24*time.Hour) // 1 year
 	var id hlc.NodeID
 	raw := strings.TrimSpace(reader.String("LANTERN_NODE_ID", ""))
-	raw = strings.TrimPrefix(raw, "0x")
+	cfg := ReplicationConfig{TombstoneTTL: ttl, nodeIDExplicit: raw != ""}
 	if raw != "" {
-		if b, err := hex.DecodeString(raw); err == nil && len(b) == len(id) {
-			copy(id[:], b)
-			return ReplicationConfig{NodeID: id, TombstoneTTL: ttl, nodeIDExplicit: true}
+		b, err := hex.DecodeString(strings.TrimPrefix(raw, "0x"))
+		if err == nil && len(b) == len(id) {
+			copy(cfg.NodeID[:], b)
 		}
-		// Fall through to random on malformed input. Logged here so the
-		// operator sees the fallback without crashing startup, and recorded
-		// in the envconfig findings so LANTERN_STRICT_CONFIG treats it like
-		// every other malformed value (#847).
-		reader.Malformed("LANTERN_NODE_ID", raw, "must be 32 hex chars (16 bytes)")
-		slog.Warn("ignoring malformed LANTERN_NODE_ID; using random NodeID",
-			slog.String("value", raw))
+		if cfg.NodeID == (hlc.NodeID{}) {
+			reader.Malformed("LANTERN_NODE_ID", raw, "must be 32 hex characters and nonzero")
+		}
 	}
-	if _, err := rand.Read(id[:]); err != nil {
-		// rand.Read on linux/darwin cannot fail in practice; degrade
-		// to all-zero rather than panicking the server.
-		slog.Error("failed to read crypto/rand for NodeID; using zero NodeID",
-			slog.Any("err", err))
-	}
-	return ReplicationConfig{NodeID: id, TombstoneTTL: ttl}
-}
-
-// NewHLCClock constructs the process-wide hybrid logical clock. The clock's
-// origin NodeID is the same one stamped onto outgoing replication frames.
-//
-// OnSkewExceeded is intentionally left nil here — the skew metric is owned
-// by the replication subsystem and will be wired in when remote Update calls
-// land (see issues #180 and #182). For now this is a one-way local clock.
-func NewHLCClock(rc ReplicationConfig) *hlc.Clock {
-	return hlc.New(rc.NodeID, hlc.Options{})
+	return cfg
 }

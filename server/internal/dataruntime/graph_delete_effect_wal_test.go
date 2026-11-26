@@ -205,7 +205,13 @@ func TestGraphDeleteEffectWALReplaysEveryExactArmWithAndWithoutTombstones(t *tes
 				}
 				graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
 				tc.seed(graph)
-				if err := replayGraphDeleteEffect(graph, decoded.(*graphDeleteEffectEnvelope)); err != nil {
+				service := NewExecutor(graph).WithReplication(mutationlog.New(mutationlog.Options{Capacity: 4}), hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+				if tombstones {
+					service.WithTombstoneTTL(time.Hour)
+				}
+				m := decoded.(*graphDeleteEffectEnvelope).Mutation
+				m.Seq = 1
+				if err := service.ApplyMutation(t.Context(), m); err != nil {
 					t.Fatal(err)
 				}
 				if tc.stillLive(graph) {

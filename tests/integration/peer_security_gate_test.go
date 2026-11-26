@@ -592,6 +592,7 @@ func TestPeerApplyObservationSeparatesUnfinishedDelegate(t *testing.T) {
 
 func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testing.T) {
 	const phaseTimeout = 15 * time.Second
+	const ringCapacity, subscriberCapacity = 256, 96
 	for _, evict := range []bool{false, true} {
 		name := "retained history"
 		if evict {
@@ -634,7 +635,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					return listener
 				},
 				LogOptions: func(i int) mutationlog.Options {
-					options := mutationlog.Options{Capacity: 10000, SubscriberBuffer: 512}
+					options := mutationlog.Options{Capacity: ringCapacity, SubscriberBuffer: subscriberCapacity}
 					if i == 0 {
 						options.OnDrop = func(cause string) {
 							if cause == mutationlog.DropCauseBufferFull {
@@ -746,9 +747,9 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			}
 			heldAt := time.Now()
 			ledger.add("receiver_held", "apply_started", apply.applyStarted.Load())
-			// At most 512 new entries fit without overflowing the normal live
-			// buffer. First prove an actual Write is blocked, then cause loss.
-			for range 511 {
+			// Leave one subscriber slot free until the kernel reports a blocked
+			// Write on the original TLS socket. Only then trigger overflow.
+			for range subscriberCapacity - 1 {
 				write(pressureCtx, "data:pressure", payload)
 			}
 			blocked, err := probe.blockedWrite(pressureCtx, heldAt)
@@ -810,23 +811,27 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if f.primary[1].LocalSeq(hlc.NodeID{3}) != 1 {
 				t.Fatal("held receiver advanced its committed cursor")
 			}
-			if first, _ := f.logs[0].FirstSeq(); first != 1 {
+			if _, _, evicted := f.data[0].MutationLogStats(); evicted != 0 {
 				t.Fatal("retention was lost before the intended branch")
 			}
-			// The interruption proof is complete. Evicting a normal-size ring
+			// The interruption proof is complete. Evicting the retained ring
 			// is finite fixture preparation, not part of its elapsed deadline.
 			// Cancel completed phases so later work cannot borrow their context.
 			cancelPressure()
 			probe.boundInitialSend.Store(false)
 			ledger.add("pressure_proof_complete_source_send_control_disabled_for_replacement")
 			if evict {
-				// This fixed-count, in-process preparation uses the owning
-				// test budget. A separate short deadline would assert a
-				// fixture throughput floor rather than recovery behavior.
-				for i := 0; i < 10016; i++ {
+				// The interrupted connection can still deliver already-buffered
+				// frames after Apply is released. Evict even the successor of
+				// the maximum cursor that connection could possibly supply.
+				beforeDisconnect := f.primary[0].LocalSeq(hlc.NodeID{3})
+				for range ringCapacity + 1 {
+					if _, _, gone := f.data[0].MutationLogStats(); gone > beforeDisconnect {
+						break
+					}
 					write(ctx, "data:pressure", []byte("later"))
 				}
-				if first, _ := f.logs[0].FirstSeq(); first <= 3 {
+				if _, _, evicted := f.data[0].MutationLogStats(); evicted <= beforeDisconnect {
 					t.Fatal("finite fixture failed to evict the committed resume cursor")
 				}
 			}
@@ -970,7 +975,19 @@ type peerSecurityFixture struct {
 	key      ed25519.PrivateKey
 	roots    *x509.CertPool
 	certs    [2]tls.Certificate
-	logs     [2]*mutationlog.Log
+	data     [2]*service.ServingRuntime
+}
+
+// All fixture mutations pass through the certified runtime. Its evictions
+// count committed positions preceding the current retained suffix.
+func (f *peerSecurityFixture) firstSeq(node int) (uint64, bool) {
+	length, _, evicted := f.data[node].MutationLogStats()
+	return evicted + 1, length > 0
+}
+func (f *peerSecurityFixture) lastSeq(node int) (uint64, bool) {
+	length, _, evicted := f.data[node].MutationLogStats()
+	last := evicted + uint64(length)
+	return last, last != 0
 }
 
 type peerSecurityOptions struct {
@@ -1118,8 +1135,8 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		if len(options) != 0 && options[0].LogOptions != nil {
 			logOptions = options[0].LogOptions(i)
 		}
-		f.logs[i] = mutationlog.New(logOptions)
-		data, err := service.NewGraphOnlyServingRuntime(graph, f.logs[i], hlc.New(hlc.NodeID{byte(i + 3)}, hlc.Options{}), "namespaced-v1")
+		data, err := service.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "graph"), hlc.NodeID{byte(i + 3)}, graph, logOptions, "namespaced-v1")
+		f.data[i] = data
 		if err != nil {
 			t.Fatal(err)
 		}

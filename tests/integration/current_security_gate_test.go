@@ -177,6 +177,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	publicRoots := x509.NewCertPool()
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
+	dataOwners := make(map[int]*service.ServingRuntime)
 	var servingLoggers []*slog.Logger
 	var slowOwners []*provider.SlowRPCInterceptor
 	startupLogLevels := map[int]slog.Level{1: slog.LevelWarn, 2: slog.LevelWarn, 3: slog.LevelWarn}
@@ -236,13 +237,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 					return nil
 				}
 			}
-			data, err = service.CreateDurableReceiptWALServingRuntime(config)
+			data, err = service.OpenReceiptDatabase(t.Context(), config, true)
 		} else {
-			data, err = service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 64}), hlc.New(hlc.NodeID{byte(id)}, hlc.Options{}), "namespaced-v1")
+			data, err = service.OpenGraphDatabase(t.Context(), filepath.Join(dir, fmt.Sprintf("graph-%d", id)), hlc.NodeID{byte(id)}, graph, mutationlog.Options{Capacity: 64}, "namespaced-v1")
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
+		dataOwners[id] = data
 		t.Cleanup(func() { _ = data.Close() })
 		securityConfig := loadAuthorityWireSecurityConfig(t, dir, id, f.provider.URL, roots, func(input map[string]any) {
 			if native != nil {
@@ -317,18 +319,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		restored, err := provider.NewRuntimeRestored(data, svc)
-		if err != nil {
-			t.Fatal(err)
-		}
 		limits := provider.NetConfig{MaxRecvMsgBytes: 1 << 20, MaxSendMsgBytes: 1 << 20, MaxConcurrentStreams: 16}
-		certified, err := provider.NewRuntimeCertified(data, svc, peer, restored, limits)
+		certified, err := provider.NewRuntimeCertified(data, svc, peer, limits)
 		if err != nil {
 			t.Fatal(err)
 		}
-		receiptConfig := provider.ReceiptWALConfig{Mode: provider.ReceiptWALModeGraphOnly}
+		receiptConfig := provider.ReceiptConfig{Mode: provider.ReceiptModeGraphOnly}
 		if id == 1 {
-			receiptConfig.Mode = provider.ReceiptWALModeFresh
+			receiptConfig.Mode = provider.ReceiptModeFresh
 		}
 		backupConfig := startup.Backup
 		backupConfig.Dir, backupConfig.InstanceID = t.TempDir(), "managed-backup-fixture"
@@ -525,6 +523,13 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		servers = append(servers, s)
 		controls = append(controls, graphv1connect.NewLanternSecurityServiceClient(transport, s.URL))
 	}
+	restartNode := func(id int) {
+		t.Helper()
+		if err := dataOwners[id].Close(); err != nil {
+			t.Fatal("close graph before same-volume restart", id, err)
+		}
+		startNode(id, "resume", restartPublic(id))
+	}
 	// Every fixed member is initialized explicitly with the same required
 	// operator input before any owner serves. All normal starts hard-resume.
 	for id := 1; id <= 3; id++ {
@@ -628,7 +633,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	}
 	if renewal {
 		runCurrentMembershipGate(t, f, dir, servers, runtimes, workerStops, func(id int) (*httptest.Server, *provider.SecurityRuntime, func()) {
-			startNode(id, "resume", restartPublic(id))
+			restartNode(id)
 			last := len(runtimes) - 1
 			return servers[last], runtimes[last], workerStops[last]
 		})
@@ -1551,7 +1556,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("conflicting startup rate environment was not loaded", err)
 			}
 		}
-		startNode(2, "resume", restartPublic(2))
+		restartNode(2)
 		last := len(runtimes) - 1
 		runtimes[1], stops[1], servers[1], controls[1] = runtimes[last], stops[last], servers[last], controls[last]
 		servingLoggers[1] = servingLoggers[last]
@@ -2710,12 +2715,12 @@ func TestCurrentPhysicalFixtureExpirationBounds(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x55})
 			config.Receipt.Retention = 6 * time.Hour
-			runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+			runtime, err := service.OpenReceiptDatabase(t.Context(), config, true)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = runtime.Close() })
-			wire := mountReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, currentFixtureTombstoneTTL(true), provider.ReceiptWALModeFresh)
+			wire := mountReceiptProtocolWireRuntime(t, runtime, config, provider.NetConfig{}, currentFixtureTombstoneTTL(true), provider.ReceiptModeFresh)
 			capability := receiptProtocolCapability(t, wire)
 			receiptContext := receiptProtocolContext(t, capability, 0x55, 1, time.UnixMilli(int64(capability.GetServerNowUnixMs())))
 			expiration := time.Now().Add(8 * time.Hour)

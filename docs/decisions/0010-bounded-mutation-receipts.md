@@ -1,8 +1,16 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted Edge contribution Delete; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
+- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted Edge contribution Delete. Continuity relies on atomic Tarp publication, the guarded receipt-tail wire, active and retired receipt recovery, RECEIPT Snapshot, verified physical backup, and pre-listener certification. Put Edge and prefix Delete remain disabled.
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491, #1528
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491, #1528, #2246
+
+Under #2246, the per-node Tarp database owns the graph, relay, origin
+positions, and receipt state. The receipt manifest persists the clock
+high-water even when a lookup or aborted operation advances it without a
+graph mutation. Physical restore verifies the database against its backup
+witness. References below to data FileWAL replay, sidecars, and manifest-last
+file sets describe the earlier implementation. Native security consensus and
+materialization continue to use separate FileWAL journals.
 
 ## Context and boundary
 
@@ -543,8 +551,8 @@ kind pins the reachable `Mutation` schema, rejects an unreviewed field change
 under union v4, and old union versions fail closed rather than gaining aliases,
 dual readers, or compatibility fallback. Any future compatibility policy is a
 v1 activation decision, not a prerequisite for changing this private format.
-The private [read-only mixed-WAL audit](../../server/internal/dataruntime/receipt_wal_recovery.go)
-checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
+The former private read-only mixed-WAL audit
+checked a complete, genesis-based FileWAL for frame/payload HLC agreement,
 contiguous per-origin sequences, one configured epoch/policy, and a bounded
 set of known unexpired receipt results. It validates those rows through the
 Store snapshot rules and releases expired entry/byte capacity as each frame's
@@ -563,8 +571,8 @@ must fail closed after epoch rollover.
 `mutationlog.AcquireFileWALLease` provides an advisory process lock for the
 WAL path across separate audit, replay, and append calls. A production owner
 must hold it throughout those calls and shutdown, use its canonical path,
-and never unlink the stable `.lease` sidecar. The private production
-`ServingRuntime` now holds this lease together with the graph, Store, origin
+and never unlink the stable `.lease` sidecar. The former data FileWAL
+`ServingRuntime` held this lease together with the graph, Store, origin
 tracker, appendable Log, clock/tip journals, and endpoint generation for the
 entire process lifetime. The lease alone still does not certify application
 recovery.
@@ -856,13 +864,9 @@ The internal Store can now take an optional synchronous
 Begin/Lookup changes in-memory state, and a sink error permanently faults
 those decisions and Snapshot export. Snapshot import validates first, then
 binds and advances the sink. This establishes the in-process persistence seam
-only. A raw `ClockJournal` can now create or resume a synced, checksummed
-sidecar bound to the canonical WAL path, epoch, and policy fingerprint, while
-rejecting torn or incompatible metadata. Its caller must hold the same WAL
-lease through journal Close. Neither path binding nor the journal alone
-attests the WAL bytes, their archive/suffix cut, or a complete serving state;
-the private production runtime owns it only together with the verified WAL,
-tip, Store, graph, origin cut, HLC, lease, and endpoint generation.
+only. The former data FileWAL runtime backed this sink with a checksummed
+clock sidecar bound to its path, epoch, and policy. The Tarp receipt runtime
+now binds the same sink to its receipt manifest on startup.
 A separate opt-in FileWAL tip journal durably records each frame's
 local sequence and rolling hash after the WAL fsync but before the Log reports
 success. On restart it verifies the complete attested prefix and rejects a
@@ -973,30 +977,15 @@ installs cannot reap it. Cleanup failure after commit is logged as an
 operational error while the install still reports the already-committed
 outcome.
 
-The sole production composition boundary selects
-`LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
-default and preserves the historical in-memory graph, NopWAL-backed Log, HLC,
-and graph-only backup restore. `fresh` and `restart` require an absolute
-`LANTERN_RECEIPT_WAL_PATH`, a nonzero `LANTERN_RECEIPT_EPOCH`, and explicit
-immutable retention, entry-cap, and logical-byte-cap policy. They also require
-an explicitly configured, nonzero `LANTERN_NODE_ID`; graph-only mode retains
-the historical random-per-boot fallback, but durable mode must not resume a
-local Log at sequence N+1 under a new origin. They certify one owned
-graph/Store/origin/Log/HLC/epoch/generation bundle before constructing either
-service, the primary listener, metrics server, or replication pump.
-Wire cleanup releases later owners before this bundle, and `App` retains the
-bundle until all serving goroutines stop. Durable mode selects receipt-set
-production from the exact certified runtime and performs durable restore in a
-private identity-bearing barrier before `NewRuntimeCertified`. Snapshot
-installer, Pump, anti-entropy, and backup construction follow that barrier.
-After the exact production backup source is certified, a separate public
-receipt barrier activates capability, status, and receipt-bearing Vertex Put,
-exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and
-targeted Edge contribution Delete only
-when bearer authentication is configured; primary listener construction
-follows that decision. Graph-only mode alone keeps the
-historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
-metrics, and behavior are unchanged.
+The production runtime uses one Tarp database per node in `LANTERN_DATA_DIR`.
+`LANTERN_RECEIPT_MODE=graph-only|fresh|restart` controls receipt support.
+All three modes retain the graph, relay history, causal floors and node identity
+across restarts. Receipt-enabled nodes additionally bind the explicitly configured
+node ID, deployment epoch, retention and capacity policy to the database.
+`fresh` initializes a new receipt domain. `restart` verifies and opens it.
+The runtime validates the private backup and replication boundaries before
+admitting authorized public receipt operations. Physical backup and startup
+restore use the same Tarp database in every mode.
 
 Durable runtime selection alone does not enable the public surface.
 Graph-only, auth-disabled, recovering, faulted, closed, or otherwise

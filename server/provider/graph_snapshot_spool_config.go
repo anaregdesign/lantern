@@ -12,7 +12,7 @@ import (
 )
 
 // GraphSnapshotSpoolConfig owns the graph-only receiver's explicit temporary
-// storage contract. It never inherits the Receipt WAL path or system temp dir.
+// storage contract. Graph-only HA requires a dedicated operator-supplied path.
 type GraphSnapshotSpoolConfig = replication.GraphSnapshotSpoolConfig
 
 func NewGraphSnapshotSpoolConfig(config *Config) GraphSnapshotSpoolConfig {
@@ -48,17 +48,17 @@ func loadGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig 
 	return *securityConfig.ProvisionedSnapshotSpool, nil
 }
 
-func selectGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig SecurityConfig, mode ReceiptWALMode) (GraphSnapshotSpoolConfig, error) {
+func selectGraphSnapshotSpoolForSecurity(reader *envconfig.Reader, securityConfig SecurityConfig, mode ReceiptMode) (GraphSnapshotSpoolConfig, error) {
 	profile, err := loadGraphSnapshotSpoolForSecurity(reader, securityConfig)
 	if err != nil || securityConfig.Mode != "oidc" {
 		return profile, err
 	}
 	switch mode {
-	case ReceiptWALModeGraphOnly:
+	case ReceiptModeGraphOnly:
 		return profile, nil
-	case ReceiptWALModeFresh, ReceiptWALModeRestart:
-		// Receipt WAL owns its independent durable representation. The signed
-		// graph profile remains validated material, without an active spool.
+	case ReceiptModeFresh, ReceiptModeRestart:
+		// The receipt Snapshot installer uses its own bounded collector. OIDC
+		// still validates the provisioned graph-only spool profile.
 		return GraphSnapshotSpoolConfig{}, nil
 	default:
 		return GraphSnapshotSpoolConfig{}, errors.New("unknown serving durability representation")
@@ -102,14 +102,14 @@ func loadGraphSnapshotSpoolConfig(reader *envconfig.Reader) (GraphSnapshotSpoolC
 	return GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: disk, MaxFrameBytes: int(frame)}, nil
 }
 
-func validateGraphSnapshotSpoolConfig(config GraphSnapshotSpoolConfig, mode ReceiptWALMode, peers PeerPlaneConfig) error {
+func validateGraphSnapshotSpoolConfig(config GraphSnapshotSpoolConfig, mode ReceiptMode, peers PeerPlaneConfig) error {
 	if config == (GraphSnapshotSpoolConfig{}) {
-		if mode == ReceiptWALModeGraphOnly && peers.ListenAddress != "" {
+		if mode == ReceiptModeGraphOnly && peers.ListenAddress != "" {
 			return errors.New("graph-only HA requires an explicit Snapshot spool directory, disk quota and frame limit")
 		}
 		return nil
 	}
-	if mode != ReceiptWALModeGraphOnly {
+	if mode != ReceiptModeGraphOnly {
 		return errors.New("graph Snapshot spool settings require graph-only runtime mode")
 	}
 	return config.Validate()

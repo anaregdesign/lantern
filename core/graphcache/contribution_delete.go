@@ -308,8 +308,11 @@ func (c *GraphCache[S, T]) prepareEdgeContributionDelete(
 		if plan == nil {
 			before := c.edges.bucket(key.Tail, key.Head)
 			plan = &stagedEdgeDeletePlan[S]{
-				key: pair, before: before, after: cloneWeightForStaging(before),
+				key: pair, before: before, after: cloneWeightForStaging(before, now),
 				headProjected: projected[pair],
+			}
+			if err := c.StorageError(); err != nil {
+				return nil, err
 			}
 			if before != nil {
 				var found bool

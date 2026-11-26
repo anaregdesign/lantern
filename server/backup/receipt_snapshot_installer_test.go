@@ -29,8 +29,8 @@ func newReceiptSnapshotInstallerFixture(
 		graph.EnablePrefixIndex(func(key string) string { return key })
 		return nil
 	}
-	config := dataruntime.DurableReceiptWALRuntimeConfig{
-		Path:           filepath.Join(dir, "receipts.wal"),
+	config := dataruntime.ReceiptDatabaseConfig{
+		Path:           filepath.Join(dir, "graph"),
 		Receipt:        policy,
 		Log:            mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
 		DefaultTTL:     time.Hour,
@@ -39,7 +39,7 @@ func newReceiptSnapshotInstallerFixture(
 		Now:            policy.ClockHighWater,
 		BaselineCodec:  ReceiptBaselineCodec{},
 	}
-	runtime, err := dataruntime.CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := dataruntime.OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}

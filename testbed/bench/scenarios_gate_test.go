@@ -545,7 +545,7 @@ func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod str
 			Calls     []scenarioCall `yaml:"calls"`
 		} `yaml:"target"`
 		Cluster struct {
-			ReceiptWAL struct {
+			Receipts struct {
 				Enabled    bool   `yaml:"enabled"`
 				Retention  string `yaml:"retention"`
 				MaxEntries int    `yaml:"max_entries"`
@@ -664,12 +664,12 @@ func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod str
 	if doc.LeakGate.SteadySampleInterval != "5s" {
 		t.Errorf("leak_gate.steady_sample_interval = %q, want 5s", doc.LeakGate.SteadySampleInterval)
 	}
-	if !doc.Cluster.ReceiptWAL.Enabled {
+	if !doc.Cluster.Receipts.Enabled {
 		t.Fatal("receipt WAL is not enabled")
 	}
-	retention, err := time.ParseDuration(doc.Cluster.ReceiptWAL.Retention)
+	retention, err := time.ParseDuration(doc.Cluster.Receipts.Retention)
 	if err != nil || retention < time.Hour {
-		t.Fatalf("receipt retention = %q, %v; want at least 1h", doc.Cluster.ReceiptWAL.Retention, err)
+		t.Fatalf("receipt retention = %q, %v; want at least 1h", doc.Cluster.Receipts.Retention, err)
 	}
 	warmupDuration, err := time.ParseDuration(doc.Phases.Warmup.Duration)
 	if err != nil {
@@ -700,11 +700,11 @@ func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod str
 	admissionRPS := totalProducerRPS / len(wantCalls)
 	requiredEntries := int(warmupDuration.Seconds())*(doc.Phases.Warmup.RPS/len(wantCalls)) +
 		int(steadyDuration.Seconds())*admissionRPS
-	if doc.Cluster.ReceiptWAL.MaxEntries < requiredEntries*6/5 {
-		t.Errorf("receipt max_entries = %d, want >= 120%% of %d admitted operations", doc.Cluster.ReceiptWAL.MaxEntries, requiredEntries)
+	if doc.Cluster.Receipts.MaxEntries < requiredEntries*6/5 {
+		t.Errorf("receipt max_entries = %d, want >= 120%% of %d admitted operations", doc.Cluster.Receipts.MaxEntries, requiredEntries)
 	}
-	if doc.Cluster.ReceiptWAL.MaxBytes < doc.Cluster.ReceiptWAL.MaxEntries*512 {
-		t.Errorf("receipt max_bytes = %d, want >= 512 bytes per retained entry", doc.Cluster.ReceiptWAL.MaxBytes)
+	if doc.Cluster.Receipts.MaxBytes < doc.Cluster.Receipts.MaxEntries*512 {
+		t.Errorf("receipt max_bytes = %d, want >= 512 bytes per retained entry", doc.Cluster.Receipts.MaxBytes)
 	}
 }
 

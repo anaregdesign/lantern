@@ -66,7 +66,7 @@ func TestGeneratedFixedTopologyPreservesStandaloneEdgeCreate(t *testing.T) {
 			}
 			defer closePeer()
 			graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Minute)
-			data, err := dataruntime.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
+			data, err := dataruntime.OpenGraphDatabase(t.Context(), filepath.Join(t.TempDir(), "graph"), hlc.NodeID{7}, graph, mutationlog.Options{Capacity: 16}, "namespaced-v1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,11 +112,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := NewRuntimeRestored(data, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := NewRuntimeCertified(data, primary, peer, restored, NetConfig{})
+	cert, err := NewRuntimeCertified(data, primary, peer, NetConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +142,7 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 			c.anti = replication.NewAntiEntropy(replication.AntiEntropyConfig{Pump: c.pump, SearchConfigFingerprint: fingerprint}, nil, nil, nil)
 		},
 		func(c *managedOperationalCertified) {
-			c.backup = backup.New(data.NewExecutor(nil), backup.Config{Interval: time.Hour}, nil, nil)
+			c.backup = backup.NewGraphStore(data.NewExecutor(nil), data.GraphStore(), backup.Config{Interval: time.Hour}, nil, nil)
 		},
 	} {
 		wrong := operational

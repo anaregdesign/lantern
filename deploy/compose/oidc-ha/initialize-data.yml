@@ -3,10 +3,10 @@
 services:
   lantern-0:
     environment:
-      LANTERN_RECEIPT_WAL_MODE: fresh
+      LANTERN_RECEIPT_MODE: fresh
   lantern-1:
     environment:
-      LANTERN_RECEIPT_WAL_MODE: fresh
+      LANTERN_RECEIPT_MODE: fresh
   lantern-2:
     environment:
-      LANTERN_RECEIPT_WAL_MODE: fresh
+      LANTERN_RECEIPT_MODE: fresh

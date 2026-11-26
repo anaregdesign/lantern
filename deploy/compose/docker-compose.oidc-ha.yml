@@ -9,8 +9,8 @@ x-node-environment: &node-environment
   # This MUST remain loopback in OIDC. Separate mTLS relays own remote scraping.
   LANTERN_METRICS_ADDR: "127.0.0.1:9090"
   LANTERN_DRAIN_DELAY_SECONDS: "5"
-  LANTERN_RECEIPT_WAL_MODE: restart
-  LANTERN_RECEIPT_WAL_PATH: /state/receipts.wal
+  LANTERN_RECEIPT_MODE: restart
+  LANTERN_DATA_DIR: /state/graph
   LANTERN_RECEIPT_RETENTION: 1h
   LANTERN_RECEIPT_MAX_ENTRIES: "32768"
   LANTERN_RECEIPT_MAX_BYTES: "16777216"

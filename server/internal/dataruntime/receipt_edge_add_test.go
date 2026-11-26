@@ -260,7 +260,7 @@ func TestPublicReceiptEdgeAddPreservesNaNResultFromPriorGraph(t *testing.T) {
 }
 
 func TestPublicReceiptEdgeAddSurvivesDeleteAndRestart(t *testing.T) {
-	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "graph.db"))
 	install := func(t *testing.T, runtime *ServingRuntime) (*Executor, *Replication) {
 		t.Helper()
 		primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
@@ -280,7 +280,7 @@ func TestPublicReceiptEdgeAddSurvivesDeleteAndRestart(t *testing.T) {
 		return primary, replication
 	}
 
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestPublicReceiptEdgeAddSurvivesDeleteAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +754,7 @@ func TestReceiptEdgeAddFollowerUsesLocalProjectionAndRelaysEvidence(t *testing.T
 	if err != nil || response.GetEffectiveWeights()[0] != 4 {
 		t.Fatalf("source commit = %+v, %v", response, err)
 	}
-	sourceEnvelope := source.log.RetainedEntries()[0].Op.(*graphAddEffectEnvelope)
+	sourceEnvelope := mustRetainedPayloads(t, source.log)[0].Op.(*graphAddEffectEnvelope)
 	wire, err := sourceEnvelope.ReplicationMutation()
 	if err != nil {
 		t.Fatal(err)
@@ -790,7 +790,7 @@ func TestReceiptEdgeAddFollowerUsesLocalProjectionAndRelaysEvidence(t *testing.T
 	if err != nil || status != mutationreceipt.Confirmed || len(receipt.Result) != 4 {
 		t.Fatalf("converged follower status = %v, %+v, %v", status, receipt, err)
 	}
-	relay := follower.log.RetainedEntries()[0].Op.(*graphAddEffectEnvelope)
+	relay := mustRetainedPayloads(t, follower.log)[0].Op.(*graphAddEffectEnvelope)
 	if len(relay.AcceptedIndexes) != 0 ||
 		relay.Receipts[0].Result[0] != sourceEnvelope.Receipts[0].Result[0] {
 		t.Fatalf("relay lost local rejection or origin result: %+v", relay)
@@ -822,15 +822,18 @@ func TestReceiptEdgeAddFollowerUsesLocalProjectionAndRelaysEvidence(t *testing.T
 }
 
 func TestReceiptEdgeAddCombinedBaselineSuffixRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "receipts.wal")
+	path := filepath.Join(t.TempDir(), "graph.db")
 	config := baselineRuntimeTestConfig(path)
+	config.Now = time.Now().Add(-10 * time.Minute).Truncate(time.Millisecond)
+	config.Receipt.ClockHighWater = config.Now
 	image := newReceiptBaselineTestImage(t, config)
 	config.BaselineCodec = image.codec
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	runtime, err := OpenReceiptDatabase(t.Context(), config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := runtime.NewExecutor(nil)
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour)
 	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
 		t.Fatal(err)
 	}
@@ -877,14 +880,25 @@ func TestReceiptEdgeAddCombinedBaselineSuffixRestart(t *testing.T) {
 	if err := validateGraphAddEffectEnvelope(envelope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.log.Append(envelope, envelope.HLC); err != nil {
+	rep, err := runtime.NewReplication(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtime.CertifyInstallation(primary, rep); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := envelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.ApplyMutation(t.Context(), wire); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	restarted, err := OpenReceiptDatabase(t.Context(), config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -913,18 +927,24 @@ func TestReceiptEdgeAddReceiptSnapshotAndBackupContinuity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := replication.receiptSnapshotSource.CaptureForBackup(
-		t.Context(),
-		runtime.receipt.policy,
-	)
+	view, err := runtime.GraphStore().Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if backup.Generation != runtime.receipt.generation ||
-		backup.NodeID != runtime.clock.NodeID() ||
-		len(backup.WholeState.Receipts.Receipts) != 1 ||
-		backup.WholeState.Receipts.Receipts[0].Kind != mutationreceipt.AddEdge ||
-		!backup.WholeState.Receipts.Receipts[0].HasContrib {
+	witness, err := runtime.TarpBackupWitness(view.Snapshot, view.Generation)
+	if err := errors.Join(err, view.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if witness.ReceiptGeneration != runtime.receipt.generation || witness.ReceiptCount != 1 {
+		t.Fatalf("physical backup witness lost receipt: %+v", witness)
+	}
+	backup, err := replication.receiptSnapshotSource.Capture(t.Context(), runtime.receipt.policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backup.Receipts.Receipts) != 1 ||
+		backup.Receipts.Receipts[0].Kind != mutationreceipt.AddEdge ||
+		!backup.Receipts.Receipts[0].HasContrib {
 		t.Fatalf("backup capture lost Add receipt evidence: %+v", backup)
 	}
 
@@ -936,7 +956,7 @@ func TestReceiptEdgeAddReceiptSnapshotAndBackupContinuity(t *testing.T) {
 	}
 	retiredConfig, _, err := retiredCatalogConfig(
 		runtime.receipt.policy,
-		backup.WholeState.Receipts.ClockHighWaterMillis,
+		backup.Receipts.ClockHighWaterMillis,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -962,11 +982,11 @@ func TestReceiptEdgeAddReceiptSnapshotAndBackupContinuity(t *testing.T) {
 	if capture.Receipts.Receipts[0].ID != id ||
 		!sameReceiptWALDecision(
 			capture.Receipts.Receipts[0],
-			backup.WholeState.Receipts.Receipts[0],
+			backup.Receipts.Receipts[0],
 		) {
 		t.Fatalf("Snapshot/backup Add evidence differs: snapshot=%+v backup=%+v",
 			capture.Receipts.Receipts[0],
-			backup.WholeState.Receipts.Receipts[0])
+			backup.Receipts.Receipts[0])
 	}
 }
 

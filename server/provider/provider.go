@@ -65,7 +65,7 @@ type Config struct {
 	Scan                 ScanConfig
 	Search               SearchConfig
 	MutationLog          MutationLogConfig
-	ReceiptWAL           ReceiptWALConfig
+	Receipts             ReceiptConfig
 	GraphSnapshotSpool   GraphSnapshotSpoolConfig
 	Replication          ReplicationConfig
 	Peer                 PeerConfig
@@ -107,8 +107,8 @@ func LoadConfig(reader *envconfig.Reader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	receiptWAL := loadReceiptWALConfig(reader)
-	graphSnapshotSpool, err := selectGraphSnapshotSpoolForSecurity(reader, securityConfig, receiptWAL.Mode)
+	receipts := loadReceiptConfig(reader)
+	graphSnapshotSpool, err := selectGraphSnapshotSpoolForSecurity(reader, securityConfig, receipts.Mode)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func LoadConfig(reader *envconfig.Reader) (*Config, error) {
 		Scan:          operational.Scan,
 		Search:        operational.Search,
 		MutationLog:   loadMutationLogConfig(reader),
-		ReceiptWAL:    receiptWAL,
+		Receipts:      receipts,
 		Replication:   loadReplicationConfig(reader),
 		Readiness:     loadReadinessConfig(reader),
 		Peer:          peer,
@@ -163,10 +163,10 @@ func LoadConfig(reader *envconfig.Reader) (*Config, error) {
 	if err := operational.Validate(); err != nil {
 		return nil, err
 	}
-	if err := validateReceiptWALConfig(cfg.ReceiptWAL, cfg.Backup, cfg.Replication); err != nil {
+	if err := validateReceiptConfig(cfg.Receipts, cfg.Backup, cfg.Replication); err != nil {
 		return nil, err
 	}
-	if err := validateGraphSnapshotSpoolConfig(cfg.GraphSnapshotSpool, cfg.ReceiptWAL.Mode, cfg.PeerPlane); err != nil {
+	if err := validateGraphSnapshotSpoolConfig(cfg.GraphSnapshotSpool, cfg.Receipts.Mode, cfg.PeerPlane); err != nil {
 		return nil, err
 	}
 	cfg.operationalBootstrap = captureOperationalBootstrap(reader, cfg.RateLimit, cfg.Backup)

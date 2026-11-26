@@ -192,17 +192,10 @@ sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
         self.assertIn("'-authority-provisioner',\n      _authorityProvisioner,", source)
         self.assertIn("includeParentEnvironment: false", source)
 
-    def test_windows_retains_native_mtls_without_requesting_unsupported_oidc(self):
+    def test_windows_exercises_rust_tls_without_starting_a_local_database(self):
         import windows_native
-        self.assertIn("TestAuthorityTimeUnsupportedNativeProfile", windows_native.GO_TESTS)
-        self.assertIn("transport::tests::real_wire_off_mtls_requires_client_identity", windows_native.RUST_TESTS)
-        self.assertNotIn("transport::tests::real_wire_mtls_and_bearer_rotation", windows_native.RUST_TESTS)
-        source = (ROOT / "sdks/rust/src/transport/tests.rs").read_text()
-        off = source.split("async fn real_wire_off_mtls_requires_client_identity()", 1)[1].split("#[tokio::test]", 1)[0]
-        self.assertIn("start_tls_server(&certs, true)", off)
-        self.assertIn("tls_client_identity", off)
-        self.assertIn("get_status", off)
-        self.assertNotIn("token_provider", off)
+        self.assertIn("transport::tests::native_health_tls_checks_server_root_and_client_identity", windows_native.RUST_TESTS)
+        self.assertNotIn("actions/setup-go", job(workflow("go"), "rust-windows"))
 
     def test_receipt_startup_uses_the_dedicated_typed_report(self):
         script = ROOT / "testbed/scripts/native_receipt_fixture.sh"
@@ -284,24 +277,24 @@ exit 1
                                 "cargo test --locked --all-features",
                                 "cargo doc --locked --no-deps --all-features"):
                     self.assertIn(command, body)
-                # Every retained stable platform still executes the wire suite.
+                # Rust clients run on each OS. Production Server wire tests run on Linux.
                 wire = next(step for step in body.split("      - ")
                             if "../../.github/scripts/rust_wire.py" in step)
                 self.assertIn("if: matrix.rust == 'stable'", wire)
-                self.assertNotIn("matrix.os == 'ubuntu-latest'", wire)
+                self.assertIn("matrix.os == 'ubuntu-latest'", wire)
         release = workflow("rust-release")
         self.assertIn("needs: [tag, conformance, configured-source-integration]", job(release, "preflight"))
         self.assertIn("--proof-kind configured-source-integration", job(release, "preflight"))
         self.assertIn("needs: [tag, verify-published]", job(release, "release"))
-        self.assertIn('go build -o "sdks/rust/target/lantern-authfixture$suffix"', job(release, "conformance"))
+        self.assertIn('go build -o "sdks/rust/target/lantern-authfixture"', job(release, "conformance"))
         self.assertIn("../../.github/scripts/rust_wire.py", job(release, "conformance"))
         self.assertNotIn("go test ./tests/integration", job(release, "conformance"))
         self.assertNotIn("--include-scoped", workflow("current-sdk4"))
         go = workflow("go")
-        self.assertIn("receipt-backup-windows]", job(go, "build"))
-        self.assertIn("WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}", job(go, "build"))
-        self.assertIn("windows_native.py", job(go, "receipt-backup-windows"))
-        self.assertIn("windows_rust_required", job(go, "receipt-backup-windows"))
+        self.assertIn("rust-windows]", job(go, "build"))
+        self.assertIn("WINDOWS_RESULT: ${{ needs.rust-windows.result }}", job(go, "build"))
+        self.assertIn("windows_native.py", job(go, "rust-windows"))
+        self.assertIn("windows_required", job(go, "rust-windows"))
 
     def test_retained_app_wire_rejects_missing_skipped_and_incomplete_execution(self):
         body = job(workflow("dart-sdk"), "offline-sqlite")

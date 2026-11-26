@@ -27,7 +27,6 @@ jobs:
       docs_only: ${{ steps.docs.outputs.docs_only }}
       configured_source_integration_required: ${{ steps.native.outputs.functional_required == 'true' && steps.qualification.outputs.configured_source_integration_required == 'true' }}
       windows_required: ${{ steps.native.outputs.windows_required }}
-      windows_rust_required: ${{ steps.native.outputs.windows_rust_required }}
       functional_required: ${{ steps.native.outputs.functional_required }}
       go_required: ${{ steps.native.outputs.go_required }}
       go_modules: ${{ steps.native.outputs.go_modules }}
@@ -294,7 +293,7 @@ jobs:
 
   build:
     name: Build & Test
-    needs: [scope, modules, functional-validation, configured-source-integration, fuzz, native-deployment, receipt-backup-windows]
+    needs: [scope, modules, functional-validation, configured-source-integration, fuzz, native-deployment, rust-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -314,7 +313,7 @@ jobs:
           CONFIGURED_SOURCE_INTEGRATION_RESULT: ${{ needs.configured-source-integration.result }}
           CONFIGURED_SOURCE_INTEGRATION_REQUIRED: ${{ needs.scope.outputs.configured_source_integration_required }}
           WINDOWS_REQUIRED: ${{ needs.scope.outputs.windows_required }}
-          WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}
+          WINDOWS_RESULT: ${{ needs.rust-windows.result }}
           DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
           EVIDENCE_ONLY: ${{ needs.scope.outputs.evidence_only }}
         run: python3 -B .github/scripts/current_qualification_result.py
@@ -339,26 +338,18 @@ jobs:
           CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256: ${{ needs.configured-source-integration.outputs.receipt_sha256 }}
         run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind configured-source-integration --trusted-receipt-sha256 "$CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-configured-source-integration"
 
-  receipt-backup-windows:
-    name: Receipt backup (Windows)
+  rust-windows:
+    name: Rust SDK (Windows)
     needs: scope
     if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.windows_required != 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.4'
-          check-latest: true
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-        if: needs.scope.outputs.windows_rust_required != 'false'
         with:
           toolchain: stable
-      - name: Test selected native filesystem, ACL, TLS and process boundaries
-        env:
-          RUST_REQUIRED: ${{ needs.scope.outputs.windows_rust_required }}
-        run: python -B .github/scripts/windows_native.py --rust "$env:RUST_REQUIRED" --evidence "$env:RUNNER_TEMP/native-windows"
+      - name: Test native Rust TLS, transport and values
+        run: python -B .github/scripts/windows_native.py --evidence "$env:RUNNER_TEMP/native-windows"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

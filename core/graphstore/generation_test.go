@@ -2,6 +2,8 @@ package graphstore
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -160,5 +162,82 @@ func TestGenerationInterruptedAndStale(t *testing.T) {
 	defer v.Close()
 	if v.Generation != 1 || v.Revision != 1 {
 		t.Fatal("stale generation published")
+	}
+}
+
+func TestGenerationCrashCutover(t *testing.T) {
+	const childDir = "LANTERN_TEST_CRASH_GENERATION_DIRECTORY"
+	const childPhase = "LANTERN_TEST_CRASH_GENERATION_PHASE"
+	if dir := os.Getenv(childDir); dir != "" {
+		db, err := OpenExisting(t.Context(), dir, hlc.NodeID{9})
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, err := db.BeginGeneration()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range []byte{'v', 'f'} {
+			if err = g.Apply(func(id uint64, w Writer) error { w.Put(append(ServicePrefix(id), part), []byte("new")); return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if os.Getenv(childPhase) == "after" {
+			if err = g.Publish(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		os.Exit(83) // Lose all process memory. Deliberately bypass DB.Close.
+	}
+	for _, phase := range []string{"before", "after"} {
+		t.Run(phase, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "graph")
+			db, err := Open(t.Context(), dir, hlc.NodeID{9})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Update(func(id uint64, _ *tarp.Snapshot, w *tarp.WriteBatch) error {
+				for _, part := range []byte{'v', 'f'} {
+					w.Put(append(ServicePrefix(id), part), []byte("old"))
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestGenerationCrashCutover$")
+			cmd.Env = append(os.Environ(), childDir+"="+dir, childPhase+"="+phase)
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 83 {
+				t.Fatalf("unexpected child result: %s %v", out, err)
+			}
+			db, err = OpenExisting(t.Context(), dir, hlc.NodeID{9})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			view, err := db.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer view.Close()
+			want := "old"
+			if phase == "after" {
+				want = "new"
+			}
+			for _, part := range []byte{'v', 'f'} {
+				got, err := view.Snapshot.Get(append(ServicePrefix(view.Generation), part))
+				if err != nil || string(got) != want {
+					t.Fatalf("cut %s = %q, %v", phase, got, err)
+				}
+			}
+		})
 	}
 }

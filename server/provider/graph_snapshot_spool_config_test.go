@@ -44,9 +44,9 @@ func TestGraphSnapshotSpoolSelectionPreservesSignedProfileAcrossRepresentations(
 	state := filepath.Join(t.TempDir(), "node-1")
 	spool := provisionedSnapshotSpool(state)
 	config := SecurityConfig{Mode: "oidc", StateDirectory: state, ProvisionedSnapshotSpool: &spool}
-	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
+	for _, mode := range []ReceiptMode{ReceiptModeGraphOnly, ReceiptModeFresh, ReceiptModeRestart} {
 		active, err := selectGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config, mode)
-		if err != nil || mode == ReceiptWALModeGraphOnly && active != spool || mode != ReceiptWALModeGraphOnly && active != (GraphSnapshotSpoolConfig{}) {
+		if err != nil || mode == ReceiptModeGraphOnly && active != spool || mode != ReceiptModeGraphOnly && active != (GraphSnapshotSpoolConfig{}) {
 			t.Fatal("incorrect active spool for serving representation", mode, err)
 		}
 		if *config.ProvisionedSnapshotSpool != spool {
@@ -59,7 +59,7 @@ func TestGraphSnapshotSpoolSelectionPreservesSignedProfileAcrossRepresentations(
 	bad := spool
 	bad.MaxDiskBytes = 0
 	config.ProvisionedSnapshotSpool = &bad
-	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
+	for _, mode := range []ReceiptMode{ReceiptModeGraphOnly, ReceiptModeFresh, ReceiptModeRestart} {
 		if _, err := selectGraphSnapshotSpoolForSecurity(testEnvironmentReader(), config, mode); err == nil {
 			t.Fatal("inactive representation bypassed invalid immutable spool profile", mode)
 		}
@@ -92,13 +92,13 @@ func TestGraphSnapshotSpoolConfigRequiresExplicitHAStorage(t *testing.T) {
 	if err != nil || config != (GraphSnapshotSpoolConfig{}) {
 		t.Fatalf("unset graph spool did not remain disabled: %+v, %v", config, err)
 	}
-	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
+	for _, mode := range []ReceiptMode{ReceiptModeGraphOnly, ReceiptModeFresh, ReceiptModeRestart} {
 		if err := validateGraphSnapshotSpoolConfig(config, mode, PeerPlaneConfig{}); err != nil {
 			t.Fatalf("unused zero spool broke single-node or receipt runtime %q: %v", mode, err)
 		}
 	}
 	peers := PeerPlaneConfig{ListenAddress: "127.0.0.1:6391"}
-	if err := validateGraphSnapshotSpoolConfig(config, ReceiptWALModeGraphOnly, peers); err == nil {
+	if err := validateGraphSnapshotSpoolConfig(config, ReceiptModeGraphOnly, peers); err == nil {
 		t.Fatal("graph-only HA inferred temporary storage")
 	}
 	directory, err := filepath.EvalSymlinks(t.TempDir())
@@ -115,13 +115,13 @@ func TestGraphSnapshotSpoolConfigRequiresExplicitHAStorage(t *testing.T) {
 	if err != nil || config.Directory != directory || config.MaxDiskBytes != 128<<20 || config.MaxFrameBytes != 32<<20 {
 		t.Fatalf("explicit capacity was not parsed exactly: %+v, %v", config, err)
 	}
-	if err := validateGraphSnapshotSpoolConfig(config, ReceiptWALModeGraphOnly, peers); err != nil {
+	if err := validateGraphSnapshotSpoolConfig(config, ReceiptModeGraphOnly, peers); err != nil {
 		t.Fatal(err)
 	}
 	if NewGraphSnapshotSpoolConfig(&Config{GraphSnapshotSpool: config}) != config {
 		t.Fatal("focused provider changed the spool capacity")
 	}
-	if err := validateGraphSnapshotSpoolConfig(config, ReceiptWALModeFresh, peers); err == nil {
+	if err := validateGraphSnapshotSpoolConfig(config, ReceiptModeFresh, peers); err == nil {
 		t.Fatal("receipt runtime silently ignored graph-only spool settings")
 	}
 }
@@ -156,7 +156,7 @@ func TestGraphSnapshotSpoolConfigRejectsPartialMalformedOrUnsafeStorage(t *testi
 			t.Setenv(test.key, test.value)
 			config, err := loadGraphSnapshotSpoolConfig(testEnvironmentReader())
 			if err == nil {
-				err = validateGraphSnapshotSpoolConfig(config, ReceiptWALModeGraphOnly, PeerPlaneConfig{})
+				err = validateGraphSnapshotSpoolConfig(config, ReceiptModeGraphOnly, PeerPlaneConfig{})
 			}
 			if err == nil {
 				t.Fatal("partial, malformed or unsafe spool configuration was accepted")
@@ -184,7 +184,7 @@ func TestGraphSnapshotSpoolConfigRejectsPartialMalformedOrUnsafeStorage(t *testi
 				}
 			}
 			config := GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20}
-			if err := validateGraphSnapshotSpoolConfig(config, ReceiptWALModeGraphOnly, PeerPlaneConfig{}); err == nil {
+			if err := validateGraphSnapshotSpoolConfig(config, ReceiptModeGraphOnly, PeerPlaneConfig{}); err == nil {
 				t.Fatal("spool directory ownership contract was not checked")
 			}
 		})

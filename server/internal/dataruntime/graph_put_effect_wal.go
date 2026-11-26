@@ -10,7 +10,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// graphPutEffectEnvelope is private FileWAL evidence for the Put effects this
+// graphPutEffectEnvelope is the stored relay record for the Put effects this
 // receiver actually accepted. Mutation remains the original relay/Subscribe
 // projection; an omitted slot was rejected locally and must not be retried
 // against a later, possibly expired causal floor. Every serving graph Put
@@ -270,7 +270,7 @@ func encodeGraphPutEffectWAL(op mutationlog.MutationOp) ([]byte, error) {
 	maxBody := receiptWALUnionMaxBytes - receiptWALUnionHeaderSize
 	if len(graph) > math.MaxUint32 || len(e.Accepted) > math.MaxUint32 ||
 		uint64(len(graph))+graphPutEffectWALHeaderSize+graphPutEffectWALItemSize*uint64(len(e.Accepted)) > uint64(maxBody) {
-		return nil, receiptWALUnionError("graph Put effect exceeds FileWAL frame limit")
+		return nil, receiptWALUnionError("graph Put effect exceeds relay record limit")
 	}
 	out := make([]byte, graphPutEffectWALHeaderSize+len(graph)+graphPutEffectWALItemSize*len(e.Accepted))
 	copy(out[:8], graphPutEffectWALMagic)

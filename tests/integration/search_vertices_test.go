@@ -551,14 +551,34 @@ func TestSearchVertices_ExpirationOverWire(t *testing.T) {
 }
 
 func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
-	cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
+	const query = "candidatx"
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	requestContext := make(chan context.Context, 1)
+	ranking := make(chan struct{})
+	waitForCancellation := sync.OnceFunc(func() {
+		request := <-requestContext
+		close(ranking)
+		select {
+		case <-ctx.Done():
+		case <-request.Done():
+		}
+	})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnableSearchIndex(func(_ string, v *pb.Vertex) search.Document {
+		return search.Text(v.GetString_())
+	}, func(a, b string) int {
+		// Equal scores reach this tie-breaker after real dictionary and posting work.
+		waitForCancellation()
+		return strings.Compare(a, b)
+	})
 	expiration := time.Now().Add(time.Hour)
-	items := make([]graphcache.VertexItem[string, *pb.Vertex], 15_000)
+	items := make([]graphcache.VertexItem[string, *pb.Vertex], 32)
 	for i := range items {
 		key := fmt.Sprintf("load/%05d", i)
 		items[i] = graphcache.VertexItem[string, *pb.Vertex]{
 			Key:        key,
-			Value:      &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: fmt.Sprintf("candidate%05d", i)}},
+			Value:      &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "candidate"}},
 			Expiration: expiration,
 		}
 	}
@@ -575,44 +595,34 @@ func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
 		Timeout:          5 * time.Second,
 		MaxInFlight:      1,
 	}).WithHotPathMetrics(metrics)
-	srv := newConnectTestServer(t, svc, nil)
+	capture := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			if input, ok := req.Any().(*pb.SearchVerticesRequest); ok && input.GetQuery() == query {
+				requestContext <- ctx
+			}
+			return next(ctx, req)
+		}
+	})
+	srv := newConnectTestServer(t, svc, nil, capture)
 	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
-
-	terms := make([]string, 12)
-	for i := range terms {
-		terms[i] = fmt.Sprintf("candidatx%05d", i)
-	}
-	heavy := &pb.SearchVerticesRequest{
-		Query:   strings.Join(terms, " "),
-		Options: &pb.SearchOptions{Fuzziness: 1},
-	}
-	heavyCtx, cancelHeavy := context.WithCancel(context.Background())
+	heavy := &pb.SearchVerticesRequest{Query: query, Options: &pb.SearchOptions{Fuzziness: 1}}
+	heavyCtx, cancelHeavy := context.WithCancel(ctx)
+	defer cancelHeavy()
 	heavyDone := make(chan error, 1)
 	go func() {
 		_, err := c.SearchVertices(heavyCtx, connect.NewRequest(heavy))
 		heavyDone <- err
 	}()
-	time.Sleep(10 * time.Millisecond)
-
-	// An admission rejection proves the heavy call has crossed the real h2c
-	// boundary and acquired the only execution slot. Cancel only after that
-	// signal, so this exercises cancellation after backend entry.
-	var admissionErr error
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		_, err := c.SearchVertices(context.Background(), connect.NewRequest(&pb.SearchVerticesRequest{Query: "probe"}))
-		if connect.CodeOf(err) == connect.CodeResourceExhausted {
-			admissionErr = err
-			break
-		}
-		select {
-		case err := <-heavyDone:
-			t.Fatalf("heavy search finished before admission was observable: %v", err)
-		default:
-		}
+	select {
+	case <-ranking:
+	case err := <-heavyDone:
+		t.Fatalf("search ended before ranking: %v", err)
+	case <-ctx.Done():
+		t.Fatal("search did not reach ranking", ctx.Err())
 	}
-	if admissionErr == nil {
-		t.Fatal("did not observe admission saturation while heavy search was active")
+	_, admissionErr := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "probe"}))
+	if connect.CodeOf(admissionErr) != connect.CodeResourceExhausted {
+		t.Fatalf("probe while the only execution slot is occupied: %v", admissionErr)
 	}
 	admissionDetail := wireSearchErrorDetail(t, admissionErr)
 	if admissionDetail.GetReason() != pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED {

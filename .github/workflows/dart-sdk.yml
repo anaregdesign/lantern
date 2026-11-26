@@ -139,16 +139,16 @@ jobs:
         run: |
           go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
-          env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
+          env LANTERN_PORT=6380 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6380" LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-enabled.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
-          env LANTERN_PORT=6381 LANTERN_METRICS_ADDR=:9091 LANTERN_SEARCH_ENABLED=false \
+          env LANTERN_PORT=6381 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6381" LANTERN_METRICS_ADDR=:9091 LANTERN_SEARCH_ENABLED=false \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-disabled.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
-          env LANTERN_PORT=6382 LANTERN_METRICS_ADDR=:9092 LANTERN_SEARCH_POSITIONS=false \
+          env LANTERN_PORT=6382 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6382" LANTERN_METRICS_ADDR=:9092 LANTERN_SEARCH_POSITIONS=false \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-positions.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
-          env LANTERN_PORT=6383 LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
+          env LANTERN_PORT=6383 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6383" LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
             LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
@@ -392,7 +392,7 @@ jobs:
           go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-offline-authfixture" ./server/cmd/authfixture
           go test -c -buildvcs=true -o "$RUNNER_TEMP/lantern-offline-authority-provisioner" ./server/internal/security
-          env LANTERN_PORT=6398 LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
+          env LANTERN_PORT=6398 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6398" LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-offline" > "$RUNNER_TEMP/lantern-offline.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-offline.pid"
           for attempt in $(seq 1 60); do
@@ -598,7 +598,7 @@ jobs:
         run: |
           go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-sqlite-authfixture" ./server/cmd/authfixture
-          env LANTERN_PORT=6397 LANTERN_METRICS_ADDR=:9097 LANTERN_LOG_LEVEL=warn \
+          env LANTERN_PORT=6397 LANTERN_DATA_DIR="$RUNNER_TEMP/lantern-graph-6397" LANTERN_METRICS_ADDR=:9097 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-sqlite" > "$RUNNER_TEMP/lantern-sqlite.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-sqlite.pid"
           for attempt in $(seq 1 60); do

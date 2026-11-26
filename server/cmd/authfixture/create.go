@@ -14,7 +14,7 @@ func addFixtureEdgeCreate(result *fixture) error {
 		return errors.New("original OIDC input required")
 	}
 	result.security.Roles = fixtureRoles()
-	if result.Nodes[0].Environment["LANTERN_RECEIPT_WAL_MODE"] != "" {
+	if result.Nodes[0].Environment["LANTERN_RECEIPT_MODE"] != "" {
 		result.Nodes[0].Environment["LANTERN_RECEIPT_MAX_ENTRIES"] = "32768"
 		result.Nodes[0].Environment["LANTERN_RECEIPT_MAX_BYTES"] = "16777216"
 	}

@@ -1,24 +1,76 @@
-# Lantern — the in-memory Key-Vertex-Store
+# Lantern — the Key-Vertex-Store
 
-Lantern is an in-memory database for **live relationships**: typed values live
-at keys, directed weighted edges connect them, and both can expire. Read a
-value, query its neighborhood, and search its content through the same API.
+Lantern stores typed values at keys and connects them with directed, weighted
+edges. Values and edge contributions can each have a TTL. One API supports
+key lookups, neighborhood queries and full-text search.
+
+Each Server node uses [Tarp](https://github.com/anaregdesign/tarp) as its storage
+engine. Vertex and Edge data, replication progress and optional mutation receipts
+share one on-disk database. Restart the node with the same `LANTERN_DATA_DIR`
+to recover its graph and resume replication. Each replica owns its own volume.
+Tarp reclaims space in the background. After bulk changes settle, Lantern can
+group records by key to speed up scans that read values. See the
+[storage and compaction guide](docs/backup.md#compacting-the-node-database).
+
+## Try with curl
+
+From the repository root, build the Server and start a single node on loopback.
+Docker stores its database in a named volume.
+
+```sh
+docker build -t lantern:local .
+docker run --rm --name lantern-demo \
+  --mount type=volume,source=lantern-demo-data,target=/var/lib/lantern/runtime \
+  -p 127.0.0.1:6380:6380 \
+  lantern:local
+```
+
+Once the server starts, paste this into a second terminal:
+
+```sh
+rpc() {
+  curl -fsS -w '\n' \
+    -H 'Content-Type: application/json' \
+    -H 'Connect-Protocol-Version: 1' \
+    -d "$2" \
+    "http://localhost:6380/graph.v1.LanternService/$1"
+}
+
+# Store ordinary values at keys.
+rpc PutVertex '{"vertex":{"key":"user:42","string":"alice"}}'
+rpc PutVertex '{"vertex":{"key":"item:7","string":"desk lamp"}}'
+rpc GetVertex '{"key":"item:7"}'
+
+# Two events contribute to the same directed edge: 1.5 + 0.5 = 2.
+rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":1.5}}'
+rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":0.5}}'
+rpc GetEdge '{"tail":"user:42","head":"item:7"}'
+
+# Query the neighborhood and search the stored content.
+rpc Illuminate '{"seed":"user:42","bfs":{"step":1,"fanOut":10}}'
+rpc SearchVertices '{"query":"lamp","limit":10}'
+```
+
+You should see `PUT_OUTCOME_APPLIED_AND_LIVE` for both writes, `"desk lamp"`
+in the vertex read, and an edge `weight` of **2**. `Illuminate` returns both
+vertices and their connecting edge; search returns a hit for `item:7`.
+
+This demo uses local HTTP without auth. To stop the container:
+
+```sh
+docker stop lantern-demo
+```
+
+Run the same `docker run` command again and repeat `GetVertex` or `GetEdge`.
+The values and weight survive restart. Repeating the two Add calls increases
+the weight again.
 
 ## Try it in the Admin UI
 
-With **Git and Docker (including Compose)**, start the published stack:
-
-```sh
-git clone --depth 1 https://github.com/anaregdesign/lantern.git
-cd lantern/deploy/compose
-docker compose up -d --pull always --wait
-```
-
-No local build or SDK install is needed. Once startup completes, open
-**<http://localhost:8080/cli>**. Check that **Gateway** is
-`http://localhost:6380` (use **Reset** if you have saved another gateway).
-In a fresh demo, paste this block once into the **CLI command input**;
-commands run in order automatically:
+For the three-node Admin demo, follow the [Compose setup](deploy/compose/README.md)
+to select compatible images, prepare private peer state and start the local OFF
+stack. Open **<http://localhost:8080/cli>** and use the same-origin Gateway.
+In a fresh demo, paste this block once into the **CLI command input**:
 
 ```text
 put vertex user:42 "alice"
@@ -41,20 +93,12 @@ host ports `6380`–`6382`, `8080`, `6390`, and `9091`; keep them free for this
 demo. This demo uses HTTP without auth; use a trusted development network.
 The [Compose guide](deploy/compose/README.md) covers configuration.
 
-Stop the stack from the same directory:
-
-```sh
-docker compose down
-```
-
-This keeps the backup volumes for your next run. To discard the demo's stored
-snapshots as well, use `docker compose down -v`. Prefer an HTTP-only trial?
-See [Try with curl](#try-with-curl).
+The Compose guide also covers shutdown and restart with the same private state.
 
 ## What makes Lantern different
 
-**Cache semantics apply to the graph itself.** Use Lantern beside your system
-of record when the question is “what is related to this key **right now**?”
+Use TTLs to query relationships that matter **right now**. Keep vertices and
+edges without expiration when their history should survive restarts.
 
 | Capability | What it gives you |
 |---|---|
@@ -89,10 +133,10 @@ t=4  last contribution expires   → no live edge
 
 Expiration is a **step change**, not continuous decay. SDK `AddDecayingEdge`
 helpers approximate a geometric decay curve with staggered expirations.
-Reads exclude expired state; background GC reclaims it. TTL is optional per
-write: omitting expiration means permanent state for the lifetime of the graph.
-An edge is visible only while both endpoint vertices are live. Edge writes
-auto-create missing endpoints but do not extend an existing live vertex's TTL.
+Reads exclude expired state and background GC reclaims it. A value without
+expiration survives restart until it is replaced or deleted. An edge is
+visible only while both endpoint vertices are live. Operations such as
+`CreateEdge` and receipt-backed mixed graph mutations require live endpoints.
 
 ### Query relationships without fetching the whole graph
 
@@ -127,8 +171,8 @@ Before choosing it, account for these boundaries:
 
 | Boundary | Deployment consequence |
 |---|---|
-| **In-memory by default** | A restart loses the graph unless you configure recovery. Graph-only snapshots lose writes since the last snapshot; opt-in durable receipt-WAL mode has a separate WAL/backup recovery contract. See [backup and restore](docs/backup.md). |
-| **Full replicas, no sharding** | Every HA replica holds the entire graph. The working set must fit in one process's RAM. |
+| **Node-local storage** | Preserve each node’s Tarp data volume across restarts. Recover lost volumes through [backup and restore](docs/backup.md). |
+| **Full replicas** | Size each node's disk for the full graph, retained history and compaction. RAM usage includes graph metadata, storage caches and the optional full-text index. Cold Vertex values and Edge contributions can be read from disk. |
 | **Eventual consistency** | Leaderless replication provides HA, with asynchronous propagation between replicas. It is not linearizable; WAN replication is outside the supported scope. See the [replication contract](docs/replication.md). |
 | **Local graph queries** | Seed-local traversal and ranking are supported; whole-graph offline analytics are outside the intended workload. |
 | **Authentication and authorization** | Authentication defaults to OFF. OIDC uses Role-only read/write Allows on typed resources, with literal data-prefix scopes and default refusal, plus named machine credentials. HA uses a separate signed-membership mTLS workload plane. See [the authorization model](docs/authorization-model.md) and [ADR 0012](docs/decisions/0012-oidc-prefix-rbac.md) for the qualification boundary. |
@@ -156,51 +200,90 @@ go get github.com/anaregdesign/lantern/sdks/go
 ```
 
 ```go
-import "github.com/anaregdesign/lantern/sdks/go"
+package main
 
-cli, err := client.NewLantern("http://localhost:6380")
-if err != nil { log.Fatal(err) }
-defer cli.Close()
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
 
-ctx := context.Background()
+	"github.com/anaregdesign/lantern/sdks/go"
+)
 
-// Vertices accept string, int, float, bool, time.Time, time.Duration, []byte, nil.
-for _, input := range []struct{ key string; value any }{
-    {"user:42", "alice"},
-    {"item:7", "desk lamp"},
-} {
-    outcome, err := cli.PutVertex(ctx, input.key, input.value, time.Hour)
-    if err != nil || outcome != client.PutOutcomeAppliedAndLive {
-        log.Fatalf("PutVertex %q: outcome=%s err=%v", input.key, outcome, err)
-    }
-}
+func main() {
 
-// Each AddEdge appends a contribution with its own TTL and returns the live sum.
-_, _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
+	cli, err := client.NewLantern("http://localhost:6380")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cli.Close()
 
-// Approximate geometric decay with staggered TTL contributions (one AddEdges RPC).
-_, _ = cli.AddDecayingEdge(ctx, "user:42", "item:7",
-    client.DecayOpts{InitialWeight: 16, Ratio: 0.5, Steps: 5, Interval: time.Minute})
+	ctx := context.Background()
 
-// Walk: 2 hops, top-3 per hop, TF-IDF weighted.
-g, _ := cli.Illuminate(ctx, "user:42",
-    client.WithBFS(client.BFSOpts{Step: 2, FanOut: 3}),
-    client.WithWeighting(client.WeightingTFIDF))
+	// Vertices accept string, int, float, bool, time.Time, time.Duration, []byte, nil.
+	for _, input := range []struct {
+		key   string
+		value any
+	}{
+		{"user:42", "alice"},
+		{"item:7", "desk lamp"},
+	} {
+		outcome, err := cli.PutVertex(ctx, input.key, input.value, time.Hour)
+		if err != nil || outcome != client.PutOutcomeAppliedAndLive {
+			log.Fatalf("PutVertex %q: outcome=%s err=%v", input.key, outcome, err)
+		}
+	}
 
-// Full-text search: BM25-ranked hits over vertex content.
-hits, _ := cli.SearchVertices(ctx, "desk lamp", client.WithMatchMode(client.MatchAll))
+	// Each AddEdge appends a contribution with its own TTL and returns the live sum.
+	if _, err := cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute); err != nil {
+		log.Fatal(err)
+	}
 
-// Page beyond the per-call limit without collecting an unbounded slice.
-for hit, err := range cli.SearchVerticesIter(ctx, "desk lamp",
-    client.WithSearchLimit(50), client.WithFullVertex()) {
-    if err != nil { log.Fatal(err) }
-    fmt.Println(hit.Key, client.StringValue(hit.Vertex))
-}
+	// Approximate geometric decay with staggered TTL contributions (one AddEdges RPC).
+	if _, err := cli.AddDecayingEdge(ctx, "user:42", "item:7",
+		client.DecayOpts{InitialWeight: 16, Ratio: 0.5, Steps: 5, Interval: time.Minute}); err != nil {
+		log.Fatal(err)
+	}
 
-// Prefix scan: enumerate a namespace, auto-paginated.
-for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
-    if err != nil { log.Fatal(err) }
-    for _, v := range batch { fmt.Println(client.StringValue(v)) }
+	// Walk: 2 hops, top-3 per hop, TF-IDF weighted.
+	g, err := cli.Illuminate(ctx, "user:42",
+		client.WithBFS(client.BFSOpts{Step: 2, FanOut: 3}),
+		client.WithWeighting(client.WeightingTFIDF))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("BFS vertices:", len(g.Vertices))
+
+	// Full-text search: BM25-ranked hits over vertex content.
+	hits, err := cli.SearchVertices(ctx, "desk lamp", client.WithMatchMode(client.MatchAll))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Search hits:", len(hits))
+
+	// Page beyond the per-call limit without collecting an unbounded slice.
+	for hit, err := range cli.SearchVerticesIter(ctx, "desk lamp",
+		client.WithSearchLimit(50), client.WithFullVertex()) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		value, err := client.StringValue(hit.Vertex)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(hit.Key, value)
+	}
+
+	// Prefix scan: enumerate a namespace, auto-paginated.
+	for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, v := range batch {
+			fmt.Println(v.GetKey())
+		}
+	}
 }
 ```
 
@@ -259,11 +342,9 @@ try {
 JS values map to typed proto fields (`string`, `number`, `bigint`,
 `boolean`, `Date`, `Uint8Array`, `null`, plus explicit numeric wrappers);
 ordinary batch writes auto-chunk, while opt-in receipt batches remain
-unsplit. The browser build (`lantern-sdk/web`) is what powers the
-[admin SPA](admin/). Full API:
-[sdks/node/README.md](sdks/node/README.md).
-Published Node 0.13.0 includes targeted contribution Delete alongside
-the opt-in receipt APIs. See the SDK guide for safe mutation replay.
+unsplit. The browser build (`lantern-sdk/web`) powers the Admin UI.
+The [Node SDK guide](sdks/node/README.md) covers targeted contribution
+Delete and safe mutation replay.
 
 ### Dart / Flutter
 
@@ -271,23 +352,16 @@ the opt-in receipt APIs. See the SDK guide for safe mutation replay.
 Android/iOS-first SDK with immutable values, TTL-preserving Graph results,
 CRUD, scans, search, typed traversal, degree ranking, and explicit status.
 Its transport owns secure endpoints, token providers, deadlines, cancellation,
-bounded retry, typed failures, and auth-exempt Health probing. Published
-**0.5.1** includes opt-in receipts and targeted contribution Delete. Start with
-the [SDK guide and maintained Flutter example](sdks/dart/README.md).
+bounded retry, typed failures, and auth-exempt Health probing. The
+[SDK guide and Flutter example](sdks/dart/README.md) cover receipt-backed
+mutations and targeted contribution Delete.
 
 [`lantern_client_offline`](https://pub.dev/packages/lantern_client_offline) is
-an experimental, opt-in Repository layer for cached snapshots, pending
-overlays, and foreground replay. Published **0.5.0** adds targeted contribution
-Delete to receipt-backed conditional Vertex Put, exact Vertex/Edge Delete,
-and explicit-ID Edge Add. Published
-[**0.6.0**](https://github.com/anaregdesign/lantern/releases/tag/sdks/dart/offline/v0.6.0)
-adds the common bound data client and automatic foreground synchronization with
-hosted parent 0.5.1. It injects a transactional store, keeps credentials
-application-owned, respects TTL, and reconciles possibly dispatched writes
-status-first. See the [offline guide](sdks/dart/offline/README.md) for the
-qualified release contract. The in-memory reference store is test
-infrastructure; the [SQLite adapter](sdks/dart/offline_sqlite/README.md) remains
-a separate unpublished Flutter package.
+an opt-in Repository layer for cached snapshots, pending writes and automatic
+foreground synchronization. It accepts a client-side transactional store,
+respects TTLs and checks the status of possibly dispatched writes before replay.
+The application owns its credentials. See the [offline SDK guide](sdks/dart/offline/README.md)
+and the separate [Flutter SQLite adapter](sdks/dart/offline_sqlite/README.md).
 
 ### Rust
 
@@ -329,56 +403,6 @@ inside the REPL for traversal defaults, bounds, and examples. Reads emit JSON
 by default; search also supports NDJSON and TSV. The [Admin UI](admin/README.md)
 adds graph visualization, data browsing, search, and operational status.
 
-## Try with curl
-
-You need **Docker, curl, and a POSIX shell**. No checkout, build, or SDK install
-is required. Start a released server in one terminal:
-
-```sh
-docker run --rm --name lantern-demo \
-  -p 127.0.0.1:6380:6380 \
-  ghcr.io/anaregdesign/lantern:v0.35.4
-```
-
-Once the server starts, paste this into a second terminal:
-
-```sh
-rpc() {
-  curl -fsS -w '\n' \
-    -H 'Content-Type: application/json' \
-    -H 'Connect-Protocol-Version: 1' \
-    -d "$2" \
-    "http://localhost:6380/graph.v1.LanternService/$1"
-}
-
-# Store ordinary values at keys.
-rpc PutVertex '{"vertex":{"key":"user:42","string":"alice"}}'
-rpc PutVertex '{"vertex":{"key":"item:7","string":"desk lamp"}}'
-rpc GetVertex '{"key":"item:7"}'
-
-# Two events contribute to the same directed edge: 1.5 + 0.5 = 2.
-rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":1.5}}'
-rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":0.5}}'
-rpc GetEdge '{"tail":"user:42","head":"item:7"}'
-
-# Query the neighborhood and search the stored content.
-rpc Illuminate '{"seed":"user:42","bfs":{"step":1,"fanOut":10}}'
-rpc SearchVertices '{"query":"lamp","limit":10}'
-```
-
-You should see `PUT_OUTCOME_APPLIED_AND_LIVE` for both writes, `"desk lamp"`
-in the vertex read, and an edge `weight` of **2**. `Illuminate` returns both
-vertices and their connecting edge; search returns a hit for `item:7`.
-
-This demo uses local HTTP without auth and omits expiration, so its values
-remain until deleted or the container stops. If port `6380` is occupied, change
-the host port in `-p` and the matching port in the `rpc` URL. To stop and discard
-the demo:
-
-```sh
-docker stop lantern-demo
-```
-
 ## API and safe mutation replay
 
 The [protobuf contract](proto/graph/v1/graph.proto) is the full API reference.
@@ -390,7 +414,7 @@ Exact reads/writes/deletes have singular and plural forms:
 | Edges | Get live weight, additive Add, replacement Put, whole-edge Delete, targeted contribution Delete |
 | Enumeration | Cursor-paginated vertex/key/edge scans, prefix count, capped prefix Delete with dry-run |
 | Queries | Search, `Illuminate` traversal families, degree ranking |
-| Operations | Health, server/replication status, backup stream, CDC Subscribe/Snapshot, receipt capability/status |
+| Operations | Health, server/replication status, public graph export, scoped CDC (`WatchChanges`), receipt capability/status |
 
 The source candidate also provides receipt-required [mixed graph mutations](docs/mixed-graph-mutations.md): unconditional Vertex Puts followed by explicit-ID Edge Adds, with one local atomic publication and per-effect HA conflict resolution.
 
@@ -407,17 +431,10 @@ published support.
 
 ### Docker Compose: cluster and Admin UI
 
-From a repository checkout:
-
-```sh
-cd deploy/compose
-docker compose up -d --pull always
-```
-
-Open **<http://localhost:8080>**. The default starts one OFF Server on loopback
-`6380` and Admin. HA requires the explicit signed-membership overlay; MCP and
-Prometheus are opt-in local profiles. See the
-[Compose guide](deploy/compose/README.md) for configuration and cleanup.
+The OFF and OIDC stacks each run three Servers with signed peer membership,
+Admin, MCP and Prometheus. Each Server owns its graph directory and backup
+destination. Follow the [Compose guide](deploy/compose/README.md) for first
+initialization and restart.
 
 For OIDC, supply [one human configuration](deploy/examples/auth/README.md#environment-json-startup)
 for provisioning, one-time initialization and every start. Identity keys and
@@ -455,12 +472,13 @@ defines defaults, validation, limits, and recovery requirements. Common entries:
 | Variable | Default | Purpose |
 |---|---|---|
 | `LANTERN_PORT` | `6380` | RPC listener |
+| `LANTERN_DATA_DIR` | `./tarp.db` for the binary | Node-private database directory. The container uses `/var/lib/lantern/runtime/graph`. |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | Background cleanup interval |
 | `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` (unlimited) | Graph-admission soft caps; size causal retention budgets and `GOMEMLIMIT` too |
 | `LANTERN_AUTH_MODE` | `off` | `oidc` requires complete native security/Issuer configuration; retired static-token settings are rejected |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` | unset | TLS; `LANTERN_TLS_CLIENT_CA_FILE` enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | empty | Browser origin allow-list |
-| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Default volatile runtime, or configured `fresh` / `restart` durable receipt runtime |
+| `LANTERN_RECEIPT_MODE` | `graph-only` | Select graph-only storage or enable receipts in the same Tarp database with `fresh` / `restart` |
 | `LANTERN_METRICS_ADDR` | `:9090` | Prometheus and HTTP health listener |
 | `LANTERN_STRICT_CONFIG` | `false` | Reject malformed/unknown config when enabled |
 
@@ -479,9 +497,10 @@ and the [HA runbook](docs/ha-runbook.md) for operational signals.
 ```mermaid
 flowchart LR
     C["SDKs · CLI · Admin · MCP"] --> S["Connect / gRPC / gRPC-Web"]
-    S --> G["In-memory vertices + edges"]
-    S --> I["BM25 search index"]
-    S <--> R["Replication and mutation log"]
+    S --> G[("Node-local Tarp database · graph, relay and receipts")]
+    S --> I["Optional in-memory BM25 index"]
+    S <--> R["Lantern replication"]
+    R <--> G
     R <--> P["Full peer replicas (optional HA)"]
 ```
 
@@ -492,7 +511,7 @@ Dart/Rust SDKs, and Bun-managed TypeScript packages. The server depends on
 | Path | Role |
 |---|---|
 | [`proto/`](proto/) / [`pb/`](pb/) | Shared schema / generated Go protobuf and Connect stubs |
-| [`core/`](core/) | Graph, cache, collections, concurrency, and NLP building blocks |
+| [`core/`](core/) | Tarp graph storage, graph operations, collections, concurrency and NLP building blocks |
 | [`server/`](server/) | Data/replication services, internal authentication adapters, bounded search/paging, and runtime assembly |
 | [`sdks/`](sdks/) | Independently consumable client packages |
 | [`cli/`](cli/) / [`admin/`](admin/) / [`mcp/`](mcp/) | CLI, browser console, and agent-facing MCP server |

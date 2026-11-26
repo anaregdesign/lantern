@@ -141,7 +141,7 @@ func (c *GraphCache[S, T]) collectEdgeScanRowsLocked(
 	tailPrefix, headPrefix, afterTail, afterHead string,
 	limit int,
 ) (snapshot []edgeScanRow[S], enabled, collected bool) {
-	if c.prefixIndex == nil {
+	if c.prefixExtract == nil {
 		return nil, false, false
 	}
 	collected = true
@@ -158,7 +158,7 @@ func (c *GraphCache[S, T]) collectEdgeScanRowsLocked(
 		return !full()
 	}
 	tailWalk := func(visit func(string) bool) {
-		walkVisiblePrefix(ctx, c.prefixIndex, tailPrefix, afterTail, true, false, true, visit)
+		c.walkVertexPrefix(ctx, tailPrefix, afterTail, true, false, true, visit)
 	}
 	tailWalk(func(tailProj string) bool {
 		if err := ctx.Err(); err != nil {
@@ -172,13 +172,16 @@ func (c *GraphCache[S, T]) collectEdgeScanRowsLocked(
 		if !ok {
 			return true
 		}
-		heads, ok := c.edges.headsOf(tail)
-		if !ok || len(heads) == 0 {
-			return true
-		}
 		headAfter := ""
 		if tailProj == afterTail {
 			headAfter = afterHead
+		}
+		if c.storagePrefixOrder && c.storage != nil {
+			return c.walkStoredTailHeads(ctx, tail, tailProj, headPrefix, headAfter, collect)
+		}
+		heads, ok := c.edges.headsOf(tail)
+		if !ok || len(heads) == 0 {
+			return true
 		}
 		if c.headByTail != nil {
 			c.scanTailHeadsFastView(ctx, tail, tailProj, headPrefix, headAfter, heads, collect)
@@ -367,6 +370,9 @@ func (c *GraphCache[S, T]) deleteEdgesByPrefixKeys(ctx context.Context, tailPref
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
+	if err := c.StorageError(); err != nil {
+		return nil, err
+	}
 	if !enabled || !collected {
 		if preflight != nil {
 			return nil, ctx.Err()
@@ -442,6 +448,9 @@ func (c *GraphCache[S, T]) deleteEdgesByPrefixHLC(ctx context.Context, tailPrefi
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
+	if err := c.StorageError(); err != nil {
+		return nil, err
+	}
 	if !enabled {
 		if preflight != nil {
 			return nil, ctx.Err()

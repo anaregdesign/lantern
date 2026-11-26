@@ -1,8 +1,9 @@
 # server — Lantern Connect server
 
-The `lantern` server: an in-memory `key-vertex-store` (graph-based KVS)
-with replication, exposed on **`:6380`** by default. This module produces
-the `lantern` binary; the root module's `Dockerfile` builds and ships it.
+The `lantern` server exposes a replicated graph key-value store on **`:6380`**
+by default. Each node stores vertices, edges and replication progress in one
+local [Tarp](https://github.com/anaregdesign/tarp) database. This module
+produces the `lantern` binary shipped by the root module's `Dockerfile`.
 
 The primary listener speaks **Connect** (Connect protocol, gRPC, and
 gRPC-Web all multiplexed on the same h2c port). The pre-#347 split
@@ -25,7 +26,8 @@ go build -o lantern ./cmd
 go run ./cmd
 
 # Container image (published per root tag)
-docker run --rm -p 6380:6380 -p 9090:9090 ghcr.io/anaregdesign/lantern:latest
+docker run --rm -p 6380:6380 -p 9090:9090 \
+  -v lantern-data:/var/lib/lantern/runtime ghcr.io/anaregdesign/lantern:latest
 ```
 
 The server listens on:
@@ -54,7 +56,7 @@ cohort do not qualify as a singleton.
 | --- | --- |
 | `cmd/` | `main`, the `App` composition root, and `wire`-generated graph (`wire.go` / `wire_gen.go`). |
 | `service/` | Connect adapters and `LanternServer` HTTP lifecycle, GC and graceful shutdown; construction aliases for callers outside the internal-package boundary. |
-| `internal/dataruntime/` | `Executor`, replication producer, private publication/receipt state, committed reads, Snapshot capture/install, WAL recovery and runtime certification. |
+| `internal/dataruntime/` | `Executor`, replication producer, private publication/receipt state, committed reads, Snapshot capture/install, Tarp recovery and runtime certification. |
 | `provider/` | Wire providers — `Config` aggregation, `LanternListener` (the h2c http.Server wired with the Connect mux + grpchealth + grpcreflect + CORS + otelhttp), Connect interceptors (logging, metrics, slow-rpc, validation, rate-limit), TLS loader, Prometheus registry, metrics HTTP server, OTel tracing, readiness gate, replication pump, anti-entropy driver. |
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
 | `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
@@ -191,6 +193,7 @@ failure (#847). The most common knobs:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LANTERN_PORT` | `6380` | Primary Lantern RPC listen port (Connect / gRPC / gRPC-Web multiplexed on h2c). |
+| `LANTERN_DATA_DIR` | `tarp.db` (`/var/lib/lantern/runtime/graph` in the container image) | Node-owned database directory. Reuse it when restarting the same node. |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes (omitted TTL/expiration ⇒ permanent; decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
 | `LANTERN_GC_EDGE_BUDGET` | `0` | Maximum tail buckets swept per tick; `0` keeps the full sweep. A high-degree tail can still dominate a bounded tick. Monitor tail backlog and reclamation lag when enabling. |
@@ -239,12 +242,12 @@ closed while an authenticated administrator repairs it. Typed managed adoption
 and Admin integration retain their independent authority requirements (#1996).
 
 Public edge Put/Add RPCs accept only finite source weights, for both singular and
-plural calls. Peer mutations and restored Snapshot/archive contributions follow
+plural calls. Peer mutations and private Snapshot contributions follow
 the same rule. Finite contributions may still overflow to an infinite effective
 Add weight; the server does not normalize that result or an authoritative
-receipt's original four-byte result (including NaN). Direct startup
-`RestoreEdges` can import a folded infinite backup weight; public `PutEdges`
-cannot treat that derived value as a new finite source.
+receipt's original four-byte result (including NaN). Tarp recovery preserves
+the accepted sources. A graph-only peer Snapshot can also carry a folded
+aggregate explicitly. Public `PutEdges` requires a finite new source.
 
 Replication-specific variables (`LANTERN_PEERS`, `LANTERN_MAX_REPLICATION_LAG`,
 anti-entropy intervals, etc.) are documented in
@@ -264,8 +267,8 @@ Receipt writes are also bounded by the largest receiver-local relay of their
 same evidence, not just the origin's possibly sparse frame. A restart fails
 before listener creation if the configured send cap cannot carry any retained
 relay; intrinsic receipt wire bounds are checked even with an unlimited cap.
-Receipt-WAL's internal 8 MiB bound and Snapshot's separately bounded transport
-do not raise this cap. Full-mutation Subscribe requires binary protobuf
+Receipt bodies and receipt wire frames each have an independent 8 MiB ceiling.
+The configured send cap still applies. Snapshot has its own transport limits. Full-mutation Subscribe requires binary protobuf
 (Connect, gRPC, or binary gRPC-Web); ProtoJSON is supported only for
 identity-only Subscribe, while gRPC-Web text is unsupported. Configure each
 peer/client read cap to accept at least the maximum frame its senders admit.
@@ -292,7 +295,7 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_gc_duration_seconds` | histogram | — | GC tick wall-clock. |
 | `lantern_gc_edge_backlog_tails` | gauge | — | Tails not yet visited in the current budgeted sweep cycle; `0` when the full sweep is selected or a cycle completes. |
 | `lantern_build_info` | gauge | `version`, `commit`, `go_version` | Always 1. |
-| `lantern_mutation_log_entries_total` | counter | — | Successful WAL appends. |
+| `lantern_mutation_log_entries_total` | counter | — | Mutation entries appended to the committed relay log. |
 | `lantern_mutation_log_capacity` | gauge | — | Configured ring slots. |
 | `lantern_subscribe_active_streams` | gauge | — | Active `Subscribe` streams. |
 | `lantern_subscribe_dropped_total` | counter | `reason` | `Subscribe` aborts. |
@@ -416,7 +419,7 @@ standing up a metrics stack:
   Backup consumes runtime-owned capture/restore contracts; the runtime imports
   neither service nor backup. See [ownership and lock order](../docs/data-runtime-ownership.md).
 - `internal/dataruntime -> internal/query` delegates bounded search and retained result paging.
-  Query consumes a narrow Reader; the executor retains Snapshot/WAL consistency,
+  Query consumes a narrow Reader; the executor retains consistent graph and relay cuts,
   authorized contexts, namespace cursor bindings and payload detachment. Fresh
   search captures may retry; retained page reads run at most once.
 

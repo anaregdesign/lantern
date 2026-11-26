@@ -1,6 +1,6 @@
 # Lantern Admin
 
-Browser-based control surface for the [Lantern](../README.md) in-memory graph
+Browser-based control surface for the [Lantern](../README.md) graph
 KVS. Built with React Router (SPA mode), Fluent UI v9, Sigma.js, and
 TypeScript.
 

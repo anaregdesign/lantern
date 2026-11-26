@@ -453,11 +453,11 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	m := &DomainMetrics{
 		vertices: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_vertices",
-			Help: "Number of vertices currently held by the in-memory graph cache.",
+			Help: "Number of vertices tracked by the node graph.",
 		}),
 		edges: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_edges",
-			Help: "Number of edges currently held by the in-memory graph cache.",
+			Help: "Number of edges tracked by the node graph.",
 		}),
 		expirations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "lantern_ttl_expirations_total",

@@ -16,7 +16,6 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/dataruntime"
-	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/query"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -44,7 +43,6 @@ type App struct {
 	drainDelay      time.Duration
 	shutdownPlan    *service.ShutdownPlan
 	backupper       *backup.Backupper
-	restoreReq      bool
 	pump            *replication.Pump
 	llm             *provider.LLMEngine
 	antiEntropy     *replication.AntiEntropy
@@ -94,9 +92,7 @@ func newApp(
 	gate *readiness.Gate,
 	sc provider.ShutdownConfig,
 	backupper *backup.Backupper,
-	bcfg backup.Config,
 	pc provider.PeerConfig,
-	rc provider.ReplicationConfig,
 	engine *provider.LLMEngine,
 	runtime *dataruntime.ServingRuntime,
 	peerServer *provider.PeerPlaneServer,
@@ -124,7 +120,7 @@ func newApp(
 	// discovery configured.
 	enabled := peerPlane.ListenAddress != "" || len(pc.Peers) > 0 || pc.Discovery == "dns"
 	svc.WithReplicationStatus(pump, dataruntime.ReplicationStatusInfo{
-		NodeID:  rc.NodeID,
+		NodeID:  runtime.NodeID(),
 		Enabled: enabled,
 	})
 
@@ -147,7 +143,6 @@ func newApp(
 		drainDelay:      sc.DrainDelay,
 		shutdownPlan:    shutdownPlan,
 		backupper:       backupper,
-		restoreReq:      bcfg.RestoreRequired,
 		pump:            pump,
 		antiEntropy:     antiEntropy,
 		runtime:         runtime,
@@ -303,24 +298,6 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Restore-on-startup (#770, #779) runs BEFORE any listener serves: the
-	// newest mounted dump is replayed as a baseline so the node never begins
-	// serving an empty graph. When peers exist the subsequent bootstrap
-	// overlays this baseline via HLC ordering (newer peer state wins per key,
-	// so replicas take priority); a solo instance or a whole-cluster cold
-	// start keeps the restored baseline as the recovered state. The Backupper
-	// no-ops when no directory is configured or
-	// LANTERN_BACKUP_RESTORE_ON_START is false. A restore failure fails boot only when
-	// LANTERN_BACKUP_RESTORE_REQUIRED is set.
-	if !a.runtime.DurableReceiptWAL() {
-		if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {
-			if a.restoreReq || errors.Is(err, keyspace.ErrNamespaceFormat) {
-				return fmt.Errorf("restore-on-startup: %w", err)
-			}
-			a.logger.Warn("restore-on-startup failed; starting with current state", slog.Any("err", err))
-		}
-	}
-
 	// The overall ("") gRPC health entry is owned by the readiness Gate
 	// (#188): in single-instance mode it is already SERVING; in
 	// multi-peer mode it stays NOT_SERVING until bootstrap completes
@@ -358,7 +335,7 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 		})
 	}
 	// Ready-to-serve instant for GetServerStatus.started_at/uptime (#943).
-	// Called AFTER RestoreOnStartup (which can take arbitrarily long) and
+	// Set after graph recovery and runtime construction,
 	// right before the Connect listener starts accepting, so uptime reflects
 	// "ready to serve" rather than wire-init time. MarkStarted is
 	// sync.Once-guarded, so a hot-reload that re-enters Run does not reset it.
@@ -471,6 +448,12 @@ func main() {
 func runMain() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == "compact-graph-store" {
+		return compactGraphStore(ctx, os.Args[2:], os.Stdout)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "restore-graph-store" {
+		return restoreGraphStore(ctx, os.Args[2:], os.Stdout)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "provision-security" {
 		return provisionSecurity(ctx, os.Args[2:], os.Stdout)
 	}
@@ -517,7 +500,7 @@ func runMain() error {
 		slog.Duration("default_ttl", app.cfg.Cache.TTL),
 		slog.String("metrics_addr", app.cfg.Observability.MetricsAddr),
 		slog.Bool("reflection", app.cfg.Observability.EnableReflection),
-		slog.String("receipt_wal_mode", string(app.cfg.ReceiptWAL.Mode)),
+		slog.String("receipt_wal_mode", string(app.cfg.Receipts.Mode)),
 	)
 
 	if err := app.Run(ctx); err != nil {

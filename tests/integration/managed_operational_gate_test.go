@@ -234,7 +234,7 @@ func (a *currentOperationalAcceptance) Adopt(t *testing.T) {
 	// The first resident attempt may coexist. No exact file count or pruning
 	// claim is inferred from this one explicit real producer invocation.
 	produced, err := a.nodes[0].Backupper.BackupNow(a.ctx)
-	if err != nil || produced.Bytes == 0 || produced.Vertices < len(a.keys) {
+	if err != nil || produced.Bytes == 0 || produced.Members != 2 {
 		t.Fatal("managed production did not create an actual backup", produced, err)
 	}
 	capacity := &pb.OperationalCapacityValues{GcEdgeBudget: 7, GcIntervalSeconds: 3600, MaxVertices: 1, MaxEdges: 1, MaxVertexCausalEntries: 1, MaxEdgeCausalEntries: 1}

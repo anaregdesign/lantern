@@ -360,7 +360,7 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		return nil, receiptStoreError(err)
 	}
 	graphTx.Apply()
-	err = publication.commit(envelope, ts, tx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, tx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
@@ -471,7 +471,7 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if err := s.validateReplicationFrame(localEnvelope); err != nil {
 		return err
 	}
-	if prior, ok := pending.receiptWAL.(*edgeDeleteReceiptEnvelope); ok &&
+	if prior, ok := pending.receipts.(*edgeDeleteReceiptEnvelope); ok &&
 		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
@@ -492,8 +492,8 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	// Retain the exact receiver-local evidence before entering the WAL. On an
 	// indeterminate return this is the recovery identity while the service
 	// faults reads, writes, status, Snapshot, and Subscribe.
-	pending.receiptWAL = localEnvelope
-	err = publication.commit(localEnvelope, ts, tx, graphTx.Commit, originTx)
+	pending.receipts = localEnvelope
+	err = publication.commit(localEnvelope, ts, tx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return connect.NewError(connect.CodeResourceExhausted, err)

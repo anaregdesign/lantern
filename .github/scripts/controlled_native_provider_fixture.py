@@ -1070,7 +1070,7 @@ def run(plan, plan_sha256, approval, approval_sha256, dispatch_refs=()):
 
     def environment(index, mode, label=None):
         values = {"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_CONFIG_JSON": json.dumps(configs[index], separators=(",", ":")),
-                  "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_BACKUP_ENABLED": "false",
+                  "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_DATA_DIR": "/state/graph", "LANTERN_BACKUP_ENABLED": "false",
                   "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "0", "LANTERN_LOG_LEVEL": "warn"}
         if not renewing or label != "provision":
             child = child_input(plan, configs[index], admitted, mode, capacity)

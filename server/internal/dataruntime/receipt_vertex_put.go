@@ -506,7 +506,7 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	if err := storeTx.Stage(); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
@@ -610,7 +610,7 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 	if err := s.validateReplicationFrame(localEnvelope); err != nil {
 		return err
 	}
-	if prior, ok := pending.receiptWAL.(*vertexPutReceiptEnvelope); ok &&
+	if prior, ok := pending.receipts.(*vertexPutReceiptEnvelope); ok &&
 		sameVertexPutAccepted(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
@@ -627,8 +627,8 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
-	pending.receiptWAL = localEnvelope
-	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx)
+	pending.receipts = localEnvelope
+	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return connect.NewError(connect.CodeResourceExhausted, err)

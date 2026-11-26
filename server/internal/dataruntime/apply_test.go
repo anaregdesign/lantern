@@ -374,6 +374,17 @@ func TestApplyMutation_SnapshotFaultRejectsPeerBeforeQueueOrStore(t *testing.T) 
 			check("active Snapshot")
 			finish(false)
 			check("failed Snapshot")
+			if durable {
+				retry, err := svc.BeginSnapshotInstallChecked(t.Context(), func() error { return nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := retry(true); err == nil {
+					t.Fatal("graph-only install repaired a receipt database")
+				}
+				check("receipt state still requires a whole-state Snapshot")
+				return
+			}
 			retry, err := svc.BeginSnapshotInstall()
 			if err != nil {
 				t.Fatal(err)

@@ -40,7 +40,7 @@ def main():
         "native_source_config_sha256": digest(args.config), "events": [], "phases": [], "volumes": {},
     }
     if args.mixed_ha:
-        receipt["scope"] = "three current-v2 product containers with independent data WALs and real private replication; bounded functional mixed HA only"
+        receipt["scope"] = "three current-v2 product containers with independent Tarp stores and real private replication; bounded functional mixed HA only"
     label = "lantern.task=1610-mixed-ha" if args.mixed_ha else "lantern.task=1727-custody"
     containers, networks = [], []
     sequence = 0
@@ -145,8 +145,8 @@ def main():
         settings = {
             "LANTERN_AUTH_MODE": "oidc",
             "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "", "LANTERN_NODE_ID": f"{node:032x}",
-            "LANTERN_RECEIPT_WAL_MODE": "restart" if mode == "resume" else "fresh",
-            "LANTERN_RECEIPT_WAL_PATH": "/journal/business.wal", "LANTERN_RECEIPT_EPOCH": "42424242424242424242424242424242",
+            "LANTERN_RECEIPT_MODE": "restart" if mode == "resume" else "fresh",
+            "LANTERN_DATA_DIR": "/journal/graph", "LANTERN_RECEIPT_EPOCH": "42424242424242424242424242424242",
             "LANTERN_RECEIPT_RETENTION": "1h", "LANTERN_RECEIPT_MAX_ENTRIES": "128", "LANTERN_RECEIPT_MAX_BYTES": "1048576",
             "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "1",
             "LANTERN_CURRENT_CUSTODY_GATE": "1", "LANTERN_CURRENT_CUSTODY_NODE_URL": f"https://{hosts[node-1]}:6380",
@@ -263,7 +263,7 @@ def main():
             phase("mixed-full-reconnected")
             for node in (1, 2, 3):
                 stop_node(node, 2, f"mixed-first-clean-{node}")
-            phase("mixed-closed-wal")
+            phase("mixed-closed-store")
             nodes = {node: start_node(node, "resume") for node in (1, 2, 3)}
             phase("mixed-restarted")
             for node in (1, 2, 3):

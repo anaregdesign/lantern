@@ -13,6 +13,7 @@ type stagedVertexSlot[T any] struct {
 	value      T
 	expiration time.Time
 	present    bool
+	cold       bool
 }
 
 type stagedVertexSearchBefore[T any] struct {
@@ -185,9 +186,9 @@ func (c *GraphCache[S, T]) prepareStagedVertexMutationLocked(
 		applicationTime: applicationTime,
 	}
 	for _, key := range unique {
-		value, expiration, present := c.vertices.PeekWithExpiration(key)
+		value, expiration, present, cold := c.vertices.PeekResident(key)
 		stage.slots[key] = stagedVertexSlot[T]{
-			value: value, expiration: expiration, present: present,
+			value: value, expiration: expiration, present: present, cold: cold,
 		}
 		if c.prefixIndex != nil {
 			projected, ok := projections[key]

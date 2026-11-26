@@ -989,6 +989,59 @@ async fn endpoint_and_plaintext_credential_policy_fail_closed() {
 }
 
 #[tokio::test]
+async fn native_health_tls_checks_server_root_and_client_identity() -> TestResult {
+    use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
+
+    let certs = TestCertificates::generate()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+    let incoming = futures_util::stream::unfold(listener, |listener| async {
+        let accepted = listener.accept().await.map(|(socket, _)| socket);
+        Some((accepted, listener))
+    });
+    let tls = ServerTlsConfig::new()
+        .identity(Identity::from_pem(
+            fs::read(certs.files.path().join("server.pem"))?,
+            fs::read(certs.files.path().join("server.key"))?,
+        ))
+        .client_ca_root(Certificate::from_pem(&certs.ca_pem));
+    let (reporter, health) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status(HEALTH_SERVICE, tonic_health::ServingStatus::Serving)
+        .await;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .tls_config(tls)?
+            .serve_with_incoming_shutdown(health, incoming, async {
+                let _ = stopped.await;
+            }),
+    );
+    for (root, identity) in [
+        (&certs.other_ca_pem, true),
+        (&certs.ca_pem, false),
+        (&certs.ca_pem, true),
+    ] {
+        let mut builder = LanternClient::builder(&endpoint).tls_private_ca_pem(root)?;
+        if identity {
+            builder = builder.tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)?;
+        }
+        let result = match builder.connect().await {
+            Ok(client) => client.ping().await,
+            Err(err) => Err(err),
+        };
+        assert_eq!(
+            result.is_ok(),
+            identity && root == &certs.ca_pem,
+            "health handshake: {result:?}"
+        );
+    }
+    let _ = stop.send(());
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_h2c_limits_search_and_stream() -> TestResult {
     let mut server = GoServer::start(&[("LANTERN_SEARCH_ENABLED", "false")])?;

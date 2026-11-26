@@ -77,7 +77,7 @@ func initializeSecurityStorage(config SecurityConfig) error {
 	if config.ProvisionedSnapshotSpool == nil || validateProvisionedSnapshotSpool(*config.ProvisionedSnapshotSpool, config.StateDirectory) != nil {
 		return errSecurityProvisioning
 	}
-	spool, err := selectGraphSnapshotSpoolForSecurity(config.environment, config, loadReceiptWALConfig(config.environment).Mode)
+	spool, err := selectGraphSnapshotSpoolForSecurity(config.environment, config, loadReceiptConfig(config.environment).Mode)
 	if err != nil {
 		return err
 	}

@@ -350,9 +350,10 @@ keys/edges are not deleted. Use an empty destination for an exact
 fully validated earlier Put response counts; its failed batch might have
 applied, and an expiration may lapse before a later pass.
 
-Backup contains neither per-contribution identities nor decay history,
-causal frontiers, removal floors, receipt Store/WAL, or mutation receipts.
-It cannot reconstruct those from a folded Edge. Finite folded weights
+This public backup contains vertices and folded edges. The Server's
+[private node backup](../../docs/backup.md) preserves retained contributions,
+causal frontiers and removal floors, plus mutation receipts on receipt-enabled
+nodes. Finite folded weights
 are restorable through public Put; a server can fold finite contributions
 into **NaN or infinity**, but public `PutEdges` rejects nonfinite source
 weights. Restore therefore returns `UnsupportedBackup` **before any Put**
@@ -444,13 +445,10 @@ LANTERN_RUST_TEST_AUTH_FIXTURE="$PWD/target/lantern-authfixture" \
 Local authenticated Server fixtures require the supported Darwin/arm64 or
 Linux/amd64/arm64 native authority profile and its declared read-only source
 input; see the [platform and time contract](../../docs/security-current-authority.md).
-Windows retains native roots, HTTPS, OFF+mTLS and ordinary wire cases, plus
-file/ACL/process checks and explicit unsupported-authority refusal. The seven
-local OIDC Server wire cases execute on Linux/macOS; all SDK tests still compile
-on Windows. A Windows SDK can use
-Bearer credentials with a supported remote OIDC Server; its client support does
-not grant a Windows Server authority profile. Hosted CI shares explicit source
-input preparation with configured-source-integration and does not change the production factory or clocks.
+Hosted CI runs production Server wire conformance on Linux. The Rust SDK
+also tests native roots, TLS server identity and mutual TLS on Windows using
+a local gRPC Health service. Production Server conformance and configured
+time-source integration use the declared read-only source input.
 
 The public scoped-CDC and current-authority cases use separately provisioned
 root Go fixtures. `TestAuth_OIDCRustScopedChangesFacadeRealConnect` runs the
@@ -467,7 +465,7 @@ receipt fails acceptance. See the [SDK4 qualification contract](../../CONTRIBUTI
 
 Tests exercise the explicit single-instance h2c exception, verified TLS,
 mTLS, bearer rotation, authenticated two-node HA streaming, retained-log
-gaps, receipt-WAL envelope negotiation, subscriber cancellation, graph
+gaps, receipt envelope negotiation, subscriber cancellation, graph
 backup/restore, structured search failures, a response above Tonic's
 4-MiB default, all exact values/expiration boundaries, bounded CRUD
 chunks, failure reporting, and retained-ID Add semantics over the

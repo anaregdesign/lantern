@@ -16,6 +16,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
+	"github.com/anaregdesign/lantern/server/replication"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -30,14 +31,14 @@ const (
 )
 
 type pendingMutation struct {
-	mutation   *pb.Mutation
-	receipt    receiptMutationEnvelope
-	receiptWAL receiptMutationEnvelope
-	walOp      mutationlog.MutationOp
-	size       int
-	applied    bool // graph committed; retry the log append without applying twice
-	faulted    bool // relay WAL failed after graph apply; all CDC streams are gapped
-	opName     string
+	mutation *pb.Mutation
+	receipt  receiptMutationEnvelope
+	receipts receiptMutationEnvelope
+	walOp    mutationlog.MutationOp
+	size     int
+	applied  bool // graph committed; retry the log append without applying twice
+	faulted  bool // relay WAL failed after graph apply; all CDC streams are gapped
+	opName   string
 }
 
 type receiptMutationEnvelope interface {
@@ -238,6 +239,23 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 		s.snapshotInstallMu.Unlock()
 		return nil, err
 	}
+	if s.runtime != nil && s.runtime.tarp != nil && (s.snapshotInstallFaulted || s.receiptCommitFaulted || s.publicationFaultCount != 0) {
+		retryable, err := s.canRetryTarpSnapshot(ctx)
+		if retryable && err == nil {
+			err = validate()
+		}
+		if !retryable || err != nil {
+			gate.Unlock()
+			s.snapshotReadCutMu.Unlock()
+			s.snapshotInstallMu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			return nil, publicationGapError()
+		}
+	}
+	s.snapshotReplayStarted = replication.SnapshotReplayStarted(ctx)
+	s.snapshotGenerationAttempted = false
 	s.snapshotInstallSequence++
 	attemptID := s.snapshotInstallSequence
 	// This names the Snapshot latch, not the first global publication fault.
@@ -318,6 +336,15 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 				result = "publication_gate_rejected"
 				return err
 			}
+			if s.runtime != nil && s.runtime.tarp != nil {
+				s.snapshotGenerationAttempted = true
+				if err := s.commitTarpGraphSnapshot(ctx, validate); err != nil {
+					gate.Unlock()
+					s.snapshotReadCutMu.Unlock()
+					result = "storage_install_failed"
+					return err
+				}
+			}
 			s.snapshotInstallFaulted = false
 			s.publicationFaultCount--
 			if s.publicationFaultCount == 0 {
@@ -328,8 +355,19 @@ func (s *Executor) BeginSnapshotInstallChecked(ctx context.Context, check func()
 			finishStateKnown = true
 			receiptFaultAfter = s.receiptCommitFaulted
 			finishFaultCount = s.publicationFaultCount
+			var catchupErr error
+			if s.runtime != nil && s.runtime.tarp != nil {
+				for origin := range s.pendingMutations {
+					if catchupErr = s.drainRemoteOrigin(ctx, origin); catchupErr != nil {
+						break
+					}
+				}
+			}
 			gate.Unlock()
 			s.snapshotReadCutMu.Unlock()
+			if catchupErr != nil {
+				return catchupErr
+			}
 		}
 		return nil
 	}, nil
@@ -1136,7 +1174,7 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 			pending.walOp = result.walOp
 		}
 		if s.log != nil {
-			if _, err := s.log.Append(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
+			if err := s.appendGraphLog(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
 				s.markPublicationFault(pending)
 				return connect.NewError(connect.CodeUnavailable, fmt.Errorf("replication: relay log append for origin %x seq %d: %w", origin, seq, err))
 			}
@@ -1151,7 +1189,7 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 				s.receiptOriginCutMu.Unlock()
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: durable origin clock floor: %w", err))
 			}
-		} else if s.clock != nil {
+		} else if s.clock != nil && (s.runtime == nil || s.runtime.tarp == nil) {
 			s.clock.Update(hlcFromProto(m.GetHlc()))
 		}
 		if s.onReplicationApply != nil {

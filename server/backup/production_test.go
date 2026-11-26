@@ -3,14 +3,10 @@ package backup
 import (
 	"context"
 	"errors"
-	"os"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
-
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/internal/dataruntime"
 )
 
 func TestProductionValidationAndGenerations(t *testing.T) {
@@ -30,7 +26,7 @@ func TestProductionValidationAndGenerations(t *testing.T) {
 	if err := (ProductionConfig{Interval: time.Second, Retain: int(^uint(0) >> 1)}).Validate(); err != nil {
 		t.Fatalf("large safe retention rejected: %v", err)
 	}
-	b := New(&fakeService{}, testConfig(t.TempDir()), nil, nil)
+	b := testBackupper(t, testConfig(t.TempDir()))
 	if err := b.AvailableProduction(); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +59,7 @@ func TestProductionValidationAndGenerations(t *testing.T) {
 	if err := b.ApplyProduction(ProductionSnapshot{Generation: 5, Config: base}); !errors.Is(err, ErrProductionStopped) {
 		t.Fatalf("stopped result = %v", err)
 	}
-	missing := New(&fakeService{}, Config{}, nil, nil)
+	missing := testBackupper(t, Config{})
 	if err := missing.ApplyProduction(ProductionSnapshot{Generation: 1, Config: base}); err == nil || missing.Production().Generation != 0 {
 		t.Fatalf("missing destination apply = %v, %+v", err, missing.Production())
 	}
@@ -101,7 +97,7 @@ func (timer *productionTestTimer) Reset(interval time.Duration) {
 func (timer *productionTestTimer) Stop() { timer.stops++ }
 
 func TestProductionOnlySchedulingChangesResetCadence(t *testing.T) {
-	b := New(&fakeService{}, testConfig(t.TempDir()), nil, nil)
+	b := testBackupper(t, testConfig(t.TempDir()))
 	timer := &productionTestTimer{}
 	b.productionTicker = timer
 	config := b.Production().Config
@@ -132,139 +128,85 @@ func TestProductionOnlySchedulingChangesResetCadence(t *testing.T) {
 	}
 }
 
-type productionTestService struct {
-	fakeService
-	calls chan struct{}
-	hook  func()
-}
-
-func (s *productionTestService) BackupSnapshot(ctx context.Context, request *pb.BackupSnapshotRequest, sender dataruntime.Sender[pb.BackupSnapshotResponse]) error {
-	if s.hook != nil {
-		s.hook()
-	}
-	select {
-	case s.calls <- struct{}{}:
-	default:
-	}
-	return s.fakeService.BackupSnapshot(ctx, request, sender)
-}
-
 func TestProductionResidentEnableDisableAndRestoreIndependence(t *testing.T) {
-	service := &productionTestService{calls: make(chan struct{}, 8)}
 	cfg := testConfig(t.TempDir())
 	cfg.Enabled = false
-	b := New(service, cfg, nil, nil)
+	b := testBackupper(t, cfg)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- b.Run(ctx) }()
-	t.Cleanup(func() {
+	defer func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("production owner did not stop")
+		if err := <-done; err != nil {
+			t.Error(err)
 		}
-	})
-	config := ProductionConfig{Enabled: true, Interval: 10 * time.Millisecond, Retain: 0}
+	}()
+	config := ProductionConfig{Enabled: true, Interval: 10 * time.Millisecond}
 	if err := b.ApplyProduction(ProductionSnapshot{Generation: 1, Config: config}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-service.calls:
-	case <-time.After(5 * time.Second):
-		t.Fatal("disabled resident owner could not be enabled")
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		points, err := b.graphPoints(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(points) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("disabled owner did not start periodic production")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	config.Enabled = false
 	if err := b.ApplyProduction(ProductionSnapshot{Generation: 2, Config: config}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.backupOnceWithSource(t.Context(), "periodic"); err != nil {
-		t.Fatal(err)
+	if stats, err := b.backupOnceWithSource(ctx, "periodic"); err != nil || stats.Bytes != 0 {
+		t.Fatal(stats, err)
 	}
-	if !b.cfg.RestoreOnStart || !reflect.DeepEqual(b.cfg, cfg) {
-		t.Fatalf("production changed bootstrap/restore configuration: %+v", b.cfg)
+	if stats, err := b.BackupNow(ctx); err != nil || stats.Bytes == 0 {
+		t.Fatal(stats, err)
 	}
-	// Manual production remains available with periodic production disabled.
-	if _, err := b.BackupNow(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.RestoreOnStartup(t.Context()); err != nil {
-		t.Fatalf("managed disable suppressed startup restoration: %v", err)
-	}
-	if service.beginRecovery != 1 {
-		t.Fatal("bootstrap-selected restore was not performed")
+	if !reflect.DeepEqual(b.cfg, cfg) {
+		t.Fatal("managed policy altered startup configuration")
 	}
 }
 
 func TestProductionAttemptPinsRetentionAndWaiterCapturesLatest(t *testing.T) {
-	for _, receipt := range []bool{false, true} {
-		t.Run(map[bool]string{false: "graph", true: "receipt"}[receipt], func(t *testing.T) {
-			entered, release := make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			var releaseOnce sync.Once
-			defer releaseOnce.Do(func() { close(release) })
-			block := false
-			hook := func() {
-				if block {
-					once.Do(func() { close(entered); <-release })
-				}
-			}
-			cfg := testConfig(t.TempDir())
-			cfg.Retain = 0
-			var b *Backupper
-			if receipt {
-				archive := wholeStateArchiveFixture(t)
-				source := &receiptBackupSetSource{capture: producerBackupCapture(archive)}
-				source.hook = func(context.Context) error { hook(); return nil }
-				var err error
-				b, err = NewReceipt(&fakeService{}, source, archive.Policy, cfg, nil, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				b = New(&productionTestService{calls: make(chan struct{}, 4), hook: hook}, cfg, nil, nil)
-				var stamp int64
-				b.now = func() time.Time { stamp++; return time.Unix(0, stamp) }
-			}
-			for range 3 {
-				if _, err := b.BackupNow(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			block = true
-			done := make(chan error, 1)
-			go func() { _, err := b.BackupNow(t.Context()); done <- err }()
-			<-entered
-			next := ProductionSnapshot{Generation: 1, Config: ProductionConfig{Interval: time.Hour, Retain: 1}}
-			if err := b.ApplyProduction(next); err != nil {
-				t.Fatal(err)
-			}
-			before, err := os.ReadDir(cfg.Dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			releaseOnce.Do(func() { close(release) })
-			if err := <-done; err != nil {
-				t.Fatal(err)
-			}
-			pinned, err := b.PreviewRetention(t.Context(), 1)
-			if err != nil || pinned.ValidBackups != 4 {
-				t.Fatalf("in-flight retention changed: %+v, %v", pinned, err)
-			}
-			// A second completed generation-1 attempt prunes the first one.
-			if _, err := b.BackupNow(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			preview, err := b.PreviewRetention(t.Context(), 1)
-			if err != nil || !preview.Complete || preview.ValidBackups != 1 {
-				t.Fatalf("new attempt did not capture latest retention: %+v, %v", preview, err)
-			}
-			if receipt && len(before) != 3*(receiptBackupSetExpectedMemberCount+1) {
-				t.Fatal("Apply changed receipt files while capture was blocked")
-			}
-		})
+	cfg := testConfig(t.TempDir())
+	cfg.Retain = 0
+	b := testBackupper(t, cfg)
+	for range 3 {
+		if _, err := b.BackupNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	syncDir := b.fs.syncDir
+	b.fs.syncDir = func(p string) error { once.Do(func() { close(entered); <-release }); return syncDir(p) }
+	done := make(chan error, 1)
+	go func() { _, err := b.BackupNow(t.Context()); done <- err }()
+	<-entered
+	next := ProductionSnapshot{Generation: 1, Config: ProductionConfig{Interval: time.Hour, Retain: 1}}
+	err := b.ApplyProduction(next)
+	close(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	check := func(want int) {
+		p, err := b.PreviewRetention(t.Context(), 1)
+		if err != nil || !p.Complete || p.ValidBackups != want {
+			t.Fatal(p, err)
+		}
+	}
+	check(4)
+	if _, err := b.BackupNow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	check(1)
 }

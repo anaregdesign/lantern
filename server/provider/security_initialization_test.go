@@ -65,7 +65,7 @@ func TestInitializeSecurityStorageKeepsCustodySeparateAndSpoolInactiveForReceipt
 		t.Skip("native runtime requires supported target")
 	}
 	clearSecurityEnvironment(t)
-	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
+	t.Setenv("LANTERN_RECEIPT_MODE", "restart")
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

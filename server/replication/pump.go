@@ -41,6 +41,7 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -244,6 +245,19 @@ type snapshotWatermarkApplier interface {
 // and admits new ones only after a complete, verified install.
 type snapshotInstallGuard interface {
 	BeginSnapshotInstallChecked(context.Context, func() error) (finish func(verified bool) error, err error)
+}
+
+type snapshotReplayKey struct{}
+
+// SnapshotReplayStarted reports whether this installer has attempted any live
+// graph or origin change. Only the native graph installer creates the marker.
+// A nil result means the caller cannot establish this through the replay loop.
+func SnapshotReplayStarted(ctx context.Context) func() bool {
+	started, _ := ctx.Value(snapshotReplayKey{}).(*atomic.Bool)
+	if started == nil {
+		return nil
+	}
+	return started.Load
 }
 
 func beginSnapshotInstall(ctx context.Context, applier MutationApplier) (func(bool) error, error) {
@@ -693,6 +707,10 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 }
 
 func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream SnapshotStream, publish bool, identities *snapshotIdentityIndex, diagnostic *snapshotInstallDiagnostic) (SnapshotInstallResult, error) {
+	var started atomic.Bool
+	if publish {
+		ctx = context.WithValue(ctx, snapshotReplayKey{}, &started)
+	}
 	var finishInstall func(bool) error
 	defer func() {
 		if finishInstall != nil {
@@ -710,6 +728,13 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 			return SnapshotInstallResult{}, err
 		}
 		resp := stream.Msg()
+		if publish && finishInstall != nil && !started.Load() {
+			switch resp.GetEntry().(type) {
+			case *pb.SnapshotResponse_Header, *pb.SnapshotResponse_Footer:
+			default:
+				started.Store(true)
+			}
+		}
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if err := replay.acceptHeader(e.Header); err != nil {
@@ -935,6 +960,7 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 	}
 	diagnostic.enter("watermarks")
 	if i.marks != nil {
+		started.Store(true)
 		if err := i.marks.ApplySnapshotWatermarks(
 			replay.header.GetCutoffSeqPerOrigin(),
 			snapshotHLC(replay.header.GetCutoffHlc()),

@@ -293,7 +293,7 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if err := storeTx.Stage(); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
@@ -396,7 +396,7 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	if err := s.validateReplicationFrame(localEnvelope); err != nil {
 		return err
 	}
-	if prior, ok := pending.receiptWAL.(*vertexDeleteReceiptEnvelope); ok &&
+	if prior, ok := pending.receipts.(*vertexDeleteReceiptEnvelope); ok &&
 		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
@@ -413,8 +413,8 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
-	pending.receiptWAL = localEnvelope
-	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx)
+	pending.receipts = localEnvelope
+	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return connect.NewError(connect.CodeResourceExhausted, err)

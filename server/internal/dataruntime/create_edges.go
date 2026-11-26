@@ -205,7 +205,7 @@ func (s *Executor) CreateEdges(ctx context.Context, req *pb.CreateEdgesRequest) 
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)

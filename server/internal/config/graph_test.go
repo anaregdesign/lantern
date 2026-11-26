@@ -12,7 +12,7 @@ func TestGraphLoading(t *testing.T) {
 	cleanEnvironment(t)
 	reader := envconfig.NewReader(os.Environ())
 	cfg := Load(reader, ":9090")
-	if cfg.Cache != (CacheConfig{TTL: time.Minute, GCInterval: time.Minute}) {
+	if cfg.Cache != (CacheConfig{DataDir: "tarp.db", TTL: time.Minute, GCInterval: time.Minute}) {
 		t.Fatalf("cache defaults = %+v", cfg.Cache)
 	}
 	if cfg.Traversal != (TraversalConfig{Timeout: 5 * time.Second, MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000, MaxResults: 1024}) {
@@ -25,7 +25,7 @@ func TestGraphLoading(t *testing.T) {
 		t.Fatalf("validation defaults = %+v", cfg.Validation)
 	}
 	for key, value := range map[string]string{
-		"LANTERN_DEFAULT_TTL_SECONDS": "4", "LANTERN_GC_INTERVAL_SECONDS": "5", "LANTERN_GC_EDGE_BUDGET": "6",
+		"LANTERN_DATA_DIR": "/data/node", "LANTERN_DEFAULT_TTL_SECONDS": "4", "LANTERN_GC_INTERVAL_SECONDS": "5", "LANTERN_GC_EDGE_BUDGET": "6",
 		"LANTERN_MAX_VERTICES": "7", "LANTERN_MAX_EDGES": "8", "LANTERN_MAX_VERTEX_CAUSAL_ENTRIES": "9", "LANTERN_MAX_EDGE_CAUSAL_ENTRIES": "10",
 		"LANTERN_TRAVERSAL_TIMEOUT_MS": "0", "LANTERN_TRAVERSAL_MAX_PUSHES": "11", "LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES": "12", "LANTERN_TRAVERSAL_MAX_RESULTS": "13",
 		"LANTERN_SCAN_DEFAULT_LIMIT": "14", "LANTERN_SCAN_MAX_LIMIT": "15", "LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT": "16", "LANTERN_DELETE_BY_PREFIX_MAX_LIMIT": "17",
@@ -35,7 +35,7 @@ func TestGraphLoading(t *testing.T) {
 	}
 	reader = envconfig.NewReader(os.Environ())
 	cfg = Load(reader, ":9090")
-	if cfg.Cache != (CacheConfig{TTL: 4 * time.Second, GCInterval: 5 * time.Second, GCEdgeBudget: 6, MaxVertices: 7, MaxEdges: 8, MaxVertexCausalEntries: 9, MaxEdgeCausalEntries: 10}) {
+	if cfg.Cache != (CacheConfig{DataDir: "/data/node", TTL: 4 * time.Second, GCInterval: 5 * time.Second, GCEdgeBudget: 6, MaxVertices: 7, MaxEdges: 8, MaxVertexCausalEntries: 9, MaxEdgeCausalEntries: 10}) {
 		t.Fatalf("cache overrides = %+v", cfg.Cache)
 	}
 	if cfg.Traversal != (TraversalConfig{MaxPushes: 11, MaxTouchedEdges: 12, MaxResults: 13}) ||
