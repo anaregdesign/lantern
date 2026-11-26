@@ -44,7 +44,9 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 		return err
 	}
 	if !batch.oversized {
-		return db.commitRows(next, &batch.batch, batch.graphBytes)
+		if err := db.commitRows(next, &batch.batch, batch.graphBytes); !exceedsBatchCapacity(err) {
+			return err
+		}
 	}
 	batch.batch = tarp.WriteBatch{}
 	plan := rowUpdate{generation: db.head.active, changes: make(map[string]rowChange)}
@@ -57,7 +59,10 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(plan.changes) < tarp.MaxWriteBatchEntries && plan.size+128 < uint64(storageOptions().TargetSegmentBytes) {
+	// Tarp already folded duplicate keys if it rejected the first Apply.
+	// Only a batch that exceeded our staging budget can benefit from trying
+	// the coalesced plan once before allocating a new generation.
+	if batch.oversized && len(plan.changes) < tarp.MaxWriteBatchEntries && plan.size <= uint64(storageOptions().TargetSegmentBytes) {
 		var b tarp.WriteBatch
 		var graphBytes uint64
 		for key, op := range plan.changes {
@@ -70,9 +75,19 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 				b.Put([]byte(key), op.value)
 			}
 		}
-		return db.commitRows(next, &b, graphBytes)
+		if err := db.commitRows(next, &b, graphBytes); !exceedsBatchCapacity(err) {
+			return err
+		}
 	}
 	return db.replaceRows(ctx, snap, plan, next)
+}
+
+func exceedsBatchCapacity(err error) bool {
+	// Apply returns this validation error directly, before publishing any
+	// records. An OpError carries its own publication outcome and must be
+	// returned to the caller intact.
+	limit, ok := err.(*tarp.BatchLimitError)
+	return ok && limit.Kind == tarp.BatchRecordBytesLimit
 }
 
 func (db *DB) commitRows(next manifest, batch *tarp.WriteBatch, graphBytes uint64) error {
@@ -117,7 +132,7 @@ func (b *boundedUpdate) fits(k, v []byte) bool {
 	if k[0] == 'G' {
 		b.graphBytes += cost
 	}
-	b.oversized = b.batch.Len()+2 > tarp.MaxWriteBatchEntries || b.size+128 >= uint64(storageOptions().TargetSegmentBytes)
+	b.oversized = b.batch.Len()+2 > tarp.MaxWriteBatchEntries || b.size > uint64(storageOptions().TargetSegmentBytes)
 	return !b.oversized
 }
 

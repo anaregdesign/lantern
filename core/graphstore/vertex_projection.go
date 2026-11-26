@@ -62,7 +62,8 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 		// The recognized families occupy the contiguous interval from Vertex
 		// to Vertex metadata. Look outside it for undeclared graph records.
 		header := prefixBounds(first[:len(first)-1])
-		for _, bound := range []scanBounds{{header.lower, first}, {prefixBounds(last).upper, header.upper}} {
+		vertices, metadata := prefixBounds(first), prefixBounds(last)
+		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {metadata.upper, header.upper}} {
 			for _, err := range snap.KeysRange(ctx, bound.lower, bound.upper) {
 				if err == nil {
 					err = fmt.Errorf("%w: unknown graph row family", ErrInvalidRow)
@@ -71,9 +72,9 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 				return
 			}
 		}
-		next, stop := iter.Pull2(snap.ScanPrefix(ctx, last))
+		next, stop := iter.Pull2(snap.ScanRange(ctx, metadata.lower, metadata.upper))
 		defer stop()
-		for row, err := range snap.ScanPrefix(ctx, first) {
+		for row, err := range snap.ScanRange(ctx, vertices.lower, vertices.upper) {
 			if err != nil {
 				yield(zero, err)
 				return

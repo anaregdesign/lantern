@@ -1,6 +1,7 @@
 package graphstore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"testing"
@@ -70,7 +71,8 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 		t.Fatal("deleted row survived", err)
 	}
 	n := 0
-	for v, err := range view.Snapshot.ScanPrefix(ctx, append(ServicePrefix(view.Generation), 2)) {
+	lo, hi := tarp.PrefixRange(append(ServicePrefix(view.Generation), 2))
+	for v, err := range view.Snapshot.ScanRange(ctx, lo, hi) {
 		if err != nil || len(v.Value) != 4 || binary.BigEndian.Uint32(v.Value) != uint32(n) {
 			t.Fatal("invalid row", n, err)
 		}
@@ -78,5 +80,85 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 	}
 	if n != tarp.MaxWriteBatchEntries {
 		t.Fatal("incomplete update", n)
+	}
+}
+
+func TestUpdateRowsSegmentBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		coalesce   bool
+		secondSize int
+		generation uint64
+	}{
+		{"ExactFit", false, 64, 1},
+		{"OneByteOver", false, 65, 2},
+		{"CoalescedExactFit", true, 64, 1},
+		{"CoalescedOneByteOver", true, 65, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			node := hlc.NodeID{1}
+			// Two 10-byte keys with 63/64-byte values and the application
+			// head fit this segment exactly.
+			raw, err := tarp.Open(dir, tarp.Options{MaxRecordBytes: 256, TargetSegmentBytes: 400})
+			if err != nil {
+				t.Fatal(err)
+			}
+			db, err := openDB(raw, node, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			old, err := db.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.Close()
+			first := bytes.Repeat([]byte("a"), 63)
+			second := bytes.Repeat([]byte("b"), tc.secondSize)
+			err = db.UpdateRows(t.Context(), func(gen uint64, _ *tarp.Snapshot, w Writer) error {
+				a := append(ServicePrefix(gen), 1)
+				if tc.coalesce {
+					// Force re-planning by input count, then fold to the same two keys.
+					for range tarp.MaxWriteBatchEntries {
+						w.Delete(a)
+					}
+				}
+				w.Put(a, first)
+				w.Put(append(ServicePrefix(gen), 2), second)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := old.Snapshot.Get(append(ServicePrefix(old.Generation), 1)); !errors.Is(err, tarp.ErrNotFound) {
+				t.Fatalf("old snapshot contains updated row: %v", err)
+			}
+			if err := old.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := OpenExisting(t.Context(), dir, node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			view, err := reopened.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer view.Close()
+			if view.Revision != 1 || view.Generation != tc.generation {
+				t.Fatalf("reopened revision %d generation %d", view.Revision, view.Generation)
+			}
+			for i, want := range [][]byte{first, second} {
+				got, err := view.Snapshot.Get(append(ServicePrefix(view.Generation), byte(i+1)))
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("row %d after reopen: %x, %v", i, got, err)
+				}
+			}
+		})
 	}
 }
