@@ -116,7 +116,11 @@ func TestTarpReceiptSnapshotRestoresBoundMarkerAndRetiredCatalog(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "store")
 	config := baselineRuntimeTestConfig("")
 	image := newReceiptBaselineTestImage(t, config)
-	retired, _ := mustRetiredCatalogSnapshot(t, config.Receipt, image.capture.Receipts.ClockHighWaterMillis, 0x47)
+	highWater := image.capture.Receipts.ClockHighWaterMillis
+	// Retired epochs sort on opposite sides of the active epoch (0x81).
+	retired, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x47)
+	last, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0xc7)
+	retired.Epochs = append(retired.Epochs, last.Epochs...)
 	setReceiptBaselineTestRetired(&image, retired)
 	config.BaselineCodec = image.codec
 	rt, s := openTarpReceiptTestRuntime(t, dir, config, true)
@@ -142,8 +146,31 @@ func TestTarpReceiptSnapshotRestoresBoundMarkerAndRetiredCatalog(t *testing.T) {
 	}
 	defer view.Close()
 	w, err := rt.TarpBackupWitness(view.Snapshot, view.Generation)
-	if err != nil || w.ReceiptRetiredCount != 2 || w.ReceiptCount != 1 || w.ReceiptBaselineDigest != ref {
+	if err != nil || w.ReceiptRetiredCount != 4 || w.ReceiptCount != 1 || w.ReceiptBaselineDigest != ref {
 		t.Fatalf("restored witness %+v, %v", w, err)
+	}
+	rep, err := rt.NewReplication(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewReceiptWholeStateSource(s, rt.receipt.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rep.ConfigureReceiptSnapshot(source, rt.receipt.policy); err != nil {
+		t.Fatal(err)
+	}
+	stream := &replicationSnapshotRecorder{}
+	if err := rep.Snapshot(t.Context(), &pb.SnapshotRequest{RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}, stream); err != nil {
+		t.Fatal(err)
+	}
+	// The receiving side verifies strict order of both policies and receipt IDs.
+	decoded, err := DecodeReceiptSnapshotFrames(stream.frames, rt.receipt.policy, receiptSnapshotTestCatalogConfig(image.capture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Receipts.Receipts) != 1 || len(decoded.Retired.Epochs) != 2 {
+		t.Fatalf("streamed %d active receipts and %d retired epochs", len(decoded.Receipts.Receipts), len(decoded.Retired.Epochs))
 	}
 }
 

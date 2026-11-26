@@ -37,8 +37,8 @@ func openTarpReceiptTable(ctx context.Context, gen uint64, snap *tarp.Snapshot, 
 		return nil, errors.New("incompatible active Tarp receipt policy")
 	}
 	t := &tarpReceiptTable{gen: gen, snap: snap, cut: cut, policies: map[mutationreceipt.Epoch]mutationreceipt.Config{active.Epoch: active}}
-	prefix := tarpServiceKey(gen, tarpRetiredPolicy)
-	for row, err := range snap.ScanPrefix(ctx, prefix) {
+	lower, upper := tarp.PrefixRange(tarpServiceKey(gen, tarpRetiredPolicy))
+	for row, err := range snap.ScanRange(ctx, lower, upper) {
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +50,7 @@ func openTarpReceiptTable(ctx context.Context, gen uint64, snap *tarp.Snapshot, 
 		if err != nil {
 			return nil, err
 		}
-		if _, dup := t.policies[cfg.Epoch]; dup || !bytes.Equal(row.Key[len(prefix):], cfg.Epoch[:]) {
+		if _, dup := t.policies[cfg.Epoch]; dup || !bytes.Equal(row.Key[len(lower):], cfg.Epoch[:]) {
 			return nil, errors.New("stored retired receipt policy identity mismatch")
 		}
 		if len(t.retired) >= active.MaxEntries {
@@ -70,13 +70,13 @@ type tarpReceiptRecord struct {
 
 func (t *tarpReceiptTable) records(ctx context.Context, family byte) iter.Seq2[tarpReceiptRecord, error] {
 	return func(yield func(tarpReceiptRecord, error) bool) {
-		prefix := tarpServiceKey(t.gen, family)
-		for row, err := range t.snap.ScanPrefix(ctx, prefix) {
+		lower, upper := tarp.PrefixRange(tarpServiceKey(t.gen, family))
+		for row, err := range t.snap.ScanRange(ctx, lower, upper) {
 			if err != nil {
 				yield(tarpReceiptRecord{}, err)
 				return
 			}
-			record := tarpReceiptRecord{key: row.Key[len(prefix):], raw: row.Value, retired: family == tarpRetiredRow}
+			record := tarpReceiptRecord{key: row.Key[len(lower):], raw: row.Value, retired: family == tarpRetiredRow}
 			record.keyID = record.key
 			if record.retired {
 				if len(record.key) != len(mutationreceipt.Epoch{})+len(mutationreceipt.ID{}) {

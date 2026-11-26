@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -21,12 +22,18 @@ func TestVertexProjectionTracksExpiryAndValidatesReopen(t *testing.T) {
 	}
 	now := time.Unix(0, 0).UTC()
 	ts := hlc.Timestamp{WallNs: 10}
+	want := []VertexEntry[string, string]{
+		{"a", Vertex[string]{Value: "body", HLC: ts, Expiration: now.Add(time.Hour)}},
+		{"a\x00", Vertex[string]{Value: "permanent"}},
+		{"b", Vertex[string]{Expiration: now}},
+	}
 	var b tarp.WriteBatch
-	if err := errors.Join(
-		rows.PutVertex(&b, 1, "a", Vertex[string]{Value: "body", HLC: ts, Expiration: now.Add(time.Hour)}),
-		rows.PutVertex(&b, 1, "a\x00", Vertex[string]{Value: "permanent"}),
-		rows.PutVertex(&b, 1, "b", Vertex[string]{Expiration: now}),
-	); err != nil {
+	for _, entry := range slices.Backward(want) {
+		if err := rows.PutVertex(&b, 1, entry.Key, entry.Vertex); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rows.PutVertex(&b, 2, "a", Vertex[string]{Value: "other generation"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Apply(&b); err != nil {
@@ -65,6 +72,16 @@ func TestVertexProjectionTracksExpiryAndValidatesReopen(t *testing.T) {
 	defer next.Close()
 	checkKeys(pinned, []string{"a", "a\x00"})
 	checkKeys(next, []string{"b"})
+	var verified []VertexEntry[string, string]
+	for entry, err := range rows.VerifiedVertices(t.Context(), pinned, 1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		verified = append(verified, entry)
+	}
+	if !slices.Equal(verified, want) {
+		t.Fatalf("verified rows at pinned cut = %+v, want %+v", verified, want)
+	}
 	var count int
 	for _, err := range rows.VerifiedVertices(t.Context(), next, 1) {
 		if err != nil {
