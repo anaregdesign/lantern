@@ -158,3 +158,137 @@ func TestOrdinals(t *testing.T) {
 		t.Fatalf("assign after release = %d, want reused %d", got, a)
 	}
 }
+
+func TestPostingPositionsMutations(t *testing.T) {
+	var positions postingPositions
+	want := make(map[uint32][]uint64)
+	set := func(ord uint32, value []uint64) {
+		t.Helper()
+		positions.set(ord, value)
+		want[ord] = value
+	}
+	remove := func(ord uint32) {
+		t.Helper()
+		delete(want, ord)
+		if got := positions.remove(ord); got != (len(want) == 0) {
+			t.Fatalf("remove(%d) empty = %v with %d values remaining", ord, got, len(want))
+		}
+	}
+	check := func(ord uint32) {
+		t.Helper()
+		if got := positions.decode(ord, nil); !slices.Equal(got, want[ord]) {
+			t.Fatalf("positions for ordinal %d = %v, want %v", ord, got, want[ord])
+		}
+	}
+
+	// Exercise the inline/block/overflow transitions at an ordinal near the
+	// end of its block, together with values on either side of that boundary.
+	set(63, []uint64{0})
+	set(64, []uint64{1, 2})
+	set(62, []uint64{3, 5})
+	big := make([]uint64, maxBlockPositionBytes+1)
+	for i := range big {
+		big[i] = uint64(i)
+	}
+	set(63, big)
+	check(62)
+	check(63)
+	check(64)
+	set(63, []uint64{2, 4})
+	remove(62)
+	remove(64)
+	check(63)
+	if positions.inlineLen == 0 || positions.blocks != nil || positions.large != nil {
+		t.Fatal("small surviving value did not return to inline storage")
+	}
+
+	// Mixed updates also cover offsets when an inserted or replaced value is
+	// before, between, or after the surviving values in a partial block.
+	rng := rand.New(rand.NewSource(22))
+	for range 400 {
+		ord := uint32(rng.Intn(3 * positionBlockWidth))
+		if rng.Intn(4) == 0 {
+			remove(ord)
+		} else {
+			value := make([]uint64, rng.Intn(60)+1)
+			var pos uint64
+			for i := range value {
+				pos += uint64(rng.Intn(1<<18) + 1)
+				value[i] = pos
+			}
+			set(ord, value)
+		}
+		check(ord)
+		for ord := range want {
+			check(ord)
+		}
+	}
+	last := ^uint32(0)
+	set(last, []uint64{1 << 41, 1<<41 + 1})
+	check(last)
+	remove(last)
+	check(last)
+	for ord := range want {
+		remove(ord)
+	}
+	if positions.blocks != nil || positions.large != nil || positions.inlineLen != 0 {
+		t.Fatal("empty positional store retained backing allocation")
+	}
+}
+
+func TestPostingPositionsReleasesOversizedBacking(t *testing.T) {
+	var positions postingPositions
+	value := make([]uint64, maxBlockPositionBytes)
+	for i := range value {
+		value[i] = uint64(i)
+	}
+	for ord := range uint32(positionBlockWidth) {
+		positions.set(ord, value)
+	}
+	b := positions.blocks[0].block
+	dataCap, endsCap := cap(b.data), cap(b.ends)
+	for ord := range uint32(positionBlockWidth - 3) {
+		positions.remove(ord)
+	}
+	if cap(b.data) >= dataCap/2 || cap(b.ends) >= endsCap/2 {
+		t.Fatalf("sparse block retained oversized buffers: data %d (was %d), ends %d (was %d)",
+			cap(b.data), dataCap, cap(b.ends), endsCap)
+	}
+	for ord := uint32(positionBlockWidth - 3); ord < positionBlockWidth; ord++ {
+		if got := positions.decode(ord, nil); !slices.Equal(got, value) {
+			t.Fatalf("shrinking the block changed positions for %d", ord)
+		}
+	}
+
+	for block := uint32(1); block <= 64; block++ {
+		positions.set(block*positionBlockWidth, []uint64{1})
+	}
+	peak := positions.blockPeak
+	for block := uint32(1); block <= 61; block++ {
+		positions.remove(block * positionBlockWidth)
+	}
+	if len(positions.blocks) != 4 || positions.blockPeak >= peak/2 {
+		t.Fatalf("sparse directory has %d blocks and peak %d (was %d)",
+			len(positions.blocks), positions.blockPeak, peak)
+	}
+	if slot := positions.blocks[64]; slot.block != nil || slot.length != 1 {
+		t.Fatalf("sparse singleton uses a separate block: %+v", slot)
+	}
+}
+
+func TestPostingPositionsDecodesSparseSlotWithoutAllocation(t *testing.T) {
+	var positions postingPositions
+	positions.set(0, []uint64{1 << 32})
+	positions.set(positionBlockWidth, []uint64{2})
+	positions.set(2*positionBlockWidth, []uint64{3})
+	dst := make([]uint64, 0, 8)
+	allocs := testing.AllocsPerRun(100, func() {
+		got := positions.decode(0, dst)
+		if len(got) != 1 || got[0] != 1<<32 {
+			t.Fatalf("sparse positions = %v", got)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("sparse decode allocated %v times with reusable scratch", allocs)
+	}
+}
