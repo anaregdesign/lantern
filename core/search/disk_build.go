@@ -410,6 +410,9 @@ func verifyDiskBuild(ctx context.Context, db *tarp.DB, base, expected uint64, ma
 	return [32]byte(digest.Sum(nil)), nil
 }
 
+// BaseID returns the immutable identity selected in the Graph store.
+func (idx *DiskIndex) BaseID() uint64 { return idx.base }
+
 // Source returns the graph cut certified by the base's commit footer.
 func (idx *DiskIndex) Source() DiskSource { return idx.footer.Source }
 

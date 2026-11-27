@@ -20,8 +20,12 @@ type tarpSearchBaseRef struct {
 }
 
 func readTarpSearchBaseRef(ctx context.Context, view *graphstore.ReadView) (tarpSearchBaseRef, error) {
+	return readTarpSearchBaseRefAt(ctx, view.Snapshot, view.Generation)
+}
+
+func readTarpSearchBaseRefAt(ctx context.Context, snap *tarp.Snapshot, generation uint64) (tarpSearchBaseRef, error) {
 	var ref tarpSearchBaseRef
-	value, err := view.Snapshot.GetContext(ctx, tarpServiceKey(view.Generation, tarpSearchBase))
+	value, err := snap.GetContext(ctx, tarpServiceKey(generation, tarpSearchBase))
 	if err != nil {
 		return ref, err
 	}

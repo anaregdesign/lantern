@@ -8,12 +8,14 @@ import (
 	"errors"
 	"math"
 	"sync/atomic"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/tarp"
 )
@@ -36,6 +38,7 @@ type tarpRelay struct {
 	graph           *graphcache.GraphCache[string, *pb.Vertex]
 	receiptPolicy   *mutationreceipt.Config
 	trackSearch     bool // fixed before the runtime admits requests
+	diskAdmission   bool // requires every local indexed write to be rollback-capable
 	diskSearch      *tarpDiskSearchReader
 	fingerprint     [32]byte
 	db              *graphstore.DB
@@ -179,6 +182,13 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 	}
 
 	var committedDigest [32]byte
+	var admissionIndex *search.DiskIndex
+	var admissionView *search.DiskAdmission
+	defer func() {
+		if admissionView != nil {
+			_ = admissionView.Close()
+		}
+	}()
 	err = r.db.UpdateRows(context.Background(), func(gen uint64, snap *tarp.Snapshot, batch graphstore.Writer) error {
 		cut, err := r.readCut(snap, gen)
 		if err != nil {
@@ -214,7 +224,32 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 			stageGraph := func(batch graphstore.Writer) error {
 				return r.stage(context.Background(), gen, snap, batch, keys, staged)
 			}
-			if err := stageTarpGraphSearchChanges(context.Background(), gen, snap, batch, cut.digest, publication, stageGraph); err != nil {
+			var check func(tarpSearchCut, searchPostimages) error
+			if r.diskAdmission && id == r.db.NodeID() {
+				check = func(searchCut tarpSearchCut, proposal searchPostimages) error {
+					if staged == nil {
+						return errUnstagedDiskSearchWrite
+					}
+					timed, ok := staged.(interface{ StorageApplicationTime() time.Time })
+					if !ok || r.diskSearch == nil {
+						return search.ErrIndexIncomplete
+					}
+					if admissionView == nil {
+						admissionIndex = r.diskSearch.base.Load()
+						if admissionIndex == nil {
+							return search.ErrIndexIncomplete
+						}
+						var err error
+						admissionView, err = admissionIndex.PinAdmission(context.Background())
+						if err != nil {
+							return err
+						}
+					}
+					return r.diskSearch.validateAdmission(context.Background(), admissionIndex, admissionView,
+						snap, gen, searchCut, timed.StorageApplicationTime(), proposal)
+				}
+			}
+			if err := stageTarpGraphSearchChanges(context.Background(), gen, snap, batch, cut.digest, publication, stageGraph, check); err != nil {
 				return err
 			}
 		} else if err = r.stage(context.Background(), gen, snap, batch, keys, staged); err != nil {
@@ -242,6 +277,11 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 		r.lastReference = relayOrigin{Origin: id, Seq: m.GetSeq(), Digest: committedDigest}
 		r.graph.StoragePublished(keys)
 		return nil
+	}
+	// An old graph-first caller cannot roll back its in-memory effects. Fence
+	// that path even though the Tarp batch itself definitely did not commit.
+	if errors.Is(err, errUnstagedDiskSearchWrite) {
+		return errUnstagedDiskSearchWrite
 	}
 	// A callback failure never published, but a storage read fault or an
 	// unhealthy/uncertain DB still requires recovery by the serving runtime.

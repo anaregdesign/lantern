@@ -56,7 +56,8 @@ func (r *tarpRelay) openDiskSearch(ctx context.Context, derived *tarp.DB, config
 			return 0, err
 		}
 	}
-	r.diskSearch = &tarpDiskSearchReader{base: base, project: config.project, maxChangeBytes: config.maxChangeBytes, maxChangeKeys: config.maxChangeKeys}
+	r.diskSearch = &tarpDiskSearchReader{project: config.project, maxChangeBytes: config.maxChangeBytes, maxChangeKeys: config.maxChangeKeys}
+	r.diskSearch.base.Store(base)
 	r.trackSearch = true
 	return id, nil
 }

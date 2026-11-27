@@ -142,31 +142,64 @@ func (q *diskQuery) validateCapacity() error {
 	return nil
 }
 
+// DiskAdmission pins one certified index snapshot across repeatable Graph
+// preparation. Close it when the enclosing mutation has reached an outcome.
+type DiskAdmission struct {
+	index    *DiskIndex
+	snapshot *tarp.Snapshot
+}
+
+// PinAdmission captures and verifies the selected derived footer before reads.
+func (idx *DiskIndex) PinAdmission(ctx context.Context) (*DiskAdmission, error) {
+	snapshot, err := idx.db.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	value, err := snapshot.GetContext(ctx, diskKey(idx.base, diskFooterRow))
+	if err != nil {
+		_ = snapshot.Close()
+		return nil, errors.Join(ErrIndexIncomplete, err)
+	}
+	if !bytes.Equal(value, idx.seal) {
+		_ = snapshot.Close()
+		return nil, ErrIndexIncomplete
+	}
+	return &DiskAdmission{index: idx, snapshot: snapshot}, nil
+}
+
+func (admission *DiskAdmission) Close() error { return admission.snapshot.Close() }
+
 // ValidateAdmission evaluates the complete final batch against an exact
 // source snapshot and its verified current overlay. Streams must contain
 // strictly ascending, unique final postimages. A proposed key overrides the
 // current key, and a nil Document is a deletion. This method does not write
 // rows. The owner keeps the authoritative write exclusion through publication.
 func (idx *DiskIndex) ValidateAdmission(ctx context.Context, now time.Time, current, proposed iter.Seq2[DiskDocument, error], budget Budget) error {
+	view, err := idx.PinAdmission(ctx)
+	if err != nil {
+		return err
+	}
+	defer view.Close()
+	return view.Validate(ctx, now, current, proposed, budget)
+}
+
+// Validate evaluates the same exact batch as ValidateAdmission on the
+// already pinned index. It can be called again if Graph repeats preparation.
+func (admission *DiskAdmission) Validate(ctx context.Context, now time.Time, current, proposed iter.Seq2[DiskDocument, error], budget Budget) error {
+	idx := admission.index
 	if now.Before(idx.footer.Source.Watermark) {
 		return ErrIndexIncomplete
 	}
 	work := newWorkTracker(ctx, diskBoundBudget(budget))
-	snap, err := idx.db.Snapshot()
-	if err != nil {
+	if err := work.check(); err != nil {
 		return err
 	}
-	defer snap.Close()
+	if err := work.visit(WorkDiskReadBytes, int64(len(idx.seal))); err != nil {
+		return err
+	}
 	q := diskQuery{
-		index: idx, snap: snap, work: work, now: now, stats: idx.footer.Stats,
+		index: idx, snap: admission.snapshot, work: work, now: now, stats: idx.footer.Stats,
 		capacity: idx.footer.Capacity,
-	}
-	stored, err := q.required(diskKey(idx.base, diskFooterRow))
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(stored, idx.seal) {
-		return ErrIndexIncomplete
 	}
 	if err := q.applyChanges(mergeDiskPostimages(current, proposed)); err != nil {
 		return err

@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/tarp"
 )
 
@@ -194,44 +196,56 @@ func visitTarpSearchChanges(ctx context.Context, snap *tarp.Snapshot, gen uint64
 	return nil
 }
 
-// stageTarpGraphSearchChanges observes the graph's exact row postimage,
-// including endpoint creates and TTL changes produced by Edge operations.
-func stageTarpGraphSearchChanges(ctx context.Context, gen uint64, snap *tarp.Snapshot, batch graphstore.Writer, previous, publication [sha256.Size]byte, stage func(graphstore.Writer) error) error {
+// stageTarpGraphSearchChanges observes the final row postimage, excluding
+// unchanged endpoint writes. The optional admission hook sees that plan and
+// the same pinned Graph preimage, before either effect or journal can commit.
+func stageTarpGraphSearchChanges(ctx context.Context, gen uint64, snap *tarp.Snapshot, batch graphstore.Writer, previous, publication [sha256.Size]byte, stage func(graphstore.Writer) error, check func(tarpSearchCut, searchPostimages) error) error {
 	rows, err := diskRows()
 	if err != nil {
 		return err
 	}
-	changed := make(map[string]bool)
-	tracker := rows.TrackVertexWrites(batch, func(key string, deleted bool) { changed[key] = deleted })
+	const maxSearchProposalBytes = 32 << 20
+	proposal := searchPostimages{rows: rows, changed: make(map[string][]byte)}
+	var retained int
+	tracker := rows.TrackVertexWrites(ctx, snap, batch, func(key string, changed bool, value []byte) error {
+		retained -= len(proposal.changed[key])
+		if !changed {
+			delete(proposal.changed, key)
+		} else if check == nil {
+			proposal.changed[key] = nil
+		} else {
+			if len(value) > maxSearchProposalBytes-retained {
+				return &mutationlog.DefiniteWALAbort{Cause: &diskSearchAdmissionRejection{cause: &search.BudgetExceededError{Kind: search.WorkDiskReadBytes, Limit: maxSearchProposalBytes}}}
+			}
+			proposal.changed[key] = bytes.Clone(value)
+			retained += len(value)
+		}
+		return nil
+	})
 	if err := stage(tracker); err != nil {
 		return err
 	}
 	if err := tracker.Err(); err != nil {
 		return err
 	}
-	if len(changed) == 0 {
+	if len(proposal.changed) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(changed))
-	for key, deleted := range changed {
-		if deleted {
-			if _, found, err := rows.GetVertex(snap, gen, key); err != nil {
-				return err
-			} else if !found {
-				continue
-			}
-		}
-		keys = append(keys, key)
+	for key := range proposal.changed {
+		proposal.keys = append(proposal.keys, key)
 	}
-	if len(keys) == 0 {
-		return nil
-	}
+	slices.Sort(proposal.keys)
 	cut, err := readTarpSearchCut(ctx, snap, gen)
 	if errors.Is(err, tarp.ErrNotFound) {
 		cut = tarpSearchCut{epoch: gen, first: 1, digest: previous}
 	} else if err != nil {
 		return err
 	}
-	_, err = stageTarpSearchChanges(batch, gen, cut, publication, keys)
+	if check != nil {
+		if err := check(cut, proposal); err != nil {
+			return &mutationlog.DefiniteWALAbort{Cause: &diskSearchAdmissionRejection{cause: err}}
+		}
+	}
+	_, err = stageTarpSearchChanges(batch, gen, cut, publication, proposal.keys)
 	return err
 }

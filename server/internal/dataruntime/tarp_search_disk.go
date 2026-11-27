@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -21,7 +22,8 @@ import (
 // tarpDiskSearchInput is tied to a pinned graph read. Building or opening a
 // derived view cannot resolve any Vertex from a newer graph revision.
 type tarpDiskSearchInput struct {
-	cut        *graphstore.ReadView
+	snapshot   *tarp.Snapshot
+	generation uint64
 	rows       *graphstore.Rows[string, *pb.Vertex]
 	source     search.DiskSource
 	changeCut  tarpSearchCut
@@ -51,12 +53,12 @@ func captureTarpDiskSearchInput(ctx context.Context, view *graphstore.ReadView, 
 		// backup and applying a different suffix at the same sequence.
 		Digest: cut.digest,
 	}
-	return tarpDiskSearchInput{cut: view, rows: rows, source: source, changeCut: cut, projection: projection}, nil
+	return tarpDiskSearchInput{snapshot: view.Snapshot, generation: view.Generation, rows: rows, source: source, changeCut: cut, projection: projection}, nil
 }
 
 func (in tarpDiskSearchInput) documents(ctx context.Context) iter.Seq2[search.DiskDocument, error] {
 	return func(yield func(search.DiskDocument, error) bool) {
-		for row, err := range in.rows.VerifiedVertices(ctx, in.cut.Snapshot, in.cut.Generation) {
+		for row, err := range in.rows.VerifiedVertices(ctx, in.snapshot, in.generation) {
 			if err != nil {
 				yield(search.DiskDocument{}, err)
 				return
@@ -87,7 +89,7 @@ func (in tarpDiskSearchInput) changes(ctx context.Context, base search.DiskSourc
 			return
 		}
 		seen := make(map[string]struct{})
-		err := visitTarpSearchChanges(ctx, in.cut.Snapshot, in.cut.Generation, in.changeCut, base.Sequence, base.Digest, maxBytes, maxKeys, func(_ uint64, key string) error {
+		err := visitTarpSearchChanges(ctx, in.snapshot, in.generation, in.changeCut, base.Sequence, base.Digest, maxBytes, maxKeys, func(_ uint64, key string) error {
 			seen[key] = struct{}{}
 			return nil
 		})
@@ -109,7 +111,7 @@ func (in tarpDiskSearchInput) changes(ctx context.Context, base search.DiskSourc
 				yield(search.DiskDocument{}, err)
 				return
 			}
-			vertex, ok, err := in.rows.GetVertex(in.cut.Snapshot, in.cut.Generation, key)
+			vertex, ok, err := in.rows.GetVertex(in.snapshot, in.generation, key)
 			if err != nil {
 				yield(search.DiskDocument{}, err)
 				return
@@ -127,7 +129,7 @@ func (in tarpDiskSearchInput) changes(ctx context.Context, base search.DiskSourc
 
 type tarpDiskSearchReader struct {
 	mu             sync.RWMutex
-	base           *search.DiskIndex
+	base           atomic.Pointer[search.DiskIndex]
 	project        func(string, *pb.Vertex) search.Document
 	maxChangeBytes int
 	maxChangeKeys  int
@@ -144,7 +146,21 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	}
 	defer view.Close()
 	now := time.Now()
-	base := reader.base.Source()
+	index := reader.base.Load()
+	if index == nil {
+		result.BackendError = search.ErrIndexIncomplete
+		return result
+	}
+	base := index.Source()
+	ref, err := readTarpSearchBaseRef(ctx, view)
+	if err != nil || index.BaseID() != ref.ID || !sameTarpDiskSource(base, ref.Source) {
+		if ctx.Err() != nil {
+			result.BackendError = ctx.Err()
+		} else {
+			result.BackendError = errors.Join(search.ErrIndexIncomplete, err)
+		}
+		return result
+	}
 	input, err := captureTarpDiskSearchInput(ctx, view, base.Corpus, base.Fingerprint, now, reader.project)
 	if err != nil {
 		result.BackendError = err
@@ -154,7 +170,7 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	accept := func(key string) bool {
 		return scope.Vertex(key) && strings.HasPrefix(key, spec.Prefix)
 	}
-	ranked, stats, err := reader.base.SearchAtWithChanges(ctx, spec.Query, spec.Limit, accept,
+	ranked, stats, err := index.SearchAtWithChanges(ctx, spec.Query, spec.Limit, accept,
 		spec.Options, spec.Phrase, spec.Budget, now, input.changes(ctx, base, reader.maxChangeBytes, reader.maxChangeKeys))
 	if errors.Is(err, search.ErrDiskIndex) {
 		err = errors.Join(search.ErrIndexIncomplete, err)
@@ -196,24 +212,28 @@ func (reader *tarpDiskSearchReader) advance(ctx context.Context, graph *graphsto
 		return err
 	}
 	defer view.Close()
-	previous := reader.base.Source()
+	index := reader.base.Load()
+	if index == nil {
+		return search.ErrIndexIncomplete
+	}
+	previous := index.Source()
 	now := time.Now()
 	input, err := captureTarpDiskSearchInput(ctx, view, previous.Corpus, previous.Fingerprint, now, reader.project)
 	if err != nil {
 		return err
 	}
-	deadline := reader.base.NextDeadline()
+	deadline := index.NextDeadline()
 	if input.source.Sequence == previous.Sequence && input.source.Digest == previous.Digest && (deadline.IsZero() || now.Before(deadline)) {
 		return nil
 	}
 	ref := tarpSearchBaseRef{ID: id, Source: input.source}
-	current, err := reader.base.AdvanceDiskBase(ctx, input.source, input.changes(ctx, previous, reader.maxChangeBytes, reader.maxChangeKeys), budget)
+	current, err := index.AdvanceDiskBase(ctx, input.source, input.changes(ctx, previous, reader.maxChangeBytes, reader.maxChangeKeys), budget)
 	if err != nil {
 		return err
 	}
 	if err := selectTarpSearchBase(ctx, graph, derived, ref, analyzer, scorer, reader.maxChangeBytes, reader.maxChangeKeys, opts...); err != nil {
 		return err
 	}
-	reader.base = current
+	reader.base.Store(current)
 	return reclaimTarpSearchChanges(ctx, graph, ref)
 }

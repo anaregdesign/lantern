@@ -119,3 +119,43 @@ func TestDiskAdmissionRejectsMalformedOverriddenInput(t *testing.T) {
 		t.Fatalf("duplicate overridden change = %v", err)
 	}
 }
+
+func TestPinnedDiskAdmissionKeepsItsCutAcrossDerivedAdvance(t *testing.T) {
+	ctx := t.Context()
+	source := diskTestSource()
+	analyzer := NewAnalyzer(nil, WhitespaceTokenizer{}, nil)
+	opts := []IndexOption{WithAnalysisLimits(SearchAnalysisLimits{MaxLiveTerms: 1})}
+	db, err := tarp.Open(t.TempDir(), tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	before := []DiskDocument{{Key: "a", Document: Text("alpha")}}
+	if err := BuildDiskBase(ctx, db, 1, source, diskTestDocuments(before), analyzer, opts...); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := OpenDiskIndex(ctx, db, 1, source, analyzer, nil, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err := idx.PinAdmission(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admission.Close()
+
+	next := source
+	next.Sequence++
+	next.Digest[0] = 1
+	replacement := []DiskDocument{{Key: "a", Document: Text("beta")}}
+	if _, err := idx.AdvanceDiskBase(ctx, next, diskTestDocuments(replacement), Budget{}); err != nil {
+		t.Fatal(err)
+	}
+	proposed := []DiskDocument{{Key: "b", Document: Text("alpha")}}
+	if err := admission.Validate(ctx, source.Watermark, nil, diskTestDocuments(proposed), Budget{}); err != nil {
+		t.Fatalf("pinned admission lost the original term capacity: %v", err)
+	}
+	if err := idx.ValidateAdmission(ctx, source.Watermark, nil, diskTestDocuments(proposed), Budget{}); !errors.Is(err, ErrIndexIncomplete) {
+		t.Fatalf("superseded handle recertified without a pin: %v", err)
+	}
+}

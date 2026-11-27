@@ -151,7 +151,8 @@ func TestTarpDiskSearchCaptureUsesCommittedChangesAndAdmittedKeys(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.tarp.diskSearch = &tarpDiskSearchReader{base: base, project: project, maxChangeBytes: 1 << 20, maxChangeKeys: 32}
+	runtime.tarp.diskSearch = &tarpDiskSearchReader{project: project, maxChangeBytes: 1 << 20, maxChangeKeys: 32}
+	runtime.tarp.diskSearch.base.Store(base)
 	put("docs:allowed", "replacement")
 	put("docs:denied", "replacement")
 	admitted, err := graphcache.NewQueryView([]graphcache.KeyRange{{Lower: "docs:allowed", Upper: "docs:allowed\x00"}}, nil)
@@ -191,7 +192,7 @@ func TestTarpDiskSearchCaptureUsesCommittedChangesAndAdmittedKeys(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.tarp.diskSearch.base = reopened
+	runtime.tarp.diskSearch.base.Store(reopened)
 	spec.Query = "replacement"
 	got, err = reader.Capture(ctx, spec)
 	if err != nil || got.BackendError != nil || len(got.Hits) != 1 || got.Hits[0].GetKey() != "docs:allowed" {
