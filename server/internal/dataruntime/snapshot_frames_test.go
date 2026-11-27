@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -841,6 +842,37 @@ func TestDecodeReceiptSnapshotFramesReturnsDetachedArchiveCapture(t *testing.T) 
 		decoded.Receipts.Receipts[0].Result[0] != 0xde ||
 		decoded.Graph[1].GetVertex().GetVertex().GetKey() != "live" {
 		t.Fatal("decoded receipt Snapshot capture aliases input frames")
+	}
+}
+
+func TestDecodeOwnedReceiptSnapshotFramesReusesGraphBodies(t *testing.T) {
+	want, policy := receiptSnapshotTestCapture(t, true, true)
+	frames, err := PrepareReceiptSnapshotFrames(want, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := receiptSnapshotTestCatalogConfig(want)
+	owned, err := DecodeOwnedReceiptSnapshotFrames(t.Context(), frames, policy, retired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned.Graph[1] != frames[2] {
+		t.Fatal("receiver duplicated an owned graph frame")
+	}
+	if owned.Graph[0] == frames[0] || owned.Graph[2] == frames[3] ||
+		frames[0].GetHeader().GetReceiptMetadata() == nil ||
+		frames[3].GetFooter().GetActiveReceiptCount() != 1 {
+		t.Fatal("receipt envelope was changed when detaching the graph")
+	}
+	for i := range want.Graph {
+		if !proto.Equal(owned.Graph[i], want.Graph[i]) {
+			t.Fatalf("owned graph frame %d differs from archive capture", i)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := DecodeOwnedReceiptSnapshotFrames(ctx, frames, policy, retired); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled receiver decode was not stopped: %v", err)
 	}
 }
 

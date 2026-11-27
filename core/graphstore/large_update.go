@@ -29,7 +29,11 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 		return err
 	}
 	defer snap.Close()
-	batch := boundedUpdate{generation: db.head.active}
+	sizer, err := db.rowBatchSizer()
+	if err != nil {
+		return err
+	}
+	batch := boundedUpdate{generation: db.head.active, sizer: sizer}
 	if err := prepare(db.head.active, snap, &batch); err != nil {
 		return err
 	}
@@ -59,27 +63,76 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Tarp already folded duplicate keys if it rejected the first Apply.
-	// Only a batch that exceeded our staging budget can benefit from trying
-	// the coalesced plan once before allocating a new generation.
-	if batch.oversized && len(plan.changes) < tarp.MaxWriteBatchEntries && plan.size <= uint64(storageOptions().TargetSegmentBytes) {
-		var b tarp.WriteBatch
-		var graphBytes uint64
-		for key, op := range plan.changes {
-			if key[0] == 'G' {
-				graphBytes += uint64(len(key)) + uint64(len(op.value)) + 48
-			}
-			if op.deleted {
-				b.Delete([]byte(key))
-			} else {
-				b.Put([]byte(key), op.value)
-			}
-		}
-		if err := db.commitRows(next, &b, graphBytes); !exceedsBatchCapacity(err) {
+	// The tentative size includes every input. Retry against the distinct
+	// postimage with absent Deletes removed before copying a generation.
+	if batch.oversized {
+		applied, err := db.applyCoalescedRows(ctx, snap, next, plan)
+		if err != nil || applied {
 			return err
 		}
 	}
 	return db.replaceRows(ctx, snap, plan, next)
+}
+
+func (db *DB) rowBatchSizer() (tarp.WriteBatchSizer, error) {
+	sizer := db.raw.WriteBatchSizer()
+	// The application manifest is appended to every ordinary commit.
+	err := sizer.Add(uint64(len(manifestKey)), uint64(len(db.head.encode())))
+	return sizer, err
+}
+
+func (db *DB) applyCoalescedRows(ctx context.Context, snap *tarp.Snapshot, next manifest, plan rowUpdate) (bool, error) {
+	sizer, err := db.rowBatchSizer()
+	if err != nil {
+		return false, err
+	}
+	for key, op := range plan.changes {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if op.deleted {
+			physical := []byte(key)
+			present := false
+			for _, err := range snap.KeysRange(ctx, physical, append([]byte(key), 0)) {
+				if err != nil {
+					return false, err
+				}
+				present = true
+				break
+			}
+			if !present {
+				delete(plan.changes, key)
+				continue
+			}
+		}
+		if err := sizer.Add(uint64(len(key)), uint64(len(op.value))); err != nil {
+			if canCoalesce(err) {
+				return false, nil
+			}
+			return false, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	var batch tarp.WriteBatch
+	var graphBytes uint64
+	for key, op := range plan.changes {
+		if key[0] == 'G' {
+			graphBytes += uint64(len(key)) + uint64(len(op.value)) + 48
+		}
+		if op.deleted {
+			batch.Delete([]byte(key))
+		} else {
+			batch.Put([]byte(key), op.value)
+		}
+	}
+	return true, db.commitRows(next, &batch, graphBytes)
+}
+
+func canCoalesce(err error) bool {
+	limit, ok := err.(*tarp.BatchLimitError)
+	return ok && (limit.Kind == tarp.BatchRecordBytesLimit || limit.Kind == tarp.BatchInputCountLimit)
 }
 
 func exceedsBatchCapacity(err error) bool {
@@ -103,7 +156,7 @@ func (db *DB) commitRows(next manifest, batch *tarp.WriteBatch, graphBytes uint6
 type boundedUpdate struct {
 	generation uint64
 	batch      tarp.WriteBatch
-	size       uint64
+	sizer      tarp.WriteBatchSizer
 	graphBytes uint64
 	oversized  bool
 	err        error
@@ -128,12 +181,18 @@ func (b *boundedUpdate) fits(k, v []byte) bool {
 		b.err = err
 		return false
 	}
-	b.size += cost
+	if err := b.sizer.Add(uint64(len(k)), uint64(len(v))); err != nil {
+		if canCoalesce(err) {
+			b.oversized = true
+		} else {
+			b.err = err
+		}
+		return false
+	}
 	if k[0] == 'G' {
 		b.graphBytes += cost
 	}
-	b.oversized = b.batch.Len()+2 > tarp.MaxWriteBatchEntries || b.size > uint64(storageOptions().TargetSegmentBytes)
-	return !b.oversized
+	return true
 }
 
 func rowSize(gen uint64, k, v []byte) (uint64, error) {
@@ -155,7 +214,6 @@ type rowChange struct {
 type rowUpdate struct {
 	generation uint64
 	changes    map[string]rowChange
-	size       uint64
 	err        error
 }
 
@@ -166,15 +224,10 @@ func (p *rowUpdate) set(key, value []byte, remove bool) {
 	if p.err != nil {
 		return
 	}
-	cost, err := rowSize(p.generation, key, value)
-	if err != nil {
+	if _, err := rowSize(p.generation, key, value); err != nil {
 		p.err = err
 		return
 	}
-	if old, ok := p.changes[string(key)]; ok {
-		p.size -= uint64(len(key)) + uint64(len(old.value)) + 48
-	}
-	p.size += cost
 	p.changes[string(key)] = rowChange{value: bytes.Clone(value), deleted: remove}
 }
 

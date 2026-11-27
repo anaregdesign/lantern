@@ -13,8 +13,18 @@ import (
 // VertexAt reads through one pinned cut, keeping a live nil value distinct
 // from an absent or expired vertex.
 func (r *Rows[K, V]) VertexAt(snap *tarp.Snapshot, generation uint64, key K, now time.Time) (V, bool, error) {
+	return r.VertexAtWithReadCharge(snap, generation, key, now, nil)
+}
+
+// VertexAtWithReadCharge calls charge with encoded key/value bytes before
+// decoding each stored row. A missing key charges its probe.
+func (r *Rows[K, V]) VertexAtWithReadCharge(snap *tarp.Snapshot, generation uint64, key K, now time.Time, charge func(int) error) (V, bool, error) {
 	var zero V
-	v, found, err := r.GetVertex(snap, generation, key)
+	physical, err := r.vertexKey(generation, vertexFamily, key)
+	if err != nil {
+		return zero, false, err
+	}
+	v, found, err := readChargedRow(snap, physical, r.decodeVertex, charge)
 	if err != nil || !found || !cache.IsLiveAt(v.Expiration, now) {
 		return zero, false, err
 	}
@@ -24,14 +34,19 @@ func (r *Rows[K, V]) VertexAt(snap *tarp.Snapshot, generation uint64, key K, now
 // HasVertexAt checks TTL from the row header without decoding the application
 // payload. It is used for keys-only scans and edge endpoint liveness.
 func (r *Rows[K, V]) HasVertexAt(snap *tarp.Snapshot, gen uint64, key K, now time.Time) (bool, error) {
+	return r.HasVertexAtWithReadCharge(snap, gen, key, now, nil)
+}
+
+// HasVertexAtWithReadCharge charges only the Vertex metadata lookup.
+func (r *Rows[K, V]) HasVertexAtWithReadCharge(snap *tarp.Snapshot, gen uint64, key K, now time.Time, charge func(int) error) (bool, error) {
 	physical, err := r.vertexKey(gen, vertexMetadataFamily, key)
 	if err != nil {
 		return false, err
 	}
-	expiry, found, err := readRow(snap, physical, func(data []byte) (time.Time, error) {
+	expiry, found, err := readChargedRow(snap, physical, func(data []byte) (time.Time, error) {
 		deadline, _, err := parseVertexProjection(data)
 		return deadline, err
-	})
+	}, charge)
 	return found && cache.IsLiveAt(expiry, now), err
 }
 
@@ -45,22 +60,32 @@ type EdgeDetail struct {
 // the same snapshot. Replicated weights sum in deterministic HLC/identity
 // order; zero-HLC, zero-ID local events retain their insertion order.
 func (r *Rows[K, V]) EdgeAt(ctx context.Context, snap *tarp.Snapshot, gen uint64, key EdgeKey[K], now time.Time) (EdgeDetail, error) {
+	return r.EdgeAtWithReadCharge(ctx, snap, gen, key, now, nil)
+}
+
+// EdgeAtWithReadCharge applies an operation's physical read budget to
+// endpoint probes, the Edge header, and every source, including expired ones.
+func (r *Rows[K, V]) EdgeAtWithReadCharge(ctx context.Context, snap *tarp.Snapshot, gen uint64, key EdgeKey[K], now time.Time, charge func(int) error) (EdgeDetail, error) {
 	var result EdgeDetail
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
 	for _, endpoint := range []K{key.Tail, key.Head} {
-		found, err := r.HasVertexAt(snap, gen, endpoint, now)
+		found, err := r.HasVertexAtWithReadCharge(snap, gen, endpoint, now, charge)
 		if err != nil || !found {
 			return result, err
 		}
 	}
-	edge, found, err := r.GetEdge(snap, gen, key)
+	physical, err := r.edgeKey(gen, edgeFamily, key)
+	if err != nil {
+		return result, err
+	}
+	edge, found, err := readChargedRow(snap, physical, decodeEdge, charge)
 	if err != nil || !found {
 		return result, err
 	}
 	sources := liveBase(nil, edge, now)
-	for entry, err := range r.Sources(ctx, snap, gen, key) {
+	for entry, err := range r.sources(ctx, snap, gen, key, charge) {
 		if err != nil {
 			return result, err
 		}

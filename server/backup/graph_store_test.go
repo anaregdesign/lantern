@@ -40,7 +40,7 @@ func TestGraphStoreRecoveryPoint(t *testing.T) {
 		}
 		return writer.StoreRows(ctx, rows, s, b, generation, keys)
 	}
-	rt, err := dataruntime.NewTarpGraphServingRuntime(graph, db, mutationlog.Options{Capacity: 16}, stage, keyspace.Version)
+	rt, err := dataruntime.NewTarpGraphServingRuntime(t.Context(), graph, db, mutationlog.Options{Capacity: 16}, stage, keyspace.Version)
 	if err != nil {
 		t.Fatal(err)
 	}

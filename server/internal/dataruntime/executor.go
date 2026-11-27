@@ -942,18 +942,29 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
+		cached := func() error {
 			g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(bfs.GetStep()), int(bfs.GetFanOut()), coreWeighting, selectSmallest, keep)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return err
-		}); viewErr != nil && !errors.Is(viewErr, err) {
-			return nil, viewErr
+			return ctxToConnect(err)
+		}
+		var viewErr error
+		if coreWeighting == graphcache.WeightingRaw {
+			viewErr = s.withGraphRows(ctx, func(read graphRead) error {
+				if read.cut == nil {
+					return cached()
+				}
+				g, expirations, err = read.traversal(ctx, policy.Traversal.WorkBudget).Neighbor(
+					ctx, request.GetSeed(), request.GetVertexPrefix(), int(bfs.GetStep()), int(bfs.GetFanOut()), selectSmallest)
+				return storedTraversalError(err)
+			})
+		} else {
+			viewErr = s.withPublicGraphReadRetry(ctx, cached)
 		}
 		traversalDur = time.Since(traversalStart)
-		if err != nil {
-			return nil, ctxToConnect(err)
+		if viewErr != nil {
+			return nil, viewErr
 		}
 		phase = "response"
 

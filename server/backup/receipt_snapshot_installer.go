@@ -112,6 +112,11 @@ func (i *ReceiptSnapshotInstaller) Install(
 	if err != nil {
 		return result, fmt.Errorf("backup: decode validated RECEIPT candidate: %w", err)
 	}
+	// The detached validation graph has served its purpose. Release it
+	// before the target prepares its own graph and receipt publication cut.
+	candidate.mu.Lock()
+	candidate.stage = nil
+	candidate.mu.Unlock()
 	if err := i.target.InstallReceiptBaseline(ctx, capture); err != nil {
 		return result, fmt.Errorf("backup: install RECEIPT baseline: %w", err)
 	}
@@ -158,7 +163,8 @@ func (c *ReceiptSnapshotCandidate) installCapture(ctx context.Context) (datarunt
 	if err != nil {
 		return dataruntime.ReceiptWholeStateCapture{}, err
 	}
-	capture, err := dataruntime.DecodeReceiptSnapshotFrames(
+	capture, err := dataruntime.DecodeOwnedReceiptSnapshotFrames(
+		ctx,
 		frames,
 		c.expectedPolicy,
 		c.retiredConfig,

@@ -11,11 +11,13 @@ import (
 )
 
 type storageResidency[S comparable, T any] struct {
-	rows        *graphstore.Rows[S, T]
-	db          *graphstore.DB
-	fault       atomic.Pointer[error]
-	pending     storageSweep[S]
-	maintenance func(func() error) error
+	rows            *graphstore.Rows[S, T]
+	db              *graphstore.DB
+	fault           atomic.Pointer[error]
+	recoveryAt      time.Time
+	recoveryExpired bool
+	pending         storageSweep[S]
+	maintenance     func(func() error) error
 }
 
 // StorageError reports a required row that could not be hydrated. Recovery

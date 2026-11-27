@@ -45,13 +45,40 @@ func openTarpTestRuntime(t *testing.T, dir string, capacity int) (*ServingRuntim
 		}
 		return writer.StoreRows(ctx, rows, snap, batch, gen, keys)
 	}
-	rt, err := NewTarpGraphServingRuntime(graph, db, mutationlog.Options{Capacity: capacity}, stage, "")
+	rt, err := NewTarpGraphServingRuntime(t.Context(), graph, db, mutationlog.Options{Capacity: capacity}, stage, "")
 	if err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
 	return rt, rt.NewExecutor(nil)
+}
+
+func TestTarpRuntimeStartupCancellationLeavesFreshStoreUninitialized(t *testing.T) {
+	db, err := graphstore.Open(t.Context(), t.TempDir(), hlc.NodeID{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	graph := graphcache.NewGraphCache[string, *pb.Vertex](0)
+	stage, err := RestoreGraphStorage(t.Context(), graph, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rt, err := NewTarpGraphServingRuntime(ctx, graph, db, mutationlog.Options{Capacity: 16}, stage, "")
+	if rt != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled startup = %v, %v", rt, err)
+	}
+	view, err := db.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	if view.Revision != 0 {
+		t.Fatalf("cancelled startup initialized revision %d", view.Revision)
+	}
 }
 
 func TestTarpRuntimeRestoresLocalGraphAndRetainedRelay(t *testing.T) {

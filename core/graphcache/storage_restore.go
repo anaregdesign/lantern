@@ -41,14 +41,14 @@ func (c *GraphCache[S, T]) restoreStorage(ctx context.Context, rows *graphstore.
 // payload, then verify the Edge/Source and floor families before publishing
 // the new search index.
 func (c *GraphCache[S, T]) restoreStorageRows(ctx context.Context, rows *graphstore.Rows[S, T], view *graphstore.ReadView, now time.Time, indexDocument func(S, search.Document, time.Time) error) error {
-	c.storage.pending.observed = now
+	c.storage.recoveryAt = now
 	for entry, err := range rows.VerifiedVertices(ctx, view.Snapshot, view.Generation) {
 		if err != nil {
 			return err
 		}
 		v := entry.Vertex
 		if !cache.IsLiveAt(v.Expiration, now) {
-			c.storage.pending.vertices = append(c.storage.pending.vertices, entry.Key)
+			c.storage.recoveryExpired = true
 			c.recordVertexCausalBarrierLocked(entry.Key, v.HLC)
 			continue
 		}
@@ -66,27 +66,25 @@ func (c *GraphCache[S, T]) restoreStorageRows(ctx context.Context, rows *graphst
 		if err != nil {
 			return err
 		}
-		expiredRows := false
 		bucket := &weight{lastHLC: entry.Edge.HLC, lastOrdinal: entry.Edge.LastOrdinal, needsSort: true}
-		if v := entry.Edge.Base; v != nil && !cache.IsLiveAt(v.Expiration, now) {
-			expiredRows = true
-		}
-		if v := entry.Edge.Base; v != nil && cache.IsLiveAt(v.Expiration, now) {
-			bucket.values = append(bucket.values, weightValue{value: v.Weight, expiration: v.Expiration, hlc: v.HLC, derivedAggregate: v.DerivedAggregate})
+		if v := entry.Edge.Base; v != nil {
+			if cache.IsLiveAt(v.Expiration, now) {
+				bucket.values = append(bucket.values, weightValue{value: v.Weight, expiration: v.Expiration, hlc: v.HLC, derivedAggregate: v.DerivedAggregate})
+			} else {
+				c.storage.recoveryExpired = true
+			}
 		}
 		for _, s := range entry.Sources {
 			v := s.Source
 			if cache.IsLiveAt(v.Expiration, now) {
 				bucket.values = append(bucket.values, weightValue{value: v.Weight, expiration: v.Expiration, hlc: v.HLC, contribID: s.ID.ContribID, ordinal: s.ID.Ordinal})
 			} else {
-				expiredRows = true
+				c.storage.recoveryExpired = true
 			}
-		}
-		if expiredRows {
-			c.storage.pending.edges = append(c.storage.pending.edges, EdgeKey[S]{entry.Key.Tail, entry.Key.Head})
 		}
 		bucket.flushLockedAt(now)
 		if len(bucket.values) == 0 {
+			c.storage.recoveryExpired = true
 			c.recordEdgeCausalBarrierLocked(entry.Key.Tail, entry.Key.Head, bucket.lastHLC)
 			continue
 		}
@@ -98,7 +96,7 @@ func (c *GraphCache[S, T]) restoreStorageRows(ctx context.Context, rows *graphst
 			return err
 		}
 		if !cache.IsLiveAt(entry.Floor.Expiration, now) {
-			c.storage.pending.floors = append(c.storage.pending.floors, entry.Key)
+			c.storage.recoveryExpired = true
 			continue
 		}
 		c.restoreStorageFloor(entry.Key, entry.Floor, now)

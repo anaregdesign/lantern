@@ -40,7 +40,8 @@ import (
 // and treat IN/BOTH totals on a large, actively-written graph as advisory.
 func (s *Executor) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesByDegreeRequest) (*pb.TopVerticesByDegreeResponse, error) {
 	ctx = s.captureRequestPolicy(ctx)
-	scan := s.requestPolicy(ctx).Scan
+	policy := s.requestPolicy(ctx)
+	scan := policy.Scan
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -55,10 +56,24 @@ func (s *Executor) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesBy
 
 	dir := degreeDirection(in.GetDirection())
 	var ranked []graphcache.DegreeEntry[string]
-	if err := s.withPublicGraphReadRetry(ctx, func() error {
+	cached := func() error {
 		ranked = s.cache.TopVerticesByDegreeContext(ctx, in.GetPrefix(), int(k), dir, in.GetWeighted())
 		return nil
-	}); err != nil {
+	}
+	var err error
+	if dir == graphcache.DegreeOut {
+		err = s.withGraphRows(ctx, func(read graphRead) error {
+			if read.cut == nil {
+				return cached()
+			}
+			var readErr error
+			ranked, readErr = read.traversal(ctx, policy.Traversal.WorkBudget).OutDegree(ctx, in.GetPrefix(), int(k), in.GetWeighted())
+			return storedTraversalError(readErr)
+		})
+	} else {
+		err = s.withPublicGraphReadRetry(ctx, cached)
+	}
+	if err != nil {
 		return nil, err
 	}
 

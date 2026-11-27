@@ -63,27 +63,49 @@ func (m SortableMap[S, T]) selectK(k int, smallest bool, less func(a, b S) bool)
 		return m
 	}
 
-	h := boundedKHeap[S, T]{entries: make([]kEntry[S, T], 0, k), smallest: smallest, less: less}
+	selection := NewSelection[S, T](k, smallest, less)
+	selection.h.entries = make([]kEntry[S, T], 0, k)
 	for key, val := range m {
-		if len(h.entries) < k {
-			heap.Push(&h, kEntry[S, T]{value: key, priority: val})
-			continue
-		}
-		// h.entries[0] is the root: the boundary entry first to be evicted.
-		// Replace it only when the candidate belongs deeper in the retained
-		// set. Strict inequality keeps the operation cheap when many entries
-		// tie at the boundary.
-		if h.replaces(key, val, h.entries[0]) {
-			h.entries[0] = kEntry[S, T]{value: key, priority: val}
-			heap.Fix(&h, 0)
-		}
+		selection.Add(key, val)
 	}
-
-	filtered := make(SortableMap[S, T], len(h.entries))
-	for _, e := range h.entries {
-		filtered[e.value] = e.priority
-	}
+	filtered := make(SortableMap[S, T], selection.h.Len())
+	selection.Visit(func(key S, val T) { filtered[key] = val })
 	return filtered
+}
+
+// Selection keeps the best distinct candidates from a stream without
+// materializing the input. The caller supplies each candidate exactly once.
+type Selection[S comparable, T Number] struct {
+	limit int
+	h     boundedKHeap[S, T]
+}
+
+// NewSelection selects the smallest priorities if smallest is true, or the
+// largest otherwise. For tied priorities less names the preferred candidate.
+func NewSelection[S comparable, T Number](limit int, smallest bool, less func(a, b S) bool) Selection[S, T] {
+	return Selection[S, T]{limit: limit, h: boundedKHeap[S, T]{smallest: smallest, less: less}}
+}
+
+func (s *Selection[S, T]) Add(candidate S, priority T) {
+	if s.limit <= 0 {
+		return
+	}
+	if s.h.Len() < s.limit {
+		heap.Push(&s.h, kEntry[S, T]{value: candidate, priority: priority})
+		return
+	}
+	if s.h.replaces(candidate, priority, s.h.entries[0]) {
+		s.h.entries[0] = kEntry[S, T]{value: candidate, priority: priority}
+		heap.Fix(&s.h, 0)
+	}
+}
+
+// Visit visits the retained entries in heap order. Do not change the selection
+// during iteration.
+func (s *Selection[S, T]) Visit(emit func(S, T)) {
+	for _, entry := range s.h.entries {
+		emit(entry.value, entry.priority)
+	}
 }
 
 // kEntry / boundedKHeap is an internal, value-type bounded heap used only by

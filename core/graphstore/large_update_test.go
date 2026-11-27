@@ -162,3 +162,64 @@ func TestUpdateRowsSegmentBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateRowsCoalescesAbsentDeletesBeforeGenerationCopy(t *testing.T) {
+	ctx := t.Context()
+	node := hlc.NodeID{1}
+	dir := t.TempDir()
+	raw, err := tarp.Open(dir, tarp.Options{MaxRecordBytes: 256, TargetSegmentBytes: 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDB(raw, node, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	key := func(generation uint64, id byte) []byte {
+		return append(ServicePrefix(generation), id)
+	}
+	if err := db.UpdateRows(ctx, func(generation uint64, _ *tarp.Snapshot, b Writer) error {
+		b.Put(key(generation, 0), []byte("change"))
+		b.Put(key(generation, 1), []byte("keep"))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	old, err := db.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	preparations := 0
+	if err := db.UpdateRows(ctx, func(generation uint64, _ *tarp.Snapshot, b Writer) error {
+		preparations++
+		b.Put(key(generation, 0), []byte("changed"))
+		for i := byte(2); i < 20; i++ {
+			b.Delete(key(generation, i))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := db.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	if preparations != 2 || after.Generation != old.Generation || after.Revision != old.Revision+1 {
+		t.Fatalf("unnecessary replacement or wrong commit: preparations=%d generation=%d revision=%d", preparations, after.Generation, after.Revision)
+	}
+	for _, check := range []struct {
+		view *ReadView
+		id   byte
+		want string
+	}{
+		{old, 0, "change"}, {after, 0, "changed"}, {after, 1, "keep"},
+	} {
+		value, err := check.view.Snapshot.Get(key(check.view.Generation, check.id))
+		if err != nil || string(value) != check.want {
+			t.Fatalf("id %d: got %q, %v; want %q", check.id, value, err, check.want)
+		}
+	}
+}

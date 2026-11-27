@@ -20,21 +20,21 @@ import (
 // NewTarpGraphServingRuntime composes a graph restored from db with its
 // matching origin and retained relay cut. On success the runtime owns db.
 // On failure the caller retains ownership and must discard the candidate.
-func NewTarpGraphServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, opts mutationlog.Options, stage TarpGraphStager, namespace string) (*ServingRuntime, error) {
-	r, err := newTarpServingRuntime(graph, db, opts, stage, namespace, nil, [32]byte{})
+func NewTarpGraphServingRuntime(ctx context.Context, graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, opts mutationlog.Options, stage TarpGraphStager, namespace string) (*ServingRuntime, error) {
+	r, err := newTarpServingRuntime(ctx, graph, db, opts, stage, namespace, nil, [32]byte{})
 	if err != nil {
 		return nil, err
 	}
-	if err = r.tarp.trimRelay(); err != nil {
+	if err = r.tarp.trimRelay(ctx); err != nil {
 		return nil, errors.Join(err, r.log.Close())
 	}
-	if err = graph.CompleteStorageRecovery(context.Background()); err != nil {
+	if err = graph.CompleteStorageRecovery(ctx); err != nil {
 		return nil, errors.Join(err, r.log.Close())
 	}
 	return r, nil
 }
 
-func newTarpServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, opts mutationlog.Options, stage TarpGraphStager, namespace string, policy *mutationreceipt.Config, fingerprint [32]byte) (*ServingRuntime, error) {
+func newTarpServingRuntime(ctx context.Context, graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, opts mutationlog.Options, stage TarpGraphStager, namespace string, policy *mutationreceipt.Config, fingerprint [32]byte) (*ServingRuntime, error) {
 	if db == nil || graph == nil || stage == nil || opts.WAL != nil || opts.Retained != nil {
 		return nil, errors.New("Tarp graph runtime requires an owned graph, database and graph stager")
 	}
@@ -43,7 +43,7 @@ func newTarpServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db 
 	}
 	clock := hlc.New(db.NodeID(), hlc.Options{})
 	relay := &tarpRelay{graph: graph, db: db, stage: stage, clock: clock, namespace: namespace, capacity: uint64(opts.EffectiveCapacity()), receiptPolicy: policy, fingerprint: fingerprint}
-	cut, entries, origins, err := relay.resume()
+	cut, entries, origins, err := relay.resume(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,10 @@ func ReadTarpBackupWitness(node hlc.NodeID, gen uint64, snapshot *tarp.Snapshot,
 
 // resume always validates before enabling writes. A changed replay capacity
 // can discard the oldest retained entries, but can never rewind the local tip.
-func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTracker, error) {
+func (r *tarpRelay) resume(ctx context.Context) (tarpRelayCut, []mutationlog.Entry, *originStateTracker, error) {
+	if err := ctx.Err(); err != nil {
+		return tarpRelayCut{}, nil, nil, err
+	}
 	view, err := r.db.Read()
 	if err != nil {
 		return tarpRelayCut{}, nil, nil, err
@@ -151,7 +154,7 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 		if err = r.db.Update(func(gen uint64, snap *tarp.Snapshot, b *tarp.WriteBatch) error {
 			for _, domain := range []byte{'G', 'S'} {
 				prefix := binary.BigEndian.AppendUint64([]byte{domain}, gen)
-				for _, e := range snap.KeysPrefix(context.Background(), prefix) {
+				for _, e := range snap.KeysPrefix(ctx, prefix) {
 					if e != nil {
 						return e
 					}
@@ -167,7 +170,7 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 				b.Put(tarpServiceKey(gen, tarpReceiptManifest), ledger.encode())
 			}
 			b.Put(tarpServiceKey(gen, tarpRelayManifest), (tarpRelayCut{first: 1, receipts: r.receiptPolicy != nil}).encode(r.namespace))
-			return nil
+			return ctx.Err()
 		}); err != nil {
 			return tarpRelayCut{}, nil, nil, err
 		}
@@ -200,7 +203,7 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 	}
 	origins := newOriginStateTracker()
 	lower, upper := tarp.PrefixRange(tarpServiceKey(view.Generation, tarpRelayOrigin))
-	for item, scanErr := range view.Snapshot.ScanRange(context.Background(), lower, upper) {
+	for item, scanErr := range view.Snapshot.ScanRange(ctx, lower, upper) {
 		if scanErr != nil {
 			return cut, nil, nil, scanErr
 		}
@@ -225,7 +228,7 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 	var digest [32]byte
 	seen := make(map[hlc.NodeID]uint64)
 	var retained []mutationlog.Entry
-	for item, scanErr := range view.Snapshot.ScanRange(context.Background(), lo, hi) {
+	for item, scanErr := range view.Snapshot.ScanRange(ctx, lo, hi) {
 		if scanErr != nil {
 			return cut, nil, nil, scanErr
 		}
@@ -276,13 +279,16 @@ func (r *tarpRelay) resume() (tarpRelayCut, []mutationlog.Entry, *originStateTra
 			return cut, nil, nil, errors.New("Tarp relay ends before origin frontier")
 		}
 	}
-	return cut, retained, origins, nil
+	return cut, retained, origins, ctx.Err()
 }
 
 // Trim only after the entire startup cut passes graph, relay and receipt
 // validation. Failed validation never discards an existing relay suffix.
-func (r *tarpRelay) trimRelay() error {
+func (r *tarpRelay) trimRelay(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		done := false
 		err := r.db.Update(func(gen uint64, snap *tarp.Snapshot, b *tarp.WriteBatch) error {
 			cut, err := r.readCut(snap, gen)
@@ -302,7 +308,7 @@ func (r *tarpRelay) trimRelay() error {
 			cut.first = end
 			b.Put(tarpServiceKey(gen, tarpRelayManifest), cut.encode(r.namespace))
 			done = count-drop <= r.capacity
-			return nil
+			return ctx.Err()
 		})
 		if err != nil || done {
 			return err

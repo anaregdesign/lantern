@@ -63,7 +63,7 @@ func restoreTarpRuntime(ctx context.Context, db *graphstore.DB, receipt ReceiptC
 		return nil, err
 	}
 	if receipt.Mode == ReceiptModeGraphOnly {
-		return dataruntime.NewTarpGraphServingRuntime(graph, db, logOptions, stage, cacheConfig.namespaceFormat)
+		return dataruntime.NewTarpGraphServingRuntime(ctx, graph, db, logOptions, stage, cacheConfig.namespaceFormat)
 	}
 	now := time.Now()
 	config := dataruntime.ReceiptDatabaseConfig{
@@ -76,5 +76,5 @@ func restoreTarpRuntime(ctx context.Context, db *graphstore.DB, receipt ReceiptC
 		Now:             now,
 		BaselineCodec:   backup.ReceiptBaselineCodec{},
 	}
-	return dataruntime.NewTarpReceiptServingRuntime(graph, db, stage, config, receipt.Mode == ReceiptModeFresh)
+	return dataruntime.NewTarpReceiptServingRuntime(ctx, graph, db, stage, config, receipt.Mode == ReceiptModeFresh)
 }
