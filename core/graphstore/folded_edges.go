@@ -21,12 +21,18 @@ type orderedSource struct {
 	entry      SourceEntry
 }
 
-func scanOrderedSources(ctx context.Context, snap *tarp.Snapshot, bounds scanBounds) iter.Seq2[orderedSource, error] {
+func scanOrderedSources(ctx context.Context, snap *tarp.Snapshot, bounds scanBounds, charge func(int) error) iter.Seq2[orderedSource, error] {
 	return func(yield func(orderedSource, error) bool) {
 		for row, err := range snap.ScanRange(ctx, bounds.lower, bounds.upper) {
 			if err != nil {
 				yield(orderedSource{}, err)
 				return
+			}
+			if charge != nil {
+				if err := charge(len(row.Key) + len(row.Value)); err != nil {
+					yield(orderedSource{}, err)
+					return
+				}
 			}
 			tuple, err := sourceTupleCodec.Decode(row.Key)
 			if err != nil {
@@ -87,7 +93,7 @@ func (r *Rows[K, V]) EdgeBuckets(ctx context.Context, snap *tarp.Snapshot, gen u
 		prefix := tarp.EncodeOrderedStringPrefix(tailPrefix)
 		edges := prefixBounds(append(edgePrefix, prefix...))
 		sources := prefixBounds(append(sourcePrefix, prefix...))
-		next, stop := iter.Pull2(scanOrderedSources(ctx, snap, sources))
+		next, stop := iter.Pull2(scanOrderedSources(ctx, snap, sources, nil))
 		defer stop()
 		source, scanErr, has := next()
 		var scratch []SourceEntry

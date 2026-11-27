@@ -109,13 +109,23 @@ type FloorEntry[K comparable] struct {
 }
 
 func readRow[T any](snap *tarp.Snapshot, key []byte, decode func([]byte) (T, error)) (T, bool, error) {
+	return readChargedRow(snap, key, decode, nil)
+}
+
+func readChargedRow[T any](snap *tarp.Snapshot, key []byte, decode func([]byte) (T, error), charge func(int) error) (T, bool, error) {
 	var zero T
 	value, err := snap.Get(key)
-	if errors.Is(err, tarp.ErrNotFound) {
-		return zero, false, nil
-	}
-	if err != nil {
+	absent := errors.Is(err, tarp.ErrNotFound)
+	if err != nil && !absent {
 		return zero, false, err
+	}
+	if charge != nil {
+		if chargeErr := charge(len(key) + len(value)); chargeErr != nil {
+			return zero, false, chargeErr
+		}
+	}
+	if absent {
+		return zero, false, nil
 	}
 	result, err := decode(value)
 	if err != nil {

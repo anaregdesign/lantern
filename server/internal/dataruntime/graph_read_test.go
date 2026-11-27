@@ -125,6 +125,24 @@ func TestDiskGraphReadRPCs(t *testing.T) {
 	if !slices.Equal(heads, []string{"a", "c"}) {
 		t.Fatalf("edge pages=%q", heads)
 	}
+	walk, err := s.Illuminate(scoped, &pb.IlluminateRequest{
+		Seed: "a", VertexPrefix: "c",
+		Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}},
+	})
+	if err != nil || len(walk.GetGraph().GetEdges()) != 1 || len(walk.GetGraph().GetVertices()) != 2 ||
+		walk.GetGraph().GetEdges()[0].GetHead() != "c" || walk.GetGraph().GetEdges()[0].GetWeight() != 4 {
+		t.Fatalf("stored RAW traversal = %v, %v", walk, err)
+	}
+	degrees, err := s.TopVerticesByDegree(scoped, &pb.TopVerticesByDegreeRequest{Prefix: "a", K: 1})
+	if err != nil || len(degrees.GetEntries()) != 1 || degrees.GetEntries()[0].GetDegree() != 2 ||
+		degrees.GetEntries()[0].GetWeightedDegree() != 8 {
+		t.Fatalf("stored OUT degree = %v, %v", degrees, err)
+	}
+	s.WithTraversalLimits(TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxTouchedEdges: 1}})
+	if partial, err := s.TopVerticesByDegree(scoped, &pb.TopVerticesByDegreeRequest{Prefix: "a", K: 1}); partial != nil ||
+		connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("stored degree budget = %v, %v", partial, err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

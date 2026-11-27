@@ -198,13 +198,17 @@ func (r *Rows[K, V]) sourceBounds(gen uint64, k EdgeKey[K]) (scanBounds, error) 
 // by ordinal; explicit sources are ordered by ID. Folding uses the graph's
 // HLC then ID order, independently of this storage enumeration order.
 func (r *Rows[K, V]) Sources(ctx context.Context, snap *tarp.Snapshot, gen uint64, k EdgeKey[K]) iter.Seq2[SourceEntry, error] {
+	return r.sources(ctx, snap, gen, k, nil)
+}
+
+func (r *Rows[K, V]) sources(ctx context.Context, snap *tarp.Snapshot, gen uint64, k EdgeKey[K], charge func(int) error) iter.Seq2[SourceEntry, error] {
 	return func(yield func(SourceEntry, error) bool) {
 		bounds, err := r.sourceBounds(gen, k)
 		if err != nil {
 			yield(SourceEntry{}, err)
 			return
 		}
-		for row, err := range scanOrderedSources(ctx, snap, bounds) {
+		for row, err := range scanOrderedSources(ctx, snap, bounds, charge) {
 			if err != nil {
 				yield(SourceEntry{}, err)
 				return

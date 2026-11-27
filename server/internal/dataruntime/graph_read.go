@@ -37,6 +37,17 @@ func graphReadError(err error) error {
 	}
 }
 
+func storedTraversalError(err error) error {
+	if errors.Is(err, graphcache.ErrStoredTraversalBudgetExceeded) {
+		return connect.NewError(connect.CodeResourceExhausted, graphcache.ErrStoredTraversalBudgetExceeded)
+	}
+	return graphReadError(err)
+}
+
+func (r graphRead) traversal(ctx context.Context, budget graphcache.PPRWorkBudget) *graphcache.StoredTraversal[*pb.Vertex] {
+	return graphcache.NewStoredTraversal(r.rows, r.cut, r.now, graphcache.AdmittedQueryView(ctx), budget)
+}
+
 // Each attempt pins one generation behind the existing publication and
 // Snapshot-install checks. All liveness decisions share its operation time.
 func (s *Executor) withGraphRows(ctx context.Context, capture func(graphRead) error) error {
