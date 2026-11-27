@@ -43,6 +43,10 @@ func (r searchReader) Capture(ctx context.Context, spec query.Spec) (query.Captu
 		// Optimistic captures replace the entire previous attempt, including
 		// its backend failure and work counters.
 		captured = query.CaptureResult{}
+		if rt := r.service.runtime; rt != nil && rt.tarp != nil && rt.tarp.diskSearch != nil {
+			captured = rt.tarp.diskSearch.capture(ctx, rt.tarp.db, spec)
+			return nil
+		}
 		if spec.Projection == pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
 			snapshot, stats, err := r.service.cache.SearchVerticesSnapshotContext(ctx, spec.Query, spec.Limit, spec.Prefix, spec.Options, spec.Phrase, spec.Budget)
 			captured.Stats, captured.BackendError = stats, err

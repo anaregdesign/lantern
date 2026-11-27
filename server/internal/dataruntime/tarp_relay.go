@@ -35,6 +35,8 @@ type tarpRelay struct {
 	replayReadFault atomic.Pointer[error]
 	graph           *graphcache.GraphCache[string, *pb.Vertex]
 	receiptPolicy   *mutationreceipt.Config
+	trackSearch     bool // fixed before the runtime admits requests
+	diskSearch      *tarpDiskSearchReader
 	fingerprint     [32]byte
 	db              *graphstore.DB
 	clock           *hlc.Clock
@@ -207,7 +209,15 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 				return err
 			}
 		}
-		if err = r.stage(context.Background(), gen, snap, batch, keys, staged); err != nil {
+		if r.trackSearch {
+			publication := tarpEntryDigest(cut.digest, entry.Seq, raw)
+			stageGraph := func(batch graphstore.Writer) error {
+				return r.stage(context.Background(), gen, snap, batch, keys, staged)
+			}
+			if err := stageTarpGraphSearchChanges(context.Background(), gen, snap, batch, cut.digest, publication, stageGraph); err != nil {
+				return err
+			}
+		} else if err = r.stage(context.Background(), gen, snap, batch, keys, staged); err != nil {
 			return err
 		}
 		if cut.floor.Less(localFloor) {
