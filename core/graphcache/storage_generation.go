@@ -98,6 +98,11 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 }
 
 type storageRecord struct{ k, v []byte }
+
+// A one-MiB Vertex expands during encoding and has a separate TTL row.
+// Coalesce several such Vertices into each durable staging write.
+const storageGenerationChunkBytes = 4 << 20
+
 type storageChunk struct {
 	ctx     context.Context
 	target  *graphstore.Generation
@@ -118,7 +123,7 @@ func (w *storageChunk) Put(k, v []byte) {
 	if w.err = w.ctx.Err(); w.err != nil {
 		return
 	}
-	if len(w.records) >= 512 || w.bytes+len(k)+len(v) > 1<<20 {
+	if len(w.records) >= 512 || w.bytes+len(k)+len(v) > storageGenerationChunkBytes {
 		if w.flush() != nil {
 			return
 		}
