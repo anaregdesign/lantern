@@ -21,6 +21,13 @@ DOC_DIRS = {
     "testbed", "testbed/bench", "testbed/dart-transport-probe",
     "deploy/compose", "deploy/helm/lantern",
 }
+# Reviewed repository skill prose. The separate strict local prose mode uses
+# DOC_DIRS for module README and CHANGELOG eligibility.
+SKILL_DOC_DIRS = {
+    ".github/skills/lantern-ops",
+    ".github/skills/react-router-app-architecture",
+    ".github/skills/react-router-app-architecture/references",
+}
 # Generated environment reference must still reproduce the source registry.
 # SDK design/decision prose is not executed or embedded by the product; validate
 # its links and toolchain/release consistency without rebuilding every platform.
@@ -33,9 +40,10 @@ def is_document(path: str) -> bool:
         return False
     if path in CONTRACT_DOCS:
         return False
+    parent = str(value.parent)
     return path in ROOT_DOCS or (
         value.suffix == ".md"
-        and (path.startswith("docs/") or str(value.parent) in DOC_DIRS)
+        and (path.startswith("docs/") or parent in DOC_DIRS or parent in SKILL_DOC_DIRS)
     )
 
 

@@ -225,6 +225,18 @@ class ScopeTest(unittest.TestCase):
         impact = ci_scope.validation_scope.affected(routing)
         self.assertEqual(ci_scope.selected_jobs(routing, impact)[0], ci_scope.JOBS)
 
+    def test_skill_markdown_does_not_schedule_dart_or_hide_mobile_inputs(self):
+        skill = ".github/skills/react-router-app-architecture/SKILL.md"
+        for additional, expected in (
+            ({}, set()),
+            ({"sdks/dart/example/integration_test/mobile_smoke_test.dart": "M"}, {"mobile"}),
+            ({".github/workflows/unmapped.yml": "M"}, ci_scope.JOBS),
+        ):
+            with self.subTest(additional=additional):
+                changes = {skill: "M"} | additional
+                scope = ci_scope.validation_scope.affected(changes)
+                self.assertEqual(ci_scope.selected_jobs(changes, scope)[0], expected)
+
     def test_routing_selects_only_the_owning_jobs(self):
         action = ci_scope.DART_WORKFLOW
         reused = ".github/workflows/current-sdk4.yml"
