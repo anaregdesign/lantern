@@ -162,6 +162,9 @@ func (q *diskQuery) subtractDocument(id uint64, doc diskDocValue) error {
 			if int(frequency) > doc.lengths[token.Class][field]-seen[token.Class][field] || counts[field] == math.MaxInt {
 				return diskInvalid("expired posting contradicts document metadata")
 			}
+			if err := q.capacity.removePosting(posting.positions[field]); err != nil {
+				return err
+			}
 			seen[token.Class][field] += int(frequency)
 			terms[token.Class][field]++
 			counts[field]++

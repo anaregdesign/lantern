@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -43,7 +44,14 @@ type VertexPutTransaction[S comparable, T any] struct {
 func (c *GraphCache[S, T]) BeginVertexPut(
 	items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(items, ts, ifAbsent, true, nil)
+	return c.BeginVertexPutContext(context.Background(), items, ts, ifAbsent)
+}
+
+// BeginVertexPutContext is BeginVertexPut with cancellation during planning.
+func (c *GraphCache[S, T]) BeginVertexPutContext(
+	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool,
+) (*VertexPutTransaction[S, T], error) {
+	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, nil)
 }
 
 // BeginReplicatedVertexPut stages an already-committed receiver projection.
@@ -55,13 +63,23 @@ func (c *GraphCache[S, T]) BeginVertexPut(
 func (c *GraphCache[S, T]) BeginReplicatedVertexPut(
 	items []VertexItem[S, T], ts hlc.Timestamp,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(items, ts, false, false, nil)
+	return c.BeginReplicatedVertexPutContext(context.Background(), items, ts)
+}
+
+// BeginReplicatedVertexPutContext is BeginReplicatedVertexPut with cancellation during planning.
+func (c *GraphCache[S, T]) BeginReplicatedVertexPutContext(
+	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp,
+) (*VertexPutTransaction[S, T], error) {
+	return c.beginVertexPut(ctx, items, ts, false, false, nil)
 }
 
 func (c *GraphCache[S, T]) beginVertexPut(
-	items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict bool,
+	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict bool,
 	mixed *stagedGraphMutation[S, T],
 ) (*VertexPutTransaction[S, T], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if c.publicationGate == nil {
 		return nil, errors.New("graphcache: staged Vertex Put requires a publication gate")
 	}
@@ -85,7 +103,8 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		}, nil
 	}
 
-	keys := vertexItemKeys(items)
+	vertexKeys := vertexItemKeys(items)
+	keys := vertexKeys
 	if mixed != nil {
 		keys = mixed.unionKeys(items)
 	}
@@ -158,7 +177,12 @@ func (c *GraphCache[S, T]) beginVertexPut(
 			return nil, search.ErrIndexIncomplete
 		}
 
-		applied := c.planStagedVertexPutLocked(items, ts, ifAbsent, time.Now(), nil)
+		before, err := c.storedVertexPreimagesLocked(ctx, vertexKeys)
+		if err != nil {
+			unlockMu()
+			return nil, err
+		}
+		applied := c.planStagedVertexPutLocked(items, ts, ifAbsent, time.Now(), nil, before)
 		final := finalVertexIndexes(items, applied)
 		missing := missingPreparedIndexesAt(preparation, items, final, time.Now())
 		oldMissing := c.missingStagedVertexSearchBeforeLocked(vertexKeysAt(items, final), oldSearch)
@@ -179,10 +203,15 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		lockState = 2
 		c.searchCommitMu.Lock()
 		lockState = 3
+		if err := ctx.Err(); err != nil {
+			unlockAll()
+			return nil, err
+		}
 		applicationTime := c.applicationTime()
 		outcomes := make([]PutOutcome, len(items))
-		applied = c.planStagedVertexPutLocked(items, ts, ifAbsent, applicationTime, outcomes)
-		if err := c.validateVertexLifecycleLocked(items, applied, applicationTime, false); err != nil {
+		applied = c.planStagedVertexPutLocked(items, ts, ifAbsent, applicationTime, outcomes, before)
+		readLifetime := c.vertexLifetimeReaderLocked(before, applicationTime)
+		if err := validateVertexLifecycle(items, applied, applicationTime, false, readLifetime); err != nil {
 			unlockAll()
 			return nil, err
 		}
@@ -241,7 +270,7 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		}
 
 		accepted := make([]IndexedVertexPut[S, T], len(applied))
-		reductions := c.vertexLifecycleReductionsLocked(items, applied, applicationTime)
+		reductions := vertexLifecycleReductions(items, applied, applicationTime, readLifetime)
 		for i, index := range applied {
 			accepted[i] = IndexedVertexPut[S, T]{
 				Index: index, Item: items[index], Outcome: outcomes[index],
@@ -281,13 +310,13 @@ func (c *GraphCache[S, T]) beginVertexPut(
 }
 
 func (c *GraphCache[S, T]) planStagedVertexPutLocked(
-	items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool, now time.Time, outcomes []PutOutcome,
+	items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool, now time.Time, outcomes []PutOutcome, before map[S]storedVertexBefore,
 ) []int {
 	if ifAbsent {
-		_, applied, _ := c.planVerticesIfAbsentLocked(items, ts, true, now, outcomes)
+		_, applied, _ := c.planVerticesIfAbsentLocked(items, ts, true, now, outcomes, before)
 		return applied
 	}
-	applied, _ := c.planVerticesHLCLocked(items, ts)
+	applied, _ := planVerticesHLC(items, c.vertexWriteAdmissionLocked(ts, before))
 	if outcomes == nil {
 		return applied
 	}
@@ -357,7 +386,14 @@ type VertexDeleteTransaction[S comparable, T any] struct {
 func (c *GraphCache[S, T]) BeginVertexDelete(
 	keys []S, ts hlc.Timestamp, expiration time.Time,
 ) (*VertexDeleteTransaction[S, T], error) {
-	return c.beginVertexDelete(keys, ts, expiration, true)
+	return c.BeginVertexDeleteContext(context.Background(), keys, ts, expiration)
+}
+
+// BeginVertexDeleteContext is BeginVertexDelete with cancellation during planning.
+func (c *GraphCache[S, T]) BeginVertexDeleteContext(
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
+) (*VertexDeleteTransaction[S, T], error) {
+	return c.beginVertexDelete(ctx, keys, ts, expiration, true)
 }
 
 // BeginReplicatedVertexDelete stages a certified remote exact Delete without
@@ -367,12 +403,22 @@ func (c *GraphCache[S, T]) BeginVertexDelete(
 func (c *GraphCache[S, T]) BeginReplicatedVertexDelete(
 	keys []S, ts hlc.Timestamp, expiration time.Time,
 ) (*VertexDeleteTransaction[S, T], error) {
-	return c.beginVertexDelete(keys, ts, expiration, false)
+	return c.BeginReplicatedVertexDeleteContext(context.Background(), keys, ts, expiration)
+}
+
+// BeginReplicatedVertexDeleteContext is BeginReplicatedVertexDelete with cancellation during planning.
+func (c *GraphCache[S, T]) BeginReplicatedVertexDeleteContext(
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
+) (*VertexDeleteTransaction[S, T], error) {
+	return c.beginVertexDelete(ctx, keys, ts, expiration, false)
 }
 
 func (c *GraphCache[S, T]) beginVertexDelete(
-	keys []S, ts hlc.Timestamp, expiration time.Time, strict bool,
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time, strict bool,
 ) (*VertexDeleteTransaction[S, T], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if c.publicationGate == nil {
 		return nil, errors.New("graphcache: staged Vertex Delete requires a publication gate")
 	}
@@ -442,7 +488,12 @@ func (c *GraphCache[S, T]) beginVertexDelete(
 			return nil, search.ErrIndexIncomplete
 		}
 
-		_, acceptedIndexes := c.planStagedVertexDeleteLocked(keys, ts)
+		before, err := c.storedVertexPreimagesLocked(ctx, keys)
+		if err != nil {
+			unlockMu()
+			return nil, err
+		}
+		_, acceptedIndexes := c.planExactVertexDeleteLocked(keys, ts, before)
 		acceptedKeys := vertexKeysAtIndexes(keys, acceptedIndexes)
 		oldMissing := c.missingStagedVertexSearchBeforeLocked(acceptedKeys, oldSearch)
 		if len(oldMissing) > 0 {
@@ -455,8 +506,12 @@ func (c *GraphCache[S, T]) beginVertexDelete(
 		lockState = 2
 		c.searchCommitMu.Lock()
 		lockState = 3
+		if err := ctx.Err(); err != nil {
+			unlockAll()
+			return nil, err
+		}
 		applicationTime := c.applicationTime()
-		existed, acceptedIndexes := c.planStagedVertexDeleteLocked(keys, ts)
+		existed, acceptedIndexes := c.planExactVertexDeleteLocked(keys, ts, before)
 		acceptedKeys = vertexKeysAtIndexes(keys, acceptedIndexes)
 		if strict && ts != (hlc.Timestamp{}) {
 			if err := c.checkVertexCausalCapacityLocked(acceptedKeys); err != nil {
@@ -520,8 +575,8 @@ func (c *GraphCache[S, T]) beginVertexDelete(
 	}
 }
 
-func (c *GraphCache[S, T]) planStagedVertexDeleteLocked(
-	keys []S, ts hlc.Timestamp,
+func (c *GraphCache[S, T]) planExactVertexDeleteLocked(
+	keys []S, ts hlc.Timestamp, before map[S]storedVertexBefore,
 ) (existed []bool, accepted []int) {
 	existed = make([]bool, len(keys))
 	accepted = make([]int, 0, len(keys))
@@ -530,10 +585,15 @@ func (c *GraphCache[S, T]) planStagedVertexDeleteLocked(
 		if _, seen := present[key]; seen {
 			continue
 		}
-		_, _, present[key], _ = c.vertices.PeekResident(key)
+		if before != nil {
+			present[key] = before[key].present
+		} else {
+			_, _, present[key], _ = c.vertices.PeekResident(key)
+		}
 	}
+	allowed := c.vertexWriteAdmissionLocked(ts, before)
 	for i, key := range keys {
-		if !c.vertexDeleteWriteAllowedLocked(key, ts) {
+		if !allowed(key) {
 			continue
 		}
 		accepted = append(accepted, i)

@@ -228,7 +228,9 @@ func (s *Executor) DeleteVerticesByPrefix(ctx context.Context, in *pb.DeleteVert
 			return s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp)
 		}
 		var keys []string
-		if s.tombstoneTTL > 0 {
+		if graph := s.cleanStoredVertexGraphLocked(); graph != nil && limit != 0 {
+			keys, err = graph.DeleteByPrefixFromCommittedCut(ctx, in.GetPrefix(), limit, ts, tombExp, preflight)
+		} else if s.tombstoneTTL > 0 {
 			keys, err = s.cache.DeleteByPrefixHLCCheckedKeysWithPreflight(ctx, in.GetPrefix(), limit, ts, tombExp, preflight)
 		} else {
 			keys, err = s.cache.DeleteByPrefixKeysWithPreflight(ctx, in.GetPrefix(), int(limit), preflight)

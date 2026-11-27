@@ -46,6 +46,10 @@ func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	digest, size, err := codec.DigestCombinedReceiptBaseline(t.Context(), capture)
+	if err != nil || size != uint64(len(raw)) || digest != sha256.Sum256(raw) {
+		t.Fatalf("combined baseline digest or size mismatch: digest=%x size=%d err=%v", digest, size, err)
+	}
 	if got := string(raw[:8]); got != "LANTCBLN" {
 		t.Fatalf("combined baseline magic = %q", got)
 	}

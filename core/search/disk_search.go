@@ -93,7 +93,7 @@ func (idx *DiskIndex) SearchAtWithChanges(ctx context.Context, query string, k i
 	defer snap.Close()
 	q := &diskQuery{
 		index: idx, snap: snap, work: work, terms: make(map[Token]*diskQueryTerm),
-		now: now, stats: idx.footer.Stats,
+		now: now, stats: idx.footer.Stats, capacity: idx.footer.Capacity,
 	}
 	value, err := q.required(diskKey(idx.base, diskFooterRow))
 	if err != nil {
@@ -106,6 +106,9 @@ func (idx *DiskIndex) SearchAtWithChanges(ctx context.Context, query string, k i
 		return nil, work.stats, err
 	}
 	if err := q.applyDueDeadlines(); err != nil {
+		return nil, work.stats, err
+	}
+	if err := q.validateCapacity(); err != nil {
 		return nil, work.stats, err
 	}
 	started = time.Now()
@@ -155,6 +158,7 @@ type diskQuery struct {
 	cursorBytes  int
 	now          time.Time
 	stats        [numTokenClasses][numDocumentFields]diskFieldStats
+	capacity     diskCapacity
 	overlay      diskQueryOverlay
 	keepVersions bool
 }

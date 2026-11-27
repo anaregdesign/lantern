@@ -53,7 +53,7 @@ type DiskIndex struct {
 
 const (
 	diskDomain uint8 = 0xc4
-	diskLayout uint8 = 1
+	diskLayout uint8 = 2
 	diskMarker uint8 = iota + 1
 	diskFooterRow
 	diskDocIDRow
@@ -91,6 +91,7 @@ type diskFooter struct {
 	Digest        [32]byte
 	Stats         [numTokenClasses][numDocumentFields]diskFieldStats
 	FirstDeadline time.Time
+	Capacity      diskCapacity
 }
 
 type diskDocValue struct {
@@ -190,6 +191,9 @@ func OpenDiskIndex(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 		footer.Positions != config.positions || footer.Digest == ([32]byte{}) ||
 		(!footer.FirstDeadline.IsZero() && !footer.FirstDeadline.After(source.Watermark)) {
 		return nil, diskInvalid("incompatible commit footer")
+	}
+	if err := footer.validateCapacity(); err != nil {
+		return nil, err
 	}
 	for class, fields := range footer.Stats {
 		for fieldID, field := range fields {

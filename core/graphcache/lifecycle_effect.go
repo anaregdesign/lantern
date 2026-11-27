@@ -24,7 +24,7 @@ func lifecycleReduction(old lifetimeBefore, next time.Time, now time.Time) bool 
 
 // Optional receipt effect capture reads touched resources only and simulates
 // all admitted duplicate positions before any staged write becomes visible.
-func (c *GraphCache[S, T]) vertexLifecycleReductionsLocked(items []VertexItem[S, T], accepted []int, now time.Time) []bool {
+func vertexLifecycleReductions[S comparable, T any](items []VertexItem[S, T], accepted []int, now time.Time, readLifetime func(S) lifetimeBefore) []bool {
 	capture := false
 	for _, item := range items {
 		capture = capture || item.CaptureLifecycleReduction
@@ -38,8 +38,7 @@ func (c *GraphCache[S, T]) vertexLifecycleReductionsLocked(items []VertexItem[S,
 		item := items[index]
 		old, known := previous[item.Key]
 		if !known {
-			_, expiration, present, _ := c.vertices.PeekResident(item.Key)
-			old = lifetimeBefore{expiration: expiration, live: present && cache.IsLiveAt(expiration, now)}
+			old = readLifetime(item.Key)
 		}
 		result[index] = item.CaptureLifecycleReduction && lifecycleReduction(old, item.Expiration, now)
 		previous[item.Key] = lifetimeBefore{expiration: item.Expiration, live: vertexItemLiveAt(item, now)}
@@ -51,6 +50,10 @@ func (c *GraphCache[S, T]) vertexLifecycleReductionsLocked(items []VertexItem[S,
 // duplicates. They mutate neither graph nor index, and allocate nothing when
 // ingress supplied no effect restrictions (including trusted peer apply).
 func (c *GraphCache[S, T]) validateVertexLifecycleLocked(items []VertexItem[S, T], accepted []int, now time.Time, all bool) error {
+	return validateVertexLifecycle(items, accepted, now, all, c.vertexLifetimeReaderLocked(nil, now))
+}
+
+func validateVertexLifecycle[S comparable, T any](items []VertexItem[S, T], accepted []int, now time.Time, all bool, readLifetime func(S) lifetimeBefore) error {
 	guarded := false
 	for _, item := range items {
 		guarded = guarded || item.DenyLifecycleReduction
@@ -63,8 +66,7 @@ func (c *GraphCache[S, T]) validateVertexLifecycleLocked(items []VertexItem[S, T
 		item := items[i]
 		old, known := previous[item.Key]
 		if !known {
-			_, expiration, present, _ := c.vertices.PeekResident(item.Key)
-			old = lifetimeBefore{expiration: expiration, live: present && cache.IsLiveAt(expiration, now)}
+			old = readLifetime(item.Key)
 		}
 		if item.DenyLifecycleReduction && lifecycleReduction(old, item.Expiration, now) {
 			return ErrLifecycleEffectDenied

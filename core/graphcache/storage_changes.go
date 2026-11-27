@@ -1,6 +1,9 @@
 package graphcache
 
-import "github.com/anaregdesign/lantern/core/graphstore"
+import (
+	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/tarp"
+)
 
 // A value loaded from the committed store has a known starting state. Track
 // only changed sources while editing that bucket, including TTL collection.
@@ -24,7 +27,7 @@ func (changes sourceChanges) note(v weightValue, deleted bool) {
 	changes[id] = sourceChange{source: v.storedSource(), deleted: deleted}
 }
 
-func writeSourceChanges[S comparable, T any](w *weight, rows *graphstore.Rows[S, T], b graphstore.Writer, gen uint64, key graphstore.EdgeKey[S]) error {
+func writeSourceChanges[S comparable, T any](w *weight, rows *graphstore.Rows[S, T], snap *tarp.Snapshot, b graphstore.Writer, gen uint64, key graphstore.EdgeKey[S]) error {
 	edge := graphstore.Edge{HLC: w.lastHLC, LastOrdinal: w.lastOrdinal}
 	for _, v := range w.values {
 		if v.contribID.IsZero() && v.ordinal == 0 {
@@ -34,13 +37,18 @@ func writeSourceChanges[S comparable, T any](w *weight, rows *graphstore.Rows[S,
 		}
 	}
 	for id, change := range w.changes {
-		var err error
-		if change.deleted {
-			err = rows.DeleteSource(b, gen, key, id)
-		} else {
-			err = rows.PutSource(b, gen, key, id, change.source)
-		}
+		old, found, err := rows.GetSource(snap, gen, key, id)
 		if err != nil {
+			return err
+		}
+		var before, after *graphstore.Source
+		if found {
+			before = &old
+		}
+		if !change.deleted {
+			after = &change.source
+		}
+		if err := rows.ReplaceSource(b, gen, key, id, before, after); err != nil {
 			return err
 		}
 	}

@@ -40,6 +40,12 @@ func (c *GraphCache[S, T]) CompleteStorageRecovery(ctx context.Context) error {
 	if err := c.storage.rows.EnsureIncomingEdgeIndex(ctx, c.storage.db); err != nil {
 		return err
 	}
+	if !c.storage.sourceOrderVerified {
+		if err := c.storage.rows.EnsureSourceOrder(ctx, c.storage.db); err != nil {
+			return err
+		}
+		c.storage.sourceOrderVerified = true
+	}
 	return c.storage.db.EnsureTopologyStats(ctx)
 }
 

@@ -14,7 +14,7 @@ import (
 func (db *DB) EnsureTopologyStats(ctx context.Context) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	snap, err := db.topologyBuildSnapshot(ctx)
+	snap, err := db.derivedBuildSnapshot(ctx)
 	if err != nil {
 		return err
 	}
@@ -32,7 +32,7 @@ func (g *Generation) BuildTopologyStats(ctx context.Context) error {
 		db.mu.Unlock()
 		return ErrGenerationClosed
 	}
-	snap, err := db.topologyBuildSnapshot(ctx)
+	snap, err := db.derivedBuildSnapshot(ctx)
 	db.mu.Unlock()
 	if err != nil {
 		return err
@@ -53,7 +53,7 @@ func (g *Generation) BuildTopologyStats(ctx context.Context) error {
 }
 
 // Caller holds db.mu.
-func (db *DB) topologyBuildSnapshot(ctx context.Context) (*tarp.Snapshot, error) {
+func (db *DB) derivedBuildSnapshot(ctx context.Context) (*tarp.Snapshot, error) {
 	if err := db.available(); err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func buildTopologyStats(ctx context.Context, snap *tarp.Snapshot, gen uint64, ap
 	if err != nil {
 		return err
 	}
-	builder := topologyBuildBatch{apply: apply, chunk: generationWriter{id: gen}}
+	builder := derivedBuildBatch{apply: apply, chunk: generationWriter{id: gen}}
 	// An aborted startup can leave working rows. Remove them before rebuilding
 	// so changes made by startup expiry cannot leave a stale endpoint count.
 	lo, hi := tarp.PrefixRange(totals)
@@ -105,12 +105,12 @@ func buildTopologyStats(ctx context.Context, snap *tarp.Snapshot, gen uint64, ap
 	return builder.flush()
 }
 
-type topologyBuildBatch struct {
+type derivedBuildBatch struct {
 	apply func(*tarp.WriteBatch) error
 	chunk generationWriter
 }
 
-func (b *topologyBuildBatch) stage(ctx context.Context, key, value []byte, delete bool) error {
+func (b *derivedBuildBatch) stage(ctx context.Context, key, value []byte, delete bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func (b *topologyBuildBatch) stage(ctx context.Context, key, value []byte, delet
 	return b.chunk.err
 }
 
-func (b *topologyBuildBatch) flush() error {
+func (b *derivedBuildBatch) flush() error {
 	if err := b.apply(&b.chunk.batch); err != nil {
 		return err
 	}

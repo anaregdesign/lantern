@@ -248,9 +248,12 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 		if v == nil {
 			return graphApplyResult{}, nil
 		}
-		outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes([]graphcache.VertexItem[string, *pb.Vertex]{{
+		outcomes, err := s.applyVertexPutsAtCut([]graphcache.VertexItem[string, *pb.Vertex]{{
 			Key: v.GetKey(), Value: v, Expiration: prototime.Expiration(v.GetExpiration()),
 		}}, ts)
+		if err != nil {
+			return graphApplyResult{}, writeError(err)
+		}
 		if outcomes[0] == graphcache.PutOutcomeSuperseded && useTomb && s.onTombstoneClampReject != nil {
 			s.onTombstoneClampReject()
 		}
@@ -281,7 +284,10 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 				Expiration: prototime.Expiration(v.GetExpiration()),
 			})
 		}
-		outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes(items, ts)
+		outcomes, err := s.applyVertexPutsAtCut(items, ts)
+		if err != nil {
+			return graphApplyResult{}, writeError(err)
+		}
 		if useTomb && s.onTombstoneClampReject != nil {
 			for _, outcome := range outcomes {
 				if outcome == graphcache.PutOutcomeSuperseded {
@@ -324,7 +330,10 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutVertex entry has no outcome"))
 			}
 		}
-		outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes(items, ts)
+		outcomes, err := s.applyVertexPutsAtCut(items, ts)
+		if err != nil {
+			return graphApplyResult{}, writeError(err)
+		}
 		if useTomb && s.onTombstoneClampReject != nil {
 			for _, outcome := range outcomes {
 				if outcome == graphcache.PutOutcomeSuperseded {
@@ -341,7 +350,10 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 
 	case *pb.MutationOp_DeleteVertex:
 		if useTomb {
-			_, accepted := s.cache.DeleteVerticesHLCDecisions([]string{op.DeleteVertex.GetKey()}, ts, tombExp)
+			_, accepted, err := s.deleteVertexBatchAtCut([]string{op.DeleteVertex.GetKey()}, ts, tombExp, false)
+			if err != nil {
+				return graphApplyResult{}, writeError(err)
+			}
 			effect, err := newGraphDeleteEffectEnvelope(m, accepted)
 			if err != nil {
 				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
@@ -358,7 +370,10 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 
 	case *pb.MutationOp_DeleteVertices:
 		if useTomb {
-			_, accepted := s.cache.DeleteVerticesHLCDecisions(op.DeleteVertices.GetKeys(), ts, tombExp)
+			_, accepted, err := s.deleteVertexBatchAtCut(op.DeleteVertices.GetKeys(), ts, tombExp, false)
+			if err != nil {
+				return graphApplyResult{}, writeError(err)
+			}
 			effect, err := newGraphDeleteEffectEnvelope(m, accepted)
 			if err != nil {
 				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))

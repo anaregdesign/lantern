@@ -112,7 +112,7 @@ func (c *GraphCache[S, T]) storeEdgeLocked(ctx context.Context, rows *graphstore
 		cold := bucket.cold
 		if !cold && bucket.changes != nil {
 			defer bucket.mu.Unlock()
-			return writeSourceChanges(bucket, rows, batch, generation, k)
+			return writeSourceChanges(bucket, rows, snapshot, batch, generation, k)
 		}
 		bucket.mu.Unlock()
 		if cold {
@@ -138,17 +138,20 @@ func (c *GraphCache[S, T]) storeEdgeLocked(ctx context.Context, rows *graphstore
 			return err
 		}
 		next, keep := sources[entry.ID]
-		switch {
-		case !keep:
-			if err := rows.DeleteSource(batch, generation, k, entry.ID); err != nil {
-				return err
-			}
-		case sameStoredSource(entry.Source, next):
+		var after *graphstore.Source
+		if keep {
 			delete(sources, entry.ID)
+			if sameStoredSource(entry.Source, next) {
+				continue
+			}
+			after = &next
+		}
+		if err := rows.ReplaceSource(batch, generation, k, entry.ID, &entry.Source, after); err != nil {
+			return err
 		}
 	}
 	for id, source := range sources {
-		if err := rows.PutSource(batch, generation, k, id, source); err != nil {
+		if err := rows.ReplaceSource(batch, generation, k, id, nil, &source); err != nil {
 			return err
 		}
 	}

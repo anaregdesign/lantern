@@ -1,6 +1,7 @@
 package graphstore
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"iter"
@@ -154,9 +155,23 @@ func (r *Rows[K, V]) EdgeBuckets(ctx context.Context, snap *tarp.Snapshot, gen u
 }
 
 // FoldedEdges emits nonzero live sums and leaves endpoint visibility to the
-// caller. Working memory is bounded by the largest bucket.
+// caller. Certified cuts stream the order projection without bucket scratch.
 func (r *Rows[K, V]) FoldedEdges(ctx context.Context, snap *tarp.Snapshot, gen uint64, tailPrefix string, now time.Time) iter.Seq2[FoldedEdge[K], error] {
 	return func(yield func(FoldedEdge[K], error) bool) {
+		ready, err := hasSourceOrder(snap, gen)
+		if err != nil {
+			yield(FoldedEdge[K]{}, err)
+			return
+		}
+		if ready {
+			err := r.walkOrderedEdges(ctx, snap, gen, tailPrefix, now, false, func(entry EdgeEntry[K], detail EdgeDetail, _ edgeRecoveryStats) bool {
+				return !detail.Found || yield(FoldedEdge[K]{entry.Key, detail}, nil)
+			})
+			if err != nil {
+				yield(FoldedEdge[K]{}, err)
+			}
+			return
+		}
 		var scratch []SourceEntry
 		for bucket, err := range r.EdgeBuckets(ctx, snap, gen, tailPrefix) {
 			if err != nil {
@@ -174,4 +189,75 @@ func (r *Rows[K, V]) FoldedEdges(ctx context.Context, snap *tarp.Snapshot, gen u
 			}
 		}
 	}
+}
+
+func (r *Rows[K, V]) walkOrderedEdges(ctx context.Context, snap *tarp.Snapshot, gen uint64, tailPrefix string, now time.Time, recovery bool, yield func(EdgeEntry[K], EdgeDetail, edgeRecoveryStats) bool) error {
+	order, err := familyPrefix(gen, sourceOrderFamily)
+	if err != nil {
+		return err
+	}
+	edges, err := familyPrefix(gen, edgeFamily)
+	if err != nil {
+		return err
+	}
+	prefix := tarp.EncodeOrderedStringPrefix(tailPrefix)
+	o := prefixBounds(append(append([]byte(nil), order...), prefix...)).after(order, false)
+	e := prefixBounds(append(edges, prefix...))
+	next, stop := iter.Pull2(scanSourceOrder(ctx, snap, o, recovery))
+	defer stop()
+	physical, scanErr, has := next()
+	for row, err := range snap.ScanRange(ctx, e.lower, e.upper) {
+		if err != nil {
+			return err
+		}
+		pair, err := edgeTupleCodec.Decode(row.Key)
+		if err != nil {
+			return fmt.Errorf("%w: decode edge key: %w", ErrInvalidRow, err)
+		}
+		edge, err := decodeEdge(row.Value)
+		if err != nil {
+			return err
+		}
+		pair.Header.Family = sourceOrderFamily
+		bucket, err := edgeTupleCodec.Encode(pair)
+		if err != nil {
+			return err
+		}
+		fold := edgeSourceFold{base: edge.Base, now: now}
+		var stats edgeRecoveryStats
+		if recovery {
+			fold.recovery = &stats
+		}
+		for has && scanErr == nil {
+			if !bytes.HasPrefix(physical, bucket) {
+				if bytes.Compare(physical, bucket) < 0 {
+					return fmt.Errorf("%w: Source order without Edge", ErrInvalidRow)
+				}
+				break
+			}
+			ordered, err := decodeSourceOrderKey(physical)
+			if err != nil {
+				return err
+			}
+			if err := fold.add(snap, ordered, edge.LastOrdinal, nil); err != nil {
+				return err
+			}
+			physical, scanErr, has = next()
+		}
+		if scanErr != nil {
+			return scanErr
+		}
+		key, err := r.decodeEdgeKey(pair)
+		if err != nil {
+			return err
+		}
+		detail := fold.finish()
+		if !yield(EdgeEntry[K]{key, edge}, detail, stats) {
+			return nil
+		}
+	}
+	if scanErr == nil && has {
+		return fmt.Errorf("%w: Source order without Edge", ErrInvalidRow)
+	}
+	return scanErr
 }

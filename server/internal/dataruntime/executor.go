@@ -1220,7 +1220,7 @@ func (s *Executor) PutVertices(ctx context.Context, request *pb.PutVerticesReque
 			if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
 				return nil, err
 			}
-			_, outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items, ts)
+			outcomes, err := s.putVertexBatchAtCut(items, ts, true)
 			if err != nil {
 				return nil, searchIndexWriteError(err)
 			}
@@ -1287,7 +1287,7 @@ func (s *Executor) PutVertices(ctx context.Context, request *pb.PutVerticesReque
 		if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
 			return nil, err
 		}
-		outcomes, err := s.cache.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
+		outcomes, err := s.putVertexBatchAtCut(items, ts, false)
 		if err != nil {
 			return nil, searchIndexWriteError(err)
 		}
@@ -1428,6 +1428,9 @@ func (s *Executor) preflightLocalGraphDeleteLocked(op *pb.MutationOp, ts hlc.Tim
 }
 
 func writeError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return ctxToConnect(err)
+	}
 	if errors.Is(err, graphcache.ErrEdgeEndpointNotLive) {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
@@ -1532,7 +1535,7 @@ func (s *Executor) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequ
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
 			var err error
-			outcomes, accepted, err = s.cache.DeleteVerticesHLCDecisionsChecked(in.GetKeys(), ts, tombExp)
+			outcomes, accepted, err = s.deleteVertexBatchAtCut(in.GetKeys(), ts, tombExp, true)
 			if err != nil {
 				return nil, writeError(err)
 			}

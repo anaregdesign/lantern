@@ -153,6 +153,9 @@ func (q *diskQuery) addChangedPosting(id uint64, class TokenClass, term prepared
 		if err := q.work.visit(WorkPostingVisits, 1); err != nil {
 			return err
 		}
+		if err := q.capacity.addPosting(uint64(len(occurrence.positions))); err != nil {
+			return err
+		}
 		entry.df[field]++
 		posting.frequency[field] = clampTF(occurrence.frequency)
 		if len(occurrence.positions) != 0 {

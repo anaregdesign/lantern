@@ -224,15 +224,13 @@ func (r *Rows[K, V]) sources(ctx context.Context, snap *tarp.Snapshot, gen uint6
 // bucket. Queue any replacement rows after this method. The caller must
 // serialize with other writes against the same snapshot.
 func (r *Rows[K, V]) DeleteSources(ctx context.Context, snap *tarp.Snapshot, b Writer, gen uint64, k EdgeKey[K]) error {
-	bounds, err := r.sourceBounds(gen, k)
-	if err != nil {
-		return err
-	}
-	for key, err := range snap.KeysRange(ctx, bounds.lower, bounds.upper) {
+	for row, err := range r.Sources(ctx, snap, gen, k) {
 		if err != nil {
 			return err
 		}
-		b.Delete(key)
+		if err := r.ReplaceSource(b, gen, k, row.ID, &row.Source, nil); err != nil {
+			return err
+		}
 	}
 	return nil
 }

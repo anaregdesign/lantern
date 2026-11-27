@@ -2,11 +2,77 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphstore"
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/tarp"
 )
+
+// DeleteByPrefixFromCommittedCut selects the exact bounded victims on the
+// committed Tarp cut. The caller must hold the serving publication gate with
+// no graph effects awaiting WAL repair. Only the declared storage key
+// projection is eligible. Preflight and application share the graph lock.
+func (c *GraphCache[S, T]) DeleteByPrefixFromCommittedCut(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, preflight func([]S) error) ([]S, error) {
+	if preflight == nil || limit == 0 {
+		return nil, errors.New("graphcache: stored prefix delete requires preflight and a positive limit")
+	}
+	if expiration.IsZero() {
+		return c.deleteByPrefixKeys(ctx, prefix, uint64(limit), preflight, true)
+	}
+	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, preflight, true)
+}
+
+func (c *GraphCache[S, T]) storedPrefixDeleteEnabledLocked(requested bool) bool {
+	return requested && c.storage != nil && c.storagePrefixOrder
+}
+
+// Scan only admitted metadata ranges, with one wall sample for TTL and
+// tombstones. Count live candidates before HLC filtering, preserving the
+// original prefix victim cap even when some are causally superseded.
+func (c *GraphCache[S, T]) storedPrefixDeleteVictimsLocked(ctx context.Context, prefix string, limit uint64, ts *hlc.Timestamp) ([]S, bool, error) {
+	if err := c.StorageError(); err != nil {
+		return nil, false, err
+	}
+	scope := queryViewFromContext(ctx)
+	now := time.Now()
+	var keys []S
+	var candidates uint64
+	err := c.storage.db.WithCommittedSnapshot(func(gen uint64, snap *tarp.Snapshot) error {
+		for interval := range scope.Ranges(prefix, false, false) {
+			for row, err := range c.storage.rows.LiveVertexRange(ctx, snap, gen, interval.Lower, interval.Upper, nil, false, true, now) {
+				if err != nil {
+					return err
+				}
+				candidates++
+				if ts == nil {
+					keys = append(keys, row.Key)
+				} else {
+					withoutFloors := storedVertexBefore{
+						meta:    graphstore.VertexMetadata{Expiration: row.Vertex.Expiration, HLC: row.Vertex.HLC},
+						present: true,
+					}
+					before, err := c.storage.readVertexFloors(snap, gen, row.Key, withoutFloors)
+					if err != nil {
+						return err
+					}
+					if before.writeAllowed(*ts, now) {
+						keys = append(keys, row.Key)
+					}
+				}
+				if candidates == limit {
+					return nil
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil && err != ctx.Err() {
+		return nil, false, c.storage.fence(err)
+	}
+	return keys, candidates != 0, ctx.Err()
+}
 
 // EnableStorageKeyPrefixIndex declares that extract returns the exact ordered
 // key projection encoded by the graphstore Rows. A detached staging graph uses

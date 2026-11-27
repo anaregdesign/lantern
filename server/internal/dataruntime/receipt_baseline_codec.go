@@ -24,6 +24,7 @@ const (
 // It is an internal composition seam, not a transport or user-facing API.
 type ReceiptBaselineArchiveCodec interface {
 	EncodeCombinedReceiptBaseline(context.Context, ReceiptWholeStateCapture) ([]byte, error)
+	DigestCombinedReceiptBaseline(context.Context, ReceiptWholeStateCapture) ([32]byte, uint64, error)
 	StageCombinedReceiptBaseline(
 		context.Context,
 		[]byte,

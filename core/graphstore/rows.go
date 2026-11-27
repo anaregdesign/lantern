@@ -234,6 +234,8 @@ func (r *Rows[K, V]) GetSource(snap *tarp.Snapshot, gen uint64, k EdgeKey[K], id
 	return readRow(snap, key, decodeAdd)
 }
 
+// PutSource writes the original canonical row format without a derived
+// ordering key. Use ReplaceSource for writes to certified generations.
 func (r *Rows[K, V]) PutSource(b Writer, gen uint64, k EdgeKey[K], id SourceID, s Source) error {
 	if s.DerivedAggregate {
 		return fmt.Errorf("%w: aggregate provenance on Add", ErrInvalidRow)
@@ -246,6 +248,8 @@ func (r *Rows[K, V]) PutSource(b Writer, gen uint64, k EdgeKey[K], id SourceID, 
 	return nil
 }
 
+// DeleteSource removes an identity from an uncertified generation. Use
+// ReplaceSource with the previous value when the order projection exists.
 func (r *Rows[K, V]) DeleteSource(b Writer, gen uint64, k EdgeKey[K], id SourceID) error {
 	key, err := r.sourceKey(gen, sourceFamily, k, id)
 	if err != nil {

@@ -68,7 +68,7 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 				continue
 			}
 			id := graphstore.SourceID{ContribID: v.contribID, Ordinal: v.ordinal}
-			chunk.check(rows.PutSource(&chunk, g, key, id, src))
+			chunk.check(rows.ReplaceSource(&chunk, g, key, id, nil, &src))
 		}
 		w.releaseReadLocked()
 		w.mu.Unlock()
@@ -115,6 +115,7 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 		return err
 	}
 	chunk.check(rows.MarkIncomingEdgeIndex(&chunk, g))
+	chunk.check(rows.MarkSourceOrder(&chunk, g))
 	if err := chunk.flush(); err != nil {
 		return err
 	}
@@ -142,7 +143,7 @@ func (s *storageResidency[S, T]) streamColdEdge(chunk *storageChunk, rows *graph
 			return graphstore.ErrInvalidRow
 		}
 		if cache.IsLiveAt(sourceRow.Source.Expiration, now) {
-			chunk.check(rows.PutSource(chunk, chunk.target.ID(), key, sourceRow.ID, sourceRow.Source))
+			chunk.check(rows.ReplaceSource(chunk, chunk.target.ID(), key, sourceRow.ID, nil, &sourceRow.Source))
 			if chunk.err != nil {
 				return nil
 			}

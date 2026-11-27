@@ -117,7 +117,15 @@ func (r *Rows[K, V]) reclaimExpiryRow(ctx context.Context, snap *tarp.Snapshot, 
 			return err
 		}
 		if !cache.IsLiveAt(source.Expiration, now) {
-			b.Delete(row.Key)
+			tuple, err := sourceTupleCodec.Decode(row.Key)
+			if err != nil {
+				return err
+			}
+			id, err := sourceIdentity(tuple)
+			if err != nil {
+				return err
+			}
+			return replaceSource(b, tuple, id, &source, nil)
 		}
 	case edgeFamily:
 		return r.reclaimExpiredEdge(ctx, snap, b, now, gen, row)

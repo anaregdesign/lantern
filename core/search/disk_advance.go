@@ -40,7 +40,7 @@ func (idx *DiskIndex) AdvanceDiskBase(ctx context.Context, source DiskSource, ch
 		return nil, err
 	}
 	defer snap.Close()
-	q := &diskQuery{index: idx, snap: snap, work: work, now: source.Watermark, stats: idx.footer.Stats, keepVersions: true}
+	q := &diskQuery{index: idx, snap: snap, work: work, now: source.Watermark, stats: idx.footer.Stats, capacity: idx.footer.Capacity, keepVersions: true}
 	stored, err := q.required(diskKey(idx.base, diskFooterRow))
 	if err != nil {
 		return nil, err
@@ -66,6 +66,16 @@ func (idx *DiskIndex) AdvanceDiskBase(ctx context.Context, source DiskSource, ch
 		footer: idx.footer,
 	}
 	p.footer.Source, p.footer.Stats = source, q.stats
+	p.footer.Capacity, err = q.effectiveCapacity()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.footer.validateCapacity(); err != nil {
+		return nil, err
+	}
+	if err := p.footer.Capacity.validateLimits(idx.config.limits); err != nil {
+		return nil, err
+	}
 	if err := p.prepare(); err != nil {
 		return nil, err
 	}
