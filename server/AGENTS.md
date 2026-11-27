@@ -5,6 +5,8 @@ env-var contract, and observability endpoints; this file is the always-on agent 
 for editing server code. Root [../AGENTS.md](../AGENTS.md) covers cross-module
 architecture.
 
+Apply the repository's [`v0.*.*` compatibility policy](../CONTRIBUTING.md#versioning--compatibility-pre-v100). Use the simplest correct design and remove compatibility-only Server paths when you encounter them.
+
 ## RPC surface is plural-first
 
 [internal/dataruntime/executor.go](internal/dataruntime/executor.go) implements

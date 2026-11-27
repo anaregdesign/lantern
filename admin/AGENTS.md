@@ -4,6 +4,8 @@ The browser control surface for Lantern. This is a **standalone TypeScript packa
 not a Go module, and is **not** part of `go.work`. See [README.md](README.md) for setup
 and scripts; this file is the always-on agent context for editing admin code.
 
+Apply the repository's [`v0.*.*` compatibility policy](../CONTRIBUTING.md#versioning--compatibility-pre-v100). Use the simplest correct design and remove UI and client shims kept solely for earlier releases.
+
 ## Stack
 
 - **React Router (SPA mode)** + **TypeScript**, bundled by **Vite**.

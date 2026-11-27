@@ -11,23 +11,21 @@ pushing or merging.
 
 ## Versioning & compatibility (pre-v1.0.0)
 
-**Lantern is pre-v1.0.0 and makes _no_ backward-compatibility guarantees.** Until the
-first `v1.0.0`, prefer the cleanest design over compatibility — break freely across the
-whole surface and don't hedge for old clients:
+**Backward compatibility is not a requirement for any `v0.*.*` release.** Choose
+the simplest correct implementation across proto and wire schemas, SDK APIs,
+CLI and REPL grammar, `LANTERN_*` configuration, metrics, and persisted formats.
+Maintain a single current version of each contract. Actively delete compatibility
+shims, deprecated aliases, dual paths, and migrations that exist solely to
+support earlier releases when you encounter them. Update current in-repo callers,
+tests, and documentation in the same change.
 
-- **Proto / buf schema** — renumber, retype, or drop fields and RPCs freely. You do
-  **not** need to `reserved` retired field numbers/names purely for compatibility; add a
-  `reserved` only when it prevents a real decode hazard you actually care about. If a
-  `buf breaking` gate is ever added, treat it as waived until `v1.0.0`.
-- **SDK APIs (Go / Dart / Node / Rust), CLI / REPL grammar, the `LANTERN_*` env-var contract, and
-  metric names** — may change between releases. Update every call site in the same change.
-- **Still forbidden (unrelated to compatibility):** `buf generate --clean`. It deletes
-  `pb/go.mod` + `pb/doc.go` — a tooling footgun, not a compat concern — so the `--clean`
-  prohibition stays in force.
+Proto fields and RPCs may be renumbered, retyped, or removed. Remove `reserved`
+entries whose only purpose is backward compatibility. Keep validation and
+recovery required by the current format, and reject unsupported state safely.
+`buf breaking` is waived until `v1.0.0` if introduced. Never run
+`buf generate --clean`, which deletes `pb/go.mod` and `pb/doc.go`.
 
-At `v1.0.0` this is revisited and a real compatibility / deprecation policy is adopted.
-Until then, pre-existing `reserved` markers (e.g. `IlluminateRequest`'s `reserved 4, 5;`)
-may stay because they are harmless, but they are **not** required going forward.
+Adopt a compatibility and deprecation policy at `v1.0.0`.
 
 ## Issue triage — the `Lantern roadmap` project
 

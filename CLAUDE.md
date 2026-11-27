@@ -6,6 +6,8 @@ Lantern is a Tarp-backed graph KVS ("key-vertex-store") served over Connect/HTTP
 
 **[AGENTS.md](AGENTS.md) is the full agent guide — read it before non-trivial work.** [CONTRIBUTING.md](CONTRIBUTING.md) is the process/release contract (issue triage, quality gate, tag order, toolchain bumps). This file is the always-on summary; when docs overlap they must not conflict, and details live there.
 
+**No backward compatibility during `v0.*.*`.** Choose the simplest correct design and remove compatibility-only code when you encounter it. Update current in-repo consumers with the change. See [Versioning & compatibility](CONTRIBUTING.md#versioning--compatibility-pre-v100).
+
 ## Commands
 
 ```bash
@@ -71,7 +73,6 @@ Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG wi
 - Server tests needing the client SDK (full-stack round-trips) go in `tests/integration/`, never under `server/`.
 - HA/replication work implements against [docs/replication.md](docs/replication.md) (RFC); [docs/ha-runbook.md](docs/ha-runbook.md) is the operator playbook.
 - `testbed/` is the release-QA harness (docker-compose Lantern+Prometheus, exhaustive CLI/SDK sweeps, HA smoke/recovery) — procedure in [testbed/SKILL.md](testbed/SKILL.md). `.github/skills/lantern-ops` is the canonical `lantern-cli` data-operations reference; `.github/skills/react-router-app-architecture` governs admin SPA work.
-- **Pre-v1.0.0: no backward-compat guarantees** — break the proto/wire schema, SDK APIs, CLI grammar, `LANTERN_*` env vars, and metric names freely; don't hedge for old clients. Canonical: CONTRIBUTING.md "Versioning & compatibility". Separate & still forbidden: `buf generate --clean`.
 
 ## Go conventions
 
