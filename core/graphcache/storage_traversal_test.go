@@ -270,4 +270,24 @@ func TestStoredTraversalMatchesProtectedRAM(t *testing.T) {
 			}
 		})
 	}
+	t.Run("filtered adjacency counts toward push budget", func(t *testing.T) {
+		originOnly := []KeyRange{{Lower: "origin", Upper: "origin\x00"}}
+		scope, err := NewQueryView(originOnly, originOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, limit := range []int{39, 40} {
+			budget := PPRWorkBudget{MaxTouchedEdges: limit}
+			reader := NewStoredTraversal(rows, view, now, scope, budget)
+			got, err := reader.PageRank(ctx, "origin", "head:", 10, DefaultPPRAlpha, DefaultPPREpsilon)
+			if limit == 39 {
+				var exhausted *PPRWorkBudgetExceededError
+				if got != nil || !errors.As(err, &exhausted) || exhausted.TouchedEdges != 40 || exhausted.Pushes != 0 {
+					t.Fatalf("filtered adjacency at budget %d = %v, %v", limit, got, err)
+				}
+			} else if err != nil || len(got.Vertices) != 1 || got.Vertices["origin"] != "seed" || len(got.Edges) != 0 {
+				t.Fatalf("filtered adjacency at budget %d = %v, %v", limit, got, err)
+			}
+		}
+	})
 }

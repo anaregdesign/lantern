@@ -525,7 +525,7 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 		}
 	}
 
-	return pushPageRank(ctx, seed, alpha, epsilon, budget, 0, func(tail S, visit func() error) (pprRow[S], error) {
+	return pushPageRank(ctx, seed, alpha, epsilon, budget, 0, func(tail S, visit func(uint64) error) (pprRow[S], error) {
 		var row pprRow[S]
 		if !c.vertices.Has(tail) {
 			return row, nil
@@ -540,7 +540,7 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 		}
 		edges := make([]pprEdge[S], 0, capacity)
 		for headID, w := range heads {
-			if err := visit(); err != nil {
+			if err := visit(1); err != nil {
 				return pprRow[S]{}, err
 			}
 			head, ok := c.edges.resolveID(headID)
@@ -593,7 +593,7 @@ func pprEdgesFromSlice[S comparable](edges []pprEdge[S]) iter.Seq2[pprEdge[S], e
 // pushPageRank shares the forward-push algorithm across RAM and stored graph
 // views. A row supplies its normalizing sum and degree before distributing
 // residual; storage can compute both and stream the edges on a second pass.
-func pushPageRank[S comparable](ctx context.Context, seed S, alpha, epsilon float64, budget PPRWorkBudget, maxStates int, read func(S, func() error) (pprRow[S], error)) (map[S]float64, error) {
+func pushPageRank[S comparable](ctx context.Context, seed S, alpha, epsilon float64, budget PPRWorkBudget, maxStates int, read func(S, func(uint64) error) (pprRow[S], error)) (map[S]float64, error) {
 	p := make(map[S]float64)
 	residual := map[S]float64{seed: 1}
 	queue := []S{seed}
@@ -602,12 +602,17 @@ func pushPageRank[S comparable](ctx context.Context, seed S, alpha, epsilon floa
 	budgetError := func() *PPRWorkBudgetExceededError {
 		return &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
 	}
-	visit := func() error {
-		touchedEdges++
-		if touchedEdges > budget.MaxTouchedEdges {
+	visit := func(edges uint64) error {
+		if edges > uint64(budget.MaxTouchedEdges-touchedEdges) {
+			touchedEdges = budget.MaxTouchedEdges
+			if touchedEdges < math.MaxInt {
+				touchedEdges++ // Report the first rejected touch, even for a bulk charge.
+			}
 			return budgetError()
 		}
-		if touchedEdges%pprCtxCheckInterval == 0 {
+		checkpoint := touchedEdges / pprCtxCheckInterval
+		touchedEdges += int(edges)
+		if checkpoint != touchedEdges/pprCtxCheckInterval {
 			return ctx.Err()
 		}
 		return nil

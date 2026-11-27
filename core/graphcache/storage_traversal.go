@@ -28,16 +28,17 @@ const (
 // StoredTraversal reads one admitted immutable cut. Its caller owns the view
 // and uses one reader per attempt. It does not retain loaded graph rows.
 type StoredTraversal[V any] struct {
-	rows     *graphstore.Rows[string, V]
-	cut      *graphstore.ReadView
-	now      time.Time
-	scope    *QueryView
-	readLeft int
-	byteLeft int
-	budget   PPRWorkBudget
-	weight   EdgeWeighting
-	topology graphstore.TopologyStats
-	avgLen   float64
+	rows       *graphstore.Rows[string, V]
+	cut        *graphstore.ReadView
+	now        time.Time
+	scope      *QueryView
+	readLeft   int
+	byteLeft   int
+	budget     PPRWorkBudget
+	weight     EdgeWeighting
+	topology   graphstore.TopologyStats
+	avgLen     float64
+	statsReady bool
 }
 
 func NewStoredTraversal[V any](rows *graphstore.Rows[string, V], cut *graphstore.ReadView, now time.Time, scope *QueryView, budget PPRWorkBudget) *StoredTraversal[V] {
@@ -60,8 +61,17 @@ func (r *StoredTraversal[V]) charge(bytes int) error {
 // PrepareWeighting selects the transform for Neighbor, PageRank and
 // Community. Derived counts must be certified on this reader's cut.
 func (r *StoredTraversal[V]) PrepareWeighting(weighting EdgeWeighting) error {
-	if weighting == WeightingRaw {
-		r.weight = weighting
+	if weighting != WeightingRaw {
+		if err := r.loadTopology(); err != nil {
+			return err
+		}
+	}
+	r.weight = weighting
+	return nil
+}
+
+func (r *StoredTraversal[V]) loadTopology() error {
+	if r.statsReady {
 		return nil
 	}
 	// The corpus record is a family header and two 64-bit counters.
@@ -78,11 +88,11 @@ func (r *StoredTraversal[V]) PrepareWeighting(weighting EdgeWeighting) error {
 	if stats.NonemptyTails > math.MaxInt {
 		return fmt.Errorf("%w: topology corpus size exceeds the scoring range", graphstore.ErrInvalidRow)
 	}
-	r.weight = weighting
 	r.topology = stats
 	if stats.NonemptyTails > 0 {
 		r.avgLen = float64(stats.Edges) / float64(stats.NonemptyTails)
 	}
+	r.statsReady = true
 	return nil
 }
 
@@ -115,13 +125,13 @@ func (r *StoredTraversal[V]) topologyDegree(key string) (graphstore.TopologyDegr
 	return r.rows.GetTopologyDegree(r.cut.Snapshot, r.cut.Generation, key)
 }
 
-func (r *StoredTraversal[V]) scoredOutgoing(tail string, edges iter.Seq2[graphstore.FoldedEdge[string], error]) iter.Seq2[graphstore.FoldedEdge[string], error] {
+func (r *StoredTraversal[V]) scoredOutgoing(tail string, retainedOut int, edges iter.Seq2[graphstore.FoldedEdge[string], error]) iter.Seq2[graphstore.FoldedEdge[string], error] {
 	if r.weight == WeightingRaw {
 		return edges
 	}
 	return func(yield func(graphstore.FoldedEdge[string], error) bool) {
 		var zero graphstore.FoldedEdge[string]
-		var docLen int
+		docLen := retainedOut
 		for edge, err := range edges {
 			if err != nil {
 				yield(zero, err)
@@ -240,7 +250,7 @@ func (r *StoredTraversal[V]) Neighbor(ctx context.Context, seed, headPrefix stri
 			selected := pq.NewSelection[graphstore.FoldedEdge[string], float32](fanOut, smallest, func(a, b graphstore.FoldedEdge[string]) bool {
 				return a.Key.Head < b.Key.Head
 			})
-			for edge, err := range r.scoredOutgoing(tail, r.outgoing(ctx, tail, headPrefix)) {
+			for edge, err := range r.scoredOutgoing(tail, 0, r.outgoing(ctx, tail, headPrefix)) {
 				if err != nil {
 					return nil, nil, err
 				}
@@ -341,14 +351,28 @@ func positiveEdges(edges iter.Seq2[graphstore.FoldedEdge[string], error]) iter.S
 }
 
 func (r *StoredTraversal[V]) pageRankMass(ctx context.Context, seed, headPrefix string, alpha, epsilon float64) (map[string]float64, error) {
-	outgoing := func(tail string) iter.Seq2[pprEdge[string], error] {
-		return positiveEdges(r.scoredOutgoing(tail, r.outgoing(ctx, tail, headPrefix)))
+	if err := r.loadTopology(); err != nil {
+		return nil, err
 	}
-	return pushPageRank(ctx, seed, alpha, epsilon, r.budget, r.budget.MaxPushes, func(tail string, _ func() error) (pprRow[string], error) {
+	return pushPageRank(ctx, seed, alpha, epsilon, r.budget, r.budget.MaxPushes, func(tail string, visit func(uint64) error) (pprRow[string], error) {
 		const retainedNeighbors = 32
 		var buffer []pprEdge[string]
 		var row pprRow[string]
-		for edge, err := range outgoing(tail) {
+		degree, err := r.topologyDegree(tail)
+		if err != nil {
+			return row, err
+		}
+		if degree.Out > r.topology.Edges {
+			return row, fmt.Errorf("%w: invalid topology out-degree", graphstore.ErrInvalidRow)
+		}
+		// RAM charges each retained bucket before liveness, ACL and prefix
+		// filters. Use the same cut's retained count so range seeks can skip
+		// denied rows without skipping their logical work charge.
+		if err := visit(degree.Out); err != nil {
+			return row, err
+		}
+		edges := positiveEdges(r.scoredOutgoing(tail, int(degree.Out), r.outgoing(ctx, tail, headPrefix)))
+		for edge, err := range edges {
 			if err != nil {
 				return pprRow[string]{}, err
 			}
@@ -358,10 +382,13 @@ func (r *StoredTraversal[V]) pageRankMass(ctx context.Context, seed, headPrefix 
 				buffer = append(buffer, edge)
 			}
 		}
+		if uint64(row.degree) > degree.Out {
+			return pprRow[string]{}, fmt.Errorf("%w: invalid topology out-degree", graphstore.ErrInvalidRow)
+		}
 		if row.degree <= retainedNeighbors {
 			row.edges = pprEdgesFromSlice(buffer)
 		} else {
-			row.edges = outgoing(tail)
+			row.edges = edges
 		}
 		return row, nil
 	})
@@ -394,7 +421,7 @@ func (r *StoredTraversal[V]) Community(ctx context.Context, seed, headPrefix str
 	}
 	slices.Sort(touched)
 	outgoing := func(tail string) iter.Seq2[pprEdge[string], error] {
-		return positiveEdges(r.scoredOutgoing(tail, r.outgoingRanges(ctx, tail, r.communityRanges(tail, headPrefix, seed), nil)))
+		return positiveEdges(r.scoredOutgoing(tail, 0, r.outgoingRanges(ctx, tail, r.communityRanges(tail, headPrefix, seed), nil)))
 	}
 	degrees := make(map[string]float64, len(touched))
 	var volume float64
@@ -440,7 +467,7 @@ func (r *StoredTraversal[V]) Community(ctx context.Context, seed, headPrefix str
 	for _, tail := range selected {
 		var weights map[string]float32
 		var deadlines map[string]time.Time
-		for edge, err := range r.scoredOutgoing(tail, r.outgoingRanges(ctx, tail, r.communityRanges(tail, headPrefix, seed), keep)) {
+		for edge, err := range r.scoredOutgoing(tail, 0, r.outgoingRanges(ctx, tail, r.communityRanges(tail, headPrefix, seed), keep)) {
 			if err != nil {
 				return nil, nil, err
 			}
