@@ -40,6 +40,7 @@ type tarpRelay struct {
 	trackSearch     bool // fixed before the runtime admits requests
 	diskAdmission   bool // requires every local indexed write to be rollback-capable
 	diskSearch      *tarpDiskSearchReader
+	searchRefresh   *tarpSearchRefresh
 	fingerprint     [32]byte
 	db              *graphstore.DB
 	clock           *hlc.Clock

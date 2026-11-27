@@ -452,8 +452,14 @@ func (r *ServingRuntime) Close() error {
 	}
 	r.close.Do(func() {
 		r.closed.Store(true)
+		if r.tarp != nil && r.tarp.searchRefresh != nil {
+			r.tarp.searchRefresh.stop()
+		}
 		if r.owner != nil {
 			r.closeErr = r.owner.Close()
+		}
+		if r.tarp != nil && r.tarp.searchRefresh != nil {
+			r.closeErr = errors.Join(r.closeErr, r.tarp.searchRefresh.closeDerived())
 		}
 	})
 	return r.closeErr
