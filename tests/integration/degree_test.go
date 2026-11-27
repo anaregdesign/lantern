@@ -2,11 +2,14 @@ package integration_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -122,6 +125,66 @@ func TestTopVerticesByDegree_E2E(t *testing.T) {
 			if e.GetKey() == "n:a" && (e.GetDegree() != 2 || e.GetWeightedDegree() != 6) {
 				t.Errorf("n:a after delete = %+v, want degree 2 / weight 6", e)
 			}
+		}
+	})
+}
+
+func TestTarpGraphTraversalAndOutgoingDegreeAfterReopen(t *testing.T) {
+	ctx := t.Context()
+	dir := filepath.Join(t.TempDir(), "graph")
+	open := func(t *testing.T) *service.ServingRuntime {
+		t.Helper()
+		cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
+		runtime, err := service.OpenGraphDatabase(t.Context(), dir, hlc.NodeID{1}, cache, mutationlog.Options{Capacity: 16}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		return runtime
+	}
+	t.Run("seed", func(t *testing.T) {
+		srv := newConnectTestServer(t, open(t).NewExecutor(nil), nil)
+		rpc := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+		if _, err := rpc.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+			{Key: "doc:seed", Value: &pb.Vertex_String_{String_: "seed"}},
+			{Key: "doc:a", Value: &pb.Vertex_String_{String_: "a"}},
+			{Key: "doc:b", Value: &pb.Vertex_String_{String_: "b"}},
+			{Key: "out:c", Value: &pb.Vertex_String_{String_: "c"}},
+		}})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rpc.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{
+			{Tail: "doc:seed", Head: "doc:a", Weight: 3},
+			{Tail: "doc:seed", Head: "doc:b", Weight: 1},
+			{Tail: "doc:seed", Head: "out:c", Weight: 10},
+		}})); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("reopen", func(t *testing.T) {
+		srv := newConnectTestServer(t, open(t).NewExecutor(nil), nil)
+		rpc := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+		walk, err := rpc.Illuminate(ctx, connect.NewRequest(&pb.IlluminateRequest{
+			Seed: "doc:seed", VertexPrefix: "doc:",
+			Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := walk.Msg.GetGraph().GetEdges(); len(got) != 1 || got[0].GetHead() != "doc:a" || got[0].GetWeight() != 3 {
+			t.Fatalf("unexpected scoped BFS edges: %v", got)
+		}
+		if _, err := rpc.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "doc:a"})); err != nil {
+			t.Fatal(err)
+		}
+		degree, err := rpc.TopVerticesByDegree(ctx, connect.NewRequest(&pb.TopVerticesByDegreeRequest{
+			Prefix: "doc:", K: 1, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_OUT, Weighted: true,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := degree.Msg.GetEntries(); len(got) != 1 || got[0].GetKey() != "doc:seed" || got[0].GetDegree() != 2 || got[0].GetWeightedDegree() != 11 {
+			t.Fatalf("unexpected outgoing degree after endpoint deletion: %v", got)
 		}
 	})
 }
