@@ -13,11 +13,11 @@ import (
 // a graph-first effect applied in RAM while its Tarp postimage is absent.
 // Keep those pending effects authoritative until the exact relay repair.
 func (s *Executor) cleanStoredVertexGraphLocked() *graphcache.GraphCache[string, *pb.Vertex] {
-	if s.publicationFaultCount != 0 || s.runtime == nil || s.runtime.GraphStore() == nil {
+	if s.publicationFaultCount != 0 || s.runtime == nil {
 		return nil
 	}
 	graph, _ := s.cache.(*graphcache.GraphCache[string, *pb.Vertex])
-	if graph != s.runtime.graph {
+	if graph == nil || graph != s.runtime.graph || !graph.StorageBoundTo(s.runtime.GraphStore()) {
 		return nil
 	}
 	return graph

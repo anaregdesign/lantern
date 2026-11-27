@@ -21,6 +21,14 @@ type storageResidency[S comparable, T any] struct {
 	maintenance         func(func() error) error
 }
 
+// StorageBoundTo reports whether the cache restored its row access from db.
+// A custom publication stager does not establish this binding.
+func (c *GraphCache[S, T]) StorageBoundTo(db *graphstore.DB) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return db != nil && c.storage != nil && c.storage.db == db
+}
+
 // StorageError reports a required row that could not be hydrated. Recovery
 // starts a fresh serving runtime. A failed read must never publish a partial
 // mutation or a response built from incomplete state.
