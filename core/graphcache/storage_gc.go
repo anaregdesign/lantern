@@ -9,24 +9,34 @@ import (
 	"github.com/anaregdesign/tarp"
 )
 
-// Only changed identities, including rows already dead at startup, need a
-// durable transition. The active generation and current identities are read
-// again under the owner's publication gate before reclaiming anything.
+// During serving, only identities changed by the in-memory sweep need a
+// durable transition. Startup uses the bounded physical scan.
 type storageSweep[S comparable] struct {
-	observed time.Time
 	vertices []S
 	edges    []EdgeKey[S]
 	floors   []graphstore.FloorKey[S]
 }
 
 // CompleteStorageRecovery makes expiry observed during a validated reopen
-// durable before serving starts. The pinned scan may have found a live
-// remainder and an expired source in the same bucket.
+// durable before serving starts, without keeping a list of expired rows.
 func (c *GraphCache[S, T]) CompleteStorageRecovery(ctx context.Context) error {
 	if c.storage == nil {
 		return nil
 	}
-	return c.flushStorage(ctx, c.storage.pending.observed)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.StorageError(); err != nil {
+		return err
+	}
+	if !c.storage.recoveryExpired {
+		return ctx.Err()
+	}
+	err := c.storage.rows.ReclaimExpired(ctx, c.storage.db, c.storage.recoveryAt)
+	if err != nil && err != ctx.Err() {
+		return c.storage.fence(err)
+	}
+	c.storage.recoveryExpired = err != nil
+	return err
 }
 
 // SetStorageMaintenance installs the serving owner's mutation exclusion for
