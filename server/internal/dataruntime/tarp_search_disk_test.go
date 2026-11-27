@@ -198,4 +198,29 @@ func TestTarpDiskSearchCaptureUsesCommittedChangesAndAdmittedKeys(t *testing.T) 
 		t.Fatalf("materialized search result diverged after retiring deltas: %+v, %v", got, err)
 	}
 
+	// Replacing the authoritative graph with a peer cut does not carry
+	// forward the receiver's old Search epoch.
+	finish, err := executor.BeginSnapshotInstallChecked(ctx, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := hlc.NodeID{2}
+	stamp := hlc.Timestamp{NodeID: peer, WallNs: time.Now().UnixNano()}
+	runtime.graph.PutVertexWithExpirationHLC("docs:peer", &pb.Vertex{Key: "docs:peer"}, time.Time{}, stamp)
+	if err := executor.ApplySnapshotWatermarks(map[string]uint64{"02000000000000000000000000000000": 1}, stamp); err != nil {
+		_ = finish(false)
+		t.Fatal(err)
+	}
+	if err := finish(true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = reader.Capture(ctx, spec)
+	if err != nil || !errors.Is(got.BackendError, search.ErrIndexIncomplete) || len(got.Hits) != 0 {
+		t.Fatalf("replaced graph served an old Search epoch: %+v, %v", got, err)
+	}
+	gotPeer, err := executor.GetVertex(t.Context(), &pb.GetVertexRequest{Key: "docs:peer"})
+	if err != nil || gotPeer.GetVertex().GetKey() != "docs:peer" {
+		t.Fatalf("derived failure affected authoritative graph readiness: %+v, %v", gotPeer, err)
+	}
+
 }
