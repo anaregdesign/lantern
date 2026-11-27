@@ -273,49 +273,13 @@ func PrepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 		return nil, fmt.Errorf("receipt Snapshot has invalid retired catalog policy: %w", err)
 	}
 
-	headerFrame := proto.Clone(capture.Graph[0]).(*pb.SnapshotResponse)
-	header := headerFrame.GetHeader()
-	header.ReceiptMetadata = &pb.SnapshotReceiptMetadata{
-		ActivePolicy:         receiptSnapshotPolicy(capture.Policy, capture.Receipts.PolicyFingerprint),
-		ClockHighWaterUnixMs: uint64(capture.Receipts.ClockHighWaterMillis),
-		OriginCutoffs:        make([]*pb.OriginState, len(capture.Origins)),
-		RetiredPolicies:      make([]*pb.ReceiptPolicy, len(capture.Retired.Epochs)),
-	}
-	for i, origin := range capture.Origins {
-		header.ReceiptMetadata.OriginCutoffs[i] = &pb.OriginState{
-			Origin:  append([]byte(nil), origin.Origin[:]...),
-			LastSeq: origin.LastSeq,
-			LastHlc: hlcToProto(origin.LastHLC),
-		}
-	}
-	for i, member := range capture.Retired.Epochs {
-		config := mutationreceipt.Config{
-			Epoch:      member.Policy.Epoch,
-			Retention:  member.Policy.Retention,
-			MaxEntries: member.Policy.MaxEntries,
-			MaxBytes:   member.Policy.MaxBytes,
-		}
-		header.ReceiptMetadata.RetiredPolicies[i] =
-			receiptSnapshotPolicy(config, member.State.PolicyFingerprint)
-	}
-
-	rows := make([]mutationreceipt.Receipt, 0, len(capture.Receipts.Receipts))
-	rows = append(rows, capture.Receipts.Receipts...)
-	retiredCount := 0
-	for _, member := range capture.Retired.Epochs {
-		rows = append(rows, member.State.Receipts...)
-		retiredCount += len(member.State.Receipts)
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		return bytes.Compare(rows[i].ID[:], rows[j].ID[:]) < 0
-	})
-
+	rows := orderedReceiptSnapshotRows(capture)
 	frameCapacity, err := receiptSnapshotFrameCapacity(len(capture.Graph), len(rows))
 	if err != nil {
 		return nil, err
 	}
 	frames := make([]*pb.SnapshotResponse, 0, frameCapacity)
-	frames = append(frames, headerFrame)
+	frames = append(frames, receiptSnapshotHeaderFrame(capture))
 	for _, receipt := range rows {
 		row, err := receiptSnapshotRow(receipt)
 		if err != nil {
@@ -342,17 +306,63 @@ func PrepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 		return compareReceiptSnapshotGraphFrames(graphBody[i], graphBody[j]) < 0
 	})
 	frames = append(frames, graphBody...)
-	footerFrame := proto.Clone(capture.Graph[len(capture.Graph)-1]).(*pb.SnapshotResponse)
-	footerFrame.GetFooter().ActiveReceiptCount = uint64(len(capture.Receipts.Receipts))
-	footerFrame.GetFooter().RetiredEpochCount = uint64(len(capture.Retired.Epochs))
-	footerFrame.GetFooter().RetiredReceiptCount = uint64(retiredCount)
-	footerFrame.GetFooter().OriginCount = uint64(len(capture.Origins))
-	frames = append(frames, footerFrame)
+	frames = append(frames, receiptSnapshotFooterFrame(capture, len(rows)))
 
 	if err := validateReceiptSnapshotFrames(frames, requested, retiredConfig); err != nil {
 		return nil, err
 	}
 	return frames, nil
+}
+
+func receiptSnapshotHeaderFrame(capture ReceiptWholeStateCapture) *pb.SnapshotResponse {
+	frame := proto.Clone(capture.Graph[0]).(*pb.SnapshotResponse)
+	metadata := &pb.SnapshotReceiptMetadata{
+		ActivePolicy:         receiptSnapshotPolicy(capture.Policy, capture.Receipts.PolicyFingerprint),
+		ClockHighWaterUnixMs: uint64(capture.Receipts.ClockHighWaterMillis),
+		OriginCutoffs:        make([]*pb.OriginState, len(capture.Origins)),
+		RetiredPolicies:      make([]*pb.ReceiptPolicy, len(capture.Retired.Epochs)),
+	}
+	for i, origin := range capture.Origins {
+		metadata.OriginCutoffs[i] = &pb.OriginState{
+			Origin:  append([]byte(nil), origin.Origin[:]...),
+			LastSeq: origin.LastSeq,
+			LastHlc: hlcToProto(origin.LastHLC),
+		}
+	}
+	for i, member := range capture.Retired.Epochs {
+		config := mutationreceipt.Config{
+			Epoch:      member.Policy.Epoch,
+			Retention:  member.Policy.Retention,
+			MaxEntries: member.Policy.MaxEntries,
+			MaxBytes:   member.Policy.MaxBytes,
+		}
+		metadata.RetiredPolicies[i] =
+			receiptSnapshotPolicy(config, member.State.PolicyFingerprint)
+	}
+	frame.GetHeader().ReceiptMetadata = metadata
+	return frame
+}
+
+func orderedReceiptSnapshotRows(capture ReceiptWholeStateCapture) []mutationreceipt.Receipt {
+	rows := append([]mutationreceipt.Receipt(nil), capture.Receipts.Receipts...)
+	for _, member := range capture.Retired.Epochs {
+		rows = append(rows, member.State.Receipts...)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return bytes.Compare(rows[i].ID[:], rows[j].ID[:]) < 0
+	})
+
+	return rows
+}
+
+func receiptSnapshotFooterFrame(capture ReceiptWholeStateCapture, totalReceipts int) *pb.SnapshotResponse {
+	frame := proto.Clone(capture.Graph[len(capture.Graph)-1]).(*pb.SnapshotResponse)
+	footer := frame.GetFooter()
+	footer.ActiveReceiptCount = uint64(len(capture.Receipts.Receipts))
+	footer.RetiredEpochCount = uint64(len(capture.Retired.Epochs))
+	footer.RetiredReceiptCount = uint64(totalReceipts - len(capture.Receipts.Receipts))
+	footer.OriginCount = uint64(len(capture.Origins))
+	return frame
 }
 
 func receiptSnapshotFrameCapacity(graphFrames, receiptRows int) (int, error) {
@@ -495,6 +505,7 @@ func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 		return err
 	}
 	return validateReceiptSnapshotGraphBody(
+		context.Background(),
 		frames[1:len(frames)-1],
 		footer,
 		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},
@@ -522,6 +533,7 @@ func (b receiptSnapshotCausalBounds) parse(stamp *pb.HLCTimestamp) (hlc.Timestam
 }
 
 func validateReceiptSnapshotGraphBody(
+	ctx context.Context,
 	frames []*pb.SnapshotResponse,
 	footer *pb.SnapshotFooter,
 	bounds receiptSnapshotCausalBounds,
@@ -544,6 +556,9 @@ func validateReceiptSnapshotGraphBody(
 	edges := make(map[receiptSnapshotEdgeKey]struct{})
 	var previousFrame *pb.SnapshotResponse
 	for _, frame := range frames {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if frame == nil {
 			return fmt.Errorf("nil graph frame")
 		}
@@ -1022,7 +1037,7 @@ func validateReceiptSnapshotFrames(
 	expected mutationreceipt.Config,
 	retiredConfig mutationreceipt.RetiredCatalogConfig,
 ) error {
-	_, err := DecodeReceiptSnapshotFrames(frames, expected, retiredConfig)
+	_, err := decodeReceiptSnapshotFrames(context.Background(), frames, expected, retiredConfig, true)
 	return err
 }
 
@@ -1036,10 +1051,73 @@ func DecodeReceiptSnapshotFrames(
 	expected mutationreceipt.Config,
 	retiredConfig mutationreceipt.RetiredCatalogConfig,
 ) (ReceiptWholeStateCapture, error) {
+	return decodeReceiptSnapshotFrames(context.Background(), frames, expected, retiredConfig, false)
+}
+
+// DecodeOwnedReceiptSnapshotFrames validates canonical replay frames from a
+// private receiver spool. The caller gives up ownership of the frame bodies.
+// The detached capture reuses them instead of cloning the whole graph. The
+// graph decoder verifies their exact canonical order and original evidence;
+// only the receipt envelope needs reconstruction for the wire equality check.
+func DecodeOwnedReceiptSnapshotFrames(
+	ctx context.Context,
+	frames []*pb.SnapshotResponse,
+	expected mutationreceipt.Config,
+	retiredConfig mutationreceipt.RetiredCatalogConfig,
+) (ReceiptWholeStateCapture, error) {
+	capture, err := decodeReceiptSnapshotFrames(ctx, frames, expected, retiredConfig, true)
+	if err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
+	rows := orderedReceiptSnapshotRows(capture)
+	frameCount, err := receiptSnapshotFrameCapacity(len(capture.Graph), len(rows))
+	if err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
+	if frameCount != len(frames) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf("canonical frame count changed after decode")
+	}
+	if !proto.Equal(receiptSnapshotHeaderFrame(capture), frames[0]) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf("frame 0 is not canonical")
+	}
+	for i, receipt := range rows {
+		if err := ctx.Err(); err != nil {
+			return ReceiptWholeStateCapture{}, err
+		}
+		row, err := receiptSnapshotRow(receipt)
+		if err != nil {
+			return ReceiptWholeStateCapture{}, err
+		}
+		if !proto.Equal(row, frames[i+1].GetReceipt()) {
+			return ReceiptWholeStateCapture{}, fmt.Errorf("frame %d is not canonical", i+1)
+		}
+	}
+	if !proto.Equal(receiptSnapshotFooterFrame(capture, len(rows)), frames[len(frames)-1]) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf("frame %d is not canonical", len(frames)-1)
+	}
+	if err := ctx.Err(); err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
+	return capture, nil
+}
+
+func decodeReceiptSnapshotFrames(
+	ctx context.Context,
+	frames []*pb.SnapshotResponse,
+	expected mutationreceipt.Config,
+	retiredConfig mutationreceipt.RetiredCatalogConfig,
+	owned bool,
+) (ReceiptWholeStateCapture, error) {
+	if err := ctx.Err(); err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
 	if len(frames) < 2 {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
 	for _, frame := range frames {
+		if err := ctx.Err(); err != nil {
+			return ReceiptWholeStateCapture{}, err
+		}
 		if err := ValidateReceiptSnapshotFrame(frame); err != nil {
 			return ReceiptWholeStateCapture{}, err
 		}
@@ -1115,6 +1193,9 @@ func DecodeReceiptSnapshotFrames(
 	var previousID mutationreceipt.ID
 	havePreviousID := false
 	for _, frame := range frames[1 : len(frames)-1] {
+		if err := ctx.Err(); err != nil {
+			return ReceiptWholeStateCapture{}, err
+		}
 		if row := frame.GetReceipt(); row != nil {
 			if graphStarted {
 				return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot receipt row follows graph data")
@@ -1142,7 +1223,10 @@ func DecodeReceiptSnapshotFrames(
 			continue
 		}
 		graphStarted = true
-		graphFrames = append(graphFrames, proto.Clone(frame).(*pb.SnapshotResponse))
+		if !owned {
+			frame = proto.Clone(frame).(*pb.SnapshotResponse)
+		}
+		graphFrames = append(graphFrames, frame)
 	}
 	retiredState, err = canonicalReceiptSnapshotRetiredState(retiredConfig, retiredState)
 	if err != nil {
@@ -1155,6 +1239,7 @@ func DecodeReceiptSnapshotFrames(
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot footer count mismatch")
 	}
 	if err := validateReceiptSnapshotGraphBody(
+		ctx,
 		graphFrames[1:],
 		footer,
 		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},

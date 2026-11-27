@@ -261,7 +261,8 @@ func (c *ReceiptSnapshotCollector) Collect(
 	wireHeader := proto.Clone(frames[0].GetHeader()).(*pb.SnapshotHeader)
 	retiredConfig := c.config.ExpectedRetiredConfig
 	retiredConfig.ClockHighWater = time.Time{}
-	capture, err := dataruntime.DecodeReceiptSnapshotFrames(
+	capture, err := dataruntime.DecodeOwnedReceiptSnapshotFrames(
+		ctx,
 		frames,
 		c.config.ExpectedPolicy,
 		retiredConfig,
@@ -283,18 +284,6 @@ func (c *ReceiptSnapshotCollector) Collect(
 		uint64(len(capture.Origins)) > c.config.Limits.MaxOrigins ||
 		uint64(len(capture.Graph)-2) > c.config.Limits.MaxGraphFrames {
 		return nil, receiptSnapshotCollectError("decoded section count exceeds limit")
-	}
-	canonicalFrames, err := dataruntime.PrepareReceiptSnapshotFrames(capture, c.config.ExpectedPolicy)
-	if err != nil {
-		return nil, receiptSnapshotCollectError("reconstruct canonical frames: %v", err)
-	}
-	if len(canonicalFrames) != len(frames) {
-		return nil, receiptSnapshotCollectError("canonical frame count changed after decode")
-	}
-	for i := range frames {
-		if !proto.Equal(canonicalFrames[i], frames[i]) {
-			return nil, receiptSnapshotCollectError("frame %d is not canonical", i)
-		}
 	}
 	digest, size, err := digestReceiptSnapshotSpool(spool)
 	if err != nil {
