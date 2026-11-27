@@ -214,6 +214,13 @@ The Rust/CodeQL positive path exceptions are removed. Product builds do not
 compile/embed these four design documents; the Rust API sketch is explicitly
 illustrative rather than compilable Rust.
 
+Markdown under the reviewed `lantern-ops` and `react-router-app-architecture`
+skill directories, including the Admin architecture references, follows the same
+documentation route. A diff that contains only recognized documentation runs the
+text, local link and documentation contract checks. Keep the required check names
+so those checks still report on each PR. Skill YAML and executable inputs follow
+the ordinary change classifier.
+
 This is an allowlist of documentation locations, not a blanket Markdown
 extension skip. Generated `docs/env.md`, source/fixture Markdown, unknown paths,
 workflow/classifier edits and mixed source changes keep their owning checks.

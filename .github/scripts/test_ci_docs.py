@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import ci_docs
+import local_prose_gate
 import validation_scope
 from git_test_fixture import synchronous_git_maintenance
 
@@ -29,7 +30,10 @@ class DocumentationTest(unittest.TestCase):
                      "docs/decisions/0001-dart-mobile-transport.md",
                      "docs/decisions/0002-dart-offline-repository-contract.md",
                      "docs/decisions/0011-native-rust-sdk.md",
-                     "docs/rust-sdk-v0.1-contract.md"):
+                     "docs/rust-sdk-v0.1-contract.md",
+                     ".github/skills/lantern-ops/SKILL.md",
+                     ".github/skills/react-router-app-architecture/SKILL.md",
+                     ".github/skills/react-router-app-architecture/references/boundary-and-contract-rules.md"):
             with self.subTest(path=path):
                 self.assertTrue(ci_docs.documentation_only([path]))
         for path in (*ci_docs.CONTRACT_DOCS, "server/service/service.go",
@@ -37,11 +41,24 @@ class DocumentationTest(unittest.TestCase):
                      "sdks/rust/src/generated/README.md", "unknown/README.md",
                      "deploy/helm/lantern/templates/NOTES.txt", "go.mod",
                      ".github/workflows/go.yml", ".github/scripts/ci_docs.py",
+                     ".github/agents/User.agent.md", ".github/skills/unknown/SKILL.md",
+                     ".github/skills/react-router-app-architecture/agents/openai.yaml",
+                     ".github/skills/react-router-app-architecture/references/validate.py",
+                     ".github/skills/react-router-app-architecture/references/unknown/README.md",
                      "../README.md", "/README.md", "docs/../README.md"):
             with self.subTest(path=path):
                 self.assertFalse(ci_docs.documentation_only([path]))
                 self.assertFalse(ci_docs.documentation_only(["README.md", path]))
         self.assertFalse(ci_docs.documentation_only([]))
+
+    def test_skill_docs_do_not_change_strict_local_prose_eligibility(self):
+        for directory in (".github/skills/lantern-ops",
+                          ".github/skills/react-router-app-architecture",
+                          ".github/skills/react-router-app-architecture/references"):
+            path = directory + "/README.md"
+            with self.subTest(path=path):
+                self.assertTrue(ci_docs.is_document(path))
+                self.assertFalse(local_prose_gate.prose_path(path))
 
     def test_events_without_trustworthy_range_keep_full_gates(self):
         for event, ref in (("push", "refs/tags/sdks/dart/v0.4.1"),
@@ -68,10 +85,14 @@ class DocumentationTest(unittest.TestCase):
             git("config", "user.email", "ci@example.test")
             (root / "README.md").write_text("original\n")
             (root / "source.go").write_text("package main\n")
+            skill = root / ".github/skills/react-router-app-architecture/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Original guidance.\n")
             git("add", ".")
             git("commit", "-qm", "base")
             base = git("rev-parse", "HEAD")
             (root / "README.md").write_text("updated\n")
+            skill.write_text("Updated guidance. [Guide](../../../README.md)\n")
             git("commit", "-qam", "docs")
             head = git("rev-parse", "HEAD")
             # A concurrent base-branch source commit is not in the PR's diff.
@@ -88,6 +109,8 @@ class DocumentationTest(unittest.TestCase):
                 self.assertTrue(docs)
                 self.assertEqual(revisions, (base, head))
                 ci_docs.validate(revisions)
+                self.assertEqual(ci_docs.classify({"GITHUB_EVENT_NAME": "push",
+                    "PUSH_BEFORE_SHA": base, "GITHUB_SHA": head}), (True, (base, head)))
                 git("mv", "source.go", "AGENTS.md")
                 git("commit", "-qm", "source renamed into prose")
                 rename_head = git("rev-parse", "HEAD")
@@ -146,6 +169,28 @@ class DocumentationTest(unittest.TestCase):
 
 
 class WorkflowRoutingTest(unittest.TestCase):
+    def test_agent_guidance_diff_uses_docs_checks_and_retains_mixed_validation(self):
+        # The exact files changed by the compatibility guidance PR (#2260).
+        changes = dict.fromkeys((
+            ".github/copilot-instructions.md",
+            ".github/skills/react-router-app-architecture/SKILL.md",
+            ".github/skills/react-router-app-architecture/references/dependency-injection-lifetime-and-side-effects.md",
+            "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "admin/AGENTS.md", "server/AGENTS.md",
+        ), "M")
+        self.assertTrue(ci_docs.documentation_only(list(changes)))
+        scope = validation_scope.affected(changes)
+        self.assertFalse(scope["full"])
+        self.assertEqual(scope["families"], ["docs"])
+        self.assertEqual(scope["go_modules"], [])
+        self.assertFalse(scope["windows_required"])
+        self.assertFalse(any(validation_scope.hosted(scope, changes).values()))
+
+        for path in (".github/workflows/go.yml", ".github/scripts/ci_docs.py", "docs/env.md"):
+            with self.subTest(path=path):
+                mixed = changes | {path: "M"}
+                self.assertFalse(ci_docs.documentation_only(list(mixed)))
+                self.assertTrue(validation_scope.affected(mixed)["full"])
+
     def test_docs_and_mixed_changes_route_only_to_consuming_jobs(self):
         routes = {
             "admin": ("admin_required", ["admin/README.md"], "admin/app/root.tsx"),
