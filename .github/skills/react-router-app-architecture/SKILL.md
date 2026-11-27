@@ -267,8 +267,10 @@ override only the hosting-specific pieces.
   them.
 - If a file does not fit the canonical layout, revise the plan before
   implementation instead of inventing a convenience directory.
-- Prefer direct replacement over compatibility aliases when renaming
-  architecture terms.
+- During Lantern's `v0.*.*` series, use one canonical name or shape for each app
+  contract. Update current consumers in the same change and remove code that
+  exists only to support older releases. Follow the
+  [repository versioning policy](../../../CONTRIBUTING.md#versioning--compatibility-pre-v100).
 
 ## Implementation Workflow
 

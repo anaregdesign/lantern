@@ -70,19 +70,12 @@ mutable use-case instance across concurrent requests just to save allocation.
 
 ## Migration Workflow Rule
 
-When changing architecture terms or boundaries, prefer the lowest-friction
-migration path.
+When changing architecture terms or boundaries during Lantern's `v0.*.*` series,
+follow the
+[repository versioning policy](../../../../CONTRIBUTING.md#versioning--compatibility-pre-v100).
 
-Use this order:
-
-1. choose the canonical new name or shape
-2. perform a direct replacement across the codebase in one focused change
-3. update tests, types, and documentation in the same change
-4. retain a compatibility alias only when a real consumer cannot migrate in
-   the same change set
-5. remove the alias as soon as the blocking consumer migrates
-
-Avoid:
-
-- introducing parallel old and new names that drift in scope
-- keeping deprecated names alive past their stated removal point
+1. Choose one canonical name or shape.
+2. Replace the old name or shape in current consumers in one focused change.
+3. Update tests, types, and documentation in the same change.
+4. Remove aliases, adapters, and parallel paths that exist only to support
+   older releases.
