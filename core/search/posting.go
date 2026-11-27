@@ -2,6 +2,9 @@ package search
 
 import (
 	"encoding/binary"
+	"maps"
+	"math/bits"
+	"slices"
 
 	"github.com/RoaringBitmap/roaring/v2"
 )
@@ -15,18 +18,16 @@ import (
 // keyed by the document id. Frequencies default to 1 and only the
 // comparatively rare term that occurs more than once in a document is recorded
 // in tfHi, so the common case carries no per-(term, document) frequency
-// storage at all. fieldPosition entries exist only when the index was built WithPositions
-// and the term carries at least one position in that field, so an index that
-// serves only OR-union ranking pays nothing for phrase/proximity support
-// (#889). Each document's positions are stored delta+varint packed (#908): a
-// uint64 combines field-instance and token offset before compact encoding, so
-// the store costs ~1 byte per position (short vertex values) rather than 4.
+// storage at all. fieldPosition entries exist only when the index was built
+// WithPositions and the term carries a position in that field. Documents in
+// each block share a byte buffer for their delta-encoded positions. A uint64
+// combines field-instance and token offset before encoding.
 type postingList struct {
 	docs          *roaring.Bitmap // document ordinals containing this term in any field
 	hasNonDefault bool
 	fieldDocs     [numDocumentFields]*roaring.Bitmap
 	fieldTFHi     [numDocumentFields]map[uint32]uint16
-	fieldPosition [numDocumentFields]map[uint32][]byte
+	fieldPosition [numDocumentFields]*postingPositions
 }
 
 // newPostingList returns an empty posting list ready to record documents.
@@ -39,9 +40,7 @@ func newPostingList() *postingList {
 // non-empty, are the term's ascending token positions in the document; they
 // are stored only when the index tracks positions (WithPositions) and only for
 // the primary word channel, so an OR-union-only index passes nil and pays
-// nothing. They are delta+varint packed into a fresh []byte, so the caller's
-// transient position slice is not retained and the store holds only the
-// compact bytes.
+// nothing. The index delta-encodes the positions and keeps the encoded bytes.
 func (p *postingList) set(ord uint32, tf int, positions []uint64) {
 	var fields [numDocumentFields]preparedFieldTerm
 	fields[FieldDefault] = preparedFieldTerm{frequency: tf, positions: positions}
@@ -83,9 +82,9 @@ func (p *postingList) setFields(ord uint32, fields [numDocumentFields]preparedFi
 		}
 		if len(value.positions) > 0 {
 			if p.fieldPosition[field] == nil {
-				p.fieldPosition[field] = make(map[uint32][]byte)
+				p.fieldPosition[field] = new(postingPositions)
 			}
-			p.fieldPosition[field][ord] = packPositions(value.positions)
+			p.fieldPosition[field].set(ord, value.positions)
 		}
 	}
 }
@@ -111,11 +110,8 @@ func (p *postingList) remove(ord uint32) (empty bool) {
 				p.fieldTFHi[field] = nil
 			}
 		}
-		if p.fieldPosition[field] != nil {
-			delete(p.fieldPosition[field], ord)
-			if len(p.fieldPosition[field]) == 0 {
-				p.fieldPosition[field] = nil
-			}
+		if positions := p.fieldPosition[field]; positions != nil && positions.remove(ord) {
+			p.fieldPosition[field] = nil
 		}
 	}
 	return p.docs.IsEmpty()
@@ -183,11 +179,268 @@ func (p *postingList) positionsInto(ord uint32, field FieldID, dst []uint64) []u
 	if p.fieldPosition[field] == nil {
 		return dst[:0]
 	}
-	return unpackPositionsInto(dst[:0], p.fieldPosition[field][ord])
+	return p.fieldPosition[field].decode(ord, dst)
 }
 
 func (p *postingList) positionsInField(ord uint32, field FieldID) []uint64 {
 	return p.positionsInto(ord, field, nil)
+}
+
+const (
+	positionBlockWidth = 64
+	// A block holds at most 16 KiB of payload. Large values use their own
+	// backing so inserting a short value never shifts those bytes.
+	maxBlockPositionBytes = 256
+)
+
+// postingPositions owns the positional values for one term in one field.
+// A short singleton needs no backing allocation beyond this struct. Groups
+// of nearby ordinals then share their payload and offsets in sparse blocks.
+type postingPositions struct {
+	blocks    map[uint32]positionSlot
+	large     map[uint32][]byte
+	inline    [8]byte
+	inlineOrd uint32
+	inlineLen uint8
+	blockPeak int
+	largePeak int
+}
+
+func (p *postingPositions) set(ord uint32, positions []uint64) {
+	if len(positions) <= maxBlockPositionBytes/binary.MaxVarintLen64 {
+		// Even with the widest gaps these positions fit in a block.
+		var scratch [64]byte
+		p.setSmall(ord, appendPackedPositions(scratch[:0], positions))
+		return
+	}
+	data := packPositions(positions)
+	if len(data) > maxBlockPositionBytes {
+		p.setLarge(ord, data)
+		return
+	}
+	p.setSmall(ord, data)
+}
+
+func (p *postingPositions) setSmall(ord uint32, data []byte) {
+	p.removeLarge(ord)
+	if len(p.blocks) == 0 {
+		if (p.inlineLen == 0 || p.inlineOrd == ord) && len(data) <= len(p.inline) {
+			copy(p.inline[:], data)
+			p.inlineOrd, p.inlineLen = ord, uint8(len(data))
+			return
+		}
+		if p.inlineLen != 0 && p.inlineOrd != ord {
+			p.setBlock(p.inlineOrd, p.inline[:p.inlineLen])
+		}
+		p.inlineLen = 0
+	}
+	p.setBlock(ord, data)
+}
+
+func (p *postingPositions) setBlock(ord uint32, data []byte) {
+	key, offset := positionBlockKey(ord)
+	slot := p.blocks[key]
+	bit := uint64(1) << offset
+	if slot.block != nil {
+		slot.block.set(bit, data)
+		return
+	}
+	if len(data) <= len(slot.inline) && (slot.length == 0 || slot.offset == offset) {
+		slot.offset, slot.length = offset, uint8(copy(slot.inline[:], data))
+	} else {
+		block := new(positionBlock)
+		if slot.length != 0 && slot.offset != offset {
+			block.set(uint64(1)<<slot.offset, slot.inline[:slot.length])
+		}
+		block.set(bit, data)
+		slot = positionSlot{block: block}
+	}
+	if p.blocks == nil {
+		p.blocks = make(map[uint32]positionSlot)
+	}
+	p.blocks[key] = slot
+	p.blockPeak = max(p.blockPeak, len(p.blocks))
+}
+
+func (p *postingPositions) setLarge(ord uint32, data []byte) {
+	p.removeSmall(ord)
+	if p.large == nil {
+		p.large = make(map[uint32][]byte)
+	}
+	p.large[ord] = data
+	p.largePeak = max(p.largePeak, len(p.large))
+}
+
+func (p *postingPositions) decode(ord uint32, dst []uint64) []uint64 {
+	dst = dst[:0]
+	if p.inlineLen != 0 && p.inlineOrd == ord {
+		return unpackPositionsInto(dst, p.inline[:p.inlineLen])
+	}
+	if len(p.blocks) != 0 {
+		key, offset := positionBlockKey(ord)
+		slot := p.blocks[key]
+		if block := slot.block; block != nil {
+			bit := uint64(1) << offset
+			if block.members&bit != 0 {
+				_, start, end := block.bounds(bit)
+				return unpackPositionsInto(dst, block.data[start:end])
+			}
+		} else if slot.offset == offset && slot.length != 0 {
+			return unpackPositionsInto(dst, slot.inline[:slot.length])
+		}
+	}
+	return unpackPositionsInto(dst, p.large[ord])
+}
+
+func (p *postingPositions) remove(ord uint32) (empty bool) {
+	p.removeLarge(ord)
+	p.removeSmall(ord)
+	return p.inlineLen == 0 && len(p.blocks) == 0 && len(p.large) == 0
+}
+
+func (p *postingPositions) removeLarge(ord uint32) {
+	if len(p.large) == 0 {
+		return
+	}
+	delete(p.large, ord)
+	p.large = trimPositionMap(p.large, &p.largePeak)
+}
+
+func (p *postingPositions) removeSmall(ord uint32) {
+	if p.inlineLen != 0 && p.inlineOrd == ord {
+		p.inlineLen = 0
+		return
+	}
+	if len(p.blocks) == 0 {
+		return
+	}
+	key, offset := positionBlockKey(ord)
+	slot := p.blocks[key]
+	if block := slot.block; block != nil {
+		bit := uint64(1) << offset
+		if block.members&bit == 0 {
+			return
+		}
+		if block.members != bit {
+			block.set(bit, nil)
+			if len(block.ends) == 1 && len(block.data) <= len(slot.inline) {
+				slot = positionSlot{offset: uint8(bits.TrailingZeros64(block.members))}
+				slot.length = uint8(copy(slot.inline[:], block.data))
+				p.blocks[key] = slot
+			}
+			p.inlineSingleton()
+			return
+		}
+	} else {
+		if slot.length == 0 || slot.offset != offset {
+			return
+		}
+	}
+	delete(p.blocks, key)
+	p.blocks = trimPositionMap(p.blocks, &p.blockPeak)
+	p.inlineSingleton()
+}
+
+func (p *postingPositions) inlineSingleton() {
+	if len(p.blocks) != 1 {
+		return
+	}
+	for key, slot := range p.blocks {
+		offset, data := slot.offset, slot.inline[:slot.length]
+		if block := slot.block; block != nil {
+			if len(block.ends) != 1 || len(block.data) > len(p.inline) {
+				return
+			}
+			offset, data = uint8(bits.TrailingZeros64(block.members)), block.data
+		}
+		p.inlineOrd = key*positionBlockWidth + uint32(offset)
+		p.inlineLen = uint8(copy(p.inline[:], data))
+		p.blocks = nil
+		p.blockPeak = 0
+	}
+}
+
+func trimPositionMap[V any](m map[uint32]V, peak *int) map[uint32]V {
+	n := len(m)
+	switch {
+	case n == 0:
+		*peak = 0
+		return nil
+	case *peak >= 32 && n <= *peak/4:
+		// Go maps retain buckets on deletion. Rebuild only after a large
+		// reduction so the work is amortized over the preceding removals.
+		compacted := make(map[uint32]V, n)
+		maps.Copy(compacted, m)
+		*peak = n
+		return compacted
+	default:
+		return m
+	}
+}
+
+// A sparse block's first short value fits inside its map slot. That avoids
+// separate allocations when the same term appears at widely spaced ordinals.
+type positionSlot struct {
+	block  *positionBlock
+	inline [6]byte
+	offset uint8
+	length uint8
+}
+
+type positionBlock struct {
+	members uint64
+	data    []byte
+	// Ends are indexed by bitmap rank. Every encoded value is non-empty.
+	ends []uint16
+}
+
+func positionBlockKey(ord uint32) (uint32, uint8) {
+	return ord / positionBlockWidth, uint8(ord % positionBlockWidth)
+}
+
+func (b *positionBlock) bounds(bit uint64) (rank, start, end int) {
+	rank = bits.OnesCount64(b.members & (bit - 1))
+	if rank != 0 {
+		start = int(b.ends[rank-1])
+	}
+	end = start
+	if b.members&bit != 0 {
+		end = int(b.ends[rank])
+	}
+	return rank, start, end
+}
+
+func (b *positionBlock) set(bit uint64, data []byte) {
+	rank, start, end := b.bounds(bit)
+	delta := len(data) - (end - start)
+	oldLen := len(b.data)
+	if delta > 0 {
+		b.data = slices.Grow(b.data, delta)[:oldLen+delta]
+	}
+	copy(b.data[start+len(data):], b.data[end:oldLen])
+	copy(b.data[start:], data)
+	b.data = b.data[:oldLen+delta]
+	switch {
+	case len(data) == 0:
+		b.members &^= bit
+		b.ends = slices.Delete(b.ends, rank, rank+1)
+	case start == end:
+		b.members |= bit
+		b.ends = slices.Insert(b.ends, rank, uint16(start+len(data)))
+		rank++
+	default:
+		b.ends[rank] = uint16(start + len(data))
+		rank++
+	}
+	for i := rank; i < len(b.ends); i++ {
+		b.ends[i] = uint16(int(b.ends[i]) + delta)
+	}
+	if cap(b.data) >= 128 && len(b.data) <= cap(b.data)/4 {
+		b.data = slices.Clone(b.data)
+	}
+	if cap(b.ends) >= 16 && len(b.ends) <= cap(b.ends)/4 {
+		b.ends = slices.Clone(b.ends)
+	}
 }
 
 // packPositions delta+varint encodes an ascending position slice: the first
@@ -199,7 +452,10 @@ func (p *postingList) positionsInField(ord uint32, field FieldID) []uint64 {
 // be ascending; the indexer builds it that way.
 func packPositions(positions []uint64) []byte {
 	// One byte per position is the common case, so size the buffer for it.
-	buf := make([]byte, 0, len(positions))
+	return appendPackedPositions(make([]byte, 0, len(positions)), positions)
+}
+
+func appendPackedPositions(buf []byte, positions []uint64) []byte {
 	var prev uint64
 	for _, pos := range positions {
 		buf = binary.AppendUvarint(buf, pos-prev)

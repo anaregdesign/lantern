@@ -229,6 +229,66 @@ func TestInvertedIndexCompactionAndHealth(t *testing.T) {
 	}
 }
 
+func TestInvertedIndexPackedPositionsAcrossExpiryAndCompaction(t *testing.T) {
+	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	idx := NewInvertedIndex[string, Fields](fakeAnalyzer{}, nil, compareStringID,
+		WithPositions(), WithIndexClock(func() time.Time { return now }))
+	document := func(text string) Fields {
+		return Fields{{ID: FieldKey, Text: "alpha"}, {ID: FieldValue, Text: text}}
+	}
+	expiringID := fmt.Sprintf("doc-%d", positionBlockWidth-1)
+	survivingID := fmt.Sprintf("doc-%d", positionBlockWidth)
+	for i := range 2*positionBlockWidth + 1 {
+		id := fmt.Sprintf("doc-%d", i)
+		text := "alpha beta gamma"
+		var expires time.Time
+		if id == expiringID || id == survivingID {
+			text = "alpha alpha beta"
+		}
+		if id == expiringID {
+			expires = now.Add(time.Second)
+		}
+		if err := idx.IndexWithExpiration(id, document(text), expires); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := idsOf(idx.SearchPhrase("alpha alpha beta")); !slices.Equal(got, []string{expiringID, survivingID}) {
+		t.Fatalf("phrase across blocks = %v", got)
+	}
+	expiringOrdinal, _ := idx.ords.lookup(expiringID)
+	now = now.Add(time.Second)
+	if got := idsOf(idx.SearchPhrase("alpha alpha beta")); !slices.Equal(got, []string{survivingID}) {
+		t.Fatalf("phrase after expiry = %v", got)
+	}
+	if err := idx.Index("replacement", Fields{
+		{ID: FieldKey, Text: "alpha alpha"},
+		{ID: FieldValue, Text: "beta"},
+		{ID: FieldValue, Text: "alpha alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ord, _ := idx.ords.lookup("replacement"); ord != expiringOrdinal {
+		t.Fatalf("ordinal reuse = %d, want %d", ord, expiringOrdinal)
+	}
+	if got := idsOf(idx.SearchPhrase("alpha alpha beta")); !slices.Equal(got, []string{survivingID}) {
+		t.Fatalf("reused ordinal or crossing fields matched the phrase: %v", got)
+	}
+	if err := idx.Index(survivingID, document("beta alpha alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(idx.SearchPhrase("beta alpha alpha")); !slices.Equal(got, []string{survivingID}) {
+		t.Fatalf("phrase after overwrite = %v", got)
+	}
+	before := idx.Search("alpha beta")
+	idx.Compact()
+	if after := idx.Search("alpha beta"); !slices.Equal(after, before) {
+		t.Fatal("compaction changed term scores or proximity")
+	}
+	if got := idsOf(idx.SearchPhrase("beta alpha alpha")); !slices.Equal(got, []string{survivingID}) {
+		t.Fatalf("phrase after compaction = %v", got)
+	}
+}
+
 func TestInvertedIndexRebuildDocuments(t *testing.T) {
 	t.Run("publishes complete replacement atomically", func(t *testing.T) {
 		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
