@@ -4,18 +4,23 @@
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlsplit
+from xml.parsers.expat import ExpatError
 
 from ios_smoke_log import MAX_FILE_BYTES, MAX_LINE_BYTES, PHASE_FILES, Redactor, text_tail
 
 
 BUNDLE_ID = "com.anaregdesign.lanternExample"
+RUNNER_BUNDLE = Path("build/ios/iphonesimulator/Runner.app")
 TARGET = "integration_test/mobile_smoke_test.dart"
 DRIVER = "test_driver/integration_test.dart"
 VM_URL = re.compile(
@@ -107,10 +112,11 @@ def wait_bounded(process, deadline, before_stop=None):
         return process.wait(), True
 
 
-def read_process(command, timeout, limit, *, merge_stderr=False):
+def read_process(command, timeout, limit, *, merge_stderr=False, stdin=None):
     """Capture transient command output within a byte and wall-time bound."""
     process = subprocess.Popen(
         command,
+        stdin=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
         start_new_session=True,
@@ -341,6 +347,114 @@ def verify_runner_launch(pid, executable, deadline):
         raise RunnerOwnershipError("returned_identity_unknown") from error
 
 
+def observe_preinstall_apps(xcrun, device, deadline):
+    """A complete device inventory is required to prove preinstall absence."""
+    deadline = min(deadline, time.monotonic() + 10)
+    try:
+        _, raw = runner_identity_read([xcrun, "simctl", "listapps", device], deadline, MAX_FILE_BYTES)
+        try:
+            apps = plistlib.loads(raw)
+        except plistlib.InvalidFileException:
+            # CoreSimulator prints an OpenStep property list. Its own platform
+            # parser converts it without using a missing-app error or substring.
+            with tempfile.TemporaryFile() as source:
+                source.write(raw)
+                source.seek(0)
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return "unknown"
+                status, xml, timed_out, exceeded = read_process(
+                    ["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "--", "-"],
+                    left, MAX_FILE_BYTES, stdin=source,
+                )
+            if status or timed_out or exceeded:
+                return "unknown"
+            apps = plistlib.loads(xml)
+        if time.monotonic() >= deadline or not isinstance(apps, dict) or not apps:
+            return "unknown"
+        if any(not isinstance(info, dict) or info.get("CFBundleIdentifier") != name for name, info in apps.items()):
+            return "unknown"
+        return "present" if any(name.casefold() == BUNDLE_ID.casefold() for name in apps) else "absent"
+    except (OSError, ValueError, ExpatError, plistlib.InvalidFileException, RunnerOwnershipError):
+        return "unknown"
+
+
+def same_bundle_contents(built, installed):
+    """Compare paths, entry types, link targets, and file bytes in an owned worker."""
+    def unchanged(path, before):
+        after = path.lstat()
+        return (before.st_mode, before.st_ino, before.st_dev, before.st_size,
+                before.st_mtime_ns, before.st_ctime_ns) == (
+                    after.st_mode, after.st_ino, after.st_dev, after.st_size,
+                    after.st_mtime_ns, after.st_ctime_ns,
+                )
+
+    def same_entry(left, right):
+        left_stat = left.lstat()
+        right_stat = right.lstat()
+        kind = stat.S_IFMT(left_stat.st_mode)
+        if kind != stat.S_IFMT(right_stat.st_mode):
+            return False
+        if kind == stat.S_IFDIR:
+            left_names = sorted(item.name for item in left.iterdir())
+            right_names = sorted(item.name for item in right.iterdir())
+            if left_names != right_names or not all(same_entry(left / name, right / name) for name in left_names):
+                return False
+        elif kind == stat.S_IFLNK:
+            target = os.readlink(left)
+            if (os.path.isabs(target) or target != os.readlink(right)
+                    or not left.resolve(strict=True).is_relative_to(built)
+                    or not right.resolve(strict=True).is_relative_to(installed)):
+                return False
+        elif kind == stat.S_IFREG:
+            if left_stat.st_size != right_stat.st_size:
+                return False
+            with (os.fdopen(os.open(left, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source,
+                  os.fdopen(os.open(right, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as copy):
+                if os.fstat(source.fileno()) != left_stat or os.fstat(copy.fileno()) != right_stat:
+                    return False
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    if copy.read(len(chunk)) != chunk:
+                        return False
+                if copy.read(1):
+                    return False
+        else:
+            return False
+        return unchanged(left, left_stat) and unchanged(right, right_stat)
+
+    if any(not stat.S_ISDIR(path.lstat().st_mode) for path in (built, installed)):
+        return False
+    built, installed = (path.resolve(strict=True) for path in (built, installed))
+    for name in ("Info.plist", "Runner"):
+        entry = (built / name).lstat()
+        if not stat.S_ISREG(entry.st_mode) or not entry.st_size:
+            return False
+    with (built / "Info.plist").open("rb") as source:
+        info = plistlib.load(source)
+    if (not isinstance(info, dict) or info.get("CFBundleIdentifier") != BUNDLE_ID
+            or info.get("CFBundleExecutable") != "Runner"):
+        return False
+    return same_entry(built, installed)
+
+
+def verify_installed_bundle(executable, deadline):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return "unverifiable"
+    try:
+        status, output, timed_out, exceeded = read_process(
+            [sys.executable, "-B", str(Path(__file__).resolve()), "--compare-installed-bundle",
+             str(RUNNER_BUNDLE), str(Path(executable).parent)], left, 64,
+        )
+    except OSError:
+        return "unverifiable"
+    if status or timed_out or exceeded or time.monotonic() >= deadline:
+        return "unverifiable"
+    if output == b"match\n":
+        return "match"
+    return "mismatch" if output == b"mismatch\n" else "unverifiable"
+
+
 def process_alive(pid):
     """A Simulator app PID is a host PID; distinguish its exit from a log stall."""
     try:
@@ -511,11 +625,17 @@ def run_attempt(device, attempt, root):
                 return 72
         record_phase(phases, "boot_done")
 
+        operation = "preinstall app inventory"
+        preinstall = observe_preinstall_apps(xcrun, device, deadline)
         operation = "install"
+        install_remaining = min(90, deadline - time.monotonic())
+        if install_remaining <= 0:
+            classification = "launch_stall"
+            return 70
         record_operation(phases, "install_operation", "started")
         status, output, timed_out, exceeded = read_process(
-            [xcrun, "simctl", "install", device, "build/ios/iphonesimulator/Runner.app"],
-            remaining(deadline, 90), 65536, merge_stderr=True,
+            [xcrun, "simctl", "install", device, str(RUNNER_BUNDLE)],
+            install_remaining, 65536, merge_stderr=True,
         )
         outcome = "timed_out" if timed_out else "returned"
         record_operation(
@@ -534,18 +654,30 @@ def run_attempt(device, attempt, root):
             )
         if timed_out:
             classification = "launch_stall"
-            return 70
-        if exceeded or status:
+            if preinstall != "absent" or exceeded or status not in (-signal.SIGTERM, -signal.SIGKILL):
+                record_operation(phases, "install_operation", f"verification=not_eligible preinstall={preinstall}")
+                return 70
+        elif exceeded or status:
             classification = "launch_failure"
             return 72
         operation = "prelaunch runner identity"
         native_deadline = min(deadline, time.monotonic() + launch_limit)
+        identity_deadline = min(native_deadline, time.monotonic() + 15) if timed_out else native_deadline
         try:
-            executable = prepare_runner_launch(xcrun, device, native_deadline)
+            executable = prepare_runner_launch(xcrun, device, identity_deadline)
         except RunnerOwnershipError as error:
             record_operation(phases, "native_launch_operation", f"refused prelaunch_identity={error}")
+            if timed_out:
+                record_operation(phases, "install_operation", "verification=unverifiable preinstall=absent")
+                return 70
             classification = "launch_failure"
             return 72
+        if timed_out:
+            operation = "install verification"
+            verification = verify_installed_bundle(executable, identity_deadline)
+            record_operation(phases, "install_operation", f"verification={verification} preinstall=absent")
+            if verification != "match":
+                return 70
         # Match Flutter's plain launch protocol only after proving that this
         # selected Simulator has no old Runner whose PID/logs could be reused.
         operation = "native launch"
@@ -681,6 +813,13 @@ def run_attempt(device, attempt, root):
 def main():
     if len(sys.argv) != 4:
         raise SystemExit("usage: ios_smoke_attach.py <device> <label> <diagnostics-root>")
+    if sys.argv[1] == "--compare-installed-bundle":
+        try:
+            same = same_bundle_contents(Path(sys.argv[2]), Path(sys.argv[3]))
+        except (OSError, ValueError, ExpatError, RuntimeError, plistlib.InvalidFileException):
+            raise SystemExit(1) from None
+        print("match" if same else "mismatch")
+        return
     raise SystemExit(run_attempt(sys.argv[1], sys.argv[2], Path(sys.argv[3])))
 
 

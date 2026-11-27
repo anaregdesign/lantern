@@ -97,13 +97,15 @@ echo 'All tests passed!'
       );
       final boot = calls.indexOf('xcrun simctl boot SOURCE-DEVICE');
       final ready = calls.indexOf('xcrun simctl bootstatus SOURCE-DEVICE -b');
+      final inventory = calls.indexOf('xcrun simctl listapps SOURCE-DEVICE');
       final install = calls.indexWhere(
         (line) => line.startsWith('xcrun simctl install'),
       );
       expect(build, greaterThanOrEqualTo(0));
       expect(boot, greaterThan(build));
       expect(ready, greaterThan(boot));
-      expect(install, greaterThan(ready));
+      expect(inventory, greaterThan(ready));
+      expect(install, greaterThan(inventory));
       final container = calls.indexOf(
         'xcrun simctl get_app_container '
         'SOURCE-DEVICE com.anaregdesign.lanternExample app',
@@ -1286,6 +1288,16 @@ case "${2:-}" in
   boot) exit _BOOT_EXIT_ ;;
   bootstatus)
     if [[ '_BOOT_STALL_' == true ]]; then sleep 30; fi
+    ;;
+  listapps)
+    [[ "${3:-}" == SOURCE-DEVICE ]] || exit 2
+    cat <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>com.apple.Preferences</key><dict>
+<key>CFBundleIdentifier</key><string>com.apple.Preferences</string>
+</dict></dict></plist>
+PLIST
     ;;
   terminate|install) exit 0 ;;
   get_app_container)

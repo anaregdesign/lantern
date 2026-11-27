@@ -5,6 +5,7 @@ import errno
 import io
 import os
 from pathlib import Path
+import plistlib
 import signal
 import subprocess
 import sys
@@ -23,6 +24,7 @@ class CleanupTests(unittest.TestCase):
         # identity reads and their refusal paths are exercised separately below.
         self.enterContext(patch.object(smoke, "prepare_runner_launch", return_value="/owned/Runner.app/Runner"))
         self.enterContext(patch.object(smoke, "verify_runner_launch"))
+        self.enterContext(patch.object(smoke, "observe_preinstall_apps", return_value="unknown"))
 
     def test_child_exit_between_poll_and_denied_signal_proves_group_absence(self):
         process = subprocess.Popen(
@@ -275,9 +277,10 @@ class CleanupTests(unittest.TestCase):
                     operation = root / "initial/phases/install_operation"
                     self.assertTrue(operation.is_file(), "install evidence must be retained")
                     outcome = "timed_out" if timed_out else "returned"
+                    verification = "verification=not_eligible preinstall=unknown\n" if timed_out else ""
                     self.assertEqual(
                         operation.read_text(),
-                        f"started\n{outcome} exit_code={code} output_limit={int(exceeded)}\n",
+                        f"started\n{outcome} exit_code={code} output_limit={int(exceeded)}\n{verification}",
                     )
                     self.assertFalse(
                         (root / "initial/phases/native_launch_operation").exists(),
@@ -646,6 +649,163 @@ class CleanupTests(unittest.TestCase):
                 self.assertNotIn(secret, retained)
 
 
+class InstallReconciliationTests(unittest.TestCase):
+    def test_complete_device_inventory_is_required_for_absence(self):
+        system_app = {"com.apple.Preferences": {"CFBundleIdentifier": "com.apple.Preferences"}}
+        stale_app = {smoke.BUNDLE_ID.lower(): {"CFBundleIdentifier": smoke.BUNDLE_ID.lower()}}
+        for result, expected in [
+            ((0, plistlib.dumps(system_app), False, False), "absent"),
+            ((0, plistlib.dumps(system_app | stale_app), False, False), "present"),
+            ((0, plistlib.dumps({}), False, False), "unknown"),
+            ((0, plistlib.dumps({"com.apple.Preferences": {}}), False, False), "unknown"),
+            ((0, plistlib.dumps(system_app), True, False), "unknown"),
+            ((0, plistlib.dumps(system_app), False, True), "unknown"),
+            ((1, plistlib.dumps(system_app), False, False), "unknown"),
+        ]:
+            with self.subTest(expected=expected), patch.object(smoke.time, "monotonic", return_value=100), patch.object(smoke, "read_process", return_value=result) as read:
+                self.assertEqual(smoke.observe_preinstall_apps("xcrun", "SOURCE-DEVICE", 104), expected)
+                read.assert_called_once_with(["xcrun", "simctl", "listapps", "SOURCE-DEVICE"], 4, smoke.MAX_FILE_BYTES, merge_stderr=True)
+
+    def test_openstep_device_inventory_converted_within_same_deadline(self):
+        now = [100]
+        raw = b'{ "com.apple.Preferences" = { CFBundleIdentifier = "com.apple.Preferences"; }; }'
+        xml = plistlib.dumps({"com.apple.Preferences": {"CFBundleIdentifier": "com.apple.Preferences"}})
+
+        def read(command, timeout, limit, **kwargs):
+            if command[0] == "xcrun":
+                self.assertEqual(timeout, 8)
+                now[0] += 6
+                return 0, raw, False, False
+            self.assertEqual(command, ["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "--", "-"])
+            self.assertEqual(timeout, 2)
+            self.assertEqual(kwargs["stdin"].read(), raw)
+            return 0, xml, False, False
+
+        with patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]), patch.object(smoke, "read_process", side_effect=read):
+            self.assertEqual(smoke.observe_preinstall_apps("xcrun", "SOURCE-DEVICE", 108), "absent")
+
+    def test_worker_compares_complete_bundle_and_rejects_unsafe_inputs(self):
+        for change, verdict in [
+            ("equal", "match"), ("bytes", "mismatch"), ("extra", "mismatch"),
+            ("missing", "mismatch"), ("directory", "mismatch"), ("symlink", "mismatch"),
+            ("escaping", "mismatch"), ("missing bundle", "unverifiable"),
+        ]:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                built = root / "build/Runner.app"
+                installed = root / "install/Runner.app"
+                for bundle in (built, installed):
+                    (bundle / "assets").mkdir(parents=True)
+                    (bundle / "empty").mkdir()
+                    (bundle / "Runner").write_bytes(b"test runner")
+                    (bundle / "Info.plist").write_bytes(plistlib.dumps({
+                        "CFBundleIdentifier": smoke.BUNDLE_ID, "CFBundleExecutable": "Runner",
+                    }))
+                    (bundle / "assets/data").write_bytes(b"correct bytes")
+                    (bundle / "data-link").symlink_to("assets/data")
+                if change == "bytes":
+                    (installed / "assets/data").write_bytes(b"changed bytes")
+                elif change == "extra":
+                    (installed / "assets/extra").touch()
+                elif change == "missing":
+                    (installed / "empty").rmdir()
+                elif change == "directory":
+                    (installed / "assets/data").unlink()
+                    (installed / "assets/data").mkdir()
+                elif change == "symlink":
+                    (installed / "data-link").unlink()
+                    (installed / "data-link").symlink_to("./assets/data")
+                elif change == "escaping":
+                    for bundle in (built, installed):
+                        (bundle / "data-link").unlink()
+                        (bundle / "data-link").symlink_to("../../outside")
+                    (root / "outside").touch()
+                elif change == "missing bundle":
+                    installed = root / "unknown/Runner.app"
+                with patch.object(smoke, "RUNNER_BUNDLE", built):
+                    self.assertEqual(smoke.verify_installed_bundle(str(installed / "Runner"), time.monotonic() + 5), verdict)
+
+    def test_worker_deadline_and_incomplete_results_do_not_authorize_launch(self):
+        for result in [(0, b"match\n", True, False), (0, b"match\n", False, True), (1, b"match\n", False, False), (0, b"match\nextra", False, False)]:
+            with self.subTest(result=result), patch.object(smoke.time, "monotonic", return_value=100), patch.object(smoke, "read_process", return_value=result) as read:
+                self.assertEqual(smoke.verify_installed_bundle("/owned/Runner.app/Runner", 100), "unverifiable")
+                read.assert_not_called()
+                self.assertEqual(smoke.verify_installed_bundle("/owned/Runner.app/Runner", 112), "unverifiable")
+                self.assertEqual(read.call_args.args[1:], (12, 64))
+        with patch.object(smoke.time, "monotonic", side_effect=[100, 110]), patch.object(smoke, "read_process", return_value=(0, b"match\n", False, False)):
+            self.assertEqual(smoke.verify_installed_bundle("/owned/Runner.app/Runner", 110), "unverifiable")
+
+    def test_timeout_recovery_keeps_failure_evidence_and_requires_the_whole_smoke(self):
+        for preinstall, proof, driver, expected in [
+            ("present", "match", 0, "launch_stall"),
+            ("unknown", "match", 0, "launch_stall"),
+            ("absent", "mismatch", 0, "launch_stall"),
+            ("absent", "unverifiable", 0, "launch_stall"),
+            ("absent", "match", 1, "test_failure"),
+            ("absent", "match", 0, "success"),
+        ]:
+            with self.subTest(preinstall=preinstall, proof=proof, driver=driver), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                now = [100.0]
+                installed_runner = "/owned/Runner.app/Runner"
+
+                def read(command, timeout, limit, **kwargs):
+                    self.assertEqual(command[2], "install")
+                    self.assertEqual(timeout, 90)
+                    now[0] += timeout
+                    return -15, b"", True, False
+
+                def verify(executable, deadline):
+                    self.assertEqual((executable, deadline), (installed_runner, 205))
+                    now[0] += 12
+                    return proof
+
+                def logged(command, path, timeout, budget, **kwargs):
+                    if "launch" in command:
+                        self.assertEqual(timeout, 28)
+                        return 0, False, (smoke.BUNDLE_ID + ": 42\n").encode()
+                    return driver if "drive" in command else 0, False, b""
+
+                def app_log(xcrun, device, pid, destination, phases, timeout):
+                    smoke.record_phase(phases, "body_started")
+                    smoke.record_phase(phases, "smoke_pass")
+                    return "http://localhost:42/", "passed"
+
+                with (
+                    patch.object(smoke, "observe_preinstall_apps", return_value=preinstall),
+                    patch.object(smoke, "prepare_runner_launch", return_value=installed_runner) as prepare,
+                    patch.object(smoke, "read_process", side_effect=read) as install,
+                    patch.object(smoke, "verify_installed_bundle", side_effect=verify) as compare,
+                    patch.object(smoke, "verify_runner_launch") as verify_pid,
+                    patch.object(smoke, "run_logged", side_effect=logged) as commands,
+                    patch.object(smoke, "read_app_log", side_effect=app_log) as body,
+                    patch.object(smoke, "print_driver_summary"),
+                    patch.object(smoke, "capture_diagnostics"),
+                    patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]),
+                    patch.dict(os.environ, {"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": "130", "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS": "180", "GITHUB_OUTPUT": str(root / "output")}),
+                ):
+                    result = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
+                self.assertEqual(result, {"success": 0, "test_failure": 72, "launch_stall": 70}[expected])
+                self.assertEqual((root / "initial/classification.txt").read_text(), expected + "\n")
+                verdict = proof if preinstall == "absent" else "not_eligible"
+                self.assertEqual((root / "initial/phases/install_operation").read_text(),
+                                 f"started\ntimed_out exit_code=-15 output_limit=0\nverification={verdict} preinstall={preinstall}\n")
+                install.assert_called_once()
+                if preinstall == "absent":
+                    prepare.assert_called_once_with("xcrun", "SOURCE-DEVICE", 205)
+                else:
+                    prepare.assert_not_called()
+                    compare.assert_not_called()
+                if expected != "launch_stall":
+                    verify_pid.assert_called_once_with(42, installed_runner, 230)
+                    body.assert_called_once()
+                    self.assertTrue(any("drive" in command.args[0] for command in commands.call_args_list))
+                else:
+                    verify_pid.assert_not_called()
+                    body.assert_not_called()
+                    self.assertFalse(any("launch" in command.args[0] for command in commands.call_args_list))
+
+
 class RunnerOwnershipTests(unittest.TestCase):
     device = "OWNED-DEVICE"
     container = str(Path("/tmp/Devices/OWNED-DEVICE/data/Containers/Bundle/Application/INSTALL/Runner.app").resolve())
@@ -755,7 +915,7 @@ class RunnerOwnershipTests(unittest.TestCase):
         for prelaunch in [True, False]:
             with self.subTest(prelaunch=prelaunch), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                with patch.object(smoke, "prepare_runner_launch", **({"side_effect": smoke.RunnerOwnershipError("runner_preexisting")} if prelaunch else {"return_value": self.container + "/Runner"})), patch.object(smoke, "verify_runner_launch", side_effect=smoke.RunnerOwnershipError("returned_process_unobserved")), patch.object(smoke, "run_logged", side_effect=[(0, False, b"")] * 3 + [(0, False, (smoke.BUNDLE_ID + ": 42\n").encode())]) as logged, patch.object(smoke, "read_process", return_value=(0, b"", False, False)), patch.object(smoke, "read_app_log") as app_log, patch.object(smoke, "capture_diagnostics"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}):
+                with patch.object(smoke, "observe_preinstall_apps", return_value="unknown"), patch.object(smoke, "prepare_runner_launch", **({"side_effect": smoke.RunnerOwnershipError("runner_preexisting")} if prelaunch else {"return_value": self.container + "/Runner"})), patch.object(smoke, "verify_runner_launch", side_effect=smoke.RunnerOwnershipError("returned_process_unobserved")), patch.object(smoke, "run_logged", side_effect=[(0, False, b"")] * 3 + [(0, False, (smoke.BUNDLE_ID + ": 42\n").encode())]) as logged, patch.object(smoke, "read_process", return_value=(0, b"", False, False)), patch.object(smoke, "read_app_log") as app_log, patch.object(smoke, "capture_diagnostics"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}):
                     self.assertEqual(smoke.run_attempt(self.device, "initial", root), 72)
                 self.assertEqual((root / "initial/classification.txt").read_text(), "launch_failure\n")
                 app_log.assert_not_called()
