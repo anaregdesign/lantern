@@ -13,6 +13,12 @@ directory using the stored node identity. Keep an independent persistent
 volume for each node. A backup volume can hold recovery points from multiple
 nodes if each producer uses its own `LANTERN_BACKUP_INSTANCE_ID`.
 
+Keep the original `LOCK` file in each initialized data directory. Tarp v0.16.0
+requires it when reopening the database. If an older direct Tarp restore
+produced a directory that was never opened and has no `LOCK`, restore the
+original backup into a fresh directory using the current version of Tarp.
+See the [Tarp restore contract](https://github.com/anaregdesign/tarp/blob/v0.16.0/docs/durability.md#maintenance-capacity-and-backup).
+
 The backup scheduler, manual backup and final shutdown backup produce a
 private `lantern-tarp-<instance hash>-<id>/` directory. Its `image/` contains
 a native Tarp backup. Its `cut.json` binds that image to the node, namespace,
@@ -137,7 +143,7 @@ even when Lantern rejects it. Allow disk space for replacement segments as well
 as the existing data. The command reports how many
 bytes Tarp unlinked. A zero-byte result can mean that all records were live.
 The engine preserves graph contents, relay positions and receipt decisions.
-See [Tarp’s key-ordered checkpoint contract](https://github.com/anaregdesign/tarp/blob/v0.15.0/docs/key-ordered-compaction.md)
+See [Tarp’s key-ordered checkpoint contract](https://github.com/anaregdesign/tarp/blob/v0.16.0/docs/key-ordered-compaction.md)
 and [the Lantern workload measurements](https://github.com/anaregdesign/lantern/issues/2251#issuecomment-7175705919).
 
 ## Public graph export and import
