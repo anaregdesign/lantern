@@ -64,8 +64,8 @@ func Restore(ctx context.Context, source, destination string) error {
 	return tarp.Restore(ctx, tarp.RestoreRequest{Source: source, Destination: destination, Limits: storageOptions().RestoreLimits()})
 }
 
-// StateDigest binds all authoritative graph rows, causal metadata, and private
-// service rows in the selected generation. Length framing and ordered keys
+// StateDigest binds graph rows, persisted projections, causal metadata and
+// private service rows in the selected generation. Length framing and ordered keys
 // make the streaming digest independent of storage layout and compaction.
 func StateDigest(ctx context.Context, generation uint64, snap *tarp.Snapshot) ([32]byte, error) {
 	h := sha256.New()

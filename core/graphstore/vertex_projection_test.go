@@ -127,7 +127,7 @@ func TestVerifiedVertexBytesRejectsUnknownGraphFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, family := range []byte{0, vertexMetadataFamily + 1} {
+	for i, family := range []byte{0, topologyFamily + 1} {
 		gen := uint64(i + 1)
 		key, err := familyPrefix(gen, family)
 		if err != nil {

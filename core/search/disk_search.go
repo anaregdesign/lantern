@@ -5,6 +5,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"iter"
 	"math"
 	"sort"
 	"time"
@@ -30,14 +31,17 @@ func (idx *DiskIndex) Search(ctx context.Context, query string, k int, accept fu
 // SearchAt evaluates the immutable base while its liveness statistics remain
 // valid. The caller still verifies the graph source cut and authority.
 func (idx *DiskIndex) SearchAt(ctx context.Context, query string, k int, accept func(string) bool, opts MatchOptions, phrase bool, budget Budget, now time.Time) ([]Result[string], Stats, error) {
-	if now.Before(idx.footer.Source.Watermark) || (!idx.footer.FirstDeadline.IsZero() && !idx.footer.FirstDeadline.After(now)) {
+	return idx.SearchAtWithChanges(ctx, query, k, accept, opts, phrase, budget, now, nil)
+}
+
+// SearchAtWithChanges uses the caller's complete, verified stream of final
+// changed document postimages in strictly ascending Key order. A nil Document
+// removes that Key. Source verification and hydration remain caller-owned.
+func (idx *DiskIndex) SearchAtWithChanges(ctx context.Context, query string, k int, accept func(string) bool, opts MatchOptions, phrase bool, budget Budget, now time.Time, changes iter.Seq2[DiskDocument, error]) ([]Result[string], Stats, error) {
+	if now.Before(idx.footer.Source.Watermark) {
 		return nil, Stats{}, ErrIndexIncomplete
 	}
-	budget.MaxQueryTerms = diskLimit(budget.MaxQueryTerms, diskQueryTerms)
-	budget.MaxDictionaryVisits = diskLimit(budget.MaxDictionaryVisits, 1_000_000)
-	budget.MaxPostingVisits = diskLimit(budget.MaxPostingVisits, 10_000_000)
-	budget.MaxPositionVisits = diskLimit(budget.MaxPositionVisits, 10_000_000)
-	budget.MaxDiskReadBytes = diskLimit(budget.MaxDiskReadBytes, diskReadBytes)
+	budget = diskBoundBudget(budget)
 	work := newWorkTracker(ctx, budget)
 	ctx = work.ctx
 	if err := work.check(); err != nil {
@@ -87,13 +91,22 @@ func (idx *DiskIndex) SearchAt(ctx context.Context, query string, k int, accept 
 		return nil, work.stats, err
 	}
 	defer snap.Close()
-	q := &diskQuery{index: idx, snap: snap, work: work, terms: make(map[Token]*diskQueryTerm)}
+	q := &diskQuery{
+		index: idx, snap: snap, work: work, terms: make(map[Token]*diskQueryTerm),
+		now: now, stats: idx.footer.Stats,
+	}
 	value, err := q.required(diskKey(idx.base, diskFooterRow))
 	if err != nil {
 		return nil, work.stats, err
 	}
 	if !bytes.Equal(value, idx.seal) {
 		return nil, work.stats, diskInvalid("commit footer changed")
+	}
+	if err := q.applyChanges(changes); err != nil {
+		return nil, work.stats, err
+	}
+	if err := q.applyDueDeadlines(); err != nil {
+		return nil, work.stats, err
 	}
 	started = time.Now()
 	plan, err := q.plan(tokens, opts, phrase)
@@ -105,6 +118,17 @@ func (idx *DiskIndex) SearchAt(ctx context.Context, query string, k int, accept 
 	results, err := q.execute(plan, k, accept)
 	work.stats.SelectionDuration = time.Since(started)
 	return results, work.stats, err
+}
+
+func diskBoundBudget(budget Budget) Budget {
+	budget.MaxQueryTerms = diskLimit(budget.MaxQueryTerms, diskQueryTerms)
+	budget.MaxDictionaryVisits = diskLimit(budget.MaxDictionaryVisits, 1_000_000)
+	budget.MaxPostingVisits = diskLimit(budget.MaxPostingVisits, 10_000_000)
+	budget.MaxPositionVisits = diskLimit(budget.MaxPositionVisits, 10_000_000)
+	budget.MaxExpirationVisits = diskLimit(budget.MaxExpirationVisits, 100_000)
+	budget.MaxDiskReadBytes = diskLimit(budget.MaxDiskReadBytes, diskReadBytes)
+	budget.MaxChangeVisits = diskLimit(budget.MaxChangeVisits, maxDiskChangedDocuments)
+	return budget
 }
 
 func diskLimit(limit, upper int64) int64 {
@@ -124,11 +148,15 @@ func diskPhraseTokens(tokens []Token) []Token {
 }
 
 type diskQuery struct {
-	index       *DiskIndex
-	snap        *tarp.Snapshot
-	work        *workTracker
-	terms       map[Token]*diskQueryTerm
-	cursorBytes int
+	index        *DiskIndex
+	snap         *tarp.Snapshot
+	work         *workTracker
+	terms        map[Token]*diskQueryTerm
+	cursorBytes  int
+	now          time.Time
+	stats        [numTokenClasses][numDocumentFields]diskFieldStats
+	overlay      diskQueryOverlay
+	keepVersions bool
 }
 
 func (q *diskQuery) read(key []byte) ([]byte, error) {
@@ -156,6 +184,7 @@ func (q *diskQuery) required(key []byte) ([]byte, error) {
 type diskQueryTerm struct {
 	token   Token
 	meta    diskTermValue
+	liveDF  [numDocumentFields]int
 	posting diskPosting
 }
 
@@ -172,9 +201,14 @@ type diskPostingCursor struct {
 	blocks   uint64
 	seen     uint64
 	fieldDF  [numDocumentFields]int
+	baseDone bool
+	added    []diskPosting
 }
 
 func (c *diskPostingCursor) advance(q *diskQuery) (bool, error) {
+	if c.baseDone {
+		return c.advanceOverlay(q)
+	}
 	if c.count == 0 {
 		if !c.block.success() {
 			return false, diskInvalid("trailing posting block bytes")
@@ -186,11 +220,11 @@ func (c *diskPostingCursor) advance(q *diskQuery) (bool, error) {
 			return false, err
 		}
 		if !ok {
-			c.term.posting = diskPosting{}
+			c.baseDone = true
 			if c.blocks != c.term.meta.blocks || c.seen != c.term.meta.documents || c.fieldDF != c.term.meta.df {
 				return false, diskInvalid("incomplete posting stream")
 			}
-			return false, nil
+			return c.advanceOverlay(q)
 		}
 		if err := c.openBlock(q, row); err != nil {
 			return false, err
@@ -217,6 +251,19 @@ func (c *diskPostingCursor) advance(q *diskQuery) (bool, error) {
 	c.seen++
 	c.previous = posting.id
 	c.term.posting = posting
+	return true, nil
+}
+
+func (c *diskPostingCursor) advanceOverlay(q *diskQuery) (bool, error) {
+	if len(c.added) == 0 {
+		c.term.posting = diskPosting{}
+		return false, nil
+	}
+	if err := q.work.visit(WorkPostingVisits, 1); err != nil {
+		return false, err
+	}
+	c.term.posting = c.added[0]
+	c.added = c.added[1:]
 	return true, nil
 }
 
@@ -280,6 +327,9 @@ func (q *diskQuery) execute(plan diskPlan, k int, accept func(string) bool) ([]R
 		prefix := diskKey(q.index.base, diskPostingRow, uint8(term.token.Class), term.token.Term)
 		lower, upper := tarp.PrefixRange(prefix)
 		cursor := &diskPostingCursor{term: term, prefix: prefix, lower: lower, upper: upper}
+		if added := q.overlay.terms[term.token]; added != nil {
+			cursor.added = added.postings
+		}
 		more, err := cursor.advance(q)
 		if err != nil {
 			return nil, err
@@ -317,15 +367,14 @@ func (q *diskQuery) selectCandidate(plan diskPlan, results *topKHeap[string], k 
 	if err := q.work.candidateVisit(); err != nil {
 		return err
 	}
-	value, err := q.required(diskKey(q.index.base, diskDocIDRow, id))
+	if _, excluded := q.overlay.excluded[id]; excluded {
+		return q.work.candidateSkip()
+	}
+	doc, err := q.document(id)
 	if err != nil {
 		return err
 	}
-	doc, err := decodeDiskDoc(value)
-	if err != nil {
-		return err
-	}
-	if !expirationLiveAt(doc.expiration, q.index.footer.Source.Watermark) {
+	if !expirationLiveAt(doc.expiration, q.now) {
 		return diskInvalid("expired document in live posting")
 	}
 	contains := candidateFilterFromContext[string](q.work.ctx)
@@ -347,6 +396,21 @@ func (q *diskQuery) selectCandidate(plan diskPlan, results *topKHeap[string], k 
 		heap.Fix(results, 0)
 	}
 	return nil
+}
+
+func (q *diskQuery) document(id uint64) (diskDocValue, error) {
+	if id > q.index.footer.Documents {
+		doc, ok := q.overlay.addedDocs[id]
+		if !ok {
+			return diskDocValue{}, diskInvalid("missing changed document")
+		}
+		return doc, nil
+	}
+	value, err := q.required(diskKey(q.index.base, diskDocIDRow, id))
+	if err != nil {
+		return diskDocValue{}, err
+	}
+	return decodeDiskDoc(value)
 }
 
 func (q *diskQuery) score(plan diskPlan, doc diskDocValue, id uint64) (float64, bool, error) {
@@ -400,13 +464,13 @@ func (q *diskQuery) scoreTerm(term *diskQueryTerm, doc diskDocValue) (float64, e
 		if frequency == 0 {
 			continue
 		}
-		stats := q.index.footer.Stats[class][field]
+		stats := q.stats[class][field]
 		length := doc.lengths[class][field]
-		if term.meta.df[field] == 0 || stats.Count == 0 || length < int(frequency) || uint64(length) > stats.Length {
+		if term.liveDF[field] == 0 || stats.Count == 0 || length < int(frequency) || uint64(length) > stats.Length {
 			return 0, diskInvalid("posting contradicts corpus statistics")
 		}
 		score += q.index.config.scorer.Score(TermStats{
-			TF: int(frequency), DF: term.meta.df[field], N: int(stats.Count),
+			TF: int(frequency), DF: term.liveDF[field], N: int(stats.Count),
 			DocLen: length, AvgLen: float64(stats.Length) / float64(stats.Count),
 			Class: class, Field: FieldID(field),
 		})
@@ -472,6 +536,9 @@ func (q *diskQuery) positionsFor(terms []*diskQueryTerm, id uint64, field int) (
 			return nil, err
 		}
 		positions := cache[term]
+		if term.posting.overlay != nil {
+			positions = term.posting.overlay[field]
+		}
 		if positions == nil {
 			var err error
 			positions, err = q.readPositions(term.token, id, field, count, term.posting.inline[field])

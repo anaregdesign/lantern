@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -82,29 +83,10 @@ func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
 	writeArchiveU64(&out, uint64(a.Policy.Retention/time.Millisecond))
 	writeArchiveU32(&out, maxEntries)
 	writeArchiveU64(&out, a.Policy.MaxBytes)
-	for _, frame := range a.Graph {
-		payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
-		if err != nil {
-			return wholeStateArchiveError("marshal graph frame: %v", err)
-		}
-		if err := validateArchiveGraphFrameWire(payload); err != nil {
-			return err
-		}
-		if err := writeArchiveRecord(&out, wholeStateGraphRecord, payload); err != nil {
-			return err
-		}
-	}
-	for _, receipt := range a.Receipts.Receipts {
-		payload := encodeArchiveReceipt(receipt)
-		if err := writeArchiveRecord(&out, wholeStateReceiptRecord, payload); err != nil {
-			return err
-		}
-	}
-	for _, origin := range a.Origins {
-		payload := encodeArchiveOrigin(origin)
-		if err := writeArchiveRecord(&out, wholeStateOriginRecord, payload); err != nil {
-			return err
-		}
+	if err := visitWholeStateArchiveRecords(a, func(kind byte, payload []byte) error {
+		return writeArchiveRecord(&out, kind, payload)
+	}); err != nil {
+		return err
 	}
 	if out.Len()+5+wholeStateArchiveFooterSize > wholeStateArchiveMaxBytes {
 		return wholeStateArchiveError("archive exceeds byte limit")
@@ -128,6 +110,60 @@ func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
 	return nil
 }
 
+// validateWholeStateArchiveEncoding checks that already owned decoded state
+// can be emitted in the private archive format without allocating that image.
+func validateWholeStateArchiveEncoding(ctx context.Context, a wholeStateArchive) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateWholeStateArchive(a); err != nil {
+		return err
+	}
+	size := wholeStateArchiveHeaderSize
+	if err := visitWholeStateArchiveRecords(a, func(_ byte, payload []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		size, err = checkedArchiveRecordSize(size, len(payload))
+		return err
+	}); err != nil {
+		return err
+	}
+	if size+5+wholeStateArchiveFooterSize > wholeStateArchiveMaxBytes {
+		return wholeStateArchiveError("archive exceeds byte limit")
+	}
+	return nil
+}
+
+func visitWholeStateArchiveRecords(a wholeStateArchive, visit func(byte, []byte) error) error {
+	for _, frame := range a.Graph {
+		payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
+		if err != nil {
+			return wholeStateArchiveError("marshal graph frame: %v", err)
+		}
+		if err := validateArchiveGraphFrameWire(payload); err != nil {
+			return err
+		}
+		if err := visit(wholeStateGraphRecord, payload); err != nil {
+			return err
+		}
+	}
+	for _, receipt := range a.Receipts.Receipts {
+		payload := encodeArchiveReceipt(receipt)
+		if err := visit(wholeStateReceiptRecord, payload); err != nil {
+			return err
+		}
+	}
+	for _, origin := range a.Origins {
+		payload := encodeArchiveOrigin(origin)
+		if err := visit(wholeStateOriginRecord, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // decodeWholeStateArchive returns no partial state. It rejects missing,
 // reordered, duplicate, unknown, oversized, or damaged records before a
 // future installer may inspect the decoded value.
@@ -136,6 +172,13 @@ func decodeWholeStateArchive(r io.Reader) (wholeStateArchive, error) {
 	if err != nil {
 		return wholeStateArchive{}, fmt.Errorf("backup: read whole-state archive: %w", err)
 	}
+	return decodeWholeStateArchiveBytes(raw, false)
+}
+
+// decodeWholeStateArchiveBytes can enforce the canonical baseline encoding by
+// comparing each record's bytes as it decodes. The fixed header, ordered record
+// lengths and checked footer already determine the remaining encoding.
+func decodeWholeStateArchiveBytes(raw []byte, canonical bool) (wholeStateArchive, error) {
 	if len(raw) > wholeStateArchiveMaxBytes || len(raw) < wholeStateArchiveHeaderSize+5+wholeStateArchiveFooterSize {
 		return wholeStateArchive{}, wholeStateArchiveError("invalid archive size")
 	}
@@ -200,17 +243,29 @@ func decodeWholeStateArchive(r io.Reader) (wholeStateArchive, error) {
 			if err := proto.Unmarshal(payload, frame); err != nil || frame.GetEntry() == nil {
 				return wholeStateArchive{}, wholeStateArchiveError("invalid graph frame")
 			}
+			if canonical {
+				encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
+				if err != nil || !bytes.Equal(payload, encoded) {
+					return wholeStateArchive{}, wholeStateArchiveError("archive is not canonical")
+				}
+			}
 			a.Graph = append(a.Graph, frame)
 		case wholeStateReceiptRecord:
 			receipt, err := decodeArchiveReceipt(payload)
 			if err != nil {
 				return wholeStateArchive{}, err
 			}
+			if canonical && !bytes.Equal(payload, encodeArchiveReceipt(receipt)) {
+				return wholeStateArchive{}, wholeStateArchiveError("archive is not canonical")
+			}
 			a.Receipts.Receipts = append(a.Receipts.Receipts, receipt)
 		case wholeStateOriginRecord:
 			origin, err := decodeArchiveOrigin(payload)
 			if err != nil {
 				return wholeStateArchive{}, err
+			}
+			if canonical && !bytes.Equal(payload, encodeArchiveOrigin(origin)) {
+				return wholeStateArchive{}, wholeStateArchiveError("archive is not canonical")
 			}
 			a.Origins = append(a.Origins, origin)
 		}
@@ -253,13 +308,20 @@ func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []dataruntime.O
 }
 
 func writeArchiveRecord(w *bytes.Buffer, kind byte, payload []byte) error {
-	if len(payload) == 0 || len(payload) > wholeStateArchiveMaxFrame || w.Len() > wholeStateArchiveMaxBytes-5-len(payload) {
-		return wholeStateArchiveError("record exceeds byte limit")
+	if _, err := checkedArchiveRecordSize(w.Len(), len(payload)); err != nil {
+		return err
 	}
 	w.WriteByte(kind)
 	writeArchiveU32(w, uint32(len(payload)))
 	w.Write(payload)
 	return nil
+}
+
+func checkedArchiveRecordSize(current, payload int) (int, error) {
+	if payload == 0 || payload > wholeStateArchiveMaxFrame || current > wholeStateArchiveMaxBytes-5-payload {
+		return 0, wholeStateArchiveError("record exceeds byte limit")
+	}
+	return current + 5 + payload, nil
 }
 
 func writeArchiveU16(w *bytes.Buffer, value uint16) {

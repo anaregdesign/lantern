@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -20,12 +21,22 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 	key := func(gen uint64, family byte, index uint32) []byte {
 		return binary.BigEndian.AppendUint32(append(ServicePrefix(gen), family), index)
 	}
+	rows, err := NewRows[string, string](tarp.StringCodec{}, tarp.StringCodec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := EdgeKey[string]{Tail: "kept", Head: "東"}
+	removed := EdgeKey[string]{Tail: "removed", Head: "東"}
+	added := EdgeKey[string]{Tail: "added\x00", Head: "東"}
 	err = db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, w Writer) error {
 		w.Put(key(gen, 1, 0), []byte("kept"))
 		w.Put(key(gen, 1, 1), []byte("deleted"))
-		return nil
+		return errors.Join(rows.PutEdge(w, gen, kept, Edge{}), rows.PutEdge(w, gen, removed, Edge{}), rows.MarkIncomingEdgeIndex(w, gen))
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureTopologyStats(ctx); err != nil {
 		t.Fatal(err)
 	}
 	old, err := db.Read()
@@ -37,7 +48,7 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 		for i := range uint32(tarp.MaxWriteBatchEntries) {
 			w.Put(key(gen, 2, i), binary.BigEndian.AppendUint32(nil, i))
 		}
-		return nil
+		return errors.Join(rows.DeleteEdge(w, gen, removed), rows.PutEdge(w, gen, added, Edge{}))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +91,27 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 	}
 	if n != tarp.MaxWriteBatchEntries {
 		t.Fatal("incomplete update", n)
+	}
+	if ready, err := rows.HasIncomingEdgeIndex(view.Snapshot, view.Generation); !ready || err != nil {
+		t.Fatalf("copied incoming readiness = %v, %v", ready, err)
+	}
+	var incoming []EdgeKey[string]
+	for pair, err := range rows.IncomingEdges(ctx, view.Snapshot, view.Generation, "東") {
+		if err != nil {
+			t.Fatal(err)
+		}
+		incoming = append(incoming, pair)
+	}
+	if !slices.Equal(incoming, []EdgeKey[string]{added, kept}) {
+		t.Fatalf("remapped incoming edges = %v", incoming)
+	}
+	if stats, ready, err := rows.GetTopologyStats(view.Snapshot, view.Generation); err != nil || !ready || stats != (TopologyStats{2, 2}) {
+		t.Fatalf("remapped topology totals = %+v, ready=%t, err=%v", stats, ready, err)
+	}
+	for key, want := range map[string]TopologyDegree{"東": {In: 2}, "kept": {Out: 1}, "added\x00": {Out: 1}, "removed": {}} {
+		if got, err := rows.GetTopologyDegree(view.Snapshot, view.Generation, key); err != nil || got != want {
+			t.Fatalf("remapped degree %q = %+v, err=%v; want %+v", key, got, err, want)
+		}
 	}
 }
 

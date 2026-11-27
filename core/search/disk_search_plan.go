@@ -29,16 +29,15 @@ func (q *diskQuery) term(token Token) (*diskQueryTerm, error) {
 	}
 	key := diskKey(q.index.base, diskTermRow, uint8(token.Class), token.Term)
 	value, err := q.read(key)
-	if errors.Is(err, tarp.ErrNotFound) {
-		q.terms[token] = nil
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	meta, err := decodeDiskTerm(value)
-	if err != nil {
-		return nil, err
+	var meta diskTermValue
+	if !errors.Is(err, tarp.ErrNotFound) {
+		if err != nil {
+			return nil, err
+		}
+		meta, err = decodeDiskTerm(value)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if meta.documents > q.index.footer.Documents {
 		return nil, diskInvalid("term references too many documents")
@@ -48,7 +47,15 @@ func (q *diskQuery) term(token Token) (*diskQueryTerm, error) {
 			return nil, diskInvalid("document frequency exceeds corpus count")
 		}
 	}
-	term := &diskQueryTerm{token: token, meta: meta}
+	df, live, err := q.liveDF(token, meta)
+	if err != nil {
+		return nil, err
+	}
+	if !live {
+		q.terms[token] = nil
+		return nil, nil
+	}
+	term := &diskQueryTerm{token: token, meta: meta, liveDF: df}
 	q.terms[token] = term
 	return term, nil
 }
@@ -107,15 +114,8 @@ func (q *diskQuery) expand(token Token, opts MatchOptions, limit int) ([]*diskQu
 		lowerPrefix = append(bytes.Clone(prefix), tarp.EncodeOrderedStringPrefix(token.Term)...)
 	}
 	var best expansionTopHeap
-	var queryRunes []rune
-	var first, second []int
-	fuzziness := min(opts.Fuzziness, 2)
-	if fuzziness > 0 {
-		queryRunes = []rune(token.Term)
-		first = make([]int, len(queryRunes)+fuzziness+1)
-		second = make([]int, len(first))
-	}
-	queryRunesCount := utf8.RuneCountInString(token.Term)
+	consider := q.expansionConsiderer(token.Term, opts, limit, &best)
+	seen := make(map[Token]struct{})
 	for row, readErr := range diskRange(q.work.ctx, q.snap, lowerPrefix) {
 		if readErr != nil {
 			return nil, readErr
@@ -130,26 +130,39 @@ func (q *diskQuery) expand(token Token, opts MatchOptions, limit int) ([]*diskQu
 		if err != nil || candidate == "" {
 			return nil, diskInvalid("malformed dictionary key")
 		}
-		if candidate == token.Term {
-			continue
+		expanded := Token{Class: token.Class, Term: candidate}
+		if q.overlay.terms[expanded] != nil {
+			seen[expanded] = struct{}{}
 		}
-		if opts.PrefixTerms && strings.HasPrefix(candidate, token.Term) {
-			retainExpansion(&best, expansionCandidate{term: candidate, kind: expansionPrefix, quality: utf8.RuneCountInString(candidate) - queryRunesCount}, limit)
-			continue
+		if _, expired := q.overlay.removedDF[expanded]; expired {
+			meta, err := decodeDiskTerm(row.Value)
+			if err != nil {
+				return nil, err
+			}
+			_, live, err := q.liveDF(expanded, meta)
+			if err != nil {
+				return nil, err
+			}
+			if !live {
+				continue
+			}
 		}
-		if fuzziness <= 0 {
-			continue
-		}
-		length := utf8.RuneCountInString(candidate)
-		if length < len(queryRunes)-fuzziness || length > len(queryRunes)+fuzziness {
-			continue
-		}
-		distance, matched, err := editDistanceWithinRowsTracked(queryRunes, []rune(candidate), fuzziness, first, second, q.work)
-		if err != nil {
+		if err := consider(candidate); err != nil {
 			return nil, err
 		}
-		if matched {
-			retainExpansion(&best, expansionCandidate{term: candidate, kind: expansionFuzzy, quality: distance}, limit)
+	}
+	for expanded := range q.overlay.terms {
+		if expanded.Class != token.Class {
+			continue
+		}
+		if _, already := seen[expanded]; already {
+			continue
+		}
+		if err := q.work.visit(WorkDictionaryVisits, 1); err != nil {
+			return nil, err
+		}
+		if err := consider(expanded.Term); err != nil {
+			return nil, err
 		}
 	}
 	sort.Slice(best, func(i, j int) bool { return betterExpansion(best[i], best[j]) })
@@ -168,4 +181,40 @@ func (q *diskQuery) expand(token Token, opts MatchOptions, limit int) ([]*diskQu
 		out = append(out, term)
 	}
 	return out, nil
+}
+
+func (q *diskQuery) expansionConsiderer(term string, opts MatchOptions, limit int, best *expansionTopHeap) func(string) error {
+	var queryRunes []rune
+	var first, second []int
+	fuzziness := min(opts.Fuzziness, 2)
+	if fuzziness > 0 {
+		queryRunes = []rune(term)
+		first = make([]int, len(queryRunes)+fuzziness+1)
+		second = make([]int, len(first))
+	}
+	queryRunesCount := utf8.RuneCountInString(term)
+	return func(candidate string) error {
+		if candidate == term {
+			return nil
+		}
+		if opts.PrefixTerms && strings.HasPrefix(candidate, term) {
+			retainExpansion(best, expansionCandidate{term: candidate, kind: expansionPrefix, quality: utf8.RuneCountInString(candidate) - queryRunesCount}, limit)
+			return nil
+		}
+		if fuzziness <= 0 {
+			return nil
+		}
+		length := utf8.RuneCountInString(candidate)
+		if length < len(queryRunes)-fuzziness || length > len(queryRunes)+fuzziness {
+			return nil
+		}
+		distance, matched, err := editDistanceWithinRowsTracked(queryRunes, []rune(candidate), fuzziness, first, second, q.work)
+		if err != nil {
+			return err
+		}
+		if matched {
+			retainExpansion(best, expansionCandidate{term: candidate, kind: expansionFuzzy, quality: distance}, limit)
+		}
+		return nil
+	}
 }

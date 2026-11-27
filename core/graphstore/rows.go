@@ -185,6 +185,18 @@ func (r *Rows[K, V]) GetEdge(snap *tarp.Snapshot, gen uint64, k EdgeKey[K]) (Edg
 }
 
 func (r *Rows[K, V]) PutEdge(b Writer, gen uint64, k EdgeKey[K], e Edge) error {
+	key, incoming, err := r.edgeKeys(gen, k)
+	if err != nil {
+		return err
+	}
+	b.Put(key, encodeEdge(e))
+	b.Put(incoming, nil)
+	return nil
+}
+
+// UpdateEdge replaces an existing Edge header without changing its incoming
+// key. Use PutEdge when there may be no previously committed header.
+func (r *Rows[K, V]) UpdateEdge(b Writer, gen uint64, k EdgeKey[K], e Edge) error {
 	key, err := r.edgeKey(gen, edgeFamily, k)
 	if err != nil {
 		return err
@@ -193,14 +205,16 @@ func (r *Rows[K, V]) PutEdge(b Writer, gen uint64, k EdgeKey[K], e Edge) error {
 	return nil
 }
 
-// DeleteEdge stages deletion of the header. Call DeleteSources when removing
-// the bucket's Adds; resets can independently preserve newer contributions.
+// DeleteEdge stages deletion of the header and its incoming key. Call
+// DeleteSources when removing the bucket's Adds; resets can independently
+// preserve newer contributions.
 func (r *Rows[K, V]) DeleteEdge(b Writer, gen uint64, k EdgeKey[K]) error {
-	key, err := r.edgeKey(gen, edgeFamily, k)
+	key, incoming, err := r.edgeKeys(gen, k)
 	if err != nil {
 		return err
 	}
 	b.Delete(key)
+	b.Delete(incoming)
 	return nil
 }
 

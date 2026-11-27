@@ -18,6 +18,8 @@ const (
 	edgeFamily           byte = 2
 	sourceFamily         byte = 3
 	vertexMetadataFamily byte = 9
+	incomingEdgeFamily   byte = 10
+	topologyFamily       byte = 11
 )
 
 type FloorKind byte

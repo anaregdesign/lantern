@@ -44,5 +44,5 @@ func writeSourceChanges[S comparable, T any](w *weight, rows *graphstore.Rows[S,
 			return err
 		}
 	}
-	return rows.PutEdge(b, gen, key, edge)
+	return rows.UpdateEdge(b, gen, key, edge)
 }

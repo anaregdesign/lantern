@@ -839,18 +839,20 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
+		cached := func() error {
 			g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, policy.Traversal.WorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return err
-		}); viewErr != nil && !errors.Is(viewErr, err) {
-			return nil, viewErr
+			return traversalToConnect(err, s.dataAuthorization)
 		}
+		viewErr := s.withTraversal(ctx, coreWeighting, policy.Traversal.WorkBudget, cached, func(read *graphcache.StoredTraversal[*pb.Vertex]) error {
+			g, err = read.PageRank(ctx, request.GetSeed(), request.GetVertexPrefix(), topN, alpha, epsilon)
+			return err
+		})
 		traversalDur = time.Since(traversalStart)
-		if err != nil {
-			return nil, traversalToConnect(err, s.dataAuthorization)
+		if viewErr != nil {
+			return nil, viewErr
 		}
 		phase = "response"
 
@@ -876,18 +878,20 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
+		cached := func() error {
 			g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, policy.Traversal.WorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return err
-		}); viewErr != nil && !errors.Is(viewErr, err) {
-			return nil, viewErr
+			return traversalToConnect(err, s.dataAuthorization)
 		}
+		viewErr := s.withTraversal(ctx, coreWeighting, policy.Traversal.WorkBudget, cached, func(read *graphcache.StoredTraversal[*pb.Vertex]) error {
+			g, expirations, err = read.Community(ctx, request.GetSeed(), request.GetVertexPrefix(), maxSize, alpha, epsilon)
+			return err
+		})
 		traversalDur = time.Since(traversalStart)
-		if err != nil {
-			return nil, traversalToConnect(err, s.dataAuthorization)
+		if viewErr != nil {
+			return nil, viewErr
 		}
 		phase = "response"
 		if opt := resolveOptimizer(comm.GetReduction(), comm.GetObjective()); opt != nil {
@@ -949,19 +953,10 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 			}
 			return ctxToConnect(err)
 		}
-		var viewErr error
-		if coreWeighting == graphcache.WeightingRaw {
-			viewErr = s.withGraphRows(ctx, func(read graphRead) error {
-				if read.cut == nil {
-					return cached()
-				}
-				g, expirations, err = read.traversal(ctx, policy.Traversal.WorkBudget).Neighbor(
-					ctx, request.GetSeed(), request.GetVertexPrefix(), int(bfs.GetStep()), int(bfs.GetFanOut()), selectSmallest)
-				return storedTraversalError(err)
-			})
-		} else {
-			viewErr = s.withPublicGraphReadRetry(ctx, cached)
-		}
+		viewErr := s.withTraversal(ctx, coreWeighting, policy.Traversal.WorkBudget, cached, func(read *graphcache.StoredTraversal[*pb.Vertex]) error {
+			g, expirations, err = read.Neighbor(ctx, request.GetSeed(), request.GetVertexPrefix(), int(bfs.GetStep()), int(bfs.GetFanOut()), selectSmallest)
+			return err
+		})
 		traversalDur = time.Since(traversalStart)
 		if viewErr != nil {
 			return nil, viewErr

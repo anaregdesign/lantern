@@ -17,8 +17,8 @@ type storageSweep[S comparable] struct {
 	floors   []graphstore.FloorKey[S]
 }
 
-// CompleteStorageRecovery makes expiry observed during a validated reopen
-// durable before serving starts, without keeping a list of expired rows.
+// CompleteStorageRecovery makes observed expiry durable in bounded chunks
+// and prepares the incoming Edge projection before serving.
 func (c *GraphCache[S, T]) CompleteStorageRecovery(ctx context.Context) error {
 	if c.storage == nil {
 		return nil
@@ -28,15 +28,19 @@ func (c *GraphCache[S, T]) CompleteStorageRecovery(ctx context.Context) error {
 	if err := c.StorageError(); err != nil {
 		return err
 	}
-	if !c.storage.recoveryExpired {
-		return ctx.Err()
+	if c.storage.recoveryExpired {
+		if err := c.storage.rows.ReclaimExpired(ctx, c.storage.db, c.storage.recoveryAt); err != nil {
+			if err != ctx.Err() {
+				return c.storage.fence(err)
+			}
+			return err
+		}
+		c.storage.recoveryExpired = false
 	}
-	err := c.storage.rows.ReclaimExpired(ctx, c.storage.db, c.storage.recoveryAt)
-	if err != nil && err != ctx.Err() {
-		return c.storage.fence(err)
+	if err := c.storage.rows.EnsureIncomingEdgeIndex(ctx, c.storage.db); err != nil {
+		return err
 	}
-	c.storage.recoveryExpired = err != nil
-	return err
+	return c.storage.db.EnsureTopologyStats(ctx)
 }
 
 // SetStorageMaintenance installs the serving owner's mutation exclusion for

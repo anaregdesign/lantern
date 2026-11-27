@@ -105,15 +105,6 @@ func BuildDiskBase(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 		return diskInvalid("missing database, source, document stream or Analyzer")
 	}
 	config := diskSearchConfig(analyzer, nil, opts)
-	if config.limits.MaxDocumentBytes <= 0 {
-		config.limits.MaxDocumentBytes = diskMaxKeyBytes
-	}
-	if config.limits.MaxDocumentTokens <= 0 {
-		config.limits.MaxDocumentTokens = 250_000
-	}
-	if config.limits.MaxDocumentTerms <= 0 {
-		config.limits.MaxDocumentTerms = 100_000
-	}
 	marker := diskKey(base, diskMarker)
 	_, err := db.GetContext(ctx, marker)
 	if err == nil {
@@ -231,6 +222,11 @@ func writeDiskDocument(ctx context.Context, batch *diskBuildBatch, footer *diskF
 			stats.Length += uint64(length)
 		}
 		for _, term := range data.terms {
+			for field, occurrence := range term.fields {
+				if occurrence.frequency != 0 {
+					doc.terms[class][field]++
+				}
+			}
 			if err := writeDiskOccurrence(ctx, batch, base, id, uint8(class), term); err != nil {
 				return err
 			}
@@ -414,3 +410,47 @@ func (idx *DiskIndex) Source() DiskSource { return idx.footer.Source }
 
 // NextDeadline returns the first finite expiry represented in the fixed base.
 func (idx *DiskIndex) NextDeadline() time.Time { return idx.footer.FirstDeadline }
+
+// RetireDiskBase removes an unpublished or superseded base in bounded Tarp
+// batches. The caller serializes base writers and has stopped selecting the
+// base for new readers. A query already holding a Snapshot keeps its old view.
+// Repeating retirement after cancellation is safe. The ID remains reserved.
+func RetireDiskBase(ctx context.Context, db *tarp.DB, base uint64) error {
+	if db == nil || base == 0 {
+		return diskInvalid("missing database or base")
+	}
+	marker := diskKey(base, diskMarker)
+	if _, err := db.GetContext(ctx, marker); err != nil {
+		if errors.Is(err, tarp.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := db.Delete(diskKey(base, diskFooterRow)); err != nil && !errors.Is(err, tarp.ErrNotFound) {
+		return err
+	}
+	snap, err := db.Snapshot()
+	if err != nil {
+		return err
+	}
+	defer snap.Close()
+	batch := &diskBuildBatch{db: db, sizer: db.WriteBatchSizer()}
+	lower, upper := tarp.PrefixRange(diskBasePrefix(base))
+	for key, err := range snap.KeysRange(ctx, lower, upper) {
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(key, marker) {
+			if err := batch.remove(ctx, key); err != nil {
+				return err
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return batch.flush()
+}

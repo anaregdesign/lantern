@@ -100,18 +100,11 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 		return nil, err
 	}
 
-	archive, err := decodeWholeStateArchive(bytes.NewReader(activeRaw))
+	archive, err := decodeWholeStateArchiveBytes(activeRaw, true)
 	if err != nil {
 		return nil, err
 	}
-	var canonical bytes.Buffer
-	if err := encodeWholeStateArchive(&canonical, archive); err != nil {
-		return nil, err
-	}
-	if !bytes.Equal(canonical.Bytes(), activeRaw) {
-		return nil, wholeStateArchiveError("archive is not canonical")
-	}
-	stage, err := stageReceiptWholeStateArchive(ctx, bytes.NewReader(activeRaw), expected, defaultTTL, configureGraph)
+	stage, err := stageDecodedReceiptWholeStateArchive(ctx, archive, expected, defaultTTL, configureGraph)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +198,7 @@ func decodeCombinedReceiptBaseline(
 	}
 	activeStart := receiptCombinedBaselineHeaderSize
 	activeEnd := activeStart + int(activeSize)
-	active := bytes.Clone(raw[activeStart:activeEnd])
+	active := raw[activeStart:activeEnd:activeEnd]
 	retiredRaw := raw[activeEnd:payloadEnd]
 	activeDigest := sha256.Sum256(active)
 	retiredDigest := sha256.Sum256(retiredRaw)
@@ -220,11 +213,9 @@ func decodeCombinedReceiptBaseline(
 	if err != nil {
 		return nil, mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, err
 	}
-	canonical, err := encodeCombinedReceiptBaseline(active, canonicalRetired)
-	if err != nil {
-		return nil, mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, err
-	}
-	if !bytes.Equal(canonical, raw) {
+	// The fixed header, section sizes and digests above already verify the
+	// container and its active bytes. Only the retired section was re-encoded.
+	if !bytes.Equal(canonicalRetired, retiredRaw) {
 		return nil, mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, fmt.Errorf("%w: container is not canonical", errReceiptCombinedBaseline)
 	}
 	return active, retired, retiredMetadata, nil

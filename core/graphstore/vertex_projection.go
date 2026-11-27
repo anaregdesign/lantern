@@ -54,16 +54,22 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 			yield(zero, err)
 			return
 		}
-		last, err := familyPrefix(gen, vertexMetadataFamily)
+		projection, err := familyPrefix(gen, vertexMetadataFamily)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		last, err := familyPrefix(gen, topologyFamily)
 		if err != nil {
 			yield(zero, err)
 			return
 		}
 		// The recognized families occupy the contiguous interval from Vertex
-		// to Vertex metadata. Look outside it for undeclared graph records.
+		// to topology stats. Look outside it for undeclared graph records.
 		header := prefixBounds(first[:len(first)-1])
-		vertices, metadata := prefixBounds(first), prefixBounds(last)
-		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {metadata.upper, header.upper}} {
+		vertices, metadata := prefixBounds(first), prefixBounds(projection)
+		_, graphEnd := tarp.PrefixRange(last)
+		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {graphEnd, header.upper}} {
 			for _, err := range snap.KeysRange(ctx, bound.lower, bound.upper) {
 				if err == nil {
 					err = fmt.Errorf("%w: unknown graph row family", ErrInvalidRow)

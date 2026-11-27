@@ -29,15 +29,8 @@ import (
 // like GetServerStatus counts. This is a read-only aggregate — it logs no
 // mutation and is not replicated.
 //
-// Cost model (#920): OUT-degree is walked per candidate (O(sum of candidate
-// out-degrees)). IN and BOTH have no reverse (head->tails) index, so they scan
-// every edge bucket in the graph — O(E_total), independent of how narrow the
-// prefix is. The core ranker releases its own graph read lock after capturing
-// incident buckets. This handler holds the Snapshot-admission latch during
-// ranking and retries boundedly on an overlapping publication; unrelated
-// local writes can proceed without making a mixed result visible.
-// Direct GraphCache writes still bypass that check: prefer a narrow prefix
-// and treat IN/BOTH totals on a large, actively-written graph as advisory.
+// Stored graphs stream each candidate's selected adjacency from one pinned
+// cut. IN and BOTH use a certified incoming projection.
 func (s *Executor) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesByDegreeRequest) (*pb.TopVerticesByDegreeResponse, error) {
 	ctx = s.captureRequestPolicy(ctx)
 	policy := s.requestPolicy(ctx)
@@ -56,24 +49,15 @@ func (s *Executor) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesBy
 
 	dir := degreeDirection(in.GetDirection())
 	var ranked []graphcache.DegreeEntry[string]
-	cached := func() error {
+	if err := s.withGraphRows(ctx, func(read graphRead) error {
+		if read.cut != nil {
+			var err error
+			ranked, err = read.traversal(ctx, policy.Traversal.WorkBudget).Degree(ctx, in.GetPrefix(), int(k), dir, in.GetWeighted())
+			return s.storedTraversalError(err)
+		}
 		ranked = s.cache.TopVerticesByDegreeContext(ctx, in.GetPrefix(), int(k), dir, in.GetWeighted())
 		return nil
-	}
-	var err error
-	if dir == graphcache.DegreeOut {
-		err = s.withGraphRows(ctx, func(read graphRead) error {
-			if read.cut == nil {
-				return cached()
-			}
-			var readErr error
-			ranked, readErr = read.traversal(ctx, policy.Traversal.WorkBudget).OutDegree(ctx, in.GetPrefix(), int(k), in.GetWeighted())
-			return storedTraversalError(readErr)
-		})
-	} else {
-		err = s.withPublicGraphReadRetry(ctx, cached)
-	}
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 

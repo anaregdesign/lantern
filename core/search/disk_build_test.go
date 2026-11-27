@@ -41,11 +41,49 @@ func TestDiskBuildSealsOnlyCompleteFreshBases(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrong := source
-	wrong.Sequence++
+	wrong.Digest[0] = 1
 	if _, err := OpenDiskIndex(ctx, db, 3, wrong, analyzer, nil); !errors.Is(err, ErrDiskIndex) {
 		t.Fatalf("incorrect source cut = %v", err)
 	}
 	if _, err := OpenDiskIndex(ctx, db, 3, source, analyzer, nil, WithPositions()); !errors.Is(err, ErrDiskIndex) {
 		t.Fatalf("incorrect index configuration = %v", err)
+	}
+}
+
+func TestDiskBuildRetiresRowsWithoutReusingAnID(t *testing.T) {
+	ctx := t.Context()
+	db, err := tarp.Open(t.TempDir(), tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source := diskTestSource()
+	analyzer := NewScriptAwareAnalyzer()
+	docs := diskTestDocuments([]DiskDocument{{Key: "k", Document: Text("lantern")}})
+	if err := BuildDiskBase(ctx, db, 1, source, docs, analyzer); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := db.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Close()
+	if err := RetireDiskBase(ctx, db, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := RetireDiskBase(ctx, db, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snap.Get(diskKey(1, diskDocIDRow, uint64(1))); err != nil {
+		t.Fatalf("retirement invalidated a pinned reader: %v", err)
+	}
+	if _, err := OpenDiskIndex(ctx, db, 1, source, analyzer, nil); !errors.Is(err, ErrDiskIndex) {
+		t.Fatalf("retired base still opens: %v", err)
+	}
+	if err := BuildDiskBase(ctx, db, 1, source, docs, analyzer); !errors.Is(err, ErrDiskIndex) {
+		t.Fatalf("retirement allowed reuse of an old ID: %v", err)
+	}
+	if stats := db.Stats(); stats.LiveKeys != 1 {
+		t.Fatalf("retirement kept %d live rows; want only the ID reservation", stats.LiveKeys)
 	}
 }

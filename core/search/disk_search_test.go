@@ -117,8 +117,8 @@ func TestDiskSearchMatchesReopenedRAMOracle(t *testing.T) {
 			}
 		})
 	}
-	if _, _, err = disk.SearchAt(ctx, "lantern", 5, nil, MatchOptions{}, false, Budget{}, disk.NextDeadline()); !errors.Is(err, ErrIndexIncomplete) {
-		t.Fatalf("due expiry must fence immutable base: %v", err)
+	if _, _, err = disk.SearchAt(ctx, "lantern", 5, nil, MatchOptions{}, false, Budget{}, source.Watermark.Add(-time.Nanosecond)); !errors.Is(err, ErrIndexIncomplete) {
+		t.Fatalf("prior liveness instant must fence immutable base: %v", err)
 	}
 	got, _, err := disk.Search(ctx, "lantern", 5, nil, MatchOptions{}, false, Budget{MaxDiskReadBytes: 1})
 	if !errors.Is(err, ErrBudgetExceeded) || got != nil {

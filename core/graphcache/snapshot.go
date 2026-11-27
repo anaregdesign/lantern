@@ -162,6 +162,18 @@ func (c *GraphCache[S, T]) SnapshotReplication() ReplicationSnapshot[S, T] {
 	}
 }
 
+// SnapshotReplicationTombstones captures the active Delete floors for staged
+// restore verification. It carries out the same expired Put floor migration
+// as SnapshotReplication without materialising the graph or retained barriers.
+func (c *GraphCache[S, T]) SnapshotReplicationTombstones() TombstoneSnapshot[S] {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	c.migrateExpiredVertexHLCToBarriersLocked(now)
+	c.migrateExpiredEdgeHLCToBarriersLocked(now)
+	return c.snapshotTombstonesRLocked(now)
+}
+
 func (c *GraphCache[S, T]) snapshotTombstonesRLocked(now time.Time) TombstoneSnapshot[S] {
 	out := TombstoneSnapshot[S]{
 		Vertices:          make([]SnapshotVertexTombstone[S], 0, len(c.vertexTombstones)),
