@@ -43,7 +43,7 @@ func openTarpReceiptTestRuntime(t *testing.T, dir string, cfg ReceiptDatabaseCon
 		}
 		return writer.StoreRows(ctx, rows, snap, batch, gen, keys)
 	}
-	r, err := NewTarpReceiptServingRuntime(graph, db, stage, cfg, fresh)
+	r, err := NewTarpReceiptServingRuntime(t.Context(), graph, db, stage, cfg, fresh)
 	if err != nil {
 		_ = db.Close()
 		t.Fatal(err)

@@ -60,7 +60,7 @@ func OpenReceiptDatabase(ctx context.Context, cfg ReceiptDatabaseConfig, fresh b
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	rt, err := NewTarpReceiptServingRuntime(graph, db, stage, cfg, fresh)
+	rt, err := NewTarpReceiptServingRuntime(ctx, graph, db, stage, cfg, fresh)
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
@@ -82,7 +82,7 @@ func OpenGraphDatabase(ctx context.Context, dir string, node hlc.NodeID, graph *
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	rt, err := NewTarpGraphServingRuntime(graph, db, log, stage, namespace)
+	rt, err := NewTarpGraphServingRuntime(ctx, graph, db, log, stage, namespace)
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}

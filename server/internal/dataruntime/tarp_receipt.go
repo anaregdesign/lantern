@@ -228,7 +228,7 @@ func (r *tarpRelay) advanceReceiptClock(ms int64) error {
 // NewTarpReceiptServingRuntime binds a fresh or existing Tarp data cut to
 // an explicitly configured receipt policy. Fresh and restart are distinct:
 // neither may silently replace or initialize the other's state.
-func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, stage TarpGraphStager, config ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
+func NewTarpReceiptServingRuntime(ctx context.Context, graph *graphcache.GraphCache[string, *pb.Vertex], db *graphstore.DB, stage TarpGraphStager, config ReceiptDatabaseConfig, fresh bool) (*ServingRuntime, error) {
 	if db == nil || db.NodeID() != config.NodeID || config.NodeID == (hlc.NodeID{}) || config.BaselineCodec == nil || config.ConfigureGraph == nil {
 		return nil, errors.New("invalid Tarp receipt runtime configuration")
 	}
@@ -249,7 +249,7 @@ func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Verte
 		}
 		return nil, fmt.Errorf("missing persisted Tarp receipt initialization: %w", fs.ErrNotExist)
 	}
-	rt, err := newTarpServingRuntime(graph, db, config.Log, stage, config.NamespaceFormat, &policy, validator.PolicyFingerprint())
+	rt, err := newTarpServingRuntime(ctx, graph, db, config.Log, stage, config.NamespaceFormat, &policy, validator.PolicyFingerprint())
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +257,7 @@ func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Verte
 	if err != nil {
 		return nil, errors.Join(err, rt.log.Close())
 	}
-	cut, active, retired, err := rt.tarp.readReceiptState(view.Snapshot, view.Generation, policy)
+	cut, active, retired, err := rt.tarp.readReceiptState(ctx, view.Snapshot, view.Generation, policy)
 	_ = view.Close()
 	if err != nil {
 		return nil, errors.Join(err, rt.log.Close())
@@ -286,17 +286,16 @@ func NewTarpReceiptServingRuntime(graph *graphcache.GraphCache[string, *pb.Verte
 	if cut.baselineDigest != ([32]byte{}) {
 		rt.receipt.committedBaseline = cut.baselineDigest
 	}
-	if err = rt.tarp.trimRelay(); err != nil {
+	if err = rt.tarp.trimRelay(ctx); err != nil {
 		return nil, errors.Join(err, rt.log.Close())
 	}
-	if err = graph.CompleteStorageRecovery(context.Background()); err != nil {
+	if err = graph.CompleteStorageRecovery(ctx); err != nil {
 		return nil, errors.Join(err, rt.log.Close())
 	}
 	return rt, nil
 }
 
-func (r *tarpRelay) readReceiptState(snap *tarp.Snapshot, gen uint64, policy mutationreceipt.Config) (tarpReceiptCut, mutationreceipt.Snapshot, mutationreceipt.RetiredCatalogSnapshot, error) {
-	ctx := context.Background()
+func (r *tarpRelay) readReceiptState(ctx context.Context, snap *tarp.Snapshot, gen uint64, policy mutationreceipt.Config) (tarpReceiptCut, mutationreceipt.Snapshot, mutationreceipt.RetiredCatalogSnapshot, error) {
 	t, err := openTarpReceiptTable(ctx, gen, snap, policy)
 	if err != nil {
 		return tarpReceiptCut{}, mutationreceipt.Snapshot{}, mutationreceipt.RetiredCatalogSnapshot{}, err
