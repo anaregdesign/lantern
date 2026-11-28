@@ -2018,6 +2018,9 @@ func (s *Executor) DeleteEdgeContributions(ctx context.Context, in *pb.DeleteEdg
 	if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
 		return nil, err
 	}
+	if graph := s.storedContributionDeleteGraphLocked(); graph != nil {
+		return s.commitLocalStoredContributionDelete(ctx, graph, keys, mutationOp, ts, tombExp)
+	}
 	outcomes, accepted, err := s.cache.DeleteEdgeContributionsHLCDecisionsChecked(keys, ts, tombExp)
 	if err != nil {
 		return nil, writeError(err)

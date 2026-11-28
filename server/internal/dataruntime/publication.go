@@ -1157,6 +1157,7 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 			queue = s.pendingMutations[origin]
 			continue
 		}
+		storedOperation := ""
 		if !pending.applied {
 			if s.receiptStore != nil {
 				ts := hlcFromProto(m.GetHlc())
@@ -1171,40 +1172,29 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 					return err
 				}
 			}
-			result, err := s.applyMutationGraph(m)
+			var err error
+			storedOperation, err = s.commitReplicatedStoredContributionDelete(ctx, m)
 			if err != nil {
-				if s.receiptStore != nil {
-					s.receiptOriginCutMu.Lock()
-					s.markReceiptCommitFaultLocked()
-					s.receiptOriginCutMu.Unlock()
-					return connect.NewError(connect.CodeInternal,
-						fmt.Errorf("replication: durable graph apply failed after preflight and clock persistence: %w", err))
-				}
 				return err
 			}
-			if result.opName == "" {
-				if s.receiptStore != nil {
-					s.receiptOriginCutMu.Lock()
-					s.markReceiptCommitFaultLocked()
-					s.receiptOriginCutMu.Unlock()
-					return connect.NewError(connect.CodeInternal,
-						fmt.Errorf("replication: durable graph apply produced no effect after preflight and clock persistence for origin %x seq %d", origin, seq))
+			if storedOperation == "" {
+				if err := s.applyQueuedGraphMutation(origin, seq, pending); err != nil {
+					return err
 				}
-				s.dropPending(origin, seq)
-				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: mutation origin %x seq %d has no applicable op", origin, seq))
-			}
-			pending.applied = true
-			pending.opName = result.opName
-			pending.walOp = result.walOp
-		}
-		if s.log != nil {
-			if err := s.appendGraphLog(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
-				s.markPublicationFault(pending)
-				return connect.NewError(connect.CodeUnavailable, fmt.Errorf("replication: relay log append for origin %x seq %d: %w", origin, seq, err))
+			} else {
+				pending.opName = storedOperation
 			}
 		}
-		if !s.origins.Record(origin, seq, hlcFromProto(m.GetHlc())) {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: noncontiguous publication for origin %x seq %d", origin, seq))
+		if storedOperation == "" {
+			if s.log != nil {
+				if err := s.appendGraphLog(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
+					s.markPublicationFault(pending)
+					return connect.NewError(connect.CodeUnavailable, fmt.Errorf("replication: relay log append for origin %x seq %d: %w", origin, seq, err))
+				}
+			}
+			if !s.origins.Record(origin, seq, hlcFromProto(m.GetHlc())) {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: noncontiguous publication for origin %x seq %d", origin, seq))
+			}
 		}
 		if s.receiptStore != nil {
 			if err := s.clock.RestoreFloor(hlcFromProto(m.GetHlc())); err != nil {
@@ -1225,6 +1215,35 @@ func (s *Executor) drainRemoteOrigin(ctx context.Context, origin hlc.NodeID) err
 		s.dropPending(origin, seq)
 		queue = s.pendingMutations[origin]
 	}
+	return nil
+}
+
+func (s *Executor) applyQueuedGraphMutation(origin hlc.NodeID, seq uint64, pending *pendingMutation) error {
+	result, err := s.applyMutationGraph(pending.mutation)
+	if err != nil {
+		if s.receiptStore != nil {
+			s.receiptOriginCutMu.Lock()
+			s.markReceiptCommitFaultLocked()
+			s.receiptOriginCutMu.Unlock()
+			return connect.NewError(connect.CodeInternal,
+				fmt.Errorf("replication: durable graph apply failed after preflight and clock persistence: %w", err))
+		}
+		return err
+	}
+	if result.opName == "" {
+		if s.receiptStore != nil {
+			s.receiptOriginCutMu.Lock()
+			s.markReceiptCommitFaultLocked()
+			s.receiptOriginCutMu.Unlock()
+			return connect.NewError(connect.CodeInternal,
+				fmt.Errorf("replication: durable graph apply produced no effect after preflight and clock persistence for origin %x seq %d", origin, seq))
+		}
+		s.dropPending(origin, seq)
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: mutation origin %x seq %d has no applicable op", origin, seq))
+	}
+	pending.applied = true
+	pending.opName = result.opName
+	pending.walOp = result.walOp
 	return nil
 }
 
