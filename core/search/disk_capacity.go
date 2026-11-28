@@ -53,6 +53,9 @@ func (c diskCapacity) validateLimits(limits SearchAnalysisLimits) error {
 
 func (f diskFooter) validateCapacity() error {
 	c := f.Capacity
+	if f.LiveDocuments > f.Documents || f.Deadlines > f.LiveDocuments || f.LiveDocuments > uint64(max(c.Postings, 0)) {
+		return diskInvalid("invalid document or deadline count")
+	}
 	if c.Terms < 0 || c.Postings < c.Terms || c.Positions < 0 || (c.Terms == 0) != (c.Postings == 0) {
 		return diskInvalid("invalid index capacity")
 	}
@@ -278,4 +281,68 @@ func (s *diskChangeStream) advance() {
 		s.err = diskInvalid("invalid or unordered admission postimage")
 	}
 	s.prior = s.doc.Key
+}
+
+func (q *diskQuery) effectiveDocumentCounts() (uint64, uint64, error) {
+	footer := q.index.footer
+	removed := uint64(len(q.overlay.excluded))
+	if removed > footer.LiveDocuments || q.overlay.removedDeadlines > footer.Deadlines {
+		return 0, 0, diskInvalid("document overlay counters underflow")
+	}
+	live := footer.LiveDocuments - removed + uint64(len(q.overlay.addedDocs))
+	deadlines := footer.Deadlines - q.overlay.removedDeadlines
+	for _, doc := range q.overlay.addedDocs {
+		if !doc.expiration.IsZero() {
+			deadlines++
+		}
+	}
+	return live, deadlines, nil
+}
+
+// InspectAtWithChanges reports the logical index at a verified Graph cut and
+// the physical cardinalities of its materialized base. RAM-only estimates are
+// left unset. Malformed or incomplete views never report healthy.
+func (idx *DiskIndex) InspectAtWithChanges(ctx context.Context, now time.Time, changes iter.Seq2[DiskDocument, error]) (IndexMemoryStats, error) {
+	if now.Before(idx.footer.Source.Watermark) {
+		return IndexMemoryStats{}, ErrIndexIncomplete
+	}
+	view, err := idx.PinAdmission(ctx)
+	if err != nil {
+		return IndexMemoryStats{}, err
+	}
+	defer view.Close()
+	q := diskQuery{
+		index: idx, snap: view.snapshot, work: newWorkTracker(ctx, diskBoundBudget(Budget{})),
+		now: now, stats: idx.footer.Stats, capacity: idx.footer.Capacity,
+	}
+	if err := q.applyChanges(changes); err != nil {
+		return IndexMemoryStats{}, err
+	}
+	if err := q.applyDueDeadlines(); err != nil {
+		return IndexMemoryStats{}, err
+	}
+	capacity, err := q.effectiveCapacity()
+	if err != nil {
+		return IndexMemoryStats{}, err
+	}
+	if err := capacity.validateLimits(idx.config.limits); err != nil {
+		return IndexMemoryStats{}, err
+	}
+	live, _, err := q.effectiveDocumentCounts()
+	if err != nil {
+		return IndexMemoryStats{}, err
+	}
+	return IndexMemoryStats{
+		Documents:              int(min(live, math.MaxInt)),
+		PhysicalDocuments:      int(min(idx.footer.LiveDocuments, math.MaxInt)),
+		ExpiredDocuments:       int(min(q.overlay.expiredDocuments, math.MaxInt)),
+		ExpirationQueueEntries: int(min(idx.footer.Deadlines, math.MaxInt)),
+		LiveTerms:              int(min(capacity.Terms, math.MaxInt)),
+		RetainedTermSlots:      int(min(idx.footer.Capacity.Terms, math.MaxInt)),
+		RetainedOrdinals:       int(min(idx.footer.Documents, math.MaxInt)),
+		Postings:               capacity.Postings,
+		PositionEntries:        capacity.Positions,
+		Generation:             idx.base,
+		Health:                 IndexHealthy,
+	}, nil
 }

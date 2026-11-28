@@ -6,9 +6,9 @@ and what changes in a replicated deployment. The RPC schema lives in
 [`graph.proto`](../proto/graph/v1/graph.proto); this guide is the normative
 developer and operator interpretation of that schema.
 
-Search is a derived, in-memory index over the same live vertices served by the
-KVS. It is not a second source of truth. Prefix scans answer “which keys begin
-with this prefix?”; `SearchVertices` answers “which live vertices are most
+Search uses a derived Tarp index over the same live vertices served by the
+KVS. Graph storage is authoritative. Prefix scans answer “which keys begin with
+this prefix?” and `SearchVertices` answers “which live vertices are most
 relevant to this analyzed query?”
 
 ## Discover the serving endpoint first
@@ -49,8 +49,12 @@ documented defaults, as authoritative for the endpoint it reached.
 ## Index lifecycle and document projection
 
 When `enabled=false`, no content index is built and calls fail with
-`SEARCH_DISABLED`. When enabled, the server publishes store and index changes
-through one commit barrier. `positions_enabled=false` omits positions to save
+`SEARCH_DISABLED`. When enabled, the server commits changed Vertex identities
+with Graph writes. Searches combine the selected index with later committed
+postimages from the same Graph read cut. The per-node index lives in the
+sibling directory `<LANTERN_DATA_DIR>.search`. Mount the common parent as
+writable storage. The server can rebuild this index from Graph after a restore
+or after re-enabling search. `positions_enabled=false` omits positions to save
 memory; ordinary search still works, while phrase search fails explicitly with
 `SEARCH_POSITIONS_DISABLED`.
 

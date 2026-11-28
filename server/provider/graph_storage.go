@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -48,9 +49,22 @@ func newTarpServingRuntime(ctx context.Context, receipt ReceiptConfig, cacheConf
 	if err != nil {
 		return nil, err
 	}
-	rt, err := restoreTarpRuntime(ctx, db, receipt, cacheConfig, search, logOptions)
+	cacheSearch := search
+	cacheSearch.Enabled = false
+	rt, err := restoreTarpRuntime(ctx, db, receipt, cacheConfig, cacheSearch, logOptions)
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
+	}
+	if search.Enabled {
+		project := vertexSearchDocument
+		if cacheConfig.namespaceFormat != "" {
+			project = namespacedVertexSearchDocument
+		}
+		if err := rt.StartDiskSearch(ctx, dir+".search", search.Positions, search.AnalysisLimits, project); err != nil {
+			return nil, errors.Join(fmt.Errorf("open Tarp Search: %w", err), rt.Close())
+		}
+	} else if err := rt.ClearDiskSearchSelection(ctx); err != nil {
+		return nil, errors.Join(fmt.Errorf("clear Tarp Search selection: %w", err), rt.Close())
 	}
 	db.StartMaintenance()
 	return rt, nil

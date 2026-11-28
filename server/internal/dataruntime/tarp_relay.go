@@ -38,7 +38,7 @@ type tarpRelay struct {
 	graph           *graphcache.GraphCache[string, *pb.Vertex]
 	receiptPolicy   *mutationreceipt.Config
 	trackSearch     bool // fixed before the runtime admits requests
-	diskAdmission   bool // requires every local indexed write to be rollback-capable
+	diskAdmission   bool // checks reversible local Vertex writes before publication
 	diskSearch      *tarpDiskSearchReader
 	searchRefresh   *tarpSearchRefresh
 	fingerprint     [32]byte
@@ -151,6 +151,20 @@ func (r *tarpRelay) Write(entry mutationlog.Entry) error { return r.write(entry,
 
 func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowWriter[string, *pb.Vertex]) error {
 	abort := func(e error) error { return &mutationlog.DefiniteWALAbort{Cause: e} }
+	localVertex, _ := staged.(*localVertexWALWriter)
+	if localVertex != nil {
+		if !localVertex.matches(entry.Op) {
+			return abort(errors.New("local Vertex WAL writer does not own the mutation effect"))
+		}
+		if localVertex.repairing {
+			if r.diskAdmission && localVertex.requiresSearchAdmission() && !localVertex.approval.diskApproved {
+				return abort(search.ErrIndexIncomplete)
+			}
+		} else {
+			localVertex.approval.diskRequired = r.diskAdmission && localVertex.requiresSearchAdmission()
+			localVertex.approval.diskApproved = false
+		}
+	}
 	if fault := r.replayReadFault.Load(); fault != nil {
 		return *fault
 	}
@@ -221,37 +235,53 @@ func (r *tarpRelay) write(entry mutationlog.Entry, staged graphcache.StorageRowW
 			}
 		}
 		if r.trackSearch {
+			freshLocalVertex := localVertex != nil && !localVertex.repairing && localVertex.requiresSearchAdmission()
+			if freshLocalVertex {
+				localVertex.approval.diskApproved = false
+			}
 			publication := tarpEntryDigest(cut.digest, entry.Seq, raw)
 			stageGraph := func(batch graphstore.Writer) error {
 				return r.stage(context.Background(), gen, snap, batch, keys, staged)
 			}
 			var check func(tarpSearchCut, searchPostimages) error
-			if r.diskAdmission && id == r.db.NodeID() {
-				check = func(searchCut tarpSearchCut, proposal searchPostimages) error {
-					if staged == nil {
-						return errUnstagedDiskSearchWrite
-					}
-					timed, ok := staged.(interface{ StorageApplicationTime() time.Time })
-					if !ok || r.diskSearch == nil {
-						return search.ErrIndexIncomplete
-					}
-					if admissionView == nil {
-						admissionIndex = r.diskSearch.base.Load()
-						if admissionIndex == nil {
+			if r.diskAdmission && id == r.db.NodeID() && (localVertex == nil || freshLocalVertex) {
+				// Graph-first Edge writes can implicitly create endpoints and
+				// historically converge even when indexing reaches a limit.
+				// Their accepted postimages are always in the Search journal.
+				op := m.GetOp()
+				switch {
+				case staged != nil:
+					check = func(searchCut tarpSearchCut, proposal searchPostimages) error {
+						if freshLocalVertex && localVertex.dirtyCut {
 							return search.ErrIndexIncomplete
 						}
-						var err error
-						admissionView, err = admissionIndex.PinAdmission(context.Background())
-						if err != nil {
-							return err
+						timed, ok := staged.(interface{ StorageApplicationTime() time.Time })
+						if !ok || r.diskSearch == nil {
+							return search.ErrIndexIncomplete
 						}
+						if admissionView == nil {
+							admissionIndex = r.diskSearch.base.Load()
+							if admissionIndex == nil {
+								return search.ErrIndexIncomplete
+							}
+							var err error
+							admissionView, err = admissionIndex.PinAdmission(context.Background())
+							if err != nil {
+								return err
+							}
+						}
+						return r.diskSearch.validateAdmission(context.Background(), admissionIndex, admissionView,
+							snap, gen, searchCut, timed.StorageApplicationTime(), proposal)
 					}
-					return r.diskSearch.validateAdmission(context.Background(), admissionIndex, admissionView,
-						snap, gen, searchCut, timed.StorageApplicationTime(), proposal)
+				case op.GetReplicatedPutVertices() != nil || op.GetPutVertex() != nil || op.GetPutVertices() != nil:
+					check = func(tarpSearchCut, searchPostimages) error { return errUnstagedDiskSearchWrite }
 				}
 			}
 			if err := stageTarpGraphSearchChanges(context.Background(), gen, snap, batch, cut.digest, publication, stageGraph, check); err != nil {
 				return err
+			}
+			if freshLocalVertex && check != nil {
+				localVertex.approval.diskApproved = true
 			}
 		} else if err = r.stage(context.Background(), gen, snap, batch, keys, staged); err != nil {
 			return err

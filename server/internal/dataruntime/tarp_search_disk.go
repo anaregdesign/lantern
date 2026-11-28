@@ -149,22 +149,7 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	}
 	defer view.Close()
 	now := time.Now()
-	index := reader.base.Load()
-	if index == nil {
-		result.BackendError = search.ErrIndexIncomplete
-		return result
-	}
-	base := index.Source()
-	ref, err := readTarpSearchBaseRef(ctx, view)
-	if err != nil || index.BaseID() != ref.ID || !sameTarpDiskSource(base, ref.Source) {
-		if ctx.Err() != nil {
-			result.BackendError = ctx.Err()
-		} else {
-			result.BackendError = errors.Join(search.ErrIndexIncomplete, err)
-		}
-		return result
-	}
-	input, err := captureTarpDiskSearchInput(ctx, view, base.Corpus, base.Fingerprint, now, reader.project)
+	index, input, err := reader.readInput(ctx, view, now)
 	if err != nil {
 		result.BackendError = err
 		return result
@@ -176,7 +161,7 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	budget := spec.Budget
 	budget.MaxQueryBytes = int64(spec.MaxQueryBytes)
 	ranked, stats, err := index.SearchAtWithChanges(ctx, spec.Query, spec.Limit, accept,
-		spec.Options, spec.Phrase, budget, now, input.changes(ctx, base, reader.maxChangeBytes, reader.maxChangeKeys))
+		spec.Options, spec.Phrase, budget, now, input.changes(ctx, index.Source(), reader.maxChangeBytes, reader.maxChangeKeys))
 	var analysisLimit *search.AnalysisLimitError
 	if errors.Is(err, search.ErrDiskIndex) || errors.As(err, &analysisLimit) {
 		err = errors.Join(search.ErrIndexIncomplete, err)
@@ -205,6 +190,49 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	}
 	result.Hits = hits
 	return result
+}
+
+func (reader *tarpDiskSearchReader) readInput(ctx context.Context, view *graphstore.ReadView, now time.Time) (*search.DiskIndex, tarpDiskSearchInput, error) {
+	index := reader.base.Load()
+	if index == nil {
+		return nil, tarpDiskSearchInput{}, search.ErrIndexIncomplete
+	}
+	base := index.Source()
+	ref, err := readTarpSearchBaseRef(ctx, view)
+	if err != nil || index.BaseID() != ref.ID || !sameTarpDiskSource(base, ref.Source) {
+		if ctx.Err() != nil {
+			return nil, tarpDiskSearchInput{}, ctx.Err()
+		}
+		return nil, tarpDiskSearchInput{}, errors.Join(search.ErrIndexIncomplete, err)
+	}
+	input, err := captureTarpDiskSearchInput(ctx, view, base.Corpus, base.Fingerprint, now, reader.project)
+	return index, input, err
+}
+
+// SearchIndexStats samples the selected index and its committed Graph overlay.
+func (r *ServingRuntime) SearchIndexStats(ctx context.Context) search.IndexMemoryStats {
+	if r.tarp == nil || r.tarp.diskSearch == nil {
+		return r.graph.SearchIndexMemoryStats()
+	}
+	reader := r.tarp.diskSearch
+	reader.mu.RLock()
+	defer reader.mu.RUnlock()
+	incomplete := search.IndexMemoryStats{Health: search.IndexIncomplete}
+	view, err := r.tarp.db.Read()
+	if err != nil {
+		return incomplete
+	}
+	defer view.Close()
+	now := time.Now()
+	index, input, err := reader.readInput(ctx, view, now)
+	if err != nil {
+		return incomplete
+	}
+	stats, err := index.InspectAtWithChanges(ctx, now, input.changes(ctx, index.Source(), reader.maxChangeBytes, reader.maxChangeKeys))
+	if err != nil {
+		return incomplete
+	}
+	return stats
 }
 
 // advance publishes an incremental derived cut before selecting it in

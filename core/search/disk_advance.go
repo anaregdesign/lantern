@@ -66,6 +66,13 @@ func (idx *DiskIndex) AdvanceDiskBase(ctx context.Context, source DiskSource, ch
 		footer: idx.footer,
 	}
 	p.footer.Source, p.footer.Stats = source, q.stats
+	for id := range q.overlay.addedDocs {
+		p.footer.Documents = max(p.footer.Documents, id)
+	}
+	p.footer.LiveDocuments, p.footer.Deadlines, err = q.effectiveDocumentCounts()
+	if err != nil {
+		return nil, err
+	}
 	p.footer.Capacity, err = q.effectiveCapacity()
 	if err != nil {
 		return nil, err
@@ -150,7 +157,6 @@ func (p *diskAdvancePlan) prepare() error {
 
 func (p *diskAdvancePlan) addDocument(id uint64, doc diskDocValue) error {
 	base := p.footer.Base
-	p.footer.Documents = max(p.footer.Documents, id)
 	if err := p.row(diskKey(base, diskDocIDRow, id), encodeDiskDoc(doc), false); err != nil {
 		return err
 	}

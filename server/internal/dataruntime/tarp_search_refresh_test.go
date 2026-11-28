@@ -165,13 +165,13 @@ func TestTarpSearchRefreshResolvesPendingSelectorBeforeRetirement(t *testing.T) 
 	worker := tarpSearchRefresh{relay: runtime.tarp, derived: derived, config: config, active: id, pending: newID}
 	// This is the durable state after a selector commit whose outcome was
 	// not delivered to the worker. Resolve from Graph before deleting rows.
-	if err := worker.refresh(ctx); err != nil {
+	if err := worker.refreshWithin(ctx, ctx); err != nil {
 		t.Fatal(err)
 	}
 	if worker.active != newID || worker.pending != id || runtime.tarp.diskSearch.base.Load().BaseID() != newID {
 		t.Fatal("pending resolution did not adopt Graph's proven selected base")
 	}
-	if err := worker.refresh(ctx); err != nil {
+	if err := worker.refreshWithin(ctx, ctx); err != nil {
 		t.Fatal(err)
 	}
 	if worker.pending != 0 {

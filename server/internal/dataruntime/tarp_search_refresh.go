@@ -9,21 +9,80 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/search"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/query"
 	"github.com/anaregdesign/tarp"
 )
 
 // tarpSearchRefresh owns the derived database for one selected Graph
 // runtime. Only this worker advances, builds, or retires bases.
 type tarpSearchRefresh struct {
-	relay   *tarpRelay
-	derived *tarp.DB
-	config  tarpSearchStartup
+	relay     *tarpRelay
+	derived   *tarp.DB
+	config    tarpSearchStartup
+	directory string
 
 	active  uint64
 	pending uint64 // one unconfirmed build or obsolete base awaiting proof
 
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+// StartDiskSearch opens the owned derived index before request admission.
+func (r *ServingRuntime) StartDiskSearch(ctx context.Context, directory string, positions bool, limits search.SearchAnalysisLimits, project func(string, *pb.Vertex) search.Document) error {
+	if r == nil || r.tarp == nil || r.tarp.searchRefresh != nil || r.closed.Load() {
+		return errTarpSearchCut
+	}
+	if err := r.tarp.ensureTarpSearchSource(ctx); err != nil {
+		return err
+	}
+	options := []search.IndexOption{search.WithAnalysisLimits(limits)}
+	if positions {
+		options = append(options, search.WithPositions())
+	}
+	config := tarpSearchStartup{
+		corpus:         "vertices",
+		fingerprint:    query.IndexFormatFingerprint(r.tarp.namespace, positions, limits),
+		project:        project,
+		analyzer:       search.NewScriptAwareAnalyzer(),
+		scorer:         search.DefaultLexicalScorer(),
+		options:        options,
+		maxChangeBytes: 8 << 20,
+		maxChangeKeys:  4096,
+		lazyBoot:       true,
+	}
+	derived, err := openTarpSearchStore(ctx, directory)
+	var id uint64
+	if err == nil {
+		id, err = r.tarp.openDiskSearch(ctx, derived, config)
+	}
+	if ctx.Err() != nil {
+		if derived != nil {
+			return errors.Join(ctx.Err(), derived.Close())
+		}
+		return ctx.Err()
+	}
+	if err != nil {
+		if !errors.Is(err, search.ErrIndexIncomplete) {
+			slog.Warn("Tarp Search startup deferred", "error", err)
+		}
+		r.tarp.diskSearch = &tarpDiskSearchReader{
+			project: project, maxChangeBytes: config.maxChangeBytes, maxChangeKeys: config.maxChangeKeys,
+		}
+		r.tarp.trackSearch = true
+	}
+	r.tarp.diskAdmission = true
+	r.startSearchWorker(derived, config, id, directory, 50*time.Millisecond, 2*time.Second)
+	return nil
+}
+
+func openTarpSearchStore(ctx context.Context, directory string) (*tarp.DB, error) {
+	return tarp.OpenContext(ctx, directory, tarp.Options{
+		BTreeMemoryBudgetBytes: 16 << 20,
+		ValueCacheBudgetBytes:  16 << 20,
+		ReadFileHandles:        32,
+	})
 }
 
 // startOwnedDiskSearch takes ownership of derived only on success. Call before
@@ -38,14 +97,18 @@ func (r *ServingRuntime) startOwnedDiskSearch(ctx context.Context, derived *tarp
 	if err != nil {
 		return err
 	}
+	r.startSearchWorker(derived, config, id, "", interval, attempt)
+	return nil
+}
+
+func (r *ServingRuntime) startSearchWorker(derived *tarp.DB, config tarpSearchStartup, id uint64, directory string, interval, attempt time.Duration) {
 	workerCtx, cancel := context.WithCancel(context.Background())
 	worker := &tarpSearchRefresh{
 		relay: r.tarp, derived: derived, config: config, active: id,
-		cancel: cancel, done: make(chan struct{}),
+		directory: directory, cancel: cancel, done: make(chan struct{}),
 	}
 	r.tarp.searchRefresh = worker
 	go worker.run(workerCtx, interval, attempt)
-	return nil
 }
 
 func (w *tarpSearchRefresh) run(ctx context.Context, interval, attempt time.Duration) {
@@ -60,7 +123,7 @@ func (w *tarpSearchRefresh) run(ctx context.Context, interval, attempt time.Dura
 			return
 		case <-timer.C:
 			refreshCtx, cancel := context.WithTimeout(ctx, attempt)
-			err := w.refresh(refreshCtx)
+			err := w.refreshWithin(refreshCtx, ctx)
 			cancel()
 			if ctx.Err() != nil {
 				return
@@ -94,6 +157,9 @@ func (w *tarpSearchRefresh) closeDerived() error {
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
 	reader.base.Store(nil)
+	if w.derived == nil {
+		return nil
+	}
 	return w.derived.Close()
 }
 
@@ -118,9 +184,16 @@ func (w *tarpSearchRefresh) readGraph(ctx context.Context) (*graphstore.ReadView
 	return w.relay.db.Read()
 }
 
-func (w *tarpSearchRefresh) refresh(ctx context.Context) error {
+func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if w.derived == nil {
+		var err error
+		w.derived, err = openTarpSearchStore(ctx, w.directory)
+		if err != nil {
+			return err
+		}
 	}
 	view, err := w.readGraph(ctx)
 	if err != nil {
@@ -135,7 +208,7 @@ func (w *tarpSearchRefresh) refresh(ctx context.Context) error {
 		return err
 	}
 	ref, err := readTarpSearchBaseRef(ctx, view)
-	if err != nil && !errors.Is(err, tarp.ErrNotFound) {
+	if err != nil && !errors.Is(err, tarp.ErrNotFound) && !errors.Is(err, errTarpSearchCut) {
 		return err
 	}
 	reader := w.relay.diskSearch
@@ -144,7 +217,7 @@ func (w *tarpSearchRefresh) refresh(ctx context.Context) error {
 		ref.Source.Epoch == input.source.Epoch
 	if !certified {
 		reader.base.Store(nil)
-		return w.rebuild(ctx, input, w.active)
+		return w.rebuild(rebuildCtx, input, w.active)
 	}
 	if input.changeCut.first <= ref.Source.Sequence {
 		// Reclamation may have stopped at the previous attempt deadline.
@@ -157,12 +230,14 @@ func (w *tarpSearchRefresh) refresh(ctx context.Context) error {
 	if err == nil || ctx.Err() != nil {
 		return err
 	}
-	// An explicitly bounded planning failure leaves the existing base ready
-	// and lags Search behind a proven overlay. Only a failed derived reopen
-	// proves the current base needs corrective reconstruction.
+	// The same immutable base cannot advance through a suffix exceeding
+	// these work limits. Rebuild from the bounded Graph stream instead.
+	if errors.Is(err, search.ErrBudgetExceeded) || errors.Is(err, errTarpSearchCut) {
+		return w.rebuild(rebuildCtx, input, ref.ID)
+	}
 	if _, openErr := search.OpenDiskIndex(ctx, w.derived, ref.ID, ref.Source, w.config.analyzer, w.config.scorer, w.config.options...); errors.Is(openErr, search.ErrDiskIndex) {
 		reader.base.Store(nil)
-		return w.rebuild(ctx, input, ref.ID)
+		return w.rebuild(rebuildCtx, input, ref.ID)
 	}
 	return err
 }

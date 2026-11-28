@@ -69,7 +69,9 @@ func WireDomainMetrics(
 		return cache.VertexCount(), cache.EdgeCount()
 	})
 	m.BindSearchIndexSampler(func() search.IndexMemoryStats {
-		return cache.SearchIndexMemoryStats()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		return runtime.SearchIndexStats(ctx)
 	})
 	m.BindVertexHLCSampler(func() int {
 		return cache.VertexHLCCount()

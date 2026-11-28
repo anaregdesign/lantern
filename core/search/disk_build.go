@@ -192,6 +192,10 @@ func writeDiskDocuments(ctx context.Context, batch *diskBuildBatch, footer *disk
 			return diskInvalid("posting or position count exhausted")
 		}
 		footer.Documents++
+		footer.LiveDocuments++
+		if !input.Expiration.IsZero() {
+			footer.Deadlines++
+		}
 		footer.Capacity.Postings += int64(prepared.postings)
 		footer.Capacity.Positions += int64(prepared.positionEntries)
 		if err := limitError(LimitLivePostings, footer.Capacity.Postings, config.limits.MaxLivePostings); err != nil {

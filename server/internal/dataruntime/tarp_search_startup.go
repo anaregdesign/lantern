@@ -25,6 +25,7 @@ type tarpSearchStartup struct {
 	options        []search.IndexOption
 	maxChangeBytes int
 	maxChangeKeys  int
+	lazyBoot       bool
 }
 
 // openDiskSearch selects the currently certified derived base or constructs a
@@ -51,6 +52,14 @@ func (r *tarpRelay) openDiskSearch(ctx context.Context, derived *tarp.DB, config
 		return 0, err
 	}
 	if base == nil {
+		if config.lazyBoot {
+			for _, err := range source.documents(ctx) {
+				if err != nil {
+					return 0, err
+				}
+				return 0, search.ErrIndexIncomplete
+			}
+		}
 		id, base, err = r.buildTarpSearchBase(ctx, source, derived, config)
 		if err != nil {
 			return 0, err
@@ -120,6 +129,24 @@ func reserveTarpSearchBase(ctx context.Context, derived *tarp.DB) (uint64, error
 		return 0, err
 	}
 	return id, derived.Put(key, binary.BigEndian.AppendUint64(nil, id))
+}
+
+// ClearDiskSearchSelection invalidates the last selected base before
+// serving writes with Search disabled and without recording Search changes.
+func (r *ServingRuntime) ClearDiskSearchSelection(ctx context.Context) error {
+	if r == nil || r.tarp == nil || r.tarp.searchRefresh != nil || r.closed.Load() {
+		return errTarpSearchCut
+	}
+	return r.tarp.db.Update(func(gen uint64, snap *tarp.Snapshot, batch *tarp.WriteBatch) error {
+		key := tarpServiceKey(gen, tarpSearchBase)
+		if _, err := snap.GetContext(ctx, key); errors.Is(err, tarp.ErrNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		batch.Delete(key)
+		return ctx.Err()
+	})
 }
 
 // initialize an empty accepted Search change stream underneath the verified

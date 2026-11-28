@@ -53,7 +53,7 @@ type DiskIndex struct {
 
 const (
 	diskDomain uint8 = 0xc4
-	diskLayout uint8 = 2
+	diskLayout uint8 = 3
 	diskMarker uint8 = iota + 1
 	diskFooterRow
 	diskDocIDRow
@@ -86,7 +86,9 @@ type diskFooter struct {
 	Base          uint64
 	Source        DiskSource
 	Positions     bool
-	Documents     uint64
+	Documents     uint64 // document ID high-water mark
+	LiveDocuments uint64
+	Deadlines     uint64
 	Records       uint64
 	Digest        [32]byte
 	Stats         [numTokenClasses][numDocumentFields]diskFieldStats

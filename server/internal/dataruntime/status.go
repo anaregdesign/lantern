@@ -110,7 +110,7 @@ func (s *Executor) serverStatusSnapshot(ctx context.Context) *pb.GetServerStatus
 		ReplicationEnabled: info.ReplicationEnabled,
 		VertexCount:        uint64(s.cache.VertexCount()),
 		EdgeCount:          uint64(s.cache.EdgeCount()),
-		Search:             s.searchCapabilities(),
+		Search:             s.searchCapabilities(ctx),
 		CausalMetadata:     causalMetadataStatus(s.cache.CausalMetadataStats()),
 	}
 	if !s.startedAt.IsZero() {
@@ -177,8 +177,14 @@ func nonNegativeUint64(value int) uint64 {
 	return uint64(value)
 }
 
-func (s *Executor) searchCapabilities() *pb.SearchCapabilities {
-	return query.Capabilities(s.effectiveSearchEngine().Limits(), s.cache.SearchIndexMemoryStats())
+func (s *Executor) searchCapabilities(ctx context.Context) *pb.SearchCapabilities {
+	limits := s.effectiveSearchEngine().Limits()
+	if s.runtime != nil && s.runtime.tarp != nil && s.runtime.tarp.diskSearch != nil {
+		probe, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		return query.Capabilities(limits, s.runtime.SearchIndexStats(probe))
+	}
+	return query.Capabilities(limits, s.cache.SearchIndexMemoryStats())
 }
 
 // SearchConfigFingerprint returns the stable search-capability fingerprint

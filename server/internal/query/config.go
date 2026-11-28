@@ -202,6 +202,15 @@ func Capabilities(l Limits, indexStats search.IndexMemoryStats) *pb.SearchCapabi
 	return capabilities
 }
 
+// IndexFormatFingerprint binds the analyzer, projection, and index limits.
+// A change to request policy leaves the selected disk index reusable.
+func IndexFormatFingerprint(namespace string, positions bool, limits search.SearchAnalysisLimits) string {
+	canonical := fmt.Sprintf("lexical-v1/%s/%s/%q/%t/%d/%d/%d/%d/%d/%d", searchAnalyzerVersion, searchProjectionVersion, namespace, positions,
+		limits.MaxDocumentBytes, limits.MaxDocumentTokens, limits.MaxDocumentTerms,
+		limits.MaxLiveTerms, limits.MaxLivePostings, limits.MaxPositionEntries)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(canonical)))
+}
+
 // ConfigFingerprint binds the exact search capability contract used by peers and cursors.
 func ConfigFingerprint(limits Limits) string {
 	analysis := limits.AnalysisLimits
