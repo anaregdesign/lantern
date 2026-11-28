@@ -121,10 +121,22 @@ func TestContributionDelete_AtomicCausalCapacityRealConnectWire(t *testing.T) {
 }
 
 func TestContributionDelete_PartitionAndIdentityInvalidationRealConnectWire(t *testing.T) {
+	t.Run("RAM", func(t *testing.T) {
+		assertContributionDeletePartitionAndIdentityInvalidation(t,
+			newConvergenceNode(t, hlc.NodeID{0xe3}, time.Hour),
+			newConvergenceNode(t, hlc.NodeID{0xe4}, time.Hour))
+	})
+	t.Run("Tarp", func(t *testing.T) {
+		assertContributionDeletePartitionAndIdentityInvalidation(t,
+			newCertifiedPumpNode(t, hlc.NodeID{0xe3}, 0, 0),
+			newCertifiedPumpNode(t, hlc.NodeID{0xe4}, 0, 0))
+	})
+}
+
+func assertContributionDeletePartitionAndIdentityInvalidation(t *testing.T, a, b *pumpNode) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	a := newConvergenceNode(t, hlc.NodeID{0xe3}, time.Hour)
-	b := newConvergenceNode(t, hlc.NodeID{0xe4}, time.Hour)
 	aRaw := graphv1connect.NewLanternServiceClient(h2cClient(), a.url)
 	bRaw := graphv1connect.NewLanternServiceClient(h2cClient(), b.url)
 	first := bytes.Repeat([]byte{0x44}, 24)
@@ -185,8 +197,8 @@ func TestContributionDelete_PartitionAndIdentityInvalidationRealConnectWire(t *t
 	if got := b.svc.LocalSeq(a.nodeID); got != 1 {
 		t.Fatalf("B did not receive delayed Add: frontier=%d", got)
 	}
-	if weight, ok := b.cache.GetWeight("partition", "head"); !ok || weight != 12 {
-		t.Fatalf("B failed remove-wins convergence: weight=%g live=%t", weight, ok)
+	if edge, err := bRaw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "partition", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 12 {
+		t.Fatalf("B failed remove-wins convergence: (%+v, %v)", edge, err)
 	}
 	a.startPump(ctx, t, []string{b.url})
 	deadline = time.Now().Add(5 * time.Second)
@@ -196,8 +208,8 @@ func TestContributionDelete_PartitionAndIdentityInvalidationRealConnectWire(t *t
 	if got := a.svc.LocalSeq(b.nodeID); got != 2 {
 		t.Fatalf("A did not receive Delete and independent Add: frontier=%d", got)
 	}
-	if weight, ok := a.cache.GetWeight("partition", "head"); !ok || weight != 12 {
-		t.Fatalf("A failed remove-wins convergence: weight=%g live=%t", weight, ok)
+	if edge, err := aRaw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "partition", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 12 {
+		t.Fatalf("A failed remove-wins convergence: (%+v, %v)", edge, err)
 	}
 }
 
@@ -336,39 +348,54 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 		t.Fatalf("contribution Delete was not advertised by certified runtime: %+v", capability)
 	}
 	first := bytes.Repeat([]byte{0x11}, 24)
+	survivor := bytes.Repeat([]byte{0x22}, 24)
 	absent := bytes.Repeat([]byte{0x33}, 24)
-	if _, err := wire.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
-		Edge: &pb.Edge{Tail: "receipt", Head: "head", Weight: 3}, ContribId: first,
+	if _, err := wire.raw.AddEdges(ctx, connect.NewRequest(&pb.AddEdgesRequest{
+		Edges: []*pb.Edge{
+			{Tail: "receipt", Head: "head", Weight: 3},
+			{Tail: "receipt", Head: "head", Weight: 5},
+		},
+		ContribIds: [][]byte{first, survivor},
 	})); err != nil {
 		t.Fatal(err)
 	}
-	receipt := receiptProtocolContext(t, capability, 0x62, 2, time.Now())
+	receipt := receiptProtocolContext(t, capability, 0x62, 3, time.Now())
 	request := &pb.DeleteEdgeContributionsRequest{
 		Contributions: []*pb.EdgeContributionKey{
 			wireContributionKey("receipt", "head", first),
 			wireContributionKey("receipt", "head", absent),
+			wireContributionKey("receipt", "head", first),
 		},
 		ReceiptContext: receipt,
 	}
+	wantExisted := []bool{true, false, false}
 	got, err := wire.raw.DeleteEdgeContributions(ctx, connect.NewRequest(request))
 	if err != nil || got.Msg.GetDeleted() != 1 ||
-		!slices.Equal(got.Msg.GetExisted(), []bool{true, false}) {
+		!slices.Equal(got.Msg.GetExisted(), wantExisted) {
 		t.Fatalf("initial receipt Delete = (%+v, %v)", got, err)
+	}
+	if edge, err := wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "receipt", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 5 {
+		t.Fatalf("receipt Delete failed to retain the other contribution: (%+v, %v)", edge, err)
 	}
 	// Simulate a response lost at the caller, then mutate the edge. The exact
 	// same logical call must report the original result, not re-run the Delete.
-	if _, err := wire.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{
-		Edge: &pb.Edge{Tail: "receipt", Head: "head", Weight: 9},
+	if _, err := wire.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
+		Edge:      &pb.Edge{Tail: "receipt", Head: "head", Weight: 4},
+		ContribId: bytes.Repeat([]byte{0x44}, 24),
 	})); err != nil {
 		t.Fatal(err)
 	}
+	beforeRetry := wire.server.svc.LocalSeq(config.NodeID)
 	retry, err := wire.raw.DeleteEdgeContributions(ctx, connect.NewRequest(request))
 	if err != nil || retry.Msg.GetDeleted() != 1 ||
-		!slices.Equal(retry.Msg.GetExisted(), []bool{true, false}) {
+		!slices.Equal(retry.Msg.GetExisted(), wantExisted) {
 		t.Fatalf("same-operation receipt retry = (%+v, %v)", retry, err)
 	}
+	if afterRetry := wire.server.svc.LocalSeq(config.NodeID); afterRetry != beforeRetry {
+		t.Fatalf("receipt retry advanced origin %d -> %d", beforeRetry, afterRetry)
+	}
 	if edge, err := wire.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "receipt", Head: "head"})); err != nil || edge.Msg.GetEdge().GetWeight() != 9 {
-		t.Fatalf("receipt retry changed later Put base: (%+v, %v)", edge, err)
+		t.Fatalf("receipt retry changed surviving contributions: (%+v, %v)", edge, err)
 	}
 	statuses := receiptProtocolStatuses(t, ctx, wire, receipt.GetOperationIds())
 	for i, status := range statuses {
@@ -404,8 +431,11 @@ func TestContributionDelete_ReceiptRetryAndStatusRealConnectWire(t *testing.T) {
 	}
 	again, err := restarted.raw.DeleteEdgeContributions(ctx, connect.NewRequest(request))
 	if err != nil || again.Msg.GetDeleted() != 1 ||
-		!slices.Equal(again.Msg.GetExisted(), []bool{true, false}) {
+		!slices.Equal(again.Msg.GetExisted(), wantExisted) {
 		t.Fatalf("same-operation retry after WAL restart = (%+v, %v)", again, err)
+	}
+	if afterRestartRetry := restarted.server.svc.LocalSeq(config.NodeID); afterRestartRetry != beforeRetry {
+		t.Fatalf("retry after WAL restart changed origin: got %d, want %d", afterRestartRetry, beforeRetry)
 	}
 	for _, id := range [][]byte{first, absent} {
 		if _, err := restarted.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
