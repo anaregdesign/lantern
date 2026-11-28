@@ -28,7 +28,14 @@ const manifestFormat = "LGS2"
 // for related graph and service records in the same atomic write. The B+tree
 // and value cache keep their separate bounded working sets.
 func storageOptions() tarp.Options {
-	return tarp.Options{MaxRecordBytes: 33 << 20, TargetSegmentBytes: 128 << 20}
+	return tarp.Options{
+		MaxRecordBytes:          33 << 20,
+		TargetSegmentBytes:      128 << 20,
+		ValueCacheBudgetBytes:   64 << 20,
+		BTreeMemoryBudgetBytes:  16 << 20,
+		ReadFileHandles:         64,
+		BatchGetReadConcurrency: 8,
+	}
 }
 
 type manifest struct {

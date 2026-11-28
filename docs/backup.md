@@ -22,11 +22,18 @@ ordered Edge families. It adds one fixed-size counter row per endpoint
 with a retained Edge and a corpus totals row for graph ranking. Private
 backup digests cover both projections in the captured generation.
 
-Keep the original `LOCK` file in each initialized data directory. Tarp v0.16.0
+Keep the original `LOCK` file in each initialized data directory. Tarp
 requires it when reopening the database. If an older direct Tarp restore
 produced a directory that was never opened and has no `LOCK`, restore the
 original backup into a fresh directory using the current version of Tarp.
-See the [Tarp restore contract](https://github.com/anaregdesign/tarp/blob/v0.16.0/docs/durability.md#maintenance-capacity-and-backup).
+See the [Tarp restore contract](https://github.com/anaregdesign/tarp/blob/v0.17.0/docs/durability.md#maintenance-capacity-and-backup).
+
+Before upgrading a node from a Lantern binary built with Tarp v0.16.0, take
+and verify a private recovery point. Tarp v0.17.0 can select a new MANIFEST
+format during ordinary maintenance or a large atomic update. To roll back
+after the new format is selected, restore the pre-upgrade recovery point to
+a fresh directory using the previous Lantern binary and follow the
+node and receipt epoch recovery rules below. See the [Tarp upgrade and rollback notes](https://github.com/anaregdesign/tarp/releases/tag/v0.17.0).
 
 The backup scheduler, manual backup and final shutdown backup produce a
 private `lantern-tarp-<instance hash>-<id>/` directory. Its `image/` contains
