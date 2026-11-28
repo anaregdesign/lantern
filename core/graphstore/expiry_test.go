@@ -23,6 +23,7 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(1000, 1)
+	expiredDeadline := now.Add(-time.Second)
 	old := hlc.Timestamp{WallNs: 11, NodeID: hlc.NodeID{1}}
 	renewed := hlc.Timestamp{WallNs: 12, NodeID: hlc.NodeID{1}}
 	future := now.Add(time.Hour)
@@ -32,7 +33,7 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 	tombstone := FloorKey[string]{Kind: ContributionTombstone, Tail: mixed.Tail, Head: mixed.Head, ContribID: [24]byte{11}}
 	if err := db.UpdateRows(t.Context(), func(gen uint64, _ *tarp.Snapshot, b Writer) error {
 		for i := range expiryChunkRows + 3 {
-			if err := rows.PutVertex(b, gen, key(i), Vertex[string]{Value: "expired", HLC: old, Expiration: now}); err != nil {
+			if err := rows.PutVertex(b, gen, key(i), Vertex[string]{Value: "expired", HLC: old, Expiration: expiredDeadline}); err != nil {
 				return err
 			}
 		}
@@ -62,6 +63,10 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 		t.Fatalf("first chunk cursor = %+v, err %v", cursor, err)
 	}
 	if err := db.WithCommittedSnapshot(func(gen uint64, s *tarp.Snapshot) error {
+		watermark, err := VertexExpiryWatermark(t.Context(), s, gen)
+		if err != nil || !watermark.Equal(expiredDeadline) {
+			t.Fatalf("first committed expiry watermark = %v, %v", watermark, err)
+		}
 		if _, found, err := rows.GetVertex(s, gen, key(expiryChunkRows-1)); found || err != nil {
 			t.Fatalf("last key in first chunk found=%v err=%v", found, err)
 		}
@@ -74,6 +79,9 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 	}
 	if _, found, err := rows.GetVertex(pinned.Snapshot, pinned.Generation, key(0)); !found || err != nil {
 		t.Fatalf("pinned pre-chunk row found=%v err=%v", found, err)
+	}
+	if watermark, err := VertexExpiryWatermark(t.Context(), pinned.Snapshot, pinned.Generation); err != nil || !watermark.IsZero() {
+		t.Fatalf("pinned pre-chunk watermark = %v, %v", watermark, err)
 	}
 	if err := pinned.Close(); err != nil {
 		t.Fatal(err)
@@ -104,6 +112,10 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.WithCommittedSnapshot(func(gen uint64, s *tarp.Snapshot) error {
+		watermark, err := VertexExpiryWatermark(t.Context(), s, gen)
+		if err != nil || !watermark.Equal(expiredDeadline) {
+			t.Fatalf("reopened expiry watermark = %v, %v", watermark, err)
+		}
 		for _, k := range []string{key(0), key(expiryChunkRows + 1), key(expiryChunkRows + 2)} {
 			if _, found, err := rows.GetVertex(s, gen, k); found || err != nil {
 				t.Fatalf("expired %q found=%v err=%v", k, found, err)

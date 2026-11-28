@@ -84,6 +84,10 @@ func TestStorageExpirySurvivesClockRollback(t *testing.T) {
 	}
 	if err := db.WithCommittedSnapshot(func(gen uint64, s *tarp.Snapshot) error {
 		checkIncoming(gen, s, tickEdge, pair)
+		watermark, err := graphstore.VertexExpiryWatermark(t.Context(), s, gen)
+		if err != nil || !watermark.Equal(start) {
+			t.Fatalf("startup expiry watermark = %v, %v", watermark, err)
+		}
 		if _, ok, err := rows.GetVertex(s, gen, "startup"); err != nil || ok {
 			t.Fatalf("expired startup row found=%v err=%v", ok, err)
 		}
@@ -94,7 +98,7 @@ func TestStorageExpirySurvivesClockRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	now = deadline
+	now = deadline.Add(time.Second)
 	if n := c.flushVerticesAt(now); n != 1 {
 		t.Fatalf("expired %d vertices", n)
 	}
@@ -115,6 +119,10 @@ func TestStorageExpirySurvivesClockRollback(t *testing.T) {
 	}
 	if err := db.WithCommittedSnapshot(func(g uint64, s *tarp.Snapshot) error {
 		checkIncoming(g, s, pair)
+		watermark, err := graphstore.VertexExpiryWatermark(t.Context(), s, g)
+		if err != nil || !watermark.Equal(deadline) {
+			t.Fatalf("live sweep expiry watermark = %v, %v", watermark, err)
+		}
 		if _, found, err := rows.GetVertex(s, g, "tick"); found || err != nil {
 			t.Fatalf("swept vertex found=%v err=%v", found, err)
 		}
