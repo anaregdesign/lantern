@@ -9,20 +9,34 @@ import (
 	"github.com/anaregdesign/tarp"
 )
 
-// EdgeRecoverySummary describes one retained bucket at the startup cut.
+// EdgeRecoverySummary describes one retained bucket at a pinned cut.
 // Count includes a live base. An Edge may have live Sources and zero weight.
+// RetainedAdds counts the physical Add rows, including expired rows.
+// Retained summarizes all retained rows, including an expired base.
 type EdgeRecoverySummary[K comparable] struct {
 	EdgeEntry[K]
 	Weight            float32
 	Earliest, Latest  time.Time
 	Count             int
+	RetainedAdds      uint64
+	Retained          EdgeSourceStats
 	Explicit, Expired bool
+}
+
+// EdgeSourceStats summarizes a set of Edge rows, including its base, in
+// canonical weight accumulation order.
+type EdgeSourceStats struct {
+	Weight           float32
+	Earliest, Latest time.Time
+	Count            int
+	Explicit         bool
 }
 
 type edgeRecoveryStats struct {
 	sources           uint64
 	earliest          time.Time
 	count             int
+	retained          EdgeSourceStats
 	explicit, expired bool
 }
 
@@ -44,10 +58,7 @@ func (r *Rows[K, V]) EdgeRecoverySummaries(ctx context.Context, snap *tarp.Snaps
 		var stopped bool
 		err = r.walkOrderedEdges(ctx, snap, gen, "", now, true, func(edge EdgeEntry[K], detail EdgeDetail, stats edgeRecoveryStats) bool {
 			sources += stats.sources
-			stopped = !yield(EdgeRecoverySummary[K]{
-				EdgeEntry: edge, Weight: detail.Weight, Earliest: stats.earliest, Latest: detail.Expiration,
-				Count: stats.count, Explicit: stats.explicit, Expired: stats.expired,
-			}, nil)
+			stopped = !yield(orderedEdgeSummary(edge, detail, stats), nil)
 			return !stopped
 		})
 		if err == nil && !stopped {
@@ -56,6 +67,14 @@ func (r *Rows[K, V]) EdgeRecoverySummaries(ctx context.Context, snap *tarp.Snaps
 		if err != nil {
 			yield(zero, err)
 		}
+	}
+}
+
+func orderedEdgeSummary[K comparable](edge EdgeEntry[K], detail EdgeDetail, stats edgeRecoveryStats) EdgeRecoverySummary[K] {
+	return EdgeRecoverySummary[K]{
+		EdgeEntry: edge, Weight: detail.Weight, Earliest: stats.earliest, Latest: detail.Expiration,
+		Count: stats.count, RetainedAdds: stats.sources, Retained: stats.retained,
+		Explicit: stats.explicit, Expired: stats.expired,
 	}
 }
 

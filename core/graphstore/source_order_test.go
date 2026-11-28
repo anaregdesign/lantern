@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -43,6 +44,101 @@ func TestSourceOrderKeyMatchesSemanticTies(t *testing.T) {
 			t.Fatalf("derived key %d bytes exceeds charged canonical row %d bytes: %v", len(order), len(canonical)+sourceSize, err)
 		}
 		previous = order
+	}
+}
+
+func TestSummarizeEdgeSourcesOmitsOnlyRequestedRows(t *testing.T) {
+	ctx := t.Context()
+	db, err := Open(ctx, t.TempDir(), hlc.NodeID{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	rows, err := NewRows[string, string](tarp.StringCodec{}, tarp.StringCodec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := EdgeKey[string]{Tail: "dangling\x00tail", Head: "head"}
+	now := time.Unix(100, 0).UTC()
+	soon, later := now.Add(time.Minute), now.Add(time.Hour)
+	edge := Edge{Base: &Source{Weight: 1 << 50, Expiration: soon}, LastOrdinal: 1}
+	removed := SourceEntry{ID: SourceID{ContribID: [24]byte{1}}, Source: Source{Weight: 4}}
+	live := SourceEntry{ID: SourceID{ContribID: [24]byte{2}}, Source: Source{Weight: 9, Expiration: later}}
+	expired := SourceEntry{ID: SourceID{ContribID: [24]byte{3}}, Source: Source{Weight: 100, Expiration: now}}
+	ordinal := SourceEntry{ID: SourceID{Ordinal: 1}, Source: Source{Weight: -(1 << 50)}}
+	if err := db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, b Writer) error {
+		if err := rows.PutEdge(b, gen, key, edge); err != nil {
+			return err
+		}
+		for _, entry := range []SourceEntry{expired, live, removed, ordinal} {
+			if err := rows.ReplaceSource(b, gen, key, entry.ID, nil, &entry.Source); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() *ReadView {
+		t.Helper()
+		view, err := db.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = view.Close() })
+		return view
+	}
+	legacy := read()
+	if _, err := rows.SummarizeEdgeSources(ctx, legacy.Snapshot, legacy.Generation, key, edge, now, nil); !errors.Is(err, ErrInvalidRow) {
+		t.Fatalf("unverified source order: %v", err)
+	}
+	if err := db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, b Writer) error {
+		return rows.MarkSourceOrder(b, gen)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pinned := read()
+	planned, err := rows.SummarizeEdgeSources(ctx, pinned.Snapshot, pinned.Generation, key, edge, now, map[SourceID]struct{}{removed.ID: {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Key != key || planned.Edge != edge || planned.Weight != 9 || planned.Count != 3 || planned.RetainedAdds != 3 ||
+		!planned.Explicit || !planned.Expired || !planned.Earliest.Equal(soon) || !planned.Latest.Equal(later) {
+		t.Fatalf("live summary: %+v", planned)
+	}
+	if retained := planned.Retained; retained.Weight != 109 || retained.Count != 4 ||
+		!retained.Explicit || !retained.Earliest.Equal(now) || !retained.Latest.Equal(later) {
+		t.Fatalf("retained summary: %+v", retained)
+	}
+	if got, err := rows.EdgeAt(ctx, pinned.Snapshot, pinned.Generation, key, now); err != nil || got.Found {
+		t.Fatalf("dangling edge exposed through public lookup: %+v, %v", got, err)
+	}
+	zero, err := rows.SummarizeEdgeSources(ctx, pinned.Snapshot, pinned.Generation, key, edge, now,
+		map[SourceID]struct{}{removed.ID: {}, live.ID: {}, expired.ID: {}})
+	if err != nil || zero.Weight != 0 || zero.Count != 2 || zero.Retained.Count != 2 || zero.Expired || zero.Explicit {
+		t.Fatalf("surviving zero-weight bucket: %+v, %v", zero, err)
+	}
+	dead, err := rows.SummarizeEdgeSources(ctx, pinned.Snapshot, pinned.Generation, key, edge, later,
+		map[SourceID]struct{}{removed.ID: {}, ordinal.ID: {}})
+	if err != nil || dead.Count != 0 || dead.RetainedAdds != 2 || dead.Retained.Count != 3 || !dead.Expired || !dead.Retained.Explicit {
+		t.Fatalf("expired rows must remain represented: %+v, %v", dead, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := rows.SummarizeEdgeSources(canceled, pinned.Snapshot, pinned.Generation, key, edge, now, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled summary: %v", err)
+	}
+	if err := db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, b Writer) error {
+		return rows.ReplaceSource(b, gen, key, removed.ID, &removed.Source, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := read()
+	if got, err := rows.SummarizeEdgeSources(ctx, current.Snapshot, current.Generation, key, edge, now, nil); err != nil || got != planned {
+		t.Fatalf("committed summary: %+v, %v, want %+v", got, err, planned)
+	}
+	if _, found, err := rows.GetSource(pinned.Snapshot, pinned.Generation, key, removed.ID); err != nil || !found {
+		t.Fatalf("pinned cut lost the removed source: found=%t, err=%v", found, err)
 	}
 }
 
