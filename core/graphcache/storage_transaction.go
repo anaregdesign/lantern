@@ -49,6 +49,9 @@ func (tx *EdgeContributionDeleteTransaction[S, T]) StoreRows(ctx context.Context
 	if tx == nil || tx.closed || !tx.stage.base.applied {
 		return errStorageStageClosed
 	}
+	if tx.stage.stored != nil {
+		return tx.stage.storeContributionRows(ctx, rows, snapshot, batch, generation)
+	}
 	return tx.stage.base.cache.storeRowsLocked(ctx, rows, snapshot, batch, generation, keys)
 }
 

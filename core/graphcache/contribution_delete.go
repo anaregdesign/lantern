@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -194,6 +195,7 @@ func (c *GraphCache[S, T]) ApplySnapshotEdgeContributionTombstoneHLC(
 
 type stagedEdgeContributionDelete[S comparable, T any] struct {
 	base           *stagedEdgeDelete[S, T]
+	stored         *storedContributionDelete[S]
 	accepted       []IndexedEdgeContributionDelete[S]
 	now            time.Time
 	original       map[EdgeContributionKey[S]]stagedValue[tombstoneEntry]
@@ -214,13 +216,30 @@ type EdgeContributionDeleteTransaction[S comparable, T any] struct {
 func (c *GraphCache[S, T]) PrepareEdgeContributionDelete(
 	keys []EdgeContributionKey[S], ts hlc.Timestamp, expiration time.Time,
 ) (*EdgeContributionDeleteTransaction[S, T], error) {
-	return c.prepareEdgeContributionDelete(keys, ts, expiration, true)
+	return c.prepareEdgeContributionDelete(context.Background(), keys, ts, expiration, true, false)
 }
 
 func (c *GraphCache[S, T]) PrepareReplicatedEdgeContributionDelete(
 	keys []EdgeContributionKey[S], ts hlc.Timestamp, expiration time.Time,
 ) (*EdgeContributionDeleteTransaction[S, T], error) {
-	return c.prepareEdgeContributionDelete(keys, ts, expiration, false)
+	return c.prepareEdgeContributionDelete(context.Background(), keys, ts, expiration, false, false)
+}
+
+// PrepareStoredEdgeContributionDelete stages an exact Delete on the committed
+// storage binding. Serving must exclude graph writers through publication and
+// drain any graph-first effects before entering this path.
+func (c *GraphCache[S, T]) PrepareStoredEdgeContributionDelete(
+	ctx context.Context, keys []EdgeContributionKey[S], ts hlc.Timestamp, expiration time.Time,
+) (*EdgeContributionDeleteTransaction[S, T], error) {
+	return c.prepareEdgeContributionDelete(ctx, keys, ts, expiration, true, true)
+}
+
+// PrepareStoredReplicatedEdgeContributionDelete stages accepted effects on a
+// clean committed cut, without reapplying the receiver's local quota.
+func (c *GraphCache[S, T]) PrepareStoredReplicatedEdgeContributionDelete(
+	ctx context.Context, keys []EdgeContributionKey[S], ts hlc.Timestamp, expiration time.Time,
+) (*EdgeContributionDeleteTransaction[S, T], error) {
+	return c.prepareEdgeContributionDelete(ctx, keys, ts, expiration, false, true)
 }
 
 func (c *GraphCache[S, T]) BeginEdgeContributionDelete(
@@ -258,12 +277,15 @@ func (c *GraphCache[S, T]) BeginReplicatedEdgeContributionDelete(
 }
 
 func (c *GraphCache[S, T]) prepareEdgeContributionDelete(
-	keys []EdgeContributionKey[S], ts hlc.Timestamp, expiration time.Time, strict bool,
+	ctx context.Context, keys []EdgeContributionKey[S], ts hlc.Timestamp, expiration time.Time, strict, stored bool,
 ) (*EdgeContributionDeleteTransaction[S, T], error) {
 	if c.publicationGate == nil || c.dict == nil {
 		return nil, errors.New("graphcache: staged contribution Delete requires a publication gate and dictionary")
 	}
 	if err := validateEdgeContributionKeys(keys, ts, expiration); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	// Extractors can call a point reader, so never run them under either
@@ -295,62 +317,30 @@ func (c *GraphCache[S, T]) prepareEdgeContributionDelete(
 		base: base, now: now,
 		accepted: make([]IndexedEdgeContributionDelete[S], 0, len(keys)),
 	}
-	plans := make(map[EdgeKey[S]]*stagedEdgeDeletePlan[S])
-	accepted := make([]EdgeContributionKey[S], 0, len(keys))
-	for index, key := range keys {
-		if !c.edgeContributionDeleteAllowedLockedAt(key, ts, now) {
-			continue
-		}
-		accepted = append(accepted, key)
-		stage.accepted = append(stage.accepted, IndexedEdgeContributionDelete[S]{Index: index, Key: key})
-		pair := EdgeKey[S]{Tail: key.Tail, Head: key.Head}
-		plan := plans[pair]
-		if plan == nil {
-			before := c.edges.bucket(key.Tail, key.Head)
-			plan = &stagedEdgeDeletePlan[S]{
-				key: pair, before: before, after: cloneWeightForStaging(before, now),
-				headProjected: projected[pair],
-			}
-			if err := c.StorageError(); err != nil {
-				return nil, err
-			}
-			if before != nil {
-				var found bool
-				plan.tailID, plan.headID, found = c.edges.lookupIDs(key.Tail, key.Head)
-				if !found {
-					return nil, errors.New("graphcache: staged contribution Delete dictionary drift")
-				}
-				if c.headByTail != nil {
-					if extract == nil || c.headByTail[plan.tailID] == nil {
-						return nil, errors.New("graphcache: staged contribution Delete head index missing")
-					}
-					if _, ok := c.headByTail[plan.tailID].byProj[plan.headProjected][plan.headID]; !ok {
-						return nil, errors.New("graphcache: staged contribution Delete head projection drift")
-					}
-				}
-			}
-			plans[pair] = plan
-			base.plans = append(base.plans, plan)
-		}
-		if plan.after != nil {
-			removed, empty := plan.after.removeContributionAt(key.ContribID, now)
-			base.outcomes[index] = removed
-			if empty {
-				plan.after = nil
-			}
-		}
+	var err error
+	if stored {
+		err = stage.planStoredLocked(ctx, keys, projected, extract != nil)
+	} else {
+		err = stage.planCacheLocked(keys, projected, extract != nil)
+	}
+	if err != nil {
+		return nil, err
 	}
 	if strict && ts != (hlc.Timestamp{}) && now.Before(expiration) {
+		accepted := make([]EdgeContributionKey[S], 0, len(stage.accepted))
+		for _, entry := range stage.accepted {
+			accepted = append(accepted, entry.Key)
+		}
 		if err := c.checkEdgeContributionCausalCapacityLocked(accepted); err != nil {
 			return nil, err
 		}
 	}
 	base.captureUndoLocked()
 	stage.originalMap = c.edgeContributionTombstones
-	stage.original = make(map[EdgeContributionKey[S]]stagedValue[tombstoneEntry], len(accepted))
-	for _, key := range accepted {
-		value, set := c.edgeContributionTombstones[key]
-		stage.original[key] = stagedValue[tombstoneEntry]{value: value, set: set}
+	stage.original = make(map[EdgeContributionKey[S]]stagedValue[tombstoneEntry], len(stage.accepted))
+	for _, entry := range stage.accepted {
+		value, set := c.edgeContributionTombstones[entry.Key]
+		stage.original[entry.Key] = stagedValue[tombstoneEntry]{value: value, set: set}
 	}
 	stage.deadlines.capture(&c.edgeContributionDeadlines)
 	stage.tombstoneBytes = c.edgeContributionTombstoneBytes
@@ -371,6 +361,62 @@ func (c *GraphCache[S, T]) prepareEdgeContributionDelete(
 	}
 	owned = false
 	return &EdgeContributionDeleteTransaction[S, T]{stage: stage}, nil
+}
+
+func (s *stagedEdgeContributionDelete[S, T]) planCacheLocked(keys []EdgeContributionKey[S], projected map[EdgeKey[S]]string, hasProjection bool) error {
+	c := s.base.cache
+	plans := make(map[EdgeKey[S]]*stagedEdgeDeletePlan[S])
+	for index, key := range keys {
+		if !c.edgeContributionDeleteAllowedLockedAt(key, s.base.ts, s.now) {
+			continue
+		}
+		s.accepted = append(s.accepted, IndexedEdgeContributionDelete[S]{Index: index, Key: key})
+		pair := EdgeKey[S]{Tail: key.Tail, Head: key.Head}
+		plan := plans[pair]
+		if plan == nil {
+			var err error
+			plan, err = s.planBucketLocked(pair, projected[pair], hasProjection)
+			if err != nil {
+				return err
+			}
+			plan.after = cloneWeightForStaging(plan.before, s.now)
+			if err := c.StorageError(); err != nil {
+				return err
+			}
+			plans[pair] = plan
+			s.base.plans = append(s.base.plans, plan)
+		}
+		if plan.after != nil {
+			removed, empty := plan.after.removeContributionAt(key.ContribID, s.now)
+			s.base.outcomes[index] = removed
+			if empty {
+				plan.after = nil
+			}
+		}
+	}
+	return nil
+}
+
+func (s *stagedEdgeContributionDelete[S, T]) planBucketLocked(pair EdgeKey[S], projected string, hasProjection bool) (*stagedEdgeDeletePlan[S], error) {
+	c := s.base.cache
+	plan := &stagedEdgeDeletePlan[S]{key: pair, before: c.edges.bucket(pair.Tail, pair.Head), headProjected: projected}
+	if plan.before == nil {
+		return plan, nil
+	}
+	var found bool
+	plan.tailID, plan.headID, found = c.edges.lookupIDs(pair.Tail, pair.Head)
+	if !found {
+		return nil, errors.New("graphcache: staged contribution Delete dictionary drift")
+	}
+	if c.headByTail != nil {
+		if !hasProjection || c.headByTail[plan.tailID] == nil {
+			return nil, errors.New("graphcache: staged contribution Delete head index missing")
+		}
+		if _, ok := c.headByTail[plan.tailID].byProj[projected][plan.headID]; !ok {
+			return nil, errors.New("graphcache: staged contribution Delete head projection drift")
+		}
+	}
+	return plan, nil
 }
 
 func (tx *EdgeContributionDeleteTransaction[S, T]) Result() EdgeContributionDeleteStageResult[S] {
@@ -445,7 +491,7 @@ func (s *stagedEdgeContributionDelete[S, T]) applyLocked() {
 			c.edges.tf[plan.tailID][plan.headID] = plan.after
 			c.edges.mu.Unlock()
 		}
-		c.reconcileEdgeCausalUsageLocked(plan.key)
+		c.reconcileStagedEdgeCausalUsageLocked(plan.key)
 	}
 	complete = true
 }

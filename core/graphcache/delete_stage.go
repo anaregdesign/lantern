@@ -479,15 +479,19 @@ func (s *stagedEdgeDelete[S, T]) applyLocked() {
 				c.edgeCausalBarriers = nil
 			}
 		}
-		if c.edgeHasCausalStateLocked(key) {
-			c.ensureEdgeCausalUsageLocked(key)
-		} else if bytes, ok := c.edgeCausalUsage[key]; ok {
-			delete(c.edgeCausalUsage, key)
-			c.edgeCausalUsageBytes -= bytes
-			// Shrinking would rebuild the whole ledger and defeat sparse undo.
-		}
+		c.reconcileStagedEdgeCausalUsageLocked(key)
 	}
 	complete = true
+}
+
+func (c *GraphCache[S, T]) reconcileStagedEdgeCausalUsageLocked(key EdgeKey[S]) {
+	if c.edgeHasCausalStateLocked(key) {
+		c.ensureEdgeCausalUsageLocked(key)
+	} else if bytes, ok := c.edgeCausalUsage[key]; ok {
+		delete(c.edgeCausalUsage, key)
+		c.edgeCausalUsageBytes -= bytes
+		// Shrinking would rebuild the whole ledger and defeat sparse undo.
+	}
 }
 
 func (s *stagedEdgeDelete[S, T]) stageDeadlineLocked(key EdgeKey[S], deadline time.Time) {
