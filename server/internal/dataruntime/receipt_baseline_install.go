@@ -12,7 +12,6 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 type receiptBaselineInstallFaultPoint string
@@ -70,13 +69,9 @@ func (s *Executor) installReceiptBaseline(
 		return fmt.Errorf("%w: baseline policy mismatch", errReceiptBaselineMarker)
 	}
 
-	incomingRaw, err := receiptRuntime.baselineCodec.EncodeCombinedReceiptBaseline(ctx, capture)
-	if err != nil {
-		return fmt.Errorf("service: encode receipt baseline: %w", err)
-	}
-	incoming, err := receiptRuntime.baselineCodec.StageCombinedReceiptBaseline(
+	incoming, graphFrames, err := receiptRuntime.baselineCodec.StageReceiptBaselineCapture(
 		ctx,
-		incomingRaw,
+		capture,
 		receiptRuntime.policy,
 		receiptRuntime.defaultTTL,
 		s.runtime.configureGraphCandidate,
@@ -96,7 +91,6 @@ func (s *Executor) installReceiptBaseline(
 	if incoming.Retired.ClockHighWaterMillis != incomingReceipts.ClockHighWaterMillis {
 		return fmt.Errorf("%w: active and retired baseline high-water differs", errReceiptBaselineMarker)
 	}
-	graphFrames := cloneReceiptBaselineGraphFrames(capture.Graph)
 	for attempt := 0; attempt < receiptBaselineInstallMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -267,16 +261,6 @@ func (s *Executor) prepareReceiptBaselineAttempt(
 			CutoffHLC:      incoming.CutoffHLC,
 		},
 	}, nil
-}
-
-func cloneReceiptBaselineGraphFrames(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
-	cloned := make([]*pb.SnapshotResponse, len(frames))
-	for i, frame := range frames {
-		if frame != nil {
-			cloned[i] = proto.Clone(frame).(*pb.SnapshotResponse)
-		}
-	}
-	return cloned
 }
 
 func validateReceiptBaselineDominance(

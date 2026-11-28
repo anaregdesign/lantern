@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -790,7 +791,31 @@ func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
 
 func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 	cache := provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{Enabled: true, Positions: true})
-	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+	checkStructuredSearchOverRealH2C(t, service.NewLanternService(cache))
+}
+
+func TestSearchVertices_TarpStructuredFieldsOverRealH2C(t *testing.T) {
+	t.Setenv("LANTERN_DATA_DIR", filepath.Join(t.TempDir(), "graph"))
+	cfg, err := provider.NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Search.Enabled = true
+	cfg.Search.Positions = true
+	runtime, cleanup, err := provider.NewServingRuntime(cfg.Receipts, cfg.Cache, cfg.Search, cfg.MutationLog, cfg.Replication, cfg.Backup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	checkStructuredSearchOverRealH2C(t, runtime.NewExecutor(nil).WithTombstoneTTL(time.Hour))
+	if stats := runtime.GraphCache().SearchIndexMemoryStats(); stats.Documents != 0 || stats.Postings != 0 {
+		t.Fatalf("durable serving retained the RAM index: %+v", stats)
+	}
+}
+
+func checkStructuredSearchOverRealH2C(t *testing.T, svc *service.LanternService) {
+	t.Helper()
+	svc.WithSearchLimits(service.SearchLimits{
 		Enabled: true, PositionsEnabled: true, DefaultLimit: 20, MaxLimit: 100,
 	})
 	srv := newConnectTestServer(t, svc, nil)

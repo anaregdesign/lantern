@@ -5,15 +5,17 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"maps"
 	"math"
+	"slices"
 
 	"github.com/anaregdesign/tarp"
 )
 
 // UpdateRows commits a graph mutation and its application records together.
-// If a single Tarp batch cannot hold the result, it streams the same postimage
-// into an unpublished generation and switches the manifest once. prepare may
-// be called again on the same snapshot if its writes exceed a single batch.
+// If a single Tarp batch cannot hold the result, it stages the distinct
+// postimage across segments. prepare may be called again on the same snapshot
+// if its writes exceed a single batch.
 // It must only stage rows and return the same postimage on each invocation.
 func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapshot, Writer) error) error {
 	db.mu.Lock()
@@ -74,15 +76,16 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The tentative size includes every input. Retry against the distinct
-	// postimage with absent Deletes removed before copying a generation.
-	if batch.oversized {
-		applied, err := db.applyCoalescedRows(ctx, snap, next, plan)
-		if err != nil || applied {
-			return err
-		}
+	// Try the distinct postimage before going through disk staging.
+	applied, err := db.applyCoalescedRows(ctx, snap, next, plan)
+	if err != nil || applied {
+		return err
 	}
-	return db.replaceRows(ctx, snap, plan, next)
+	err = db.commitStagedRows(ctx, next, plan)
+	if canReplaceStagedLimit(err) {
+		return db.replaceRows(ctx, snap, plan, next)
+	}
+	return err
 }
 
 func (db *DB) rowBatchSizer() (tarp.WriteBatchSizer, error) {
@@ -97,6 +100,7 @@ func (db *DB) applyCoalescedRows(ctx context.Context, snap *tarp.Snapshot, next 
 	if err != nil {
 		return false, err
 	}
+	fits := true
 	for key, op := range plan.changes {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -116,15 +120,20 @@ func (db *DB) applyCoalescedRows(ctx context.Context, snap *tarp.Snapshot, next 
 				continue
 			}
 		}
-		if err := sizer.Add(uint64(len(key)), uint64(len(op.value))); err != nil {
-			if canCoalesce(err) {
-				return false, nil
+		if fits {
+			if err := sizer.Add(uint64(len(key)), uint64(len(op.value))); err != nil {
+				if !canCoalesce(err) {
+					return false, err
+				}
+				fits = false
 			}
-			return false, err
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
+	}
+	if !fits {
+		return false, nil
 	}
 	var batch tarp.WriteBatch
 	var graphBytes uint64
@@ -138,7 +147,11 @@ func (db *DB) applyCoalescedRows(ctx context.Context, snap *tarp.Snapshot, next 
 			batch.Put([]byte(key), op.value)
 		}
 	}
-	return true, db.commitRows(next, &batch, graphBytes)
+	err = db.commitRows(next, &batch, graphBytes)
+	if exceedsBatchCapacity(err) {
+		return false, nil
+	}
+	return true, err
 }
 
 func canCoalesce(err error) bool {
@@ -162,8 +175,52 @@ func (db *DB) commitRows(next manifest, batch *tarp.WriteBatch, graphBytes uint6
 	return nil
 }
 
+// The graph writer gate stays held through spooling and publication. The
+// manifest, graph rows and service rows advance together without a generation
+// change, so already pinned views and generation-scoped consumers still work.
+func (db *DB) commitStagedRows(ctx context.Context, next manifest, plan rowUpdate) error {
+	db.interruptKeyOrder()
+	keys := append(slices.Collect(maps.Keys(plan.changes)), manifestKey)
+	slices.Sort(keys)
+	var graphBytes uint64
+	err := db.observeWrite(db.raw.ApplyStaged(ctx, func(yield func(tarp.StagedMutation, error) bool) {
+		for _, key := range keys {
+			if key == manifestKey {
+				if !yield(tarp.StagedMutation{Key: []byte(key), Value: next.encode()}, nil) {
+					return
+				}
+				continue
+			}
+			op := plan.changes[key]
+			if key[0] == 'G' {
+				graphBytes += uint64(len(key)) + uint64(len(op.value)) + 48
+			}
+			if !yield(tarp.StagedMutation{Key: []byte(key), Value: op.value, Delete: op.deleted}, nil) {
+				return
+			}
+		}
+	}))
+	if err != nil {
+		return err
+	}
+	db.head = next
+	db.graphInput += graphBytes
+	return nil
+}
+
+func canReplaceStagedLimit(err error) bool {
+	// A second publication is permitted only for a definite staged limit
+	// with successful cleanup.
+	op, ok := err.(*tarp.OpError)
+	if !ok || op.Outcome != tarp.NotApplied || errors.Is(err, tarp.ErrUnhealthy) || errors.Is(err, tarp.ErrCommitUncertain) {
+		return false
+	}
+	return op.Phase == "input" && canCoalesce(op.Err) ||
+		op.Phase == "prepare" && errors.Is(op.Err, tarp.ErrTooLarge)
+}
+
 // Ordinary requests write directly into Tarp's owned batch arena. Only
-// oversized requests need the map of distinct keys for generation replacement.
+// oversized requests need the map of distinct keys for staged publication.
 type boundedUpdate struct {
 	generation uint64
 	batch      tarp.WriteBatch

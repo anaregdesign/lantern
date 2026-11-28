@@ -234,6 +234,11 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if err != nil {
 		return nil, err
 	}
+	releaseSearch, err := s.holdDiskSearchAdmission(ctx)
+	if err != nil {
+		return nil, ctxToConnect(err)
+	}
+	defer releaseSearch()
 	graphTx, err := c.cache.BeginVertexDeleteContext(ctx, keys, ts, expiration)
 	if err != nil {
 		return nil, searchIndexWriteError(err)
@@ -295,6 +300,9 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	}
 	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
+		if rejection := diskSearchWriteRejection(err); rejection != nil {
+			return nil, rejection
+		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}

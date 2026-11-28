@@ -20,6 +20,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -50,20 +51,22 @@ func (c *receiptBaselineTestCodec) DigestCombinedReceiptBaseline(ctx context.Con
 	return sha256.Sum256(raw), uint64(len(raw)), nil
 }
 
-func (c *receiptBaselineTestCodec) StageCombinedReceiptBaseline(
+func (c *receiptBaselineTestCodec) StageReceiptBaselineCapture(
 	ctx context.Context,
-	raw []byte,
+	capture ReceiptWholeStateCapture,
 	_ mutationreceipt.Config,
 	_ time.Duration,
 	_ func(*graphcache.GraphCache[string, *pb.Vertex]) error,
-) (*ReceiptBaselineCandidate, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+) (*ReceiptBaselineCandidate, []*pb.SnapshotResponse, error) {
+	if _, err := c.EncodeCombinedReceiptBaseline(ctx, capture); err != nil {
+		return nil, nil, err
 	}
-	if !bytes.Equal(raw, c.raw) {
-		return nil, errors.New("noncanonical test baseline")
+	candidate, err := c.build()
+	frames := make([]*pb.SnapshotResponse, len(capture.Graph))
+	for i, frame := range capture.Graph {
+		frames[i] = proto.CloneOf(frame)
 	}
-	return c.build()
+	return candidate, frames, err
 }
 
 type receiptBaselineTestImage struct {
@@ -1072,27 +1075,20 @@ type blockingReceiptBaselineCodec struct {
 	once     sync.Once
 }
 
-func (c *blockingReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
+func (c *blockingReceiptBaselineCodec) StageReceiptBaselineCapture(
 	ctx context.Context,
 	capture ReceiptWholeStateCapture,
-) ([]byte, error) {
-	c.once.Do(func() { close(c.entered) })
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.release:
-	}
-	return c.delegate.EncodeCombinedReceiptBaseline(ctx, capture)
-}
-
-func (c *blockingReceiptBaselineCodec) StageCombinedReceiptBaseline(
-	ctx context.Context,
-	raw []byte,
 	config mutationreceipt.Config,
 	defaultTTL time.Duration,
 	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
-) (*ReceiptBaselineCandidate, error) {
-	return c.delegate.StageCombinedReceiptBaseline(ctx, raw, config, defaultTTL, configureGraph)
+) (*ReceiptBaselineCandidate, []*pb.SnapshotResponse, error) {
+	c.once.Do(func() { close(c.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-c.release:
+	}
+	return c.delegate.StageReceiptBaselineCapture(ctx, capture, config, defaultTTL, configureGraph)
 }
 
 func (c *blockingReceiptBaselineCodec) DigestCombinedReceiptBaseline(ctx context.Context, capture ReceiptWholeStateCapture) ([32]byte, uint64, error) {

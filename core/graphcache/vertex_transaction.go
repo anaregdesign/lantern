@@ -51,7 +51,14 @@ func (c *GraphCache[S, T]) BeginVertexPut(
 func (c *GraphCache[S, T]) BeginVertexPutContext(
 	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, nil)
+	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, false, nil)
+}
+
+// BeginVertexPutInAppliedViewContext stages a local Put against the applied
+// graph. The serving publisher uses this view while already-applied peer
+// effects wait for their original WAL publication.
+func (c *GraphCache[S, T]) BeginVertexPutInAppliedViewContext(ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool) (*VertexPutTransaction[S, T], error) {
+	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, true, nil)
 }
 
 // BeginReplicatedVertexPut stages an already-committed receiver projection.
@@ -70,11 +77,11 @@ func (c *GraphCache[S, T]) BeginReplicatedVertexPut(
 func (c *GraphCache[S, T]) BeginReplicatedVertexPutContext(
 	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(ctx, items, ts, false, false, nil)
+	return c.beginVertexPut(ctx, items, ts, false, false, false, nil)
 }
 
 func (c *GraphCache[S, T]) beginVertexPut(
-	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict bool,
+	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict, appliedView bool,
 	mixed *stagedGraphMutation[S, T],
 ) (*VertexPutTransaction[S, T], error) {
 	if err := ctx.Err(); err != nil {
@@ -177,10 +184,14 @@ func (c *GraphCache[S, T]) beginVertexPut(
 			return nil, search.ErrIndexIncomplete
 		}
 
-		before, err := c.storedVertexPreimagesLocked(ctx, vertexKeys)
-		if err != nil {
-			unlockMu()
-			return nil, err
+		var before map[S]storedVertexBefore
+		if !appliedView {
+			var err error
+			before, err = c.storedVertexPreimagesLocked(ctx, vertexKeys)
+			if err != nil {
+				unlockMu()
+				return nil, err
+			}
 		}
 		applied := c.planStagedVertexPutLocked(items, ts, ifAbsent, time.Now(), nil, before)
 		final := finalVertexIndexes(items, applied)
@@ -393,7 +404,16 @@ func (c *GraphCache[S, T]) BeginVertexDelete(
 func (c *GraphCache[S, T]) BeginVertexDeleteContext(
 	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
 ) (*VertexDeleteTransaction[S, T], error) {
-	return c.beginVertexDelete(ctx, keys, ts, expiration, true)
+	return c.beginVertexDelete(ctx, keys, ts, expiration, true, false)
+}
+
+// BeginVertexDeleteInAppliedViewContext stages an exact local Delete against
+// the graph-applied state while the publication owner has pending WAL work.
+// The owner must serialize the stage and WAL attempt with that pending work.
+func (c *GraphCache[S, T]) BeginVertexDeleteInAppliedViewContext(
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
+) (*VertexDeleteTransaction[S, T], error) {
+	return c.beginVertexDelete(ctx, keys, ts, expiration, true, true)
 }
 
 // BeginReplicatedVertexDelete stages a certified remote exact Delete without
@@ -410,11 +430,11 @@ func (c *GraphCache[S, T]) BeginReplicatedVertexDelete(
 func (c *GraphCache[S, T]) BeginReplicatedVertexDeleteContext(
 	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
 ) (*VertexDeleteTransaction[S, T], error) {
-	return c.beginVertexDelete(ctx, keys, ts, expiration, false)
+	return c.beginVertexDelete(ctx, keys, ts, expiration, false, false)
 }
 
 func (c *GraphCache[S, T]) beginVertexDelete(
-	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time, strict bool,
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time, strict, appliedView bool,
 ) (*VertexDeleteTransaction[S, T], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -488,10 +508,14 @@ func (c *GraphCache[S, T]) beginVertexDelete(
 			return nil, search.ErrIndexIncomplete
 		}
 
-		before, err := c.storedVertexPreimagesLocked(ctx, keys)
-		if err != nil {
-			unlockMu()
-			return nil, err
+		var before map[S]storedVertexBefore
+		if !appliedView {
+			var err error
+			before, err = c.storedVertexPreimagesLocked(ctx, keys)
+			if err != nil {
+				unlockMu()
+				return nil, err
+			}
 		}
 		_, acceptedIndexes := c.planExactVertexDeleteLocked(keys, ts, before)
 		acceptedKeys := vertexKeysAtIndexes(keys, acceptedIndexes)

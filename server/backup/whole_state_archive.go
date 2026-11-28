@@ -65,49 +65,96 @@ func wholeStateArchiveError(format string, args ...any) error {
 // authenticity signature and cannot prove that the producer captured one
 // atomic graph/receipt/origin cut.
 func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
-	maxEntries, err := archiveMaxEntries(a.Policy.MaxEntries)
-	if err != nil {
-		return err
-	}
 	if err := validateWholeStateArchive(a); err != nil {
 		return err
 	}
 	var out bytes.Buffer
-	out.WriteString(wholeStateArchiveMagic)
-	writeArchiveU16(&out, wholeStateArchiveVersion)
-	writeArchiveU16(&out, wholeStateArchiveReceipts)
-	writeArchiveU32(&out, 0)
-	out.Write(a.Receipts.Epoch[:])
-	out.Write(a.Receipts.PolicyFingerprint[:])
-	writeArchiveU64(&out, uint64(a.Receipts.ClockHighWaterMillis))
-	writeArchiveU64(&out, uint64(a.Policy.Retention/time.Millisecond))
-	writeArchiveU32(&out, maxEntries)
-	writeArchiveU64(&out, a.Policy.MaxBytes)
-	if err := visitWholeStateArchiveRecords(a, func(kind byte, payload []byte) error {
-		return writeArchiveRecord(&out, kind, payload)
-	}); err != nil {
+	if _, err := writeValidatedWholeStateArchive(context.Background(), &out, a); err != nil {
 		return err
 	}
-	if out.Len()+5+wholeStateArchiveFooterSize > wholeStateArchiveMaxBytes {
-		return wholeStateArchiveError("archive exceeds byte limit")
-	}
-	digest := sha256.Sum256(out.Bytes())
-	var footer bytes.Buffer
-	writeArchiveU64(&footer, uint64(len(a.Graph)))
-	writeArchiveU64(&footer, uint64(len(a.Receipts.Receipts)))
-	writeArchiveU64(&footer, uint64(len(a.Origins)))
-	footer.Write(digest[:])
-	if err := writeArchiveRecord(&out, wholeStateFooterRecord, footer.Bytes()); err != nil {
-		return err
-	}
-	n, err := w.Write(out.Bytes())
-	if err != nil {
+	if err := writeArchiveBytes(w, out.Bytes()); err != nil {
 		return fmt.Errorf("backup: write whole-state archive: %w", err)
 	}
-	if n != out.Len() {
-		return fmt.Errorf("backup: write whole-state archive: %w", io.ErrShortWrite)
-	}
 	return nil
+}
+
+func writeValidatedWholeStateArchive(ctx context.Context, w io.Writer, a wholeStateArchive) (int, error) {
+	var header bytes.Buffer
+	header.WriteString(wholeStateArchiveMagic)
+	writeArchiveU16(&header, wholeStateArchiveVersion)
+	writeArchiveU16(&header, wholeStateArchiveReceipts)
+	writeArchiveU32(&header, 0)
+	header.Write(a.Receipts.Epoch[:])
+	header.Write(a.Receipts.PolicyFingerprint[:])
+	writeArchiveU64(&header, uint64(a.Receipts.ClockHighWaterMillis))
+	writeArchiveU64(&header, uint64(a.Policy.Retention/time.Millisecond))
+	writeArchiveU32(&header, uint32(a.Policy.MaxEntries))
+	writeArchiveU64(&header, a.Policy.MaxBytes)
+	counts := []uint64{uint64(len(a.Graph)), uint64(len(a.Receipts.Receipts)), uint64(len(a.Origins))}
+	return writeArchiveSection(ctx, w, header.Bytes(), counts, func(visit func(byte, []byte) error) error {
+		return visitWholeStateArchiveRecords(a, visit)
+	})
+}
+
+// writeArchiveSection emits one canonical section with a digest over its header
+// and body. The sink can be a hash when an installer only needs the identity.
+func writeArchiveSection(ctx context.Context, w io.Writer, header []byte, counts []uint64, records func(func(byte, []byte) error) error) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	checksum := sha256.New()
+	body := io.MultiWriter(w, checksum)
+	if err := writeArchiveBytes(body, header); err != nil {
+		return 0, err
+	}
+	size := len(header)
+	if err := records(func(kind byte, payload []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		size, err = checkedArchiveRecordSize(size, len(payload))
+		if err != nil {
+			return err
+		}
+		return writeArchiveRecordBytes(body, kind, payload)
+	}); err != nil {
+		return 0, err
+	}
+	var footer bytes.Buffer
+	for _, count := range counts {
+		writeArchiveU64(&footer, count)
+	}
+	footer.Write(checksum.Sum(nil))
+	size, err := checkedArchiveRecordSize(size, footer.Len())
+	if err != nil {
+		return 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := writeArchiveRecordBytes(w, wholeStateFooterRecord, footer.Bytes()); err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
+func writeArchiveRecordBytes(w io.Writer, kind byte, payload []byte) error {
+	var prefix [5]byte
+	prefix[0] = kind
+	binary.BigEndian.PutUint32(prefix[1:], uint32(len(payload)))
+	if err := writeArchiveBytes(w, prefix[:]); err != nil {
+		return err
+	}
+	return writeArchiveBytes(w, payload)
+}
+
+func writeArchiveBytes(w io.Writer, p []byte) error {
+	n, err := w.Write(p)
+	if err == nil && n != len(p) {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 // validateWholeStateArchiveEncoding checks that already owned decoded state
@@ -304,16 +351,6 @@ func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []dataruntime.O
 	if err := dataruntime.ValidateReceiptSnapshotGraphCapture(frames, origins); err != nil {
 		return wholeStateArchiveError("%v", err)
 	}
-	return nil
-}
-
-func writeArchiveRecord(w *bytes.Buffer, kind byte, payload []byte) error {
-	if _, err := checkedArchiveRecordSize(w.Len(), len(payload)); err != nil {
-		return err
-	}
-	w.WriteByte(kind)
-	writeArchiveU32(w, uint32(len(payload)))
-	w.Write(payload)
 	return nil
 }
 

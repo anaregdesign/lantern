@@ -21,6 +21,7 @@ const (
 	incomingEdgeFamily   byte = 10
 	topologyFamily       byte = 11
 	sourceOrderFamily    byte = 12
+	vertexExpiryFamily   byte = 13
 )
 
 type FloorKind byte

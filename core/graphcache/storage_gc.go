@@ -96,6 +96,21 @@ func (c *GraphCache[S, T]) flushStorage(ctx context.Context, now time.Time) erro
 			if err := c.storeRowsLocked(ctx, c.storage.rows, snap, b, gen, keys); err != nil {
 				return err
 			}
+			var reclaimedDeadline time.Time
+			for _, key := range keys.Vertices {
+				vertex, found, err := c.storage.rows.GetVertexMetadata(snap, gen, key)
+				if err != nil {
+					return err
+				}
+				if found && !vertex.Expiration.After(now) && vertex.Expiration.After(reclaimedDeadline) {
+					reclaimedDeadline = vertex.Expiration
+				}
+			}
+			if !reclaimedDeadline.IsZero() {
+				if err := graphstore.StageVertexExpiryWatermark(ctx, snap, b, gen, reclaimedDeadline); err != nil {
+					return err
+				}
+			}
 			for _, k := range floors {
 				active, found, err := c.storage.rows.GetFloor(snap, gen, k)
 				if err != nil {

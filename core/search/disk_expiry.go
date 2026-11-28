@@ -16,11 +16,13 @@ var diskForwardCodec = mustDiskOrderedCodec[struct {
 }]()
 
 type diskQueryOverlay struct {
-	excluded  map[uint64]struct{}
-	removedDF map[Token][numDocumentFields]int
-	addedDocs map[uint64]diskDocValue
-	terms     map[Token]*diskOverlayTerm
-	bytes     int
+	excluded         map[uint64]struct{}
+	removedDF        map[Token][numDocumentFields]int
+	addedDocs        map[uint64]diskDocValue
+	terms            map[Token]*diskOverlayTerm
+	bytes            int
+	removedDeadlines uint64
+	expiredDocuments uint64
 }
 
 func (q *diskQuery) applyDueDeadlines() error {
@@ -104,6 +106,12 @@ func (q *diskQuery) excludeDocument(id uint64, doc diskDocValue) error {
 		return err
 	}
 	q.overlay.excluded[id] = struct{}{}
+	if !doc.expiration.IsZero() {
+		q.overlay.removedDeadlines++
+		if !doc.expiration.After(q.now) {
+			q.overlay.expiredDocuments++
+		}
+	}
 	return nil
 }
 

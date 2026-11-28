@@ -189,7 +189,7 @@ func (s *Engine) SearchVertices(ctx context.Context, in *pb.SearchVerticesReques
 	queryLimit := retainedLimit + 1
 	captured, viewErr := reader.Capture(ctx, Spec{
 		Query: in.GetQuery(), Limit: queryLimit, Prefix: in.GetPrefix(),
-		Options: opts, Phrase: phrase, Budget: s.limits.WorkBudget, Projection: projection,
+		Options: opts, Phrase: phrase, Budget: s.limits.WorkBudget, MaxQueryBytes: s.limits.MaxQueryBytes, Projection: projection,
 	})
 	if viewErr != nil {
 		observation.Outcome, observation.Reason = "failed_precondition", "publication_gap"

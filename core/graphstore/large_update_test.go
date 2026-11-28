@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"slices"
@@ -10,6 +11,28 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/tarp"
 )
+
+func TestStagedLimitFallbackRequiresDefiniteCapacityFailure(t *testing.T) {
+	limit := &tarp.BatchLimitError{Kind: tarp.BatchInputCountLimit, Actual: 2, Limit: 1}
+	rejected := &tarp.OpError{Phase: "input", Outcome: tarp.NotApplied, Err: limit}
+	segmentLimit := &tarp.OpError{Phase: "prepare", Outcome: tarp.NotApplied, Err: tarp.ErrTooLarge}
+	if !canReplaceStagedLimit(rejected) || !canReplaceStagedLimit(segmentLimit) {
+		t.Fatal("definite staged limits did not permit generation replacement")
+	}
+	for _, err := range []error{
+		&tarp.OpError{Phase: "input", Outcome: tarp.Unknown, Err: limit},
+		&tarp.OpError{Phase: "prepare", Outcome: tarp.Committed, Err: tarp.ErrTooLarge},
+		&tarp.OpError{Phase: "prepare", Outcome: tarp.NotApplied, Err: tarp.ErrBusy},
+		&tarp.OpError{Phase: "prepare", Outcome: tarp.NotApplied, Err: tarp.ErrNoSpace},
+		&tarp.OpError{Phase: "prepare", Outcome: tarp.NotApplied, Err: context.Canceled},
+		&tarp.OpError{Phase: "prepare", Outcome: tarp.NotApplied, Err: errors.Join(tarp.ErrTooLarge, tarp.ErrCommitUncertain)},
+		errors.Join(rejected, errors.New("cleanup failed")),
+	} {
+		if canReplaceStagedLimit(err) {
+			t.Fatalf("fallback allowed after %v", err)
+		}
+	}
+}
 
 func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 	ctx := t.Context()
@@ -43,6 +66,8 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	allocated := db.head.allocated
+	graphInput := db.graphInput
 	err = db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, w Writer) error {
 		w.Delete(key(gen, 1, 1))
 		for i := range uint32(tarp.MaxWriteBatchEntries) {
@@ -52,6 +77,9 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if db.head.allocated != allocated || db.graphInput <= graphInput {
+		t.Fatalf("staged update allocation = %d and graph input = %d", db.head.allocated, db.graphInput)
 	}
 	if v, err := old.Snapshot.Get(key(old.Generation, 1, 1)); err != nil || string(v) != "deleted" {
 		t.Fatal("original cut changed", err)
@@ -72,7 +100,7 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer view.Close()
-	if view.Revision != old.Revision+1 || view.Generation == old.Generation {
+	if view.Revision != old.Revision+1 || view.Generation != old.Generation {
 		t.Fatal("invalid published revision or generation", view.Revision, view.Generation)
 	}
 	if v, err := view.Snapshot.Get(key(view.Generation, 1, 0)); err != nil || string(v) != "kept" {
@@ -93,7 +121,7 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 		t.Fatal("incomplete update", n)
 	}
 	if ready, err := rows.HasIncomingEdgeIndex(view.Snapshot, view.Generation); !ready || err != nil {
-		t.Fatalf("copied incoming readiness = %v, %v", ready, err)
+		t.Fatalf("incoming readiness = %v, %v", ready, err)
 	}
 	var incoming []EdgeKey[string]
 	for pair, err := range rows.IncomingEdges(ctx, view.Snapshot, view.Generation, "東") {
@@ -103,14 +131,14 @@ func TestOversizedUpdateSurvivesReopenAsOneRevision(t *testing.T) {
 		incoming = append(incoming, pair)
 	}
 	if !slices.Equal(incoming, []EdgeKey[string]{added, kept}) {
-		t.Fatalf("remapped incoming edges = %v", incoming)
+		t.Fatalf("incoming edges = %v", incoming)
 	}
 	if stats, ready, err := rows.GetTopologyStats(view.Snapshot, view.Generation); err != nil || !ready || stats != (TopologyStats{2, 2}) {
-		t.Fatalf("remapped topology totals = %+v, ready=%t, err=%v", stats, ready, err)
+		t.Fatalf("topology totals = %+v, ready=%t, err=%v", stats, ready, err)
 	}
 	for key, want := range map[string]TopologyDegree{"東": {In: 2}, "kept": {Out: 1}, "added\x00": {Out: 1}, "removed": {}} {
 		if got, err := rows.GetTopologyDegree(view.Snapshot, view.Generation, key); err != nil || got != want {
-			t.Fatalf("remapped degree %q = %+v, err=%v; want %+v", key, got, err, want)
+			t.Fatalf("degree %q = %+v, err=%v; want %+v", key, got, err, want)
 		}
 	}
 }
@@ -120,12 +148,11 @@ func TestUpdateRowsSegmentBoundary(t *testing.T) {
 		name       string
 		coalesce   bool
 		secondSize int
-		generation uint64
 	}{
-		{"ExactFit", false, 64, 1},
-		{"OneByteOver", false, 65, 2},
-		{"CoalescedExactFit", true, 64, 1},
-		{"CoalescedOneByteOver", true, 65, 2},
+		{"ExactFit", false, 64},
+		{"OneByteOver", false, 65},
+		{"CoalescedExactFit", true, 64},
+		{"CoalescedOneByteOver", true, 65},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -182,7 +209,7 @@ func TestUpdateRowsSegmentBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer view.Close()
-			if view.Revision != 1 || view.Generation != tc.generation {
+			if view.Revision != 1 || view.Generation != old.Generation {
 				t.Fatalf("reopened revision %d generation %d", view.Revision, view.Generation)
 			}
 			for i, want := range [][]byte{first, second} {

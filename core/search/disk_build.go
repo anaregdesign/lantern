@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 )
 
 const diskBuildBatchBytes = 4 << 20
+const retiredDiskBase = "\x01"
 
 type diskInputSuffix struct {
 	Class uint8
@@ -192,6 +194,10 @@ func writeDiskDocuments(ctx context.Context, batch *diskBuildBatch, footer *disk
 			return diskInvalid("posting or position count exhausted")
 		}
 		footer.Documents++
+		footer.LiveDocuments++
+		if !input.Expiration.IsZero() {
+			footer.Deadlines++
+		}
 		footer.Capacity.Postings += int64(prepared.postings)
 		footer.Capacity.Positions += int64(prepared.positionEntries)
 		if err := limitError(LimitLivePostings, footer.Capacity.Postings, config.limits.MaxLivePostings); err != nil {
@@ -410,6 +416,9 @@ func verifyDiskBuild(ctx context.Context, db *tarp.DB, base, expected uint64, ma
 	return [32]byte(digest.Sum(nil)), nil
 }
 
+// BaseID returns the immutable identity selected in the Graph store.
+func (idx *DiskIndex) BaseID() uint64 { return idx.base }
+
 // Source returns the graph cut certified by the base's commit footer.
 func (idx *DiskIndex) Source() DiskSource { return idx.footer.Source }
 
@@ -425,10 +434,11 @@ func RetireDiskBase(ctx context.Context, db *tarp.DB, base uint64) error {
 		return diskInvalid("missing database or base")
 	}
 	marker := diskKey(base, diskMarker)
-	if _, err := db.GetContext(ctx, marker); err != nil {
-		if errors.Is(err, tarp.ErrNotFound) {
-			return nil
-		}
+	value, err := db.GetContext(ctx, marker)
+	if errors.Is(err, tarp.ErrNotFound) || string(value) == retiredDiskBase {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -457,5 +467,45 @@ func RetireDiskBase(ctx context.Context, db *tarp.DB, base uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := batch.put(ctx, marker, []byte(retiredDiskBase), false); err != nil {
+		return err
+	}
 	return batch.flush()
+}
+
+// NextDiskBase seeks to the first non-retired base after the supplied ID.
+// The caller serializes derived writers and proves an ID is unselected
+// before retiring it.
+func NextDiskBase(ctx context.Context, db *tarp.DB, after uint64) (uint64, error) {
+	if after == math.MaxUint64 {
+		return 0, nil
+	}
+	snap, err := db.Snapshot()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = snap.Close() }()
+	lower := diskBasePrefix(after + 1)
+	domain := lower[:len(lower)-8]
+	_, upper := tarp.PrefixRange(domain)
+	for key, err := range snap.KeysRange(ctx, lower, upper) {
+		if err != nil {
+			return 0, err
+		}
+		if len(key) <= len(lower) || !bytes.HasPrefix(key, domain) {
+			return 0, diskInvalid("malformed base key")
+		}
+		id := binary.BigEndian.Uint64(key[len(domain):len(lower)])
+		if bytes.Equal(key, diskKey(id, diskMarker)) {
+			marker, err := snap.GetContext(ctx, key)
+			if err != nil {
+				return 0, err
+			}
+			if string(marker) == retiredDiskBase {
+				continue
+			}
+		}
+		return id, nil
+	}
+	return 0, nil
 }

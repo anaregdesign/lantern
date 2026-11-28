@@ -2,6 +2,8 @@ package graphstore
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache"
@@ -51,7 +53,14 @@ func (r *Rows[K, V]) reclaimExpiryNext(ctx context.Context, db *DB, now time.Tim
 		if cursor.generation != gen {
 			next = expiryCursor{generation: gen}
 		}
-		return r.reclaimExpiryChunk(ctx, snap, b, now, &next)
+		var reclaimedDeadline time.Time
+		if err := r.reclaimExpiryChunk(ctx, snap, b, now, &next, &reclaimedDeadline); err != nil {
+			return err
+		}
+		if !reclaimedDeadline.IsZero() {
+			return StageVertexExpiryWatermark(ctx, snap, b, gen, reclaimedDeadline)
+		}
+		return nil
 	})
 	if err != nil {
 		return cursor, err
@@ -59,7 +68,7 @@ func (r *Rows[K, V]) reclaimExpiryNext(ctx context.Context, db *DB, now time.Tim
 	return next, nil
 }
 
-func (r *Rows[K, V]) reclaimExpiryChunk(ctx context.Context, snap *tarp.Snapshot, b Writer, now time.Time, cursor *expiryCursor) error {
+func (r *Rows[K, V]) reclaimExpiryChunk(ctx context.Context, snap *tarp.Snapshot, b Writer, now time.Time, cursor *expiryCursor, reclaimedDeadline *time.Time) error {
 	family := expiryFamilies[cursor.family]
 	prefix, err := familyPrefix(cursor.generation, family)
 	if err != nil {
@@ -81,7 +90,7 @@ func (r *Rows[K, V]) reclaimExpiryChunk(ctx context.Context, snap *tarp.Snapshot
 		if rows > 0 && bytes+size > expiryChunkBytes {
 			return nil
 		}
-		if err := r.reclaimExpiryRow(ctx, snap, b, now, cursor.generation, family, row); err != nil {
+		if err := r.reclaimExpiryRow(ctx, snap, b, now, cursor.generation, family, row, reclaimedDeadline); err != nil {
 			return err
 		}
 		cursor.after = row.Key
@@ -96,7 +105,7 @@ func (r *Rows[K, V]) reclaimExpiryChunk(ctx context.Context, snap *tarp.Snapshot
 	return nil
 }
 
-func (r *Rows[K, V]) reclaimExpiryRow(ctx context.Context, snap *tarp.Snapshot, b Writer, now time.Time, gen uint64, family byte, row tarp.Entry) error {
+func (r *Rows[K, V]) reclaimExpiryRow(ctx context.Context, snap *tarp.Snapshot, b Writer, now time.Time, gen uint64, family byte, row tarp.Entry, reclaimedDeadline *time.Time) error {
 	switch family {
 	case vertexMetadataFamily:
 		expiry, ts, err := parseVertexProjection(row.Value)
@@ -109,6 +118,9 @@ func (r *Rows[K, V]) reclaimExpiryRow(ctx context.Context, snap *tarp.Snapshot, 
 		}
 		if err := r.preserveExpiryBarrier(snap, b, gen, FloorKey[K]{Kind: VertexBarrier, Key: key}, ts); err != nil {
 			return err
+		}
+		if expiry.After(*reclaimedDeadline) {
+			*reclaimedDeadline = expiry
 		}
 		return r.DeleteVertex(b, gen, key)
 	case sourceFamily:
@@ -183,4 +195,41 @@ func (r *Rows[K, V]) preserveExpiryBarrier(snap *tarp.Snapshot, b Writer, gen ui
 		return err
 	}
 	return r.PutFloor(b, gen, key, Floor{HLC: ts})
+}
+
+// VertexExpiryWatermark is the latest deadline of a physically reclaimed
+// Vertex. Derived views cannot resurrect reclaimed rows
+// when their wall clock steps back before this cut.
+func VertexExpiryWatermark(ctx context.Context, snap *tarp.Snapshot, generation uint64) (time.Time, error) {
+	key, err := familyPrefix(generation, vertexExpiryFamily)
+	if err != nil {
+		return time.Time{}, err
+	}
+	value, err := snap.GetContext(ctx, key)
+	if errors.Is(err, tarp.ErrNotFound) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(value) != 12 || binary.BigEndian.Uint32(value[8:]) >= 1e9 {
+		return time.Time{}, ErrInvalidRow
+	}
+	return time.Unix(int64(binary.BigEndian.Uint64(value[:8])), int64(binary.BigEndian.Uint32(value[8:]))).UTC(), nil
+}
+
+// StageVertexExpiryWatermark advances the watermark in the same batch as
+// physically reclaimed Vertex rows.
+func StageVertexExpiryWatermark(ctx context.Context, snap *tarp.Snapshot, writer Writer, generation uint64, now time.Time) error {
+	previous, err := VertexExpiryWatermark(ctx, snap, generation)
+	if err != nil || !now.After(previous) {
+		return err
+	}
+	key, err := familyPrefix(generation, vertexExpiryFamily)
+	if err != nil {
+		return err
+	}
+	value := binary.BigEndian.AppendUint64(nil, uint64(now.Unix()))
+	writer.Put(key, binary.BigEndian.AppendUint32(value, uint32(now.Nanosecond())))
+	return nil
 }

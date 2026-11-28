@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -90,6 +91,20 @@ func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 	}
 	if got, _, ok := stage.Graph.GetEdgeDetail("tail", "head"); !ok || got != 1.5 {
 		t.Fatalf("staged baseline edge = %v, %t", got, ok)
+	}
+}
+
+func TestReceiptBaselineDigestPreservesCanonicalArchive(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	capture := producerCapture(archive)
+	capture.Retired = producerRetiredSnapshot(t, archive.Policy, archive.Receipts.ClockHighWaterMillis, 0x72)
+
+	// These values come from the original LANTCBLN v3 byte encoder.
+	const wantSize = 1151
+	const wantDigest = "38dc5d91a1e03959e79d267e268e44e9a867c4358f0cb8dc173ef88a37baf8b1"
+	digest, size, err := (ReceiptBaselineCodec{}).DigestCombinedReceiptBaseline(t.Context(), capture)
+	if err != nil || size != wantSize || hex.EncodeToString(digest[:]) != wantDigest {
+		t.Fatalf("canonical baseline digest=%x size=%d err=%v", digest, size, err)
 	}
 }
 

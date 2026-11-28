@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/tarp"
@@ -56,4 +57,22 @@ func (tx *GraphMutationTransaction[S, T]) StoreRows(ctx context.Context, rows *g
 		return errStorageStageClosed
 	}
 	return tx.vertex.stage.cache.storeRowsLocked(ctx, rows, snapshot, batch, generation, keys)
+}
+
+// StorageApplicationTime returns the sample used to materialize this staged
+// publication's accepted Vertex effects.
+func (tx *VertexPutTransaction[S, T]) StorageApplicationTime() time.Time {
+	return tx.stage.applicationTime
+}
+
+func (tx *VertexDeleteTransaction[S, T]) StorageApplicationTime() time.Time {
+	return tx.stage.applicationTime
+}
+
+func (tx *EdgeAddTransaction[S, T]) StorageApplicationTime() time.Time {
+	return tx.stage.vertex.applicationTime
+}
+
+func (tx *GraphMutationTransaction[S, T]) StorageApplicationTime() time.Time {
+	return tx.vertex.stage.applicationTime
 }

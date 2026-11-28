@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"math"
 	"reflect"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/search"
 )
@@ -540,6 +542,76 @@ func TestGraphCache_SnapshotReplicationRetainsCausalFloors(t *testing.T) {
 // been deleted (or has expired but not yet been flushed) must not appear in
 // SnapshotGraph or SnapshotEdges, even before the dangling-edge GC sweep, so a
 // restored backup is always referentially closed.
+func TestMatchesUniqueReplicationTombstones(t *testing.T) {
+	graph := NewGraphCache[string, string](time.Hour)
+	stamp := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{1}}
+	deadline := time.Now().Add(time.Hour)
+	id := ContribID{1}
+
+	graph.ApplySnapshotVertexTombstoneHLC("v", stamp, deadline)
+	graph.ApplySnapshotEdgeTombstoneHLC("tail", "head", stamp, deadline)
+	if err := graph.ApplySnapshotEdgeContributionTombstoneHLC(EdgeContributionKey[string]{
+		Tail: "tail", Head: "head", ContribID: id,
+	}, stamp, deadline); err != nil {
+		t.Fatal(err)
+	}
+	floor := graphstore.Floor{HLC: stamp, Expiration: deadline}
+	rows := []graphstore.FloorEntry[string]{
+		{Key: graphstore.FloorKey[string]{Kind: graphstore.VertexTombstone, Key: "v"}, Floor: floor},
+		{Key: graphstore.FloorKey[string]{Kind: graphstore.EdgeTombstone, Tail: "tail", Head: "head"}, Floor: floor},
+		{Key: graphstore.FloorKey[string]{Kind: graphstore.ContributionTombstone, Tail: "tail", Head: "head", ContribID: id}, Floor: floor},
+	}
+
+	match := func(expected []graphstore.FloorEntry[string]) bool {
+		t.Helper()
+		matches, err := graph.MatchesUniqueReplicationTombstones(t.Context(), func(yield func(graphstore.FloorEntry[string], error) bool) {
+			for _, row := range expected {
+				if !yield(row, nil) {
+					return
+				}
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return matches
+	}
+	if !match(rows) {
+		t.Fatal("retained floors did not match")
+	}
+	if match(rows[1:]) {
+		t.Fatal("unexpected retained floor was accepted")
+	}
+	rows[0].Key.Key = "missing"
+	if match(rows) {
+		t.Fatal("a wrong identity with equal total count was accepted")
+	}
+	rows[0].Key.Key = "v"
+	rows[0].Floor.HLC.WallNs++
+	if match(rows) {
+		t.Fatal("a different HLC was accepted")
+	}
+	rows[0].Floor = floor
+	rows[0].Floor.Expiration = deadline.Add(time.Minute)
+	if match(rows) {
+		t.Fatal("a different deadline was accepted")
+	}
+	rows[0].Floor = floor
+	expired := graphstore.FloorEntry[string]{
+		Key:   graphstore.FloorKey[string]{Kind: graphstore.VertexTombstone, Key: "expired"},
+		Floor: graphstore.Floor{HLC: stamp, Expiration: time.Now().Add(-time.Hour)},
+	}
+	if !match(append(rows, expired)) {
+		t.Fatal("an expired expected floor incorrectly required a retained row")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if matches, err := graph.MatchesUniqueReplicationTombstones(ctx, nil); matches || err != context.Canceled {
+		t.Fatalf("canceled comparison returned (%t, %v)", matches, err)
+	}
+}
+
 func TestGraphCache_Snapshot_ReferentialClosure(t *testing.T) {
 	live := time.Now().Add(time.Hour)
 	build := func() *GraphCache[string, string] {

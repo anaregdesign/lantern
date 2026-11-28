@@ -8,15 +8,10 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 )
 
-// SearchConfig governs the full-text SearchVertices RPC (#624). Enabled is
-// opt-out: the index is built by default because content search is the
-// headline reason most callers reach for Lantern's memory surface, and the
-// per-put cost is only paid while the feature is on. Operators who want the
-// leaner put hot path set LANTERN_SEARCH_ENABLED=false, which both skips
-// EnableSearchIndex at cache construction AND makes the RPC return
-// FAILED_PRECONDITION. DefaultLimit / MaxLimit cap the per-call ranked-hit
-// count the same way ScanConfig caps the prefix RPCs.
-//
+// SearchConfig governs the full-text SearchVertices RPC (#624). The server
+// maintains the derived Tarp index while Search is enabled. Setting
+// LANTERN_SEARCH_ENABLED=false stops indexing and makes the RPC return
+// FAILED_PRECONDITION. DefaultLimit and MaxLimit bound ranked page size.
 //   - LANTERN_SEARCH_ENABLED           (default true)
 //   - LANTERN_SEARCH_POSITIONS         (default true)
 //   - LANTERN_SEARCH_DEFAULT_LIMIT     (default 100)

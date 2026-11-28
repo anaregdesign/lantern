@@ -53,7 +53,7 @@ type DiskIndex struct {
 
 const (
 	diskDomain uint8 = 0xc4
-	diskLayout uint8 = 2
+	diskLayout uint8 = 3
 	diskMarker uint8 = iota + 1
 	diskFooterRow
 	diskDocIDRow
@@ -86,7 +86,9 @@ type diskFooter struct {
 	Base          uint64
 	Source        DiskSource
 	Positions     bool
-	Documents     uint64
+	Documents     uint64 // document ID high-water mark
+	LiveDocuments uint64
+	Deadlines     uint64
 	Records       uint64
 	Digest        [32]byte
 	Stats         [numTokenClasses][numDocumentFields]diskFieldStats
@@ -197,7 +199,7 @@ func OpenDiskIndex(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 	}
 	for class, fields := range footer.Stats {
 		for fieldID, field := range fields {
-			if field.Count > footer.Documents || field.Length > math.MaxInt || field.Length < field.Count ||
+			if field.Count > footer.LiveDocuments || field.Length > math.MaxInt || field.Length < field.Count ||
 				(field.Count == 0) != (field.Length == 0) {
 				return nil, diskInvalid("invalid corpus statistics")
 			}

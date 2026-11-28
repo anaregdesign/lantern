@@ -498,7 +498,7 @@ and the [HA runbook](docs/ha-runbook.md) for operational signals.
 flowchart LR
     C["SDKs · CLI · Admin · MCP"] --> S["Connect / gRPC / gRPC-Web"]
     S --> G[("Node-local Tarp database · graph, relay and receipts")]
-    S --> I["Optional in-memory BM25 index"]
+    S --> I["Optional derived Tarp BM25 index"]
     S <--> R["Lantern replication"]
     R <--> G
     R <--> P["Full peer replicas (optional HA)"]

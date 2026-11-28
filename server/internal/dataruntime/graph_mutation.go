@@ -153,6 +153,11 @@ func (s *Executor) MutateGraph(ctx context.Context, request *pb.MutateGraphReque
 	origin := s.clock.NodeID()
 	seq := s.origins.LocalSeq(origin) + 1
 	observation.mark(ctx, "graph_begin")
+	releaseSearch, err := s.holdDiskSearchAdmission(ctx)
+	if err != nil {
+		return nil, ctxToConnect(err)
+	}
+	defer releaseSearch()
 	graphTx, err := s.receiptVertexPutCoordinator.cache.BeginGraphMutation(ctx, vertices, edges, ts, uint64(4*worst))
 	if err != nil {
 		return nil, graphMutationError(err)
@@ -297,6 +302,9 @@ func graphMutationResponse(receipts []mutationreceipt.Receipt) (*pb.MutateGraphR
 }
 
 func graphMutationPublicationError(err error) error {
+	if rejection := diskSearchWriteRejection(err); rejection != nil {
+		return rejection
+	}
 	if errors.Is(err, mutationlog.ErrSeqExhausted) && !stagedPublicationRequiresRecovery(err) {
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	}

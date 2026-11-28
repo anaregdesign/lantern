@@ -18,7 +18,6 @@ const (
 	diskCursorBytes = 8 << 20
 	diskQueryBytes  = 16 << 10
 	diskQueryTerms  = 1024
-	diskResultLimit = 10_000
 )
 
 // Search evaluates a query at Source().Watermark with fixed-cut corpus
@@ -50,11 +49,8 @@ func (idx *DiskIndex) SearchAtWithChanges(ctx context.Context, query string, k i
 	if k <= 0 {
 		return nil, work.stats, nil
 	}
-	if k > diskResultLimit {
-		return nil, work.stats, diskInvalid("result limit exceeds disk profile")
-	}
-	if len(query) > diskQueryBytes {
-		return nil, work.stats, &BudgetExceededError{Kind: WorkQueryBytes, Limit: diskQueryBytes}
+	if err := work.visit(WorkQueryBytes, int64(len(query))); err != nil {
+		return nil, work.stats, err
 	}
 	select {
 	case idx.readers <- struct{}{}:
@@ -64,9 +60,6 @@ func (idx *DiskIndex) SearchAtWithChanges(ctx context.Context, query string, k i
 	}
 	started := time.Now()
 	tokens := idx.config.analyzeQuery(query)
-	if err := work.visit(WorkQueryBytes, int64(len(query))); err != nil {
-		return nil, work.stats, err
-	}
 	if err := work.visit(WorkQueryTokens, int64(len(tokens))); err != nil {
 		return nil, work.stats, err
 	}
@@ -124,11 +117,24 @@ func (idx *DiskIndex) SearchAtWithChanges(ctx context.Context, query string, k i
 }
 
 func diskBoundBudget(budget Budget) Budget {
-	budget.MaxQueryTerms = diskLimit(budget.MaxQueryTerms, diskQueryTerms)
-	budget.MaxDictionaryVisits = diskLimit(budget.MaxDictionaryVisits, 1_000_000)
-	budget.MaxPostingVisits = diskLimit(budget.MaxPostingVisits, 10_000_000)
-	budget.MaxPositionVisits = diskLimit(budget.MaxPositionVisits, 10_000_000)
-	budget.MaxExpirationVisits = diskLimit(budget.MaxExpirationVisits, 100_000)
+	if budget.MaxQueryBytes <= 0 {
+		budget.MaxQueryBytes = diskQueryBytes
+	}
+	if budget.MaxQueryTerms <= 0 {
+		budget.MaxQueryTerms = diskQueryTerms
+	}
+	if budget.MaxDictionaryVisits <= 0 {
+		budget.MaxDictionaryVisits = 1_000_000
+	}
+	if budget.MaxPostingVisits <= 0 {
+		budget.MaxPostingVisits = 10_000_000
+	}
+	if budget.MaxPositionVisits <= 0 {
+		budget.MaxPositionVisits = 10_000_000
+	}
+	if budget.MaxExpirationVisits <= 0 {
+		budget.MaxExpirationVisits = 100_000
+	}
 	budget.MaxDiskReadBytes = diskLimit(budget.MaxDiskReadBytes, diskReadBytes)
 	budget.MaxChangeVisits = diskLimit(budget.MaxChangeVisits, maxDiskChangedDocuments)
 	return budget
@@ -343,7 +349,7 @@ func (q *diskQuery) execute(plan diskPlan, k int, accept func(string) bool) ([]R
 		}
 	}
 	heap.Init(&cursors)
-	results := topKHeap[string]{entries: make([]Result[string], 0, k), better: q.index.config.betterResult}
+	results := topKHeap[string]{entries: make([]Result[string], 0, min(k, 1024)), better: q.index.config.betterResult}
 	for len(cursors) != 0 {
 		id := cursors[0].term.posting.id
 		if err := q.selectCandidate(plan, &results, k, id, accept); err != nil {

@@ -1,8 +1,11 @@
 package graphcache
 
 import (
+	"context"
+	"iter"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
@@ -162,16 +165,76 @@ func (c *GraphCache[S, T]) SnapshotReplication() ReplicationSnapshot[S, T] {
 	}
 }
 
-// SnapshotReplicationTombstones captures the active Delete floors for staged
-// restore verification. It carries out the same expired Put floor migration
-// as SnapshotReplication without materialising the graph or retained barriers.
-func (c *GraphCache[S, T]) SnapshotReplicationTombstones() TombstoneSnapshot[S] {
+// MatchesUniqueReplicationTombstones checks exact active Delete floors at one
+// application-time sample without materialising the expected or actual set.
+// The caller must validate expected identities for uniqueness before this call;
+// it must supply only tombstone rows and must not reenter the cache. Each live
+// expected row must match by identity, HLC and deadline. Equal live counts then
+// also prove that no additional active row was installed.
+func (c *GraphCache[S, T]) MatchesUniqueReplicationTombstones(
+	ctx context.Context,
+	expected iter.Seq2[graphstore.FloorEntry[S], error],
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
 	c.migrateExpiredVertexHLCToBarriersLocked(now)
 	c.migrateExpiredEdgeHLCToBarriersLocked(now)
-	return c.snapshotTombstonesRLocked(now)
+	wantCount := 0
+	for want, err := range expected {
+		if err != nil {
+			return false, err
+		}
+		var actual tombstoneEntry
+		switch want.Key.Kind {
+		case graphstore.VertexTombstone:
+			actual = c.vertexTombstones[want.Key.Key]
+		case graphstore.EdgeTombstone:
+			actual = c.edgeTombstones[EdgeKey[S]{Tail: want.Key.Tail, Head: want.Key.Head}]
+		case graphstore.ContributionTombstone:
+			actual = c.edgeContributionTombstones[EdgeContributionKey[S]{
+				Tail: want.Key.Tail, Head: want.Key.Head, ContribID: ContribID(want.Key.ContribID),
+			}]
+		default:
+			return false, nil
+		}
+		if !now.Before(want.Floor.Expiration) {
+			continue
+		}
+		if actual.ts != want.Floor.HLC || !actual.expiration.Equal(want.Floor.Expiration) {
+			return false, nil
+		}
+		wantCount++
+	}
+	vertices, err := countLiveSnapshotTombstones(ctx, c.vertexTombstones, now)
+	if err != nil {
+		return false, err
+	}
+	edges, err := countLiveSnapshotTombstones(ctx, c.edgeTombstones, now)
+	if err != nil {
+		return false, err
+	}
+	contributions, err := countLiveSnapshotTombstones(ctx, c.edgeContributionTombstones, now)
+	if err != nil {
+		return false, err
+	}
+	return wantCount == vertices+edges+contributions, ctx.Err()
+}
+
+func countLiveSnapshotTombstones[K comparable](ctx context.Context, markers map[K]tombstoneEntry, now time.Time) (int, error) {
+	count := 0
+	for _, marker := range markers {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if now.Before(marker.expiration) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (c *GraphCache[S, T]) snapshotTombstonesRLocked(now time.Time) TombstoneSnapshot[S] {
