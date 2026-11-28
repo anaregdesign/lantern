@@ -11,6 +11,7 @@ require (
 	github.com/anaregdesign/lantern/pb v0.17.0
 	github.com/anaregdesign/lantern/sdks/go v0.28.0
 	github.com/anaregdesign/lantern/server v0.0.0-00010101000000-000000000000
+	github.com/anaregdesign/tarp v0.16.0
 	github.com/manifoldco/promptui v0.9.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/prometheus/client_golang v1.25.0
@@ -32,7 +33,6 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.13.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.10.1 // indirect
 	github.com/RoaringBitmap/roaring/v2 v2.30.0 // indirect
-	github.com/anaregdesign/tarp v0.16.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
