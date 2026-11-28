@@ -295,6 +295,17 @@ func TestTarpSearchDerivedReadFaultRebuildsOnlyTheSelectedBase(t *testing.T) {
 	if !reader.noteDerivedFault(base, tarp.ErrDataUnavailable) || !reader.noteDerivedFault(base, tarp.ErrCorrupt) {
 		t.Fatal("derived storage faults did not request a rebuild")
 	}
+	graph, err := runtime.GraphStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = graph.Close() }()
+	if _, _, err := reader.readInput(ctx, graph, time.Now()); !errors.Is(err, search.ErrIndexIncomplete) {
+		t.Fatalf("Search reused the known damaged base: %v", err)
+	}
+	if err := reader.validateAdmission(ctx, base, nil, graph.Snapshot, graph.Generation, tarpSearchCut{}, time.Now(), searchPostimages{}); !errors.Is(err, search.ErrIndexIncomplete) {
+		t.Fatalf("admission reused the known damaged base: %v", err)
+	}
 	if err := worker.refreshWithin(ctx, ctx); err != nil {
 		t.Fatal(err)
 	}

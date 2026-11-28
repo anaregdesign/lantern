@@ -75,7 +75,7 @@ func (p searchPostimages) documents(project func(string, *pb.Vertex) search.Docu
 // that will be committed. The active Search handle is atomic: taking the
 // Search reader gate here would invert advance's reader-gate -> Graph order.
 func (reader *tarpDiskSearchReader) validateAdmission(ctx context.Context, index *search.DiskIndex, admission *search.DiskAdmission, snapshot *tarp.Snapshot, generation uint64, cut tarpSearchCut, at time.Time, proposal searchPostimages) error {
-	if at.IsZero() {
+	if at.IsZero() || reader.badBase.Load() == index {
 		return search.ErrIndexIncomplete
 	}
 	if err := checkTarpSearchTime(ctx, snapshot, generation, at); err != nil {

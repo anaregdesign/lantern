@@ -212,7 +212,7 @@ func (reader *tarpDiskSearchReader) noteDerivedFault(index *search.DiskIndex, er
 
 func (reader *tarpDiskSearchReader) readInput(ctx context.Context, view *graphstore.ReadView, now time.Time) (*search.DiskIndex, tarpDiskSearchInput, error) {
 	index := reader.base.Load()
-	if index == nil {
+	if index == nil || reader.badBase.Load() == index {
 		return nil, tarpDiskSearchInput{}, search.ErrIndexIncomplete
 	}
 	base := index.Source()

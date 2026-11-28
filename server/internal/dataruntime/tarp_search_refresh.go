@@ -233,8 +233,9 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 	}
 	certified := selected != nil && selected.BaseID() == ref.ID && sameTarpDiskSource(selected.Source(), ref.Source) &&
 		ref.Source.Epoch == input.source.Epoch
-	if certified && reader.badBase.CompareAndSwap(selected, nil) {
+	if certified && reader.badBase.Load() == selected {
 		reader.base.CompareAndSwap(selected, nil)
+		reader.badBase.CompareAndSwap(selected, nil)
 		return w.rebuild(rebuildCtx, input, w.active)
 	}
 	if !certified {
