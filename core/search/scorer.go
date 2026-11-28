@@ -223,3 +223,12 @@ var (
 	_ Scorer = ClassWeighted{}
 	_ Scorer = FieldWeighted{}
 )
+
+// DefaultLexicalScorer combines the production token-class and field weights.
+func DefaultLexicalScorer() Scorer {
+	return FieldWeighted{
+		Base:        ClassWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, GramWeight: DefaultGramWeight},
+		KeyWeight:   DefaultKeyFieldWeight,
+		ValueWeight: 1,
+	}
+}

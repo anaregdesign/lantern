@@ -34,6 +34,9 @@ func captureTarpDiskSearchInput(ctx context.Context, view *graphstore.ReadView, 
 	if view == nil || view.Database() == nil || projection == nil || watermark.IsZero() {
 		return tarpDiskSearchInput{}, errTarpSearchCut
 	}
+	if err := checkTarpSearchTime(ctx, view.Snapshot, view.Generation, watermark); err != nil {
+		return tarpDiskSearchInput{}, err
+	}
 	cut, err := readTarpSearchCut(ctx, view.Snapshot, view.Generation)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -170,9 +173,12 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	accept := func(key string) bool {
 		return scope.Vertex(key) && strings.HasPrefix(key, spec.Prefix)
 	}
+	budget := spec.Budget
+	budget.MaxQueryBytes = int64(spec.MaxQueryBytes)
 	ranked, stats, err := index.SearchAtWithChanges(ctx, spec.Query, spec.Limit, accept,
-		spec.Options, spec.Phrase, spec.Budget, now, input.changes(ctx, base, reader.maxChangeBytes, reader.maxChangeKeys))
-	if errors.Is(err, search.ErrDiskIndex) {
+		spec.Options, spec.Phrase, budget, now, input.changes(ctx, base, reader.maxChangeBytes, reader.maxChangeKeys))
+	var analysisLimit *search.AnalysisLimitError
+	if errors.Is(err, search.ErrDiskIndex) || errors.As(err, &analysisLimit) {
 		err = errors.Join(search.ErrIndexIncomplete, err)
 	}
 	result.Stats, result.BackendError = stats, err
@@ -236,4 +242,18 @@ func (reader *tarpDiskSearchReader) advance(ctx context.Context, graph *graphsto
 	}
 	reader.base.Store(current)
 	return reclaimTarpSearchChanges(ctx, graph, ref)
+}
+
+func checkTarpSearchTime(ctx context.Context, snapshot *tarp.Snapshot, generation uint64, at time.Time) error {
+	reclaimed, err := graphstore.VertexExpiryWatermark(ctx, snapshot, generation)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errors.Join(search.ErrIndexIncomplete, err)
+	}
+	if at.Before(reclaimed) {
+		return search.ErrIndexIncomplete
+	}
+	return nil
 }

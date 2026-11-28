@@ -295,6 +295,9 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	}
 	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx, graphTx)
 	if err != nil {
+		if rejection := diskSearchWriteRejection(err); rejection != nil {
+			return nil, rejection
+		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}

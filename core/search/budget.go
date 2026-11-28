@@ -32,6 +32,7 @@ var ErrBudgetExceeded = errors.New("search work budget exceeded")
 // Budget caps work performed by one query. Zero means unlimited and is used by
 // compatibility helpers; the server validates and supplies positive limits.
 type Budget struct {
+	MaxQueryBytes       int64
 	MaxQueryTerms       int64
 	MaxDictionaryVisits int64
 	MaxPostingVisits    int64
@@ -100,7 +101,7 @@ func (w *workTracker) visit(kind WorkKind, n int64) error {
 	var limit int64
 	switch kind {
 	case WorkQueryBytes:
-		value = &w.stats.QueryBytes
+		value, limit = &w.stats.QueryBytes, w.budget.MaxQueryBytes
 	case WorkQueryTokens:
 		value = &w.stats.QueryTokens
 	case WorkQueryClauses:

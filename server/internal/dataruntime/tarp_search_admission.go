@@ -25,6 +25,10 @@ type diskSearchAdmissionRejection struct{ cause error }
 func (e *diskSearchAdmissionRejection) Error() string { return e.cause.Error() }
 func (e *diskSearchAdmissionRejection) Unwrap() error { return e.cause }
 
+func (e *diskSearchAdmissionRejection) graphWriteRejection() error {
+	return diskSearchWriteRejection(e)
+}
+
 func diskSearchWriteRejection(err error) error {
 	var rejection *diskSearchAdmissionRejection
 	if !errors.As(err, &rejection) {
@@ -73,6 +77,9 @@ func (p searchPostimages) documents(project func(string, *pb.Vertex) search.Docu
 func (reader *tarpDiskSearchReader) validateAdmission(ctx context.Context, index *search.DiskIndex, admission *search.DiskAdmission, snapshot *tarp.Snapshot, generation uint64, cut tarpSearchCut, at time.Time, proposal searchPostimages) error {
 	if at.IsZero() {
 		return search.ErrIndexIncomplete
+	}
+	if err := checkTarpSearchTime(ctx, snapshot, generation, at); err != nil {
+		return err
 	}
 	base := index.Source()
 	ref, err := readTarpSearchBaseRefAt(ctx, snapshot, generation)

@@ -35,17 +35,12 @@ import (
 // against the pinned Lucene baseline — change the two in lockstep.
 func newSearchIndex[S comparable](positions bool, limits search.SearchAnalysisLimits, compareID func(S, S) int) *search.InvertedIndex[S, search.Document] {
 	analyzer := search.NewScriptAwareAnalyzer()
-	scorer := search.ClassWeighted{
-		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
-		GramWeight: search.DefaultGramWeight,
-	}
-	fieldScorer := search.FieldWeighted{Base: scorer, KeyWeight: search.DefaultKeyFieldWeight, ValueWeight: 1}
 	var opts []search.IndexOption
 	if positions {
 		opts = append(opts, search.WithPositions())
 	}
 	opts = append(opts, search.WithAnalysisLimits(limits))
-	return search.NewInvertedIndex[S, search.Document](analyzer, fieldScorer, compareID, opts...)
+	return search.NewInvertedIndex[S, search.Document](analyzer, search.DefaultLexicalScorer(), compareID, opts...)
 }
 
 // SearchIndexOption configures the optional content-search index at

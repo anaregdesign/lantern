@@ -297,6 +297,9 @@ func graphMutationResponse(receipts []mutationreceipt.Receipt) (*pb.MutateGraphR
 }
 
 func graphMutationPublicationError(err error) error {
+	if rejection := diskSearchWriteRejection(err); rejection != nil {
+		return rejection
+	}
 	if errors.Is(err, mutationlog.ErrSeqExhausted) && !stagedPublicationRequiresRecovery(err) {
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	}

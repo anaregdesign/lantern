@@ -23,13 +23,14 @@ type Reader interface {
 
 // Spec is one bounded, already validated search over the authorized context.
 type Spec struct {
-	Query      string
-	Limit      int
-	Prefix     string
-	Options    search.MatchOptions
-	Phrase     bool
-	Budget     search.Budget
-	Projection pb.SearchProjection
+	MaxQueryBytes int
+	Query         string
+	Limit         int
+	Prefix        string
+	Options       search.MatchOptions
+	Phrase        bool
+	Budget        search.Budget
+	Projection    pb.SearchProjection
 }
 
 // CaptureResult owns the final attempt's hits, work record and backend error.

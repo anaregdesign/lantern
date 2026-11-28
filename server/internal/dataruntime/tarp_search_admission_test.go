@@ -31,7 +31,7 @@ func TestTarpSearchAdmissionUsesStagedGraphTimeAndDoesNotPublishRejectedRows(t *
 		_ = authority.Close()
 		t.Fatal(err)
 	}
-	runtime, err := NewTarpGraphServingRuntime(graph, authority, mutationlog.Options{Capacity: 16}, stage, "")
+	runtime, err := NewTarpGraphServingRuntime(ctx, graph, authority, mutationlog.Options{Capacity: 16}, stage, "")
 	if err != nil {
 		_ = authority.Close()
 		t.Fatal(err)
