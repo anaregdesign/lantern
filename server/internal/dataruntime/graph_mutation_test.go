@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -132,44 +133,47 @@ func graphMutationTestRequest(t testing.TB, runtime *ServingRuntime, seed byte) 
 }
 
 func TestGraphMutationPublicOneDecision(t *testing.T) {
-	runtime, svc, _ := newActivatedReceiptService(t, 16)
-	req := graphMutationTestRequest(t, runtime, 0x51)
-	before := runtime.log.Len()
-	response, err := svc.MutateGraph(t.Context(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.GetResults()) != 3 || response.Results[0].GetPutVertex() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE || response.Results[2].GetAddEdgeEffectiveWeight() != 2 {
-		t.Fatal(response)
-	}
-	if weight, ok := runtime.graph.GetWeight("a", "b"); !ok || weight != 2 {
-		t.Fatal(weight, ok)
-	}
-	if runtime.log.Len() != before+1 || svc.LocalSeq(svc.clock.NodeID()) != 1 {
-		t.Fatal("not one WAL/origin decision")
-	}
-	if err := runtime.graph.PutVertex("a", &pb.Vertex{Key: "a", Value: &pb.Vertex_String_{String_: "later"}}); err != nil {
-		t.Fatal(err)
-	}
-	duplicate, err := svc.MutateGraph(t.Context(), proto.Clone(req).(*pb.MutateGraphRequest))
-	if err != nil || !proto.Equal(response, duplicate) || runtime.log.Len() != before+1 {
-		t.Fatal(duplicate, err)
-	}
-	statuses, err := svc.GetReceiptStatuses(t.Context(), &pb.GetReceiptStatusesRequest{OperationIds: req.ReceiptContext.OperationIds})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, status := range statuses.GetStatuses() {
-		r := status.GetReceipt()
-		if r == nil || r.GetItemIndex() != uint32(i) || r.GetItemCount() != 3 {
-			t.Fatal(status)
+	// Fake elapsed time keeps the success-path assertions independent of host scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		runtime, svc, _ := newActivatedReceiptService(t, 16)
+		req := graphMutationTestRequest(t, runtime, 0x51)
+		before := runtime.log.Len()
+		response, err := svc.MutateGraph(t.Context(), req)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	changed := proto.Clone(req).(*pb.MutateGraphRequest)
-	changed.Items[2].GetAddEdge().Edge.Weight = 3
-	if _, err := svc.MutateGraph(t.Context(), changed); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatal(err)
-	}
+		if len(response.GetResults()) != 3 || response.Results[0].GetPutVertex() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE || response.Results[2].GetAddEdgeEffectiveWeight() != 2 {
+			t.Fatal(response)
+		}
+		if weight, ok := runtime.graph.GetWeight("a", "b"); !ok || weight != 2 {
+			t.Fatal(weight, ok)
+		}
+		if runtime.log.Len() != before+1 || svc.LocalSeq(svc.clock.NodeID()) != 1 {
+			t.Fatal("not one WAL/origin decision")
+		}
+		if err := runtime.graph.PutVertex("a", &pb.Vertex{Key: "a", Value: &pb.Vertex_String_{String_: "later"}}); err != nil {
+			t.Fatal(err)
+		}
+		duplicate, err := svc.MutateGraph(t.Context(), proto.Clone(req).(*pb.MutateGraphRequest))
+		if err != nil || !proto.Equal(response, duplicate) || runtime.log.Len() != before+1 {
+			t.Fatal(duplicate, err)
+		}
+		statuses, err := svc.GetReceiptStatuses(t.Context(), &pb.GetReceiptStatusesRequest{OperationIds: req.ReceiptContext.OperationIds})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, status := range statuses.GetStatuses() {
+			r := status.GetReceipt()
+			if r == nil || r.GetItemIndex() != uint32(i) || r.GetItemCount() != 3 {
+				t.Fatal(status)
+			}
+		}
+		changed := proto.Clone(req).(*pb.MutateGraphRequest)
+		changed.Items[2].GetAddEdge().Edge.Weight = 3
+		if _, err := svc.MutateGraph(t.Context(), changed); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestGraphMutationMaximumItemsAndPreflightBytes(t *testing.T) {
