@@ -597,18 +597,7 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 		}
 
 	case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
-		var wireKeys []*pb.EdgeContributionKey
-		switch entry := m.GetOp().GetOp().(type) {
-		case *pb.MutationOp_DeleteEdgeContribution:
-			wireKeys = []*pb.EdgeContributionKey{{
-				Tail:      entry.DeleteEdgeContribution.GetTail(),
-				Head:      entry.DeleteEdgeContribution.GetHead(),
-				ContribId: entry.DeleteEdgeContribution.GetContribId(),
-			}}
-		case *pb.MutationOp_DeleteEdgeContributions:
-			wireKeys = entry.DeleteEdgeContributions.GetContributions()
-		}
-		keys, err := edgeContributionKeysFromWire(wireKeys)
+		keys, name, err := edgeContributionDeleteMutationKeys(m.GetOp())
 		if err != nil {
 			return graphApplyResult{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 		}
@@ -624,10 +613,7 @@ func (s *Executor) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) 
 		if err != nil {
 			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
 		}
-		if _, ok := op.(*pb.MutationOp_DeleteEdgeContribution); ok {
-			return graphApplyResult{opName: "DeleteEdgeContribution", walOp: effect}, nil
-		}
-		return graphApplyResult{opName: "DeleteEdgeContributions", walOp: effect}, nil
+		return graphApplyResult{opName: name, walOp: effect}, nil
 	}
 
 	return graphApplyResult{opName: opName}, nil

@@ -17,7 +17,7 @@ import (
 // The caller owns the serving publication gate. A failed append can leave
 // a graph-first effect applied in RAM while its Tarp postimage is absent.
 // Keep those pending effects authoritative until the exact relay repair.
-func (s *Executor) cleanStoredVertexGraphLocked() *graphcache.GraphCache[string, *pb.Vertex] {
+func (s *Executor) cleanStoredGraphLocked() *graphcache.GraphCache[string, *pb.Vertex] {
 	if s.publicationFaultCount != 0 || s.runtime == nil {
 		return nil
 	}
@@ -29,7 +29,7 @@ func (s *Executor) cleanStoredVertexGraphLocked() *graphcache.GraphCache[string,
 }
 
 func (s *Executor) putVertexBatchAtCut(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp, ifAbsent bool) ([]graphcache.PutOutcome, error) {
-	if graph := s.cleanStoredVertexGraphLocked(); graph != nil {
+	if graph := s.cleanStoredGraphLocked(); graph != nil {
 		// Graph-first application and exact publication already own this
 		// admitted request. Caller cancellation cannot abandon their work.
 		return graph.PutVerticesFromCommittedCut(context.Background(), items, ts, ifAbsent)
@@ -42,14 +42,14 @@ func (s *Executor) putVertexBatchAtCut(items []graphcache.VertexItem[string, *pb
 }
 
 func (s *Executor) applyVertexPutsAtCut(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]graphcache.PutOutcome, error) {
-	if graph := s.cleanStoredVertexGraphLocked(); graph != nil {
+	if graph := s.cleanStoredGraphLocked(); graph != nil {
 		return graph.ApplyVertexPutsFromCommittedCut(context.Background(), items, ts)
 	}
 	return s.cache.PutVerticesWithExpirationHLCOutcomes(items, ts), nil
 }
 
 func (s *Executor) deleteVertexBatchAtCut(keys []string, ts hlc.Timestamp, expiration time.Time, local bool) ([]bool, []int, error) {
-	if graph := s.cleanStoredVertexGraphLocked(); graph != nil {
+	if graph := s.cleanStoredGraphLocked(); graph != nil {
 		return graph.DeleteVerticesFromCommittedCut(context.Background(), keys, ts, expiration, local)
 	}
 	if local {

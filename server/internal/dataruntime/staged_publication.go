@@ -17,9 +17,9 @@ import (
 // those stages' Abort defers. Thus rollback finishes before a panic marks the
 // executor faulted, and the outer gates exclude observers throughout.
 //
-// This protocol also serves standalone Create without a receipt Store. Legacy
-// graph-first Append and SystemMetadata's install-before-ring publication have
-// different contracts and must not use it.
+// Standalone Create and stored contribution Delete can use this protocol with
+// no receipt Store. Legacy graph-first Append and SystemMetadata's
+// install-before-ring publication have different contracts.
 type stagedPublication struct {
 	service   *Executor
 	attempted bool

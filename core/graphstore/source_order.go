@@ -97,30 +97,61 @@ func (r *Rows[K, V]) HasSourceOrder(snap *tarp.Snapshot, gen uint64) (bool, erro
 	return hasSourceOrder(snap, gen)
 }
 
+// SummarizeEdgeSources streams live weights and retained row counts for the
+// pinned Edge header, omitting the selected Add identities. The cut must have
+// a verified Source order. Endpoint liveness is independent of retained rows.
+func (r *Rows[K, V]) SummarizeEdgeSources(ctx context.Context, snap *tarp.Snapshot, gen uint64, key EdgeKey[K], edge Edge, now time.Time, excluded map[SourceID]struct{}) (EdgeRecoverySummary[K], error) {
+	var zero EdgeRecoverySummary[K]
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+	ready, err := hasSourceOrder(snap, gen)
+	if err != nil {
+		return zero, err
+	}
+	if !ready {
+		return zero, fmt.Errorf("%w: Source order missing at Edge summary cut", ErrInvalidRow)
+	}
+	var stats edgeRecoveryStats
+	fold := edgeSourceFold{base: edge.Base, now: now, recovery: &stats, excluded: excluded}
+	if err := r.scanOrderedEdgeSources(ctx, snap, gen, key, edge.LastOrdinal, nil, &fold); err != nil {
+		return zero, err
+	}
+	detail := fold.finish()
+	return orderedEdgeSummary(EdgeEntry[K]{Key: key, Edge: edge}, detail, stats), nil
+}
+
 func (r *Rows[K, V]) foldOrderedSources(ctx context.Context, snap *tarp.Snapshot, gen uint64, key EdgeKey[K], edge Edge, now time.Time, charge func(int) error) (EdgeDetail, error) {
+	fold := edgeSourceFold{base: edge.Base, now: now}
+	if err := r.scanOrderedEdgeSources(ctx, snap, gen, key, edge.LastOrdinal, charge, &fold); err != nil {
+		return EdgeDetail{}, err
+	}
+	return fold.finish(), nil
+}
+
+func (r *Rows[K, V]) scanOrderedEdgeSources(ctx context.Context, snap *tarp.Snapshot, gen uint64, key EdgeKey[K], lastOrdinal uint64, charge func(int) error, fold *edgeSourceFold) error {
 	tuple, err := r.edgeTuple(gen, sourceOrderFamily, key)
 	if err != nil {
-		return EdgeDetail{}, err
+		return err
 	}
 	prefix, err := edgeTupleCodec.Encode(tuple)
 	if err != nil {
-		return EdgeDetail{}, err
+		return err
 	}
 	bounds := prefixBounds(prefix)
-	fold := edgeSourceFold{base: edge.Base, now: now}
 	for physical, err := range snap.KeysRange(ctx, bounds.lower, bounds.upper) {
 		if err != nil {
-			return EdgeDetail{}, err
+			return err
 		}
 		ordered, err := decodeSourceOrderKey(physical)
 		if err != nil {
-			return EdgeDetail{}, err
+			return err
 		}
-		if err := fold.add(snap, ordered, edge.LastOrdinal, charge); err != nil {
-			return EdgeDetail{}, err
+		if err := fold.add(snap, ordered, lastOrdinal, charge); err != nil {
+			return err
 		}
 	}
-	return fold.finish(), nil
+	return ctx.Err()
 }
 
 type edgeSourceFold struct {
@@ -128,6 +159,7 @@ type edgeSourceFold struct {
 	now      time.Time
 	detail   EdgeDetail
 	recovery *edgeRecoveryStats
+	excluded map[SourceID]struct{}
 }
 
 func (f *edgeSourceFold) add(snap *tarp.Snapshot, row sourceOrderTuple, lastOrdinal uint64, charge func(int) error) error {
@@ -141,26 +173,44 @@ func (f *edgeSourceFold) add(snap *tarp.Snapshot, row sourceOrderTuple, lastOrdi
 	if err != nil {
 		return err
 	}
+	if _, excluded := f.excluded[SourceID{ContribID: row.ContribID, Ordinal: row.Ordinal}]; excluded {
+		return nil
+	}
 	if f.recovery != nil {
 		f.recovery.sources++
 	}
 	if f.base != nil && !source.HLC.Less(f.base.HLC) {
-		f.addLive(*f.base, false)
+		f.addSource(*f.base, false)
 		f.base = nil
 	}
-	f.addLive(source, row.Ordinal == 0)
+	f.addSource(source, row.Ordinal == 0)
 	return nil
 }
 
-func (f *edgeSourceFold) addLive(source Source, explicit bool) {
+func (f *edgeSourceFold) addSource(source Source, explicit bool) {
+	stats := f.recovery
+	if stats != nil {
+		retained := &stats.retained
+		retained.Weight += source.Weight
+		retained.Count++
+		retained.Explicit = retained.Explicit || explicit
+		if deadline := source.Expiration; !deadline.IsZero() {
+			if retained.Earliest.IsZero() || deadline.Before(retained.Earliest) {
+				retained.Earliest = deadline
+			}
+			if deadline.After(retained.Latest) {
+				retained.Latest = deadline
+			}
+		}
+	}
 	if !cache.IsLiveAt(source.Expiration, f.now) {
-		if f.recovery != nil {
-			f.recovery.expired = true
+		if stats != nil {
+			stats.expired = true
 		}
 		return
 	}
 	f.detail.add(source)
-	if stats := f.recovery; stats != nil {
+	if stats != nil {
 		stats.count++
 		stats.explicit = stats.explicit || explicit
 		if deadline := source.Expiration; !deadline.IsZero() && (stats.earliest.IsZero() || deadline.Before(stats.earliest)) {
@@ -171,7 +221,7 @@ func (f *edgeSourceFold) addLive(source Source, explicit bool) {
 
 func (f *edgeSourceFold) finish() EdgeDetail {
 	if f.base != nil {
-		f.addLive(*f.base, false)
+		f.addSource(*f.base, false)
 	}
 	f.detail.Found = f.detail.Weight != 0
 	return f.detail

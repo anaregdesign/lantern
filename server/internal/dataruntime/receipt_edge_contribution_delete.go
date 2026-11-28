@@ -261,7 +261,12 @@ func (c *edgeContributionDeleteReceiptCoordinator) Commit(
 	if err != nil {
 		return nil, err
 	}
-	graphTx, err := c.cache.PrepareEdgeContributionDelete(keys, ts, expiration)
+	var graphTx *graphcache.EdgeContributionDeleteTransaction[string, *pb.Vertex]
+	if s.storedContributionDeleteGraphLocked() == c.cache {
+		graphTx, err = c.cache.PrepareStoredEdgeContributionDelete(ctx, keys, ts, expiration)
+	} else {
+		graphTx, err = c.cache.PrepareEdgeContributionDelete(keys, ts, expiration)
+	}
 	if err != nil {
 		return nil, writeError(err)
 	}
@@ -410,9 +415,12 @@ func (c *edgeContributionDeleteReceiptCoordinator) commitReplicated(
 	if err != nil {
 		return receiptStoreError(err)
 	}
-	graphTx, err := c.cache.PrepareReplicatedEdgeContributionDelete(
-		e.OriginalKeys, ts, e.TombstoneExpiration,
-	)
+	var graphTx *graphcache.EdgeContributionDeleteTransaction[string, *pb.Vertex]
+	if s.storedContributionDeleteGraphLocked() == c.cache {
+		graphTx, err = c.cache.PrepareStoredReplicatedEdgeContributionDelete(ctx, e.OriginalKeys, ts, e.TombstoneExpiration)
+	} else {
+		graphTx, err = c.cache.PrepareReplicatedEdgeContributionDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
+	}
 	if err != nil {
 		return writeError(err)
 	}
