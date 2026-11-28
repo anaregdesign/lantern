@@ -2,6 +2,7 @@ package dataruntime
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -10,10 +11,131 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/graphstorage"
+	"github.com/anaregdesign/tarp"
 )
+
+func openStoredPrefixRuntime(t *testing.T) (*ServingRuntime, *Executor) {
+	t.Helper()
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	graph.EnableStorageKeyPrefixIndex(func(key string) string { return key })
+	runtime, err := OpenGraphDatabase(t.Context(), t.TempDir(), hlc.NodeID{1}, graph, mutationlog.Options{Capacity: 16}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	return runtime, runtime.NewExecutor(nil)
+}
+
+func TestDeleteVerticesByPrefix_StoredCutFiltersAndPublishesExactOrderedVictims(t *testing.T) {
+	ctx := t.Context()
+	runtime, svc := openStoredPrefixRuntime(t)
+	rows, err := graphstorage.Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Populate the committed cut without installing in-memory descriptors.
+	// The mutation's admitted view excludes p:0 and p:c before the cap.
+	if err := runtime.GraphStore().UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, b graphstore.Writer) error {
+		for _, key := range []string{"p:0", "p:a", "p:a\x00", "p:b", "p:c", "p:東"} {
+			vertex := graphstore.Vertex[*pb.Vertex]{Value: &pb.Vertex{Key: key}}
+			if key == "p:a" {
+				vertex.Expiration = time.Now().Add(-time.Minute)
+			}
+			if err := rows.PutVertex(b, gen, key, vertex); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	old, err := runtime.GraphStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	svc.WithScanLimits(ScanLimits{DeleteByPrefixDefaultLimit: 1, DeleteByPrefixMaxLimit: 2})
+	admitted, err := graphcache.NewQueryView([]graphcache.KeyRange{
+		{Lower: "p:a", Upper: "p:c"},
+		{Lower: "p:東", Upper: "p:東\x00"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := svc.DeleteVerticesByPrefix(graphcache.WithQueryView(ctx, admitted), &pb.DeleteVerticesByPrefixRequest{Prefix: "p:", Limit: 20})
+	if err != nil || reply.GetDeleted() != 2 {
+		t.Fatalf("prefix Delete = %v, %v", reply, err)
+	}
+	want := []string{"p:a\x00", "p:b"}
+	mutation := latestPrefixMutation(t, runtime.log)
+	if got := mutation.GetOp().GetDeleteVertices().GetKeys(); !slices.Equal(got, want) {
+		t.Fatalf("exact WAL victims = %q, want %q", got, want)
+	}
+	for _, key := range want {
+		if _, found, err := rows.GetVertexMetadata(old.Snapshot, old.Generation, key); err != nil || !found {
+			t.Fatalf("pinned old cut lost %q: found=%t err=%v", key, found, err)
+		}
+	}
+	if err := runtime.GraphStore().WithCommittedSnapshot(func(gen uint64, snap *tarp.Snapshot) error {
+		for _, key := range []string{"p:0", "p:a", "p:a\x00", "p:b", "p:c", "p:東"} {
+			_, found, err := rows.GetVertexMetadata(snap, gen, key)
+			if err != nil || found == slices.Contains(want, key) {
+				t.Fatalf("postimage %q: found=%t err=%v", key, found, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteVerticesByPrefix_PreservesAppliedPendingRemoteDelete(t *testing.T) {
+	ctx := t.Context()
+	runtime, svc := openStoredPrefixRuntime(t)
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "p:a"}, {Key: "p:b"}}}); err != nil {
+		t.Fatal(err)
+	}
+	stage := runtime.tarp.stage
+	runtime.tarp.stage = func(context.Context, uint64, *tarp.Snapshot, graphstore.Writer, graphcache.StorageKeys[string], graphcache.StorageRowWriter[string, *pb.Vertex]) error {
+		return &tarp.OpError{Operation: "apply", Phase: "prepare", Outcome: tarp.NotApplied, Err: errors.New("injected write rejection")}
+	}
+	peer := hlc.NodeID{7}
+	remote := &pb.Mutation{
+		Origin: peer[:], Seq: 1, Hlc: newHLC(time.Now().UnixNano(), peer),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "p:a"}}},
+	}
+	if err := svc.ApplyMutation(ctx, remote); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("rejected peer append = %v", err)
+	}
+	runtime.tarp.stage = stage
+	if pending := svc.pendingMutations[peer][1]; pending == nil || !pending.applied || svc.publicationFaultCount != 1 {
+		t.Fatalf("unexpected pending peer Delete = %+v faults=%d", pending, svc.publicationFaultCount)
+	}
+	reply, err := svc.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "p:", Limit: 1})
+	if err != nil || reply.GetDeleted() != 1 {
+		t.Fatalf("prefix Delete during pending publication = %v, %v", reply, err)
+	}
+	mutation := latestPrefixMutation(t, runtime.log)
+	if got := mutation.GetOp().GetDeleteVertices().GetKeys(); !slices.Equal(got, []string{"p:b"}) {
+		t.Fatalf("dirty-cut prefix Delete victims = %q, want p:b", got)
+	}
+	if err := svc.ApplyMutation(ctx, remote); err != nil {
+		t.Fatal(err)
+	}
+	if svc.LocalSeq(peer) != 1 || svc.publicationFaultCount != 0 {
+		t.Fatalf("repair cutoff=%d faults=%d", svc.LocalSeq(peer), svc.publicationFaultCount)
+	}
+	for _, key := range []string{"p:a", "p:b"} {
+		if _, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: key}); connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("removed key %q after repair = %v", key, err)
+		}
+	}
+}
 
 func latestPrefixMutation(t *testing.T, log *mutationlog.Log) *pb.Mutation {
 	t.Helper()

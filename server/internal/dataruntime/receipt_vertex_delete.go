@@ -234,7 +234,7 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if err != nil {
 		return nil, err
 	}
-	graphTx, err := c.cache.BeginVertexDelete(keys, ts, expiration)
+	graphTx, err := c.cache.BeginVertexDeleteContext(ctx, keys, ts, expiration)
 	if err != nil {
 		return nil, searchIndexWriteError(err)
 	}
@@ -374,7 +374,7 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal,
 			fmt.Errorf("replication Vertex Delete receipt clock floor: %w", err))
 	}
-	graphTx, err := c.cache.BeginReplicatedVertexDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
+	graphTx, err := c.cache.BeginReplicatedVertexDeleteContext(ctx, e.OriginalKeys, ts, e.TombstoneExpiration)
 	if err != nil {
 		return searchIndexWriteError(err)
 	}

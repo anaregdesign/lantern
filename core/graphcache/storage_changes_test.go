@@ -70,9 +70,14 @@ func TestStoredSourceChangesCanBePreparedTwice(t *testing.T) {
 	if !reflect.DeepEqual(after.changes, want) {
 		t.Fatalf("changes = %+v", after.changes)
 	}
+	cut, err := db.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cut.Close()
 	for range 2 {
 		var b tarp.WriteBatch
-		if err := writeSourceChanges(after, r, &b, 1, k); err != nil || b.Len() != 3 {
+		if err := writeSourceChanges(after, r, cut.Snapshot, &b, cut.Generation, k); err != nil || b.Len() != 5 {
 			t.Fatalf("prepare len=%d, err=%v", b.Len(), err)
 		}
 	}

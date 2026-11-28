@@ -37,6 +37,11 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 	if err := prepare(db.head.active, snap, &batch); err != nil {
 		return err
 	}
+	if !batch.oversized && batch.err == nil {
+		if err := batch.topology.finish(ctx, snap, db.head.active, &batch); err != nil {
+			return err
+		}
+	}
 	if batch.err != nil || batch.batch.Len() == 0 && !batch.oversized {
 		return batch.err
 	}
@@ -53,9 +58,15 @@ func (db *DB) UpdateRows(ctx context.Context, prepare func(uint64, *tarp.Snapsho
 		}
 	}
 	batch.batch = tarp.WriteBatch{}
+	batch.topology = topologyChanges{}
 	plan := rowUpdate{generation: db.head.active, changes: make(map[string]rowChange)}
 	if err := prepare(db.head.active, snap, &plan); err != nil {
 		return err
+	}
+	if plan.err == nil {
+		if err := plan.topology.finish(ctx, snap, db.head.active, &plan); err != nil {
+			return err
+		}
 	}
 	if plan.err != nil {
 		return plan.err
@@ -157,6 +168,7 @@ type boundedUpdate struct {
 	generation uint64
 	batch      tarp.WriteBatch
 	sizer      tarp.WriteBatchSizer
+	topology   topologyChanges
 	graphBytes uint64
 	oversized  bool
 	err        error
@@ -165,11 +177,13 @@ type boundedUpdate struct {
 func (b *boundedUpdate) Put(k, v []byte) {
 	if b.fits(k, v) {
 		b.batch.Put(k, v)
+		b.topology.note(k, true)
 	}
 }
 func (b *boundedUpdate) Delete(k []byte) {
 	if b.fits(k, nil) {
 		b.batch.Delete(k)
+		b.topology.note(k, false)
 	}
 }
 func (b *boundedUpdate) fits(k, v []byte) bool {
@@ -214,6 +228,7 @@ type rowChange struct {
 type rowUpdate struct {
 	generation uint64
 	changes    map[string]rowChange
+	topology   topologyChanges
 	err        error
 }
 
@@ -229,6 +244,7 @@ func (p *rowUpdate) set(key, value []byte, remove bool) {
 		return
 	}
 	p.changes[string(key)] = rowChange{value: bytes.Clone(value), deleted: remove}
+	p.topology.note(key, !remove)
 }
 
 // The caller holds the writer gate. Only the last commit changes the logical

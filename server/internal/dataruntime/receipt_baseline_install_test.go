@@ -3,6 +3,7 @@ package dataruntime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -39,6 +40,14 @@ func (c *receiptBaselineTestCodec) EncodeCombinedReceiptBaseline(
 		c.onEncode(capture)
 	}
 	return append([]byte(nil), c.raw...), nil
+}
+
+func (c *receiptBaselineTestCodec) DigestCombinedReceiptBaseline(ctx context.Context, capture ReceiptWholeStateCapture) ([32]byte, uint64, error) {
+	raw, err := c.EncodeCombinedReceiptBaseline(ctx, capture)
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	return sha256.Sum256(raw), uint64(len(raw)), nil
 }
 
 func (c *receiptBaselineTestCodec) StageCombinedReceiptBaseline(
@@ -1084,6 +1093,10 @@ func (c *blockingReceiptBaselineCodec) StageCombinedReceiptBaseline(
 	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
 ) (*ReceiptBaselineCandidate, error) {
 	return c.delegate.StageCombinedReceiptBaseline(ctx, raw, config, defaultTTL, configureGraph)
+}
+
+func (c *blockingReceiptBaselineCodec) DigestCombinedReceiptBaseline(ctx context.Context, capture ReceiptWholeStateCapture) ([32]byte, uint64, error) {
+	return c.delegate.DigestCombinedReceiptBaseline(ctx, capture)
 }
 
 func TestInstallReceiptBaselineExcludesPublicReceiptOperations(t *testing.T) {

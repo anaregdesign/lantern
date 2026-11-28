@@ -37,15 +37,31 @@ func graphReadError(err error) error {
 	}
 }
 
-func storedTraversalError(err error) error {
+func (s *Executor) storedTraversalError(err error) error {
 	if errors.Is(err, graphcache.ErrStoredTraversalBudgetExceeded) {
 		return connect.NewError(connect.CodeResourceExhausted, graphcache.ErrStoredTraversalBudgetExceeded)
+	}
+	if errors.Is(err, graphcache.ErrPPRWorkBudgetExceeded) {
+		return traversalToConnect(err, s.dataAuthorization)
 	}
 	return graphReadError(err)
 }
 
 func (r graphRead) traversal(ctx context.Context, budget graphcache.PPRWorkBudget) *graphcache.StoredTraversal[*pb.Vertex] {
 	return graphcache.NewStoredTraversal(r.rows, r.cut, r.now, graphcache.AdmittedQueryView(ctx), budget)
+}
+
+func (s *Executor) withTraversal(ctx context.Context, weighting graphcache.EdgeWeighting, budget graphcache.PPRWorkBudget, cached func() error, stored func(*graphcache.StoredTraversal[*pb.Vertex]) error) error {
+	return s.withGraphRows(ctx, func(read graphRead) error {
+		if read.cut == nil {
+			return cached()
+		}
+		traversal := read.traversal(ctx, budget)
+		if err := traversal.PrepareWeighting(weighting); err != nil {
+			return s.storedTraversalError(err)
+		}
+		return s.storedTraversalError(stored(traversal))
+	})
 }
 
 // Each attempt pins one generation behind the existing publication and

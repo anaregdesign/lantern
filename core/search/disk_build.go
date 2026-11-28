@@ -105,15 +105,6 @@ func BuildDiskBase(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 		return diskInvalid("missing database, source, document stream or Analyzer")
 	}
 	config := diskSearchConfig(analyzer, nil, opts)
-	if config.limits.MaxDocumentBytes <= 0 {
-		config.limits.MaxDocumentBytes = diskMaxKeyBytes
-	}
-	if config.limits.MaxDocumentTokens <= 0 {
-		config.limits.MaxDocumentTokens = 250_000
-	}
-	if config.limits.MaxDocumentTerms <= 0 {
-		config.limits.MaxDocumentTerms = 100_000
-	}
 	marker := diskKey(base, diskMarker)
 	_, err := db.GetContext(ctx, marker)
 	if err == nil {
@@ -136,7 +127,7 @@ func BuildDiskBase(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 	if err := batch.flush(); err != nil {
 		return err
 	}
-	if err := writeDiskTerms(ctx, batch, base, config.limits.MaxLiveTerms); err != nil {
+	if err := writeDiskTerms(ctx, batch, &footer, config.limits.MaxLiveTerms); err != nil {
 		return err
 	}
 	for class, stats := range footer.Stats {
@@ -151,6 +142,9 @@ func BuildDiskBase(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 		return err
 	}
 	footer.Records = batch.records
+	if err := footer.validateCapacity(); err != nil {
+		return err
+	}
 	footer.Digest, err = verifyDiskBuild(ctx, db, base, footer.Records, marker)
 	if err != nil {
 		return err
@@ -170,7 +164,6 @@ func BuildDiskBase(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 
 func writeDiskDocuments(ctx context.Context, batch *diskBuildBatch, footer *diskFooter, config *InvertedIndex[string, Document], documents iter.Seq2[DiskDocument, error]) error {
 	var previous string
-	var livePostings, livePositions int64
 	for input, streamErr := range documents {
 		if streamErr != nil {
 			return streamErr
@@ -195,16 +188,16 @@ func writeDiskDocuments(ctx context.Context, batch *diskBuildBatch, footer *disk
 		if footer.Documents == math.MaxUint64 {
 			return diskInvalid("document ID exhausted")
 		}
-		if int64(prepared.postings) > math.MaxInt64-livePostings || int64(prepared.positionEntries) > math.MaxInt64-livePositions {
+		if int64(prepared.postings) > math.MaxInt64-footer.Capacity.Postings || int64(prepared.positionEntries) > math.MaxInt64-footer.Capacity.Positions {
 			return diskInvalid("posting or position count exhausted")
 		}
 		footer.Documents++
-		livePostings += int64(prepared.postings)
-		livePositions += int64(prepared.positionEntries)
-		if err := limitError(LimitLivePostings, livePostings, config.limits.MaxLivePostings); err != nil {
+		footer.Capacity.Postings += int64(prepared.postings)
+		footer.Capacity.Positions += int64(prepared.positionEntries)
+		if err := limitError(LimitLivePostings, footer.Capacity.Postings, config.limits.MaxLivePostings); err != nil {
 			return err
 		}
-		if err := limitError(LimitPositionEntries, livePositions, config.limits.MaxPositionEntries); err != nil {
+		if err := limitError(LimitPositionEntries, footer.Capacity.Positions, config.limits.MaxPositionEntries); err != nil {
 			return err
 		}
 		if err := writeDiskDocument(ctx, batch, footer, input, prepared); err != nil {
@@ -231,6 +224,11 @@ func writeDiskDocument(ctx context.Context, batch *diskBuildBatch, footer *diskF
 			stats.Length += uint64(length)
 		}
 		for _, term := range data.terms {
+			for field, occurrence := range term.fields {
+				if occurrence.frequency != 0 {
+					doc.terms[class][field]++
+				}
+			}
 			if err := writeDiskOccurrence(ctx, batch, base, id, uint8(class), term); err != nil {
 				return err
 			}
@@ -317,7 +315,8 @@ func (t *diskTermBuilder) finishTerm(ctx context.Context, batch *diskBuildBatch,
 	return nil
 }
 
-func writeDiskTerms(ctx context.Context, batch *diskBuildBatch, base uint64, termLimit int) error {
+func writeDiskTerms(ctx context.Context, batch *diskBuildBatch, footer *diskFooter, termLimit int) error {
+	base := footer.Base
 	snap, err := batch.db.Snapshot()
 	if err != nil {
 		return err
@@ -325,7 +324,6 @@ func writeDiskTerms(ctx context.Context, batch *diskBuildBatch, base uint64, ter
 	defer snap.Close()
 	prefix := diskKey(base, diskInputRow)
 	var term diskTermBuilder
-	var terms int64
 	for row, readErr := range diskRange(ctx, snap, prefix) {
 		if readErr != nil {
 			return readErr
@@ -338,8 +336,11 @@ func writeDiskTerms(ctx context.Context, batch *diskBuildBatch, base uint64, ter
 			if err := term.finishTerm(ctx, batch, base); err != nil {
 				return err
 			}
-			terms++
-			if err := limitError(LimitLiveTerms, terms, int64(termLimit)); err != nil {
+			if footer.Capacity.Terms == math.MaxInt64 {
+				return diskInvalid("term count exhausted")
+			}
+			footer.Capacity.Terms++
+			if err := limitError(LimitLiveTerms, footer.Capacity.Terms, int64(termLimit)); err != nil {
 				return err
 			}
 			term.term = input
@@ -414,3 +415,47 @@ func (idx *DiskIndex) Source() DiskSource { return idx.footer.Source }
 
 // NextDeadline returns the first finite expiry represented in the fixed base.
 func (idx *DiskIndex) NextDeadline() time.Time { return idx.footer.FirstDeadline }
+
+// RetireDiskBase removes an unpublished or superseded base in bounded Tarp
+// batches. The caller serializes base writers and has stopped selecting the
+// base for new readers. A query already holding a Snapshot keeps its old view.
+// Repeating retirement after cancellation is safe. The ID remains reserved.
+func RetireDiskBase(ctx context.Context, db *tarp.DB, base uint64) error {
+	if db == nil || base == 0 {
+		return diskInvalid("missing database or base")
+	}
+	marker := diskKey(base, diskMarker)
+	if _, err := db.GetContext(ctx, marker); err != nil {
+		if errors.Is(err, tarp.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := db.Delete(diskKey(base, diskFooterRow)); err != nil && !errors.Is(err, tarp.ErrNotFound) {
+		return err
+	}
+	snap, err := db.Snapshot()
+	if err != nil {
+		return err
+	}
+	defer snap.Close()
+	batch := &diskBuildBatch{db: db, sizer: db.WriteBatchSizer()}
+	lower, upper := tarp.PrefixRange(diskBasePrefix(base))
+	for key, err := range snap.KeysRange(ctx, lower, upper) {
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(key, marker) {
+			if err := batch.remove(ctx, key); err != nil {
+				return err
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return batch.flush()
+}

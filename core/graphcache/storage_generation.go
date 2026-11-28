@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/graphstore"
 )
 
@@ -16,6 +17,15 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 	if c.publicationGate != nil {
 		c.publicationGate.Lock()
 		defer c.publicationGate.Unlock()
+	}
+	var source *graphstore.ReadView
+	if c.storage != nil {
+		var err error
+		source, err = c.storage.db.Read()
+		if err != nil {
+			return c.storage.fence(err)
+		}
+		defer source.Close()
 	}
 	chunk := storageChunk{ctx: ctx, target: target}
 	g := target.ID()
@@ -32,6 +42,16 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 		key := graphstore.EdgeKey[S]{Tail: tail, Head: head}
 		edge := graphstore.Edge{}
 		w.mu.Lock()
+		if source != nil && w.cold && w.values == nil {
+			edge.HLC, edge.LastOrdinal = w.lastHLC, w.lastOrdinal
+			w.mu.Unlock()
+			err := c.storage.streamColdEdge(&chunk, rows, source, key, edge, now)
+			if err != nil && err != ctx.Err() {
+				err = c.storage.fence(err)
+			}
+			chunk.check(err)
+			return chunk.err == nil
+		}
 		if !w.loadLocked(now) {
 			w.mu.Unlock()
 			chunk.check(c.StorageError())
@@ -48,7 +68,7 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 				continue
 			}
 			id := graphstore.SourceID{ContribID: v.contribID, Ordinal: v.ordinal}
-			chunk.check(rows.PutSource(&chunk, g, key, id, src))
+			chunk.check(rows.ReplaceSource(&chunk, g, key, id, nil, &src))
 		}
 		w.releaseReadLocked()
 		w.mu.Unlock()
@@ -94,7 +114,43 @@ func (c *GraphCache[S, T]) WriteStorageGeneration(ctx context.Context, rows *gra
 	if err := c.StorageError(); err != nil {
 		return err
 	}
-	return chunk.flush()
+	chunk.check(rows.MarkIncomingEdgeIndex(&chunk, g))
+	chunk.check(rows.MarkSourceOrder(&chunk, g))
+	if err := chunk.flush(); err != nil {
+		return err
+	}
+	return target.BuildTopologyStats(ctx)
+}
+
+// streamColdEdge copies a pinned bucket one Source at a time. The destination
+// remains hidden even when one bucket needs several durable staging chunks.
+func (s *storageResidency[S, T]) streamColdEdge(chunk *storageChunk, rows *graphstore.Rows[S, T], source *graphstore.ReadView, key graphstore.EdgeKey[S], edge graphstore.Edge, now time.Time) error {
+	stored, found, err := s.rows.GetEdge(source.Snapshot, source.Generation, key)
+	if err != nil {
+		return err
+	}
+	if !found || stored.HLC != edge.HLC || stored.LastOrdinal != edge.LastOrdinal {
+		return graphstore.ErrInvalidRow
+	}
+	if stored.Base != nil && cache.IsLiveAt(stored.Base.Expiration, now) {
+		edge.Base = stored.Base
+	}
+	for sourceRow, err := range s.rows.Sources(chunk.ctx, source.Snapshot, source.Generation, key) {
+		if err != nil {
+			return err
+		}
+		if sourceRow.ID.Ordinal > edge.LastOrdinal {
+			return graphstore.ErrInvalidRow
+		}
+		if cache.IsLiveAt(sourceRow.Source.Expiration, now) {
+			chunk.check(rows.ReplaceSource(chunk, chunk.target.ID(), key, sourceRow.ID, nil, &sourceRow.Source))
+			if chunk.err != nil {
+				return nil
+			}
+		}
+	}
+	chunk.check(rows.PutEdge(chunk, chunk.target.ID(), key, edge))
+	return nil
 }
 
 type storageRecord struct{ k, v []byte }

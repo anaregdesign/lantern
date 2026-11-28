@@ -85,11 +85,31 @@ func newSnapshotIdentityIndex(ctx context.Context, scratch *snapshotScratch) (*s
 }
 
 func (i *snapshotIdentityIndex) AddEdge(tail, head string) error {
-	return i.add(tail, head, graphcache.ContribID{}, snapshotIdentityEdge, false)
+	return i.add(tail, head, graphcache.ContribID{}, snapshotIdentityEdge, false, nil)
 }
 
 func (i *snapshotIdentityIndex) AddContribution(tail, head string, id graphcache.ContribID, tombstone bool) error {
-	return i.add(tail, head, id, snapshotIdentityContribution, tombstone)
+	return i.add(tail, head, id, snapshotIdentityContribution, tombstone, nil)
+}
+
+// snapshotIdentityEdgeFrame borrows the current decoded frame's endpoint
+// strings. Every live Add refers to the exact pair already stored by AddEdge.
+type snapshotIdentityEdgeFrame struct {
+	index      *snapshotIdentityIndex
+	tail, head string
+	offset     uint64
+}
+
+func (i *snapshotIdentityIndex) addEdgeFrame(tail, head string) (snapshotIdentityEdgeFrame, error) {
+	if i == nil {
+		return snapshotIdentityEdgeFrame{}, snapshotProtocolError("identity index is nil")
+	}
+	frame := snapshotIdentityEdgeFrame{i, tail, head, i.arenaBytes}
+	return frame, i.AddEdge(tail, head)
+}
+
+func (f snapshotIdentityEdgeFrame) addContribution(id graphcache.ContribID) error {
+	return f.index.add(f.tail, f.head, id, snapshotIdentityContribution, false, &f.offset)
 }
 
 func (i *snapshotIdentityIndex) fail(err error) error {
@@ -99,7 +119,7 @@ func (i *snapshotIdentityIndex) fail(err error) error {
 	return i.err
 }
 
-func (i *snapshotIdentityIndex) add(tail, head string, id graphcache.ContribID, kind byte, tombstone bool) error {
+func (i *snapshotIdentityIndex) add(tail, head string, id graphcache.ContribID, kind byte, tombstone bool, arenaOffset *uint64) error {
 	if i == nil {
 		return snapshotProtocolError("identity index is nil")
 	}
@@ -116,8 +136,12 @@ func (i *snapshotIdentityIndex) add(tail, head string, id graphcache.ContribID, 
 		return i.fail(snapshotProtocolError("invalid identity or sort chunk"))
 	}
 	record := &i.records[i.n]
+	offset := i.arenaBytes
+	if arenaOffset != nil {
+		offset = *arenaOffset
+	}
 	*record = snapshotIdentityRecord{
-		offset: i.arena.Size(), tailLen: uint64(len(tail)), headLen: uint64(len(head)),
+		offset: offset, tailLen: uint64(len(tail)), headLen: uint64(len(head)),
 		id: id, kind: kind, tombstone: tombstone,
 	}
 	i.hasher.Reset()
@@ -125,10 +149,10 @@ func (i *snapshotIdentityIndex) add(tail, head string, id graphcache.ContribID, 
 	binary.BigEndian.PutUint64(i.prefix[1:9], record.tailLen)
 	binary.BigEndian.PutUint64(i.prefix[9:17], record.headLen)
 	_, _ = i.hasher.Write(i.prefix[:])
-	if err := i.appendKey(tail); err != nil {
+	if err := i.hashKey(tail, arenaOffset == nil); err != nil {
 		return i.fail(err)
 	}
-	if err := i.appendKey(head); err != nil {
+	if err := i.hashKey(head, arenaOffset == nil); err != nil {
 		return i.fail(err)
 	}
 	_, _ = i.hasher.Write(id[:])
@@ -140,18 +164,20 @@ func (i *snapshotIdentityIndex) add(tail, head string, id graphcache.ContribID, 
 	return nil
 }
 
-func (i *snapshotIdentityIndex) appendKey(key string) error {
+func (i *snapshotIdentityIndex) hashKey(key string, store bool) error {
 	for len(key) != 0 {
 		if err := checkSnapshotContext(i.ctx); err != nil {
 			return err
 		}
 		n := copy(i.keyA[:], key)
 		_, _ = i.hasher.Write(i.keyA[:n])
-		if err := i.write(i.arena, i.keyA[:n]); err != nil {
-			return err
+		if store {
+			if err := i.write(i.arena, i.keyA[:n]); err != nil {
+				return err
+			}
+			_, _ = i.arenaHash.Write(i.keyA[:n])
+			i.arenaBytes += uint64(n)
 		}
-		_, _ = i.arenaHash.Write(i.keyA[:n])
-		i.arenaBytes += uint64(n)
 		key = key[n:]
 	}
 	return nil
@@ -175,6 +201,9 @@ func (i *snapshotIdentityIndex) write(file *snapshotScratchFile, data []byte) er
 }
 
 func (i *snapshotIdentityIndex) compareKeys(a, b snapshotIdentityRecord) (int, error) {
+	if a.offset == b.offset && a.tailLen == b.tailLen && a.headLen == b.headLen {
+		return 0, nil
+	}
 	for _, part := range [2][4]uint64{
 		{a.offset, a.tailLen, b.offset, b.tailLen},
 		{a.offset + a.tailLen, a.headLen, b.offset + b.tailLen, b.headLen},

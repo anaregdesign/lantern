@@ -188,7 +188,7 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 // replication origin can log identities rather than replaying a predicate
 // that may match a wider set on a peer.
 func (c *GraphCache[S, T]) DeleteByPrefixKeys(ctx context.Context, prefix string, limit int) []S {
-	keys, _ := c.deleteByPrefixKeys(ctx, prefix, limit, nil)
+	keys, _ := c.deleteByPrefixKeys(ctx, prefix, uint64(max(0, limit)), nil, false)
 	return keys
 }
 
@@ -199,10 +199,10 @@ func (c *GraphCache[S, T]) DeleteByPrefixKeysWithPreflight(ctx context.Context, 
 	if preflight == nil {
 		return nil, errors.New("prefix delete requires a preflight callback")
 	}
-	return c.deleteByPrefixKeys(ctx, prefix, limit, preflight)
+	return c.deleteByPrefixKeys(ctx, prefix, uint64(max(0, limit)), preflight, false)
 }
 
-func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string, limit int, preflight func([]S) error) ([]S, error) {
+func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string, limit uint64, preflight func([]S) error, stored bool) ([]S, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.prefixExtract == nil {
@@ -211,27 +211,18 @@ func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string
 		}
 		return nil, nil
 	}
-	// Collect first, then delete. We cannot mutate the radix from inside
-	// its own walk (the walk holds radix.mu.RLock; delete needs the
-	// write lock), and even if we could, the vertex-cache eviction
-	// callback already calls radix.deleteMany — which would deadlock.
 	var victims []S
-	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
-		if err := ctx.Err(); err != nil {
-			return false
+	if c.storedPrefixDeleteEnabledLocked(stored) {
+		var err error
+		victims, _, err = c.storedPrefixDeleteVictimsLocked(ctx, prefix, limit, nil)
+		if err != nil {
+			return nil, err
 		}
-		if limit > 0 && len(victims) >= limit {
-			return false
+	} else {
+		victims = c.cachedPrefixDeleteVictimsLocked(ctx, prefix, limit)
+		if err := c.StorageError(); err != nil {
+			return nil, err
 		}
-		key, ok := c.resolveProjected(projected)
-		if !ok {
-			return true
-		}
-		victims = append(victims, key)
-		return true
-	})
-	if err := c.StorageError(); err != nil {
-		return nil, err
 	}
 	if preflight != nil {
 		if err := ctx.Err(); err != nil {
@@ -260,6 +251,21 @@ func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string
 	}
 	c.rebuildIncompleteSearchLocked()
 	return victims, nil
+}
+
+// Collect first because on-eviction index updates take the radix write lock.
+func (c *GraphCache[S, T]) cachedPrefixDeleteVictimsLocked(ctx context.Context, prefix string, limit uint64) []S {
+	var victims []S
+	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
+		if ctx.Err() != nil || limit > 0 && uint64(len(victims)) >= limit {
+			return false
+		}
+		if key, ok := c.resolveProjected(projected); ok {
+			victims = append(victims, key)
+		}
+		return true
+	})
+	return victims
 }
 
 // resolveProjected inverts the prefix extractor. For the common

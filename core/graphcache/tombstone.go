@@ -128,7 +128,7 @@ func (c *GraphCache[S, T]) ApplySnapshotVertexTombstoneHLC(key S, ts hlc.Timesta
 	if !time.Now().Before(expiration) {
 		return
 	}
-	_, _, _, _ = c.deleteVerticesHLC([]S{key}, ts, expiration, false, true, false)
+	_, _, _, _ = c.deleteVerticesHLC([]S{key}, ts, expiration, false, true, false, nil)
 }
 
 // ApplySnapshotEdgeTombstoneHLC is the edge counterpart. Like other remote
@@ -206,7 +206,7 @@ func (c *GraphCache[S, T]) DeleteVertexHLC(key S, ts hlc.Timestamp, expiration t
 // this is intentional so a Delete-before-Add race is still resolved by
 // LWW once the (out-of-order) Add arrives.
 func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time) int {
-	n, _, _, _ := c.deleteVerticesHLC(keys, ts, expiration, false, false, false)
+	n, _, _, _ := c.deleteVerticesHLC(keys, ts, expiration, false, false, false, nil)
 	return n
 }
 
@@ -214,14 +214,14 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 // DeleteVerticesHLC. A causal-metadata budget overflow leaves graph and
 // causal state unchanged.
 func (c *GraphCache[S, T]) DeleteVerticesHLCChecked(keys []S, ts hlc.Timestamp, expiration time.Time) (int, error) {
-	n, _, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, false)
+	n, _, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, false, nil)
 	return n, err
 }
 
 // DeleteVerticesHLCOutcomesChecked is the exact local-origin batch result.
 // A capacity error returns no outcomes and leaves graph and causal state as-is.
 func (c *GraphCache[S, T]) DeleteVerticesHLCOutcomesChecked(keys []S, ts hlc.Timestamp, expiration time.Time) ([]bool, error) {
-	_, outcomes, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, true)
+	_, outcomes, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, true, nil)
 	return outcomes, err
 }
 
@@ -231,7 +231,7 @@ func (c *GraphCache[S, T]) DeleteVerticesHLCOutcomesChecked(keys []S, ts hlc.Tim
 // remote mutation must converge even when it takes the receiver over its
 // local admission limit.
 func (c *GraphCache[S, T]) DeleteVerticesHLCDecisions(keys []S, ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int) {
-	_, existed, acceptedIndexes, _ = c.deleteVerticesHLC(keys, ts, expiration, false, false, true)
+	_, existed, acceptedIndexes, _ = c.deleteVerticesHLC(keys, ts, expiration, false, false, true, nil)
 	return existed, acceptedIndexes
 }
 
@@ -241,11 +241,11 @@ func (c *GraphCache[S, T]) DeleteVerticesHLCDecisions(keys []S, ts hlc.Timestamp
 // key also has Existed=false but is absent from acceptedIndexes. Duplicate
 // request positions remain distinct and ordered.
 func (c *GraphCache[S, T]) DeleteVerticesHLCDecisionsChecked(keys []S, ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error) {
-	_, existed, acceptedIndexes, err = c.deleteVerticesHLC(keys, ts, expiration, true, false, true)
+	_, existed, acceptedIndexes, err = c.deleteVerticesHLC(keys, ts, expiration, true, false, true, nil)
 	return existed, acceptedIndexes, err
 }
 
-func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time, strict, deferSearchRecovery, withOutcomes bool) (int, []bool, []int, error) {
+func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time, strict, deferSearchRecovery, withOutcomes bool, readBefore vertexPreimageReader[S]) (int, []bool, []int, error) {
 	if len(keys) == 0 {
 		if withOutcomes {
 			return 0, []bool{}, []int{}, nil
@@ -258,20 +258,30 @@ func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 		c.searchCommitMu.Lock()
 		defer c.searchCommitMu.Unlock()
 	}
-	// DeleteMany batches the vertex-index maintenance into one pass (#738);
-	// it returns only the keys that were present, which is exactly the count
-	// we report. Tombstones still go on EVERY key (including absent ones) so
-	// a Delete-before-Add race is resolved by LWW once the Add arrives.
-	accepted := make([]S, 0, len(keys))
-	var acceptedIndexes []int
-	if withOutcomes {
-		acceptedIndexes = make([]int, 0, len(keys))
+	before, err := readBefore.read()
+	if err != nil {
+		return 0, nil, nil, err
 	}
-	for i, k := range keys {
-		if c.vertexDeleteWriteAllowedLocked(k, ts) {
-			accepted = append(accepted, k)
-			if withOutcomes {
-				acceptedIndexes = append(acceptedIndexes, i)
+	// DeleteMany batches the vertex-index maintenance into one pass (#738);
+	// Tombstones still go on EVERY accepted key (including absent ones) so
+	// a Delete-before-Add race is resolved by LWW once the Add arrives.
+	var accepted []S
+	var acceptedIndexes []int
+	var outcomes []bool
+	if before != nil {
+		outcomes, acceptedIndexes = c.planExactVertexDeleteLocked(keys, ts, before)
+		accepted = vertexKeysAtIndexes(keys, acceptedIndexes)
+	} else {
+		accepted = make([]S, 0, len(keys))
+		if withOutcomes {
+			acceptedIndexes = make([]int, 0, len(keys))
+		}
+		for i, k := range keys {
+			if c.vertexDeleteWriteAllowedLocked(k, ts) {
+				accepted = append(accepted, k)
+				if withOutcomes {
+					acceptedIndexes = append(acceptedIndexes, i)
+				}
 			}
 		}
 	}
@@ -281,8 +291,14 @@ func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 		}
 	}
 	var n int
-	var outcomes []bool
-	if withOutcomes {
+	if before != nil {
+		c.vertices.DeleteMany(accepted)
+		for _, existed := range outcomes {
+			if existed {
+				n++
+			}
+		}
+	} else if withOutcomes {
 		outcomes = make([]bool, len(keys))
 		removed, acceptedOutcomes := c.vertices.DeleteManyWithOutcomes(accepted)
 		n = len(removed)
@@ -418,7 +434,7 @@ func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 // stamped at ts/expiration. Returns the number of vertices actually
 // deleted (matching DeleteByPrefix). limit==0 means unlimited.
 func (c *GraphCache[S, T]) DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error) {
-	keys, err := c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, false, nil)
+	keys, err := c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, false, nil, false)
 	return len(keys), err
 }
 
@@ -435,7 +451,7 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLCChecked(ctx context.Context, prefix 
 // a peer delete identities that the origin's limit or causal budget did not
 // commit.
 func (c *GraphCache[S, T]) DeleteByPrefixHLCCheckedKeys(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) ([]S, error) {
-	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, nil)
+	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, nil, false)
 }
 
 // DeleteByPrefixHLCCheckedKeysWithPreflight checks causal capacity, then
@@ -445,10 +461,10 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLCCheckedKeysWithPreflight(ctx context
 	if preflight == nil {
 		return nil, errors.New("HLC prefix delete requires a preflight callback")
 	}
-	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, preflight)
+	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, preflight, false)
 }
 
-func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, strict bool, preflight func([]S) error) ([]S, error) {
+func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, strict bool, preflight func([]S) error, stored bool) ([]S, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.prefixExtract == nil {
@@ -457,38 +473,35 @@ func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string,
 		}
 		return nil, nil
 	}
-	var victims []S
-	c.walkVertexPrefix(ctx, prefix, "", true, false, false, func(projected string) bool {
-		if err := ctx.Err(); err != nil {
-			return false
+	useStorage := c.storedPrefixDeleteEnabledLocked(stored)
+	var victims, accepted []S
+	var hadVictims bool
+	if useStorage {
+		var err error
+		accepted, hadVictims, err = c.storedPrefixDeleteVictimsLocked(ctx, prefix, uint64(limit), &ts)
+		if err != nil {
+			return nil, err
 		}
-		if limit > 0 && uint32(len(victims)) >= limit {
-			return false
+	} else {
+		victims = c.cachedPrefixDeleteVictimsLocked(ctx, prefix, uint64(limit))
+		hadVictims = len(victims) != 0
+		if err := c.StorageError(); err != nil {
+			return nil, err
 		}
-		key, ok := c.resolveProjected(projected)
-		if !ok {
-			return true
-		}
-		victims = append(victims, key)
-		return true
-	})
-	if err := c.StorageError(); err != nil {
-		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if c.searchIndex != nil && len(victims) > 0 {
+	if c.searchIndex != nil && hadVictims {
 		c.searchCommitMu.Lock()
 		defer c.searchCommitMu.Unlock()
 	}
-	// victims are all live (resolveProjected confirms via the vertex cache),
-	// so DeleteMany removes them all; batch it into one index-maintenance pass
-	// (#738) and tombstone each victim.
-	accepted := victims[:0]
-	for _, k := range victims {
-		if c.vertexDeleteWriteAllowedLocked(k, ts) {
-			accepted = append(accepted, k)
+	if !useStorage {
+		accepted = victims[:0]
+		for _, k := range victims {
+			if c.vertexDeleteWriteAllowedLocked(k, ts) {
+				accepted = append(accepted, k)
+			}
 		}
 	}
 	if strict && ts != (hlc.Timestamp{}) {

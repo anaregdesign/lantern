@@ -24,6 +24,7 @@ type DiskSource struct {
 	Fingerprint string
 	Epoch       uint64
 	Sequence    uint64
+	Digest      [32]byte
 	Watermark   time.Time
 }
 
@@ -52,7 +53,7 @@ type DiskIndex struct {
 
 const (
 	diskDomain uint8 = 0xc4
-	diskLayout uint8 = 1
+	diskLayout uint8 = 2
 	diskMarker uint8 = iota + 1
 	diskFooterRow
 	diskDocIDRow
@@ -90,6 +91,7 @@ type diskFooter struct {
 	Digest        [32]byte
 	Stats         [numTokenClasses][numDocumentFields]diskFieldStats
 	FirstDeadline time.Time
+	Capacity      diskCapacity
 }
 
 type diskDocValue struct {
@@ -97,6 +99,7 @@ type diskDocValue struct {
 	version    []byte
 	expiration time.Time
 	lengths    [numTokenClasses][numDocumentFields]int
+	terms      [numTokenClasses][numDocumentFields]int
 }
 
 type diskTermValue struct {
@@ -110,6 +113,7 @@ type diskPosting struct {
 	frequency [numDocumentFields]uint16
 	positions [numDocumentFields]uint64
 	inline    [numDocumentFields][]byte
+	overlay   *[numDocumentFields][]uint64
 }
 
 func diskKey(base uint64, family uint8, suffix ...any) []byte {
@@ -145,11 +149,21 @@ func validDiskSource(source DiskSource) bool {
 
 func sameDiskSource(a, b DiskSource) bool {
 	return a.Store == b.Store && a.Corpus == b.Corpus && a.Fingerprint == b.Fingerprint &&
-		a.Epoch == b.Epoch && a.Sequence == b.Sequence && a.Watermark.Equal(b.Watermark)
+		a.Epoch == b.Epoch && a.Sequence == b.Sequence && a.Digest == b.Digest && a.Watermark.Equal(b.Watermark)
 }
 
 func diskSearchConfig(analyzer Analyzer, scorer Scorer, opts []IndexOption) *InvertedIndex[string, Document] {
-	return NewInvertedIndex[string, Document](analyzer, scorer, strings.Compare, opts...)
+	config := NewInvertedIndex[string, Document](analyzer, scorer, strings.Compare, opts...)
+	if config.limits.MaxDocumentBytes <= 0 {
+		config.limits.MaxDocumentBytes = diskMaxKeyBytes
+	}
+	if config.limits.MaxDocumentTokens <= 0 {
+		config.limits.MaxDocumentTokens = 250_000
+	}
+	if config.limits.MaxDocumentTerms <= 0 {
+		config.limits.MaxDocumentTerms = 100_000
+	}
+	return config
 }
 
 // OpenDiskIndex opens a completed base at an exact source cut. Query snapshots
@@ -177,6 +191,9 @@ func OpenDiskIndex(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 		footer.Positions != config.positions || footer.Digest == ([32]byte{}) ||
 		(!footer.FirstDeadline.IsZero() && !footer.FirstDeadline.After(source.Watermark)) {
 		return nil, diskInvalid("incompatible commit footer")
+	}
+	if err := footer.validateCapacity(); err != nil {
+		return nil, err
 	}
 	for class, fields := range footer.Stats {
 		for fieldID, field := range fields {
@@ -246,9 +263,10 @@ func encodeDiskDoc(doc diskDocValue) []byte {
 		}
 		buf = appendDiskBytes(buf, expiry)
 	}
-	for _, class := range doc.lengths {
-		for _, size := range class {
+	for class, lengths := range doc.lengths {
+		for field, size := range lengths {
 			buf = appendDiskNumber(buf, uint64(size))
+			buf = appendDiskNumber(buf, uint64(doc.terms[class][field]))
 		}
 	}
 	return buf
@@ -266,11 +284,11 @@ func decodeDiskDoc(value []byte) (diskDocValue, error) {
 	}
 	for class := range doc.lengths {
 		for field := range doc.lengths[class] {
-			n := d.number()
-			if n > math.MaxInt {
-				return diskDocValue{}, diskInvalid("document length overflow")
+			n, terms := d.number(), d.number()
+			if n > math.MaxInt || terms > n || (terms == 0) != (n == 0) {
+				return diskDocValue{}, diskInvalid("invalid document length or term count")
 			}
-			doc.lengths[class][field] = int(n)
+			doc.lengths[class][field], doc.terms[class][field] = int(n), int(terms)
 		}
 	}
 	if !d.success() || doc.key == "" {
@@ -338,30 +356,6 @@ func decodeDiskPosting(d *diskDecoder) diskPosting {
 
 func encodeDiskBlock(count int, payload []byte) []byte {
 	return append(appendDiskNumber(nil, uint64(count)), payload...)
-}
-
-func decodeDiskBlock(value []byte, postings []diskPosting) ([]diskPosting, error) {
-	d := diskDecoder{data: value}
-	count := d.number()
-	if len(value) > diskPostingBlockSize || count == 0 || count > diskPostingBlockDocs {
-		return nil, diskInvalid("invalid posting block size")
-	}
-	postings = postings[:0]
-	var previous uint64
-	for range count {
-		gap := d.number()
-		if gap == 0 || gap > math.MaxUint64-previous {
-			return nil, diskInvalid("invalid posting ID gap")
-		}
-		posting := decodeDiskPosting(&d)
-		posting.id = previous + gap
-		postings = append(postings, posting)
-		previous = posting.id
-	}
-	if !d.success() {
-		return nil, diskInvalid("malformed posting block")
-	}
-	return postings, nil
 }
 
 func diskNumberKey(key, prefix []byte) (uint64, error) {

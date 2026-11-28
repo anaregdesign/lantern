@@ -12,6 +12,26 @@ import (
 	"github.com/anaregdesign/tarp"
 )
 
+// VertexMetadata is the narrow retained state used by TTL and write
+// admission. It is defined independently of the Vertex payload.
+type VertexMetadata struct {
+	Expiration time.Time
+	HLC        hlc.Timestamp
+}
+
+// GetVertexMetadata reports physical presence, including expired rows,
+// without loading the application payload.
+func (r *Rows[K, V]) GetVertexMetadata(snap *tarp.Snapshot, gen uint64, key K) (VertexMetadata, bool, error) {
+	physical, err := r.vertexKey(gen, vertexMetadataFamily, key)
+	if err != nil {
+		return VertexMetadata{}, false, err
+	}
+	return readRow(snap, physical, func(data []byte) (VertexMetadata, error) {
+		expiration, ts, err := parseVertexProjection(data)
+		return VertexMetadata{Expiration: expiration, HLC: ts}, err
+	})
+}
+
 func parseVertexProjection(data []byte) (time.Time, hlc.Timestamp, error) {
 	if len(data) != metadataSize {
 		return time.Time{}, hlc.Timestamp{}, fmt.Errorf("%w: invalid vertex projection size", ErrInvalidRow)
@@ -54,16 +74,22 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 			yield(zero, err)
 			return
 		}
-		last, err := familyPrefix(gen, vertexMetadataFamily)
+		projection, err := familyPrefix(gen, vertexMetadataFamily)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		last, err := familyPrefix(gen, sourceOrderFamily)
 		if err != nil {
 			yield(zero, err)
 			return
 		}
 		// The recognized families occupy the contiguous interval from Vertex
-		// to Vertex metadata. Look outside it for undeclared graph records.
+		// to ordered Sources. Look outside it for undeclared graph records.
 		header := prefixBounds(first[:len(first)-1])
-		vertices, metadata := prefixBounds(first), prefixBounds(last)
-		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {metadata.upper, header.upper}} {
+		vertices, metadata := prefixBounds(first), prefixBounds(projection)
+		_, graphEnd := tarp.PrefixRange(last)
+		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {graphEnd, header.upper}} {
 			for _, err := range snap.KeysRange(ctx, bound.lower, bound.upper) {
 				if err == nil {
 					err = fmt.Errorf("%w: unknown graph row family", ErrInvalidRow)

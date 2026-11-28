@@ -13,6 +13,15 @@ directory using the stored node identity. Keep an independent persistent
 volume for each node. A backup volume can hold recovery points from multiple
 nodes if each producer uses its own `LANTERN_BACKUP_INSTANCE_ID`.
 
+The first serving startup of a graph without a complete incoming Edge
+projection builds it from committed Edge keys in bounded batches. Allow disk
+space for one additional key per retained Edge and startup time for the scan
+and writes. Restart retries an interrupted build before listeners start.
+The same startup certifies generation-local topology stats from the
+ordered Edge families. It adds one fixed-size counter row per endpoint
+with a retained Edge and a corpus totals row for graph ranking. Private
+backup digests cover both projections in the captured generation.
+
 Keep the original `LOCK` file in each initialized data directory. Tarp v0.16.0
 requires it when reopening the database. If an older direct Tarp restore
 produced a directory that was never opened and has no `LOCK`, restore the

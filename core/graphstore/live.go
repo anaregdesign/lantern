@@ -63,8 +63,9 @@ func (r *Rows[K, V]) EdgeAt(ctx context.Context, snap *tarp.Snapshot, gen uint64
 	return r.EdgeAtWithReadCharge(ctx, snap, gen, key, now, nil)
 }
 
-// EdgeAtWithReadCharge applies an operation's physical read budget to
-// endpoint probes, the Edge header, and every source, including expired ones.
+// EdgeAtWithReadCharge charges endpoint probes, the Edge header and every
+// canonical Source row, including expired ones. The ordered lookup uses one
+// smaller derived key per Source in addition to the charged canonical row.
 func (r *Rows[K, V]) EdgeAtWithReadCharge(ctx context.Context, snap *tarp.Snapshot, gen uint64, key EdgeKey[K], now time.Time, charge func(int) error) (EdgeDetail, error) {
 	var result EdgeDetail
 	if err := ctx.Err(); err != nil {
@@ -83,6 +84,13 @@ func (r *Rows[K, V]) EdgeAtWithReadCharge(ctx context.Context, snap *tarp.Snapsh
 	edge, found, err := readChargedRow(snap, physical, decodeEdge, charge)
 	if err != nil || !found {
 		return result, err
+	}
+	ordered, err := hasSourceOrder(snap, gen)
+	if err != nil {
+		return result, err
+	}
+	if ordered {
+		return r.foldOrderedSources(ctx, snap, gen, key, edge, now, charge)
 	}
 	sources := liveBase(nil, edge, now)
 	for entry, err := range r.sources(ctx, snap, gen, key, charge) {
@@ -127,11 +135,15 @@ func foldSources(sources []SourceEntry) EdgeDetail {
 		return bytes.Compare(a.ID.ContribID[:], b.ID.ContribID[:])
 	})
 	for _, entry := range sources {
-		result.Weight += entry.Source.Weight
-		if entry.Source.Expiration.After(result.Expiration) {
-			result.Expiration = entry.Source.Expiration
-		}
+		result.add(entry.Source)
 	}
 	result.Found = result.Weight != 0
 	return result
+}
+
+func (d *EdgeDetail) add(source Source) {
+	d.Weight += source.Weight
+	if source.Expiration.After(d.Expiration) {
+		d.Expiration = source.Expiration
+	}
 }

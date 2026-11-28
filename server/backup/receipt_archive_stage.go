@@ -66,6 +66,16 @@ func stageReceiptWholeStateArchive(
 	if err != nil {
 		return nil, err
 	}
+	return stageDecodedReceiptWholeStateArchive(ctx, archive, expected, defaultTTL, configureGraph)
+}
+
+func stageDecodedReceiptWholeStateArchive(
+	ctx context.Context,
+	archive wholeStateArchive,
+	expected mutationreceipt.Config,
+	defaultTTL time.Duration,
+	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+) (*receiptWholeStateStage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -297,7 +307,7 @@ func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], 
 			}] = marker{ts, item.GetExpiration().AsTime()}
 		}
 	}
-	snapshot := graph.SnapshotReplication().Tombstones
+	snapshot := graph.SnapshotReplicationTombstones()
 	now := time.Now()
 	for _, item := range snapshot.Vertices {
 		want, ok := vertices[item.Key]

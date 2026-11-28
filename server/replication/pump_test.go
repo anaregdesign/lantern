@@ -1487,6 +1487,21 @@ func TestGraphOnlySnapshotInstallerRejectsInvalidContributionRemoval(t *testing.
 			frames[4].GetEdge().Contributions[0].ContribId = append([]byte(nil), frames[1].GetEdgeContributionTombstone().GetContribId()...)
 			return frames
 		}, "live edge Add and contribution tombstone overlap"},
+		{"duplicate live Add in one Edge frame", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			edge := frames[4].GetEdge()
+			edge.Contributions = append(edge.Contributions, proto.Clone(edge.Contributions[0]).(*pb.SnapshotEdgeContribution))
+			return frames
+		}, "duplicate live edge contribution"},
+		{"duplicate live Add in derived Edge", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			edge := frames[4].GetEdge()
+			add := edge.Contributions[0]
+			edge.Contributions = nil
+			edge.DerivedAggregate = &pb.SnapshotEdgeDerivedAggregate{
+				Weight: float32(math.Inf(1)),
+				Adds:   []*pb.SnapshotEdgeContribution{add, proto.Clone(add).(*pb.SnapshotEdgeContribution)},
+			}
+			return frames
+		}, "duplicate live edge contribution"},
 		{"footer count mismatch", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[len(frames)-1].GetFooter().EdgeContributionTombstoneCount++
 			return frames
@@ -1981,7 +1996,17 @@ func TestApplySnapshotEdge(t *testing.T) {
 	})
 }
 
-func TestSnapshotEdgeRows(t *testing.T) {
+func TestWalkSnapshotEdgeRows(t *testing.T) {
+	snapshotEdgeRows := func(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
+		var rows []snapshotEdgeRow
+		if err := walkSnapshotEdgeRows(edge, func(row snapshotEdgeRow) error {
+			rows = append(rows, row)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		return rows, nil
+	}
 	stamp := func(wall int64) *pb.HLCTimestamp {
 		return &pb.HLCTimestamp{WallNs: wall, NodeId: []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 	}
@@ -2027,11 +2052,6 @@ func TestSnapshotEdgeRows(t *testing.T) {
 				t.Fatal("invalid mixed Snapshot frame accepted")
 			}
 		})
-	}
-	duplicate := frame(stamp(30))
-	duplicate.Contributions = append(duplicate.Contributions, duplicate.Contributions[1])
-	if _, err := snapshotEdgeRows(duplicate); err == nil {
-		t.Fatal("duplicate Add identity accepted")
 	}
 	for _, weight := range []struct {
 		name  string
@@ -2111,9 +2131,6 @@ func TestSnapshotEdgeRows(t *testing.T) {
 		{"zero nested Add ID", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].ContribId = make([]byte, 24) }},
 		{"nested Put instead of Add", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].ContribId = nil }},
 		{"missing nested Add HLC", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].Hlc = nil }},
-		{"duplicate nested Add ID", func(e *pb.SnapshotEdge) {
-			e.DerivedAggregate.Adds = append(e.DerivedAggregate.Adds, proto.Clone(e.DerivedAggregate.Adds[0]).(*pb.SnapshotEdgeContribution))
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := proto.Clone(derived).(*pb.SnapshotEdge)

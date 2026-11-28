@@ -571,28 +571,16 @@ func (c *ReceiptSnapshotCollector) stageReceiptSnapshot(
 	ctx context.Context,
 	capture dataruntime.ReceiptWholeStateCapture,
 ) (*receiptSnapshotStage, error) {
-	stageFile, err := os.CreateTemp(c.config.TempDir, ".lantern-receipt-snapshot-*.stage")
-	if err != nil {
-		return nil, fmt.Errorf("backup: create receipt Snapshot stage: %w", err)
-	}
-	stagePath := stageFile.Name()
-	defer func() {
-		_ = stageFile.Close()
-		_ = os.Remove(stagePath)
-	}()
 	archive := wholeStateArchive{
 		Graph: capture.Graph, Receipts: capture.Receipts,
 		Policy: capture.Policy, Origins: capture.Origins,
 	}
-	if err := encodeWholeStateArchive(stageFile, archive); err != nil {
+	if err := validateWholeStateArchiveEncoding(ctx, archive); err != nil {
 		return nil, err
 	}
-	if _, err := stageFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("backup: rewind receipt Snapshot stage: %w", err)
-	}
-	wholeState, err := stageReceiptWholeStateArchive(
+	wholeState, err := stageDecodedReceiptWholeStateArchive(
 		ctx,
-		stageFile,
+		archive,
 		c.config.ExpectedPolicy,
 		c.config.DefaultTTL,
 		c.config.ConfigureGraph,

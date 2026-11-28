@@ -868,7 +868,7 @@ func BenchmarkPutVerticesIndexedBatchPreparation(b *testing.B) {
 				b.ResetTimer()
 				for range b.N {
 					if scenario.skipped {
-						if _, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, observe, nil); err != nil {
+						if _, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, observe, nil, nil); err != nil {
 							b.Fatal(err)
 						}
 						continue

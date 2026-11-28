@@ -20,6 +20,9 @@ func RestoreGraphStorage(ctx context.Context, graph *graphcache.GraphCache[strin
 	if err != nil {
 		return nil, err
 	}
+	if err := rows.BuildSourceOrder(ctx, db); err != nil {
+		return nil, err
+	}
 	view, err := db.Read()
 	if err != nil {
 		return nil, err

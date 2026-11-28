@@ -11,13 +11,22 @@ import (
 )
 
 type storageResidency[S comparable, T any] struct {
-	rows            *graphstore.Rows[S, T]
-	db              *graphstore.DB
-	fault           atomic.Pointer[error]
-	recoveryAt      time.Time
-	recoveryExpired bool
-	pending         storageSweep[S]
-	maintenance     func(func() error) error
+	rows                *graphstore.Rows[S, T]
+	db                  *graphstore.DB
+	fault               atomic.Pointer[error]
+	recoveryAt          time.Time
+	recoveryExpired     bool
+	sourceOrderVerified bool
+	pending             storageSweep[S]
+	maintenance         func(func() error) error
+}
+
+// StorageBoundTo reports whether the cache restored its row access from db.
+// A custom publication stager does not establish this binding.
+func (c *GraphCache[S, T]) StorageBoundTo(db *graphstore.DB) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return db != nil && c.storage != nil && c.storage.db == db
 }
 
 // StorageError reports a required row that could not be hydrated. Recovery

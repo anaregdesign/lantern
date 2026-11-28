@@ -839,18 +839,20 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
+		cached := func() error {
 			g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, policy.Traversal.WorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return err
-		}); viewErr != nil && !errors.Is(viewErr, err) {
-			return nil, viewErr
+			return traversalToConnect(err, s.dataAuthorization)
 		}
+		viewErr := s.withTraversal(ctx, coreWeighting, policy.Traversal.WorkBudget, cached, func(read *graphcache.StoredTraversal[*pb.Vertex]) error {
+			g, err = read.PageRank(ctx, request.GetSeed(), request.GetVertexPrefix(), topN, alpha, epsilon)
+			return err
+		})
 		traversalDur = time.Since(traversalStart)
-		if err != nil {
-			return nil, traversalToConnect(err, s.dataAuthorization)
+		if viewErr != nil {
+			return nil, viewErr
 		}
 		phase = "response"
 
@@ -876,18 +878,20 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
+		cached := func() error {
 			g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, policy.Traversal.WorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return err
-		}); viewErr != nil && !errors.Is(viewErr, err) {
-			return nil, viewErr
+			return traversalToConnect(err, s.dataAuthorization)
 		}
+		viewErr := s.withTraversal(ctx, coreWeighting, policy.Traversal.WorkBudget, cached, func(read *graphcache.StoredTraversal[*pb.Vertex]) error {
+			g, expirations, err = read.Community(ctx, request.GetSeed(), request.GetVertexPrefix(), maxSize, alpha, epsilon)
+			return err
+		})
 		traversalDur = time.Since(traversalStart)
-		if err != nil {
-			return nil, traversalToConnect(err, s.dataAuthorization)
+		if viewErr != nil {
+			return nil, viewErr
 		}
 		phase = "response"
 		if opt := resolveOptimizer(comm.GetReduction(), comm.GetObjective()); opt != nil {
@@ -949,19 +953,10 @@ func (s *Executor) Illuminate(ctx context.Context, request *pb.IlluminateRequest
 			}
 			return ctxToConnect(err)
 		}
-		var viewErr error
-		if coreWeighting == graphcache.WeightingRaw {
-			viewErr = s.withGraphRows(ctx, func(read graphRead) error {
-				if read.cut == nil {
-					return cached()
-				}
-				g, expirations, err = read.traversal(ctx, policy.Traversal.WorkBudget).Neighbor(
-					ctx, request.GetSeed(), request.GetVertexPrefix(), int(bfs.GetStep()), int(bfs.GetFanOut()), selectSmallest)
-				return storedTraversalError(err)
-			})
-		} else {
-			viewErr = s.withPublicGraphReadRetry(ctx, cached)
-		}
+		viewErr := s.withTraversal(ctx, coreWeighting, policy.Traversal.WorkBudget, cached, func(read *graphcache.StoredTraversal[*pb.Vertex]) error {
+			g, expirations, err = read.Neighbor(ctx, request.GetSeed(), request.GetVertexPrefix(), int(bfs.GetStep()), int(bfs.GetFanOut()), selectSmallest)
+			return err
+		})
 		traversalDur = time.Since(traversalStart)
 		if viewErr != nil {
 			return nil, viewErr
@@ -1225,7 +1220,7 @@ func (s *Executor) PutVertices(ctx context.Context, request *pb.PutVerticesReque
 			if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
 				return nil, err
 			}
-			_, outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items, ts)
+			outcomes, err := s.putVertexBatchAtCut(items, ts, true)
 			if err != nil {
 				return nil, searchIndexWriteError(err)
 			}
@@ -1292,7 +1287,7 @@ func (s *Executor) PutVertices(ctx context.Context, request *pb.PutVerticesReque
 		if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
 			return nil, err
 		}
-		outcomes, err := s.cache.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
+		outcomes, err := s.putVertexBatchAtCut(items, ts, false)
 		if err != nil {
 			return nil, searchIndexWriteError(err)
 		}
@@ -1433,6 +1428,9 @@ func (s *Executor) preflightLocalGraphDeleteLocked(op *pb.MutationOp, ts hlc.Tim
 }
 
 func writeError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return ctxToConnect(err)
+	}
 	if errors.Is(err, graphcache.ErrEdgeEndpointNotLive) {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
@@ -1537,7 +1535,7 @@ func (s *Executor) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequ
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
 			var err error
-			outcomes, accepted, err = s.cache.DeleteVerticesHLCDecisionsChecked(in.GetKeys(), ts, tombExp)
+			outcomes, accepted, err = s.deleteVertexBatchAtCut(in.GetKeys(), ts, tombExp, true)
 			if err != nil {
 				return nil, writeError(err)
 			}

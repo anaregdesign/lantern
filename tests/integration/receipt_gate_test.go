@@ -28,6 +28,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
@@ -39,6 +40,7 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
+	"github.com/anaregdesign/tarp"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -5153,6 +5155,21 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 	const (
 		recvLimit = 64 << 10
 	)
+	rows, err := graphstore.NewRows[string, []byte](tarp.StringCodec{}, tarp.BytesCodec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the durable fixture alongside its resident graph state without
+	// consuming a receipt or relay position used by the wire assertions.
+	seedRows := func(t *testing.T, wire receiptProtocolWireServer, seed func(uint64, graphstore.Writer) error) {
+		t.Helper()
+		err := wire.runtime.GraphStore().UpdateRows(t.Context(), func(gen uint64, _ *tarp.Snapshot, writer graphstore.Writer) error {
+			return seed(gen, writer)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	readFrame := func(t *testing.T, wire receiptProtocolWireServer) *pb.SubscribeResponse {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -5205,9 +5222,17 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 			wire := newReceiptProtocolWireServerWithNet(t, node, 8, provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit})
 			capability := receiptProtocolCapability(t, wire)
 			existing := &pb.Vertex{Key: "frame/conditional", Value: &pb.Vertex_String_{String_: "old"}}
-			if err := wire.runtime.GraphCache().PutVertexWithExpiration(
-				existing.Key, existing, time.Now().Add(time.Hour),
-			); err != nil {
+			expiration := time.Now().Add(time.Hour)
+			// The server's stored Vertex codec prefixes a present protobuf
+			// message with 1 to distinguish it from an implicit nil Vertex.
+			data, err := proto.MarshalOptions{Deterministic: true}.MarshalAppend([]byte{1}, existing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedRows(t, wire, func(gen uint64, writer graphstore.Writer) error {
+				return rows.PutVertex(writer, gen, existing.Key, graphstore.Vertex[[]byte]{Value: data, Expiration: expiration})
+			})
+			if err := wire.runtime.GraphCache().PutVertexWithExpiration(existing.Key, existing, expiration); err != nil {
 				t.Fatal(err)
 			}
 			request := &pb.PutVerticesRequest{
@@ -5307,9 +5332,14 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 				t.Cleanup(httpClient.CloseIdleConnections)
 				wire.raw = graphv1connect.NewLanternServiceClient(httpClient, wire.server.url)
 				capability := receiptProtocolCapability(t, wire)
-				if !wire.runtime.GraphCache().ApplyVertexCausalBarrierHLC("frame/protected", hlc.Timestamp{
+				barrier := hlc.Timestamp{
 					WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: node,
-				}) {
+				}
+				const protected = "frame/protected"
+				seedRows(t, wire, func(gen uint64, writer graphstore.Writer) error {
+					return rows.PutFloor(writer, gen, graphstore.FloorKey[string]{Kind: graphstore.VertexBarrier, Key: protected}, graphstore.Floor{HLC: barrier})
+				})
+				if !wire.runtime.GraphCache().ApplyVertexCausalBarrierHLC(protected, barrier) {
 					t.Fatal("cannot seed Vertex causal barrier")
 				}
 				now := time.Now()

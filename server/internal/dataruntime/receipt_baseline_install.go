@@ -2,7 +2,6 @@ package dataruntime
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -112,22 +111,21 @@ func (s *Executor) installReceiptBaseline(
 		if err != nil {
 			return err
 		}
-		raw, err := receiptRuntime.baselineCodec.EncodeCombinedReceiptBaseline(ctx, prepared.capture)
+		digest, size, err := receiptRuntime.baselineCodec.DigestCombinedReceiptBaseline(ctx, prepared.capture)
 		if err != nil {
-			return fmt.Errorf("service: encode combined receipt baseline: %w", err)
+			return fmt.Errorf("service: identify combined receipt baseline: %w", err)
 		}
 		target, ledger, err := s.stageTarpReceiptBaseline(ctx, prepared)
 		if err != nil {
 			return err
 		}
-		digest := sha256.Sum256(raw)
 		err = func() error {
 			defer target.Abort()
 			if err := receiptRuntime.injectInstallFault(receiptBaselineAfterStageBeforeFinalCut); err != nil {
 				return err
 			}
 			stage := &tarpReceiptInstall{target: target, ledger: ledger, originCount: len(prepared.candidate.Origins)}
-			return s.commitReceiptBaselineAttempt(ctx, receiptRuntime, policyStore.PolicyFingerprint(), observed, prepared.candidate, raw, digest, stage)
+			return s.commitReceiptBaselineAttempt(ctx, receiptRuntime, policyStore.PolicyFingerprint(), observed, prepared.candidate, size, digest, stage)
 		}()
 		if err == nil {
 			receiptRuntime.committedBaseline = digest
@@ -307,7 +305,7 @@ func (s *Executor) commitReceiptBaselineAttempt(
 	policyFingerprint [32]byte,
 	observed receiptBaselineInstallObservation,
 	candidate *ReceiptBaselineCandidate,
-	raw []byte,
+	size uint64,
 	digest [32]byte,
 	tarpInstall *tarpReceiptInstall,
 ) (err error) {
@@ -397,7 +395,7 @@ func (s *Executor) commitReceiptBaselineAttempt(
 		marker := receiptBaselineMarker{
 			Format:                 ReceiptBaselineFormatCombined,
 			Digest:                 digest,
-			Size:                   uint64(len(raw)),
+			Size:                   size,
 			Epoch:                  receiptRuntime.epoch,
 			PolicyFingerprint:      policyFingerprint,
 			PreviousGeneration:     receiptRuntime.generation,

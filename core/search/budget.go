@@ -23,6 +23,7 @@ const (
 	WorkCandidateVisits   WorkKind = "candidate_visits"
 	WorkCandidateSkips    WorkKind = "candidate_skips"
 	WorkDiskReadBytes     WorkKind = "disk_read_bytes"
+	WorkChangeVisits      WorkKind = "change_visits"
 )
 
 // ErrBudgetExceeded classifies deterministic query-work exhaustion.
@@ -37,6 +38,7 @@ type Budget struct {
 	MaxPositionVisits   int64
 	MaxExpirationVisits int64
 	MaxDiskReadBytes    int64
+	MaxChangeVisits     int64
 }
 
 // Stats captures exact deterministic work plus coarse executor phase timing
@@ -54,6 +56,7 @@ type Stats struct {
 	CandidateVisits   int64
 	CandidateSkips    int64
 	DiskReadBytes     int64
+	ChangeVisits      int64
 	AnalysisDuration  time.Duration
 	ExpansionDuration time.Duration
 	SelectionDuration time.Duration
@@ -114,6 +117,8 @@ func (w *workTracker) visit(kind WorkKind, n int64) error {
 		value, limit = &w.stats.PositionVisits, w.budget.MaxPositionVisits
 	case WorkExpirationVisits:
 		value, limit = &w.stats.ExpirationVisits, w.budget.MaxExpirationVisits
+	case WorkChangeVisits:
+		value, limit = &w.stats.ChangeVisits, w.budget.MaxChangeVisits
 	case WorkDiskReadBytes:
 		value, limit = &w.stats.DiskReadBytes, w.budget.MaxDiskReadBytes
 	case WorkCandidateVisits:

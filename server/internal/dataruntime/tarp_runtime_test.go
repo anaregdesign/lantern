@@ -134,6 +134,14 @@ func TestTarpGraphSnapshotPreservesCutAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This bucket remains cold while the peer Snapshot merges unrelated
+	// data. Its local contribution history must cross the generation switch.
+	if _, err := service.AddEdges(t.Context(), &pb.AddEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "kept", Head: "other", Weight: 2},
+		{Tail: "kept", Head: "other", Weight: 4},
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	finish, err := service.BeginSnapshotInstallChecked(t.Context(), func() error { return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -160,10 +168,14 @@ func TestTarpGraphSnapshotPreservesCutAcrossReopen(t *testing.T) {
 			t.Fatalf("reopened %q: %v, %v", k, got, err)
 		}
 	}
-	if service.LocalSeq(remote) != 9 || service.LocalSeq(hlc.NodeID{1}) != 1 {
+	edge, err := service.GetEdge(t.Context(), &pb.GetEdgeRequest{Tail: "kept", Head: "other"})
+	if err != nil || edge.GetEdge().GetWeight() != 6 {
+		t.Fatalf("reopened cold Edge = %v, %v", edge, err)
+	}
+	if service.LocalSeq(remote) != 9 || service.LocalSeq(hlc.NodeID{1}) != 2 {
 		t.Fatalf("incorrect restored origins %v", service.OriginStates())
 	}
-	if tip, ok := rt.log.LastSeq(); !ok || tip != 2 {
+	if tip, ok := rt.log.LastSeq(); !ok || tip != 3 {
 		t.Fatalf("incorrect restored snapshot boundary %v/%d", ok, tip)
 	}
 	_, err = service.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "successor"}})

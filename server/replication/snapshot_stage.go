@@ -92,8 +92,8 @@ func (i *graphOnlySnapshotInstaller) Install(ctx context.Context, stream Snapsho
 // graphSnapshotStage retains no dataset-sized frame slice. Each frame is
 // encoded, length-prefixed and checksummed in the one owned spool. Replay holds
 // one encoded/decoded frame at a time. The configured frame budget bounds that
-// work, not the entire heap: protobuf amplification, per-frame contribution
-// rows, the Header origin vector and the live graph remain separate costs.
+// work. Protobuf amplification, the Header origin vector and the live graph
+// remain separate heap costs.
 type graphSnapshotStage struct {
 	ctx           context.Context
 	source        SnapshotStream

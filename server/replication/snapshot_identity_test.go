@@ -87,6 +87,34 @@ func TestSnapshotIdentityExactKeysAndMixedTypes(t *testing.T) {
 	}
 }
 
+func TestSnapshotIdentityAddsShareFrameEndpointArena(t *testing.T) {
+	scratch := newSnapshotIdentityTestScratch(t, 1<<20)
+	index, err := newSnapshotIdentityIndex(t.Context(), scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.chunkLimit = 8
+	tail, head := strings.Repeat("tail", 3072), strings.Repeat("head", 3072)
+	frame, err := index.addEdgeFrame(tail, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// If each Add copied the pair, the arena alone would exceed the entire
+	// flight's scratch limit. Unique records still cross multiple merge runs.
+	for n := 1; n <= 128; n++ {
+		if err := frame.addContribution(graphcache.ContribID{byte(n)}); err != nil {
+			t.Fatalf("Add %d: %v", n, err)
+		}
+	}
+	if got, want := index.arena.Size(), uint64(len(tail)+len(head)); got != want {
+		t.Fatalf("endpoint arena = %d, want %d", got, want)
+	}
+	if err := index.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	assertSnapshotIdentityReleased(t, scratch)
+}
+
 func TestSnapshotIdentityDigestCollisionUsesExactArenaKeys(t *testing.T) {
 	scratch := newSnapshotIdentityTestScratch(t, 8<<20)
 	index, err := newSnapshotIdentityIndex(t.Context(), scratch)

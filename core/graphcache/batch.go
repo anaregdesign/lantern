@@ -385,7 +385,7 @@ func (c *GraphCache[S, T]) putVerticesWithExpiration(items []VertexItem[S, T], o
 // be accepted; an oversized skipped item cannot poison an otherwise valid
 // batch.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentChecked(items []VertexItem[S, T]) (written int, skipped []S, err error) {
-	accepted, skipped, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, nil, nil)
+	accepted, skipped, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, nil, nil, nil)
 	return len(accepted), skipped, err
 }
 
@@ -393,25 +393,25 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentChecked(items []Vert
 // path with one exact, index-aligned outcome per input.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentOutcomesChecked(items []VertexItem[S, T]) ([]PutOutcome, error) {
 	outcomes := make([]PutOutcome, len(items))
-	_, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, nil, outcomes)
+	_, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, nil, outcomes, nil)
 	return outcomes, err
 }
 
 // PutVerticesWithExpirationIfAbsentHLCChecked is the local replicated-origin
 // path: accepted writes are bounded before graph or HLC mutation.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLCChecked(items []VertexItem[S, T], ts hlc.Timestamp) (writtenIdx []int, skipped []S, err error) {
-	return c.putVerticesIfAbsentChecked(items, ts, true, nil, nil)
+	return c.putVerticesIfAbsentChecked(items, ts, true, nil, nil, nil)
 }
 
 // PutVerticesWithExpirationIfAbsentHLCOutcomesChecked is the replicated local
 // conditional Put path with one exact outcome per input.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items []VertexItem[S, T], ts hlc.Timestamp) (writtenIdx []int, outcomes []PutOutcome, err error) {
 	outcomes = make([]PutOutcome, len(items))
-	writtenIdx, _, err = c.putVerticesIfAbsentChecked(items, ts, true, nil, outcomes)
+	writtenIdx, _, err = c.putVerticesIfAbsentChecked(items, ts, true, nil, outcomes, nil)
 	return writtenIdx, outcomes, err
 }
 
-func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool, observeLock func(time.Duration), outcomes []PutOutcome) ([]int, []S, error) {
+func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool, observeLock func(time.Duration), outcomes []PutOutcome, readBefore vertexPreimageReader[S]) ([]int, []S, error) {
 	if len(items) == 0 {
 		return nil, nil, nil
 	}
@@ -437,12 +437,17 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 			unlock()
 			return nil, nil, search.ErrIndexIncomplete
 		}
+		before, err := readBefore.read()
+		if err != nil {
+			unlock()
+			return nil, nil, err
+		}
 		// This preliminary sample is only a cheap plan used to avoid analyzing
 		// stable skips. It is deliberately not the injectable application clock:
 		// the single authoritative sample for a successful commit is taken below
 		// after every final lock is held.
 		planningTime := time.Now()
-		accepted, _, _ := c.planVerticesIfAbsentLocked(items, ts, useHLC, planningTime, nil)
+		accepted, _, _ := c.planVerticesIfAbsentLocked(items, ts, useHLC, planningTime, nil, before)
 		missing := missingPreparedIndexesAt(preparation, items, accepted, planningTime)
 		if len(missing) > 0 {
 			unlock()
@@ -459,8 +464,8 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 		if outcomes != nil {
 			applicationTime = c.applicationTime()
 		}
-		finalAccepted, finalApplied, finalSkipped := c.planVerticesIfAbsentLocked(items, ts, useHLC, applicationTime, outcomes)
-		if err := c.validateVertexLifecycleLocked(items, finalApplied, applicationTime, false); err != nil {
+		finalAccepted, finalApplied, finalSkipped := c.planVerticesIfAbsentLocked(items, ts, useHLC, applicationTime, outcomes, before)
+		if err := validateVertexLifecycle(items, finalApplied, applicationTime, false, c.vertexLifetimeReaderLocked(before, applicationTime)); err != nil {
 			if c.searchIndex != nil {
 				c.searchCommitMu.Unlock()
 			}
@@ -536,18 +541,30 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 // planVerticesIfAbsentLocked performs only cheap liveness/causality checks.
 // Callers release c.mu before preparing the returned documents, then retry the
 // plan before commit; a stable skipped item is therefore never analyzed.
-func (c *GraphCache[S, T]) planVerticesIfAbsentLocked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool, now time.Time, outcomes []PutOutcome) (accepted, applied []int, skipped []S) {
+func (c *GraphCache[S, T]) planVerticesIfAbsentLocked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool, now time.Time, outcomes []PutOutcome, before map[S]storedVertexBefore) (accepted, applied []int, skipped []S) {
+	live := func(key S) bool { return c.vertices.HasAt(key, now) }
+	if before != nil {
+		live = func(key S) bool { return before[key].lifetime(now).live }
+	}
+	allowed := func(S) bool { return true }
+	if useHLC {
+		allowed = c.vertexWriteAdmissionLocked(ts, before)
+	}
+	return planVerticesIfAbsent(items, now, outcomes, live, allowed)
+}
+
+func planVerticesIfAbsent[S comparable, T any](items []VertexItem[S, T], now time.Time, outcomes []PutOutcome, live, allowed func(S) bool) (accepted, applied []int, skipped []S) {
 	reserved := make(map[S]struct{})
 	for i, item := range items {
 		_, duplicate := reserved[item.Key]
-		if c.vertices.HasAt(item.Key, now) || duplicate {
+		if live(item.Key) || duplicate {
 			skipped = append(skipped, item.Key)
 			if outcomes != nil {
 				outcomes[i] = PutOutcomeConditionNotMet
 			}
 			continue
 		}
-		if useHLC && !c.vertexWriteAllowedLocked(item.Key, ts) {
+		if !allowed(item.Key) {
 			skipped = append(skipped, item.Key)
 			if outcomes != nil {
 				outcomes[i] = PutOutcomeSuperseded
@@ -824,7 +841,7 @@ func (c *GraphCache[S, T]) deleteEdges(keys []EdgeKey[S], withOutcomes bool) (in
 // the replication apply path (#840) can fire its clamp-reject metric once per
 // rejected item with the same meaning the per-item loop had.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T], ts hlc.Timestamp) (rejected int) {
-	rejected, _ = c.putVerticesWithExpirationHLC(items, ts, false, nil)
+	rejected, _ = c.putVerticesWithExpirationHLC(items, ts, false, nil, nil)
 	return rejected
 }
 
@@ -832,25 +849,25 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 // path with one exact outcome per input.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationHLCOutcomes(items []VertexItem[S, T], ts hlc.Timestamp) []PutOutcome {
 	outcomes := make([]PutOutcome, len(items))
-	_, _ = c.putVerticesWithExpirationHLC(items, ts, false, outcomes)
+	_, _ = c.putVerticesWithExpirationHLC(items, ts, false, outcomes, nil)
 	return outcomes
 }
 
 // PutVerticesWithExpirationHLCChecked is used for locally-originated writes:
 // unlike replication apply it rejects a budget overflow atomically.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationHLCChecked(items []VertexItem[S, T], ts hlc.Timestamp) (rejected int, err error) {
-	return c.putVerticesWithExpirationHLC(items, ts, true, nil)
+	return c.putVerticesWithExpirationHLC(items, ts, true, nil, nil)
 }
 
 // PutVerticesWithExpirationHLCOutcomesChecked is the strict local HLC path
 // with an exact, index-aligned result for every item.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationHLCOutcomesChecked(items []VertexItem[S, T], ts hlc.Timestamp) ([]PutOutcome, error) {
 	outcomes := make([]PutOutcome, len(items))
-	_, err := c.putVerticesWithExpirationHLC(items, ts, true, outcomes)
+	_, err := c.putVerticesWithExpirationHLC(items, ts, true, outcomes, nil)
 	return outcomes, err
 }
 
-func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T], ts hlc.Timestamp, strict bool, outcomes []PutOutcome) (rejected int, err error) {
+func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T], ts hlc.Timestamp, strict bool, outcomes []PutOutcome, readBefore vertexPreimageReader[S]) (rejected int, err error) {
 	if len(items) == 0 {
 		return 0, nil
 	}
@@ -862,7 +879,12 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 			preparation = c.newSearchPreparation(len(items))
 			continue
 		}
-		accepted, rejected := c.planVerticesHLCLocked(items, ts)
+		before, err := readBefore.read()
+		if err != nil {
+			c.mu.Unlock()
+			return 0, err
+		}
+		accepted, rejected := planVerticesHLC(items, c.vertexWriteAdmissionLocked(ts, before))
 		if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxVertexEntries > 0 {
 			keys := make([]S, 0, len(accepted))
 			for _, index := range accepted {
@@ -896,7 +918,7 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 			c.searchCommitMu.Lock()
 		}
 		applicationTime := c.applicationTime()
-		if err := c.validateVertexLifecycleLocked(items, accepted, applicationTime, false); err != nil {
+		if err := validateVertexLifecycle(items, accepted, applicationTime, false, c.vertexLifetimeReaderLocked(before, applicationTime)); err != nil {
 			if c.searchIndex != nil {
 				c.searchCommitMu.Unlock()
 			}
@@ -971,10 +993,10 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 	}
 }
 
-func (c *GraphCache[S, T]) planVerticesHLCLocked(items []VertexItem[S, T], ts hlc.Timestamp) (accepted []int, rejected int) {
+func planVerticesHLC[S comparable, T any](items []VertexItem[S, T], allowed func(S) bool) (accepted []int, rejected int) {
 	accepted = make([]int, 0, len(items))
 	for i := range items {
-		if !c.vertexWriteAllowedLocked(items[i].Key, ts) {
+		if !allowed(items[i].Key) {
 			rejected++
 			continue
 		}

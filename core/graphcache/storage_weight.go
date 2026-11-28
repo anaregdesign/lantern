@@ -32,6 +32,11 @@ func (s *storageResidency[S, T]) bindWeight(key graphstore.EdgeKey[S], w *weight
 			w.storedExpiry = v.expiration
 		}
 	}
+	s.bindWeightLoader(key, w)
+}
+
+// Caller owns the bucket lock or a newly allocated, unpublished bucket.
+func (s *storageResidency[S, T]) bindWeightLoader(key graphstore.EdgeKey[S], w *weight) {
 	w.cold = true
 	w.values = nil
 	if w.load != nil {

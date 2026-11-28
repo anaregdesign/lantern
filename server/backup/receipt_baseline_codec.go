@@ -55,11 +55,54 @@ func (ReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
 	ctx context.Context,
 	capture dataruntime.ReceiptWholeStateCapture,
 ) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
+	active, retired, err := encodeReceiptBaselineSections(ctx, capture)
+	if err != nil {
 		return nil, err
 	}
+	raw, err := encodeCombinedReceiptBaseline(active, retired)
+	if err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// DigestCombinedReceiptBaseline identifies the same canonical archive without
+// assembling a second full copy of the two encoded sections.
+func (ReceiptBaselineCodec) DigestCombinedReceiptBaseline(
+	ctx context.Context,
+	capture dataruntime.ReceiptWholeStateCapture,
+) ([32]byte, uint64, error) {
+	active, retired, err := encodeReceiptBaselineSections(ctx, capture)
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	header, size, err := combinedReceiptBaselineHeader(active, retired)
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	h := sha256.New()
+	h.Write(header[:])
+	h.Write(active)
+	h.Write(retired)
+	var digest [32]byte
+	h.Sum(digest[:0])
+	h.Write(digest[:])
+	h.Sum(digest[:0])
+	if err := ctx.Err(); err != nil {
+		return [32]byte{}, 0, err
+	}
+	return digest, uint64(size), nil
+}
+
+func encodeReceiptBaselineSections(ctx context.Context, capture dataruntime.ReceiptWholeStateCapture) ([]byte, []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if capture.Retired.ClockHighWaterMillis != capture.Receipts.ClockHighWaterMillis {
-		return nil, fmt.Errorf("%w: active and retired high-water differ", errReceiptCombinedBaseline)
+		return nil, nil, fmt.Errorf("%w: active and retired high-water differ", errReceiptCombinedBaseline)
 	}
 	archive := wholeStateArchive{
 		Graph:    capture.Graph,
@@ -69,20 +112,16 @@ func (ReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
 	}
 	var encoded bytes.Buffer
 	if err := encodeWholeStateArchive(&encoded, archive); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	retired, err := encodeRetiredCatalogArchive(capture.Policy, capture.Retired)
 	if err != nil {
-		return nil, err
-	}
-	raw, err := encodeCombinedReceiptBaseline(encoded.Bytes(), retired)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return raw, nil
+	return encoded.Bytes(), retired, nil
 }
 
 func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
@@ -100,18 +139,11 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 		return nil, err
 	}
 
-	archive, err := decodeWholeStateArchive(bytes.NewReader(activeRaw))
+	archive, err := decodeWholeStateArchiveBytes(activeRaw, true)
 	if err != nil {
 		return nil, err
 	}
-	var canonical bytes.Buffer
-	if err := encodeWholeStateArchive(&canonical, archive); err != nil {
-		return nil, err
-	}
-	if !bytes.Equal(canonical.Bytes(), activeRaw) {
-		return nil, wholeStateArchiveError("archive is not canonical")
-	}
-	stage, err := stageReceiptWholeStateArchive(ctx, bytes.NewReader(activeRaw), expected, defaultTTL, configureGraph)
+	stage, err := stageDecodedReceiptWholeStateArchive(ctx, archive, expected, defaultTTL, configureGraph)
 	if err != nil {
 		return nil, err
 	}
@@ -150,17 +182,31 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 }
 
 func encodeCombinedReceiptBaseline(active, retired []byte) ([]byte, error) {
+	header, total, err := combinedReceiptBaselineHeader(active, retired)
+	if err != nil {
+		return nil, err
+	}
+	raw := make([]byte, 0, total)
+	raw = append(raw, header[:]...)
+	raw = append(raw, active...)
+	raw = append(raw, retired...)
+	digest := sha256.Sum256(raw)
+	raw = append(raw, digest[:]...)
+	return raw, nil
+}
+
+func combinedReceiptBaselineHeader(active, retired []byte) ([receiptCombinedBaselineHeaderSize]byte, int, error) {
+	var raw [receiptCombinedBaselineHeaderSize]byte
 	if len(active) == 0 || len(active) > wholeStateArchiveMaxBytes ||
 		len(retired) == 0 || len(retired) > wholeStateArchiveMaxBytes ||
 		len(active) > math.MaxInt-len(retired)-receiptCombinedBaselineHeaderSize-receiptCombinedBaselineFooterSize {
-		return nil, fmt.Errorf("%w: section size exceeds limit", errReceiptCombinedBaseline)
+		return raw, 0, fmt.Errorf("%w: section size exceeds limit", errReceiptCombinedBaseline)
 	}
 	total := receiptCombinedBaselineHeaderSize + len(active) + len(retired) + receiptCombinedBaselineFooterSize
 	if total > receiptCombinedBaselineMaxBytes {
-		return nil, fmt.Errorf("%w: container exceeds byte limit", errReceiptCombinedBaseline)
+		return raw, 0, fmt.Errorf("%w: container exceeds byte limit", errReceiptCombinedBaseline)
 	}
-	raw := make([]byte, receiptCombinedBaselineHeaderSize, total)
-	copy(raw, receiptCombinedBaselineMagic)
+	copy(raw[:], receiptCombinedBaselineMagic)
 	binary.BigEndian.PutUint16(raw[8:10], receiptCombinedBaselineVersion)
 	binary.BigEndian.PutUint16(raw[10:12], wholeStateArchiveVersion)
 	binary.BigEndian.PutUint16(raw[12:14], retiredCatalogArchiveVersion)
@@ -171,11 +217,7 @@ func encodeCombinedReceiptBaseline(active, retired []byte) ([]byte, error) {
 	retiredDigest := sha256.Sum256(retired)
 	copy(raw[32:64], activeDigest[:])
 	copy(raw[64:96], retiredDigest[:])
-	raw = append(raw, active...)
-	raw = append(raw, retired...)
-	digest := sha256.Sum256(raw)
-	raw = append(raw, digest[:]...)
-	return raw, nil
+	return raw, total, nil
 }
 
 func decodeCombinedReceiptBaseline(
@@ -205,7 +247,7 @@ func decodeCombinedReceiptBaseline(
 	}
 	activeStart := receiptCombinedBaselineHeaderSize
 	activeEnd := activeStart + int(activeSize)
-	active := bytes.Clone(raw[activeStart:activeEnd])
+	active := raw[activeStart:activeEnd:activeEnd]
 	retiredRaw := raw[activeEnd:payloadEnd]
 	activeDigest := sha256.Sum256(active)
 	retiredDigest := sha256.Sum256(retiredRaw)
@@ -220,11 +262,9 @@ func decodeCombinedReceiptBaseline(
 	if err != nil {
 		return nil, mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, err
 	}
-	canonical, err := encodeCombinedReceiptBaseline(active, canonicalRetired)
-	if err != nil {
-		return nil, mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, err
-	}
-	if !bytes.Equal(canonical, raw) {
+	// The fixed header, section sizes and digests above already verify the
+	// container and its active bytes. Only the retired section was re-encoded.
+	if !bytes.Equal(canonicalRetired, retiredRaw) {
 		return nil, mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, fmt.Errorf("%w: container is not canonical", errReceiptCombinedBaseline)
 	}
 	return active, retired, retiredMetadata, nil

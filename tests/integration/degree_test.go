@@ -1,8 +1,10 @@
 package integration_test
 
 import (
+	"cmp"
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestTopVerticesByDegree_E2E drives the #900 aggregate RPC full-stack against
@@ -186,5 +190,117 @@ func TestTarpGraphTraversalAndOutgoingDegreeAfterReopen(t *testing.T) {
 		if got := degree.Msg.GetEntries(); len(got) != 1 || got[0].GetKey() != "doc:seed" || got[0].GetDegree() != 2 || got[0].GetWeightedDegree() != 11 {
 			t.Fatalf("unexpected outgoing degree after endpoint deletion: %v", got)
 		}
+	})
+}
+
+func TestTarpWeightedGraphQueriesMatchRAMAfterReopen(t *testing.T) {
+	ctx := t.Context()
+	dir := filepath.Join(t.TempDir(), "graph")
+	newCache := func() *graphcache.GraphCache[string, *pb.Vertex] {
+		return provider.NewGraphCache(provider.CacheConfig{CacheSettings: provider.CacheSettings{TTL: time.Hour}}, provider.SearchConfig{})
+	}
+	open := func(t *testing.T) *service.ServingRuntime {
+		t.Helper()
+		runtime, err := service.OpenGraphDatabase(ctx, dir, hlc.NodeID{1}, newCache(), mutationlog.Options{Capacity: 16}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		return runtime
+	}
+	rpc := func(t *testing.T, svc *service.LanternService) graphv1connect.LanternServiceClient {
+		t.Helper()
+		srv := newConnectTestServer(t, svc, nil)
+		return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	}
+	ram := rpc(t, service.NewLanternService(newCache()))
+	expiry := timestamppb.New(time.Now().Add(time.Hour))
+	seed := func(t *testing.T, client graphv1connect.LanternServiceClient) {
+		t.Helper()
+		vertices := &pb.PutVerticesRequest{}
+		for _, key := range []string{"doc:seed", "doc:猫", "doc:b\x00c", "other:z"} {
+			vertices.Vertices = append(vertices.Vertices, &pb.Vertex{
+				Key: key, Value: &pb.Vertex_String_{String_: key}, Expiration: expiry,
+			})
+		}
+		if _, err := client.PutVertices(ctx, connect.NewRequest(vertices)); err != nil {
+			t.Fatal(err)
+		}
+		edges := &pb.PutEdgesRequest{Edges: []*pb.Edge{
+			{Tail: "doc:seed", Head: "doc:猫", Weight: 3, Expiration: expiry},
+			{Tail: "doc:seed", Head: "doc:b\x00c", Weight: 2, Expiration: expiry},
+			{Tail: "doc:b\x00c", Head: "doc:猫", Weight: 5, Expiration: expiry},
+			{Tail: "doc:猫", Head: "doc:seed", Weight: 1, Expiration: expiry},
+			{Tail: "doc:猫", Head: "doc:猫", Weight: 4, Expiration: expiry},
+			{Tail: "other:z", Head: "doc:猫", Weight: 7, Expiration: expiry},
+		}}
+		if _, err := client.PutEdges(ctx, connect.NewRequest(edges)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(t, ram)
+	t.Run("seed", func(t *testing.T) {
+		seed(t, rpc(t, open(t).NewExecutor(nil)))
+	})
+	t.Run("reopen", func(t *testing.T) {
+		durable := rpc(t, open(t).NewExecutor(nil))
+		for _, weighting := range []pb.Weighting{pb.Weighting_WEIGHTING_RAW, pb.Weighting_WEIGHTING_TFIDF, pb.Weighting_WEIGHTING_BM25} {
+			for _, tc := range []struct {
+				name string
+				set  func(*pb.IlluminateRequest)
+			}{
+				{"BFS", func(r *pb.IlluminateRequest) {
+					r.Params = &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 2, FanOut: 2}}
+				}},
+				{"PPR", func(r *pb.IlluminateRequest) { r.Params = &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 3}} }},
+				{"community", func(r *pb.IlluminateRequest) {
+					r.Params = &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 3}}
+				}},
+			} {
+				t.Run(weighting.String()+"/"+tc.name, func(t *testing.T) {
+					req := &pb.IlluminateRequest{Seed: "doc:seed", VertexPrefix: "doc:", Weighting: weighting}
+					tc.set(req)
+					got, err := durable.Illuminate(ctx, connect.NewRequest(req))
+					if err != nil {
+						t.Fatal(err)
+					}
+					want, err := ram.Illuminate(ctx, connect.NewRequest(req))
+					if err != nil {
+						t.Fatal(err)
+					}
+					sortIlluminateGraph(got.Msg.GetGraph())
+					sortIlluminateGraph(want.Msg.GetGraph())
+					if !proto.Equal(got.Msg, want.Msg) {
+						t.Fatalf("Tarp response = %v; RAM response = %v", got.Msg, want.Msg)
+					}
+				})
+			}
+		}
+		for _, direction := range []pb.TopVerticesByDegreeRequest_Direction{
+			pb.TopVerticesByDegreeRequest_DIRECTION_IN, pb.TopVerticesByDegreeRequest_DIRECTION_BOTH,
+		} {
+			req := &pb.TopVerticesByDegreeRequest{Prefix: "doc:", K: 3, Direction: direction, Weighted: true}
+			got, err := durable.TopVerticesByDegree(ctx, connect.NewRequest(req))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := ram.TopVerticesByDegree(ctx, connect.NewRequest(req))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proto.Equal(got.Msg, want.Msg) {
+				t.Fatalf("%v Tarp response = %v; RAM response = %v", direction, got.Msg, want.Msg)
+			}
+		}
+	})
+}
+
+func sortIlluminateGraph(g *pb.Graph) {
+	slices.SortFunc(g.GetVertices(), func(a, b *pb.Vertex) int { return cmp.Compare(a.GetKey(), b.GetKey()) })
+	slices.SortFunc(g.GetEdges(), func(a, b *pb.Edge) int {
+		if byTail := cmp.Compare(a.GetTail(), b.GetTail()); byTail != 0 {
+			return byTail
+		}
+		return cmp.Compare(a.GetHead(), b.GetHead())
 	})
 }

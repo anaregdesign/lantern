@@ -445,7 +445,7 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	origin := s.clock.NodeID()
 	seq := s.origins.LocalSeq(origin) + 1
 	ts := s.clock.Now()
-	graphTx, err := c.cache.BeginVertexPut(items, ts, call.IfAbsent)
+	graphTx, err := c.cache.BeginVertexPutContext(ctx, items, ts, call.IfAbsent)
 	if err != nil {
 		return nil, searchIndexWriteError(err)
 	}
@@ -585,7 +585,7 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	graphTx, err := c.cache.BeginReplicatedVertexPut(items, ts)
+	graphTx, err := c.cache.BeginReplicatedVertexPutContext(ctx, items, ts)
 	if err != nil {
 		return searchIndexWriteError(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"math"
 	"runtime"
 	"sort"
@@ -48,13 +49,21 @@ const (
 // caller must hold GraphCache.mu — docFreq reads c.edges without taking its own
 // lock, under the same contract as headsOf.
 func (c *GraphCache[S, T]) scoreEdge(weighting EdgeWeighting, sum float32, headID vertexID, docLen, bm25N int, bm25AvgLen float64) float32 {
+	var df int
+	if weighting != WeightingRaw {
+		df = c.edges.docFreq(headID)
+	}
+	return scoreGraphEdge(weighting, sum, df, docLen, bm25N, bm25AvgLen)
+}
+
+func scoreGraphEdge(weighting EdgeWeighting, sum float32, df, docLen, bm25N int, bm25AvgLen float64) float32 {
 	switch weighting {
 	case WeightingTFIDF:
-		return sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
+		return sum / float32(math.Log2(1+float64(df)))
 	case WeightingBM25:
 		return float32(search.BM25Score(
 			float64(sum), bm25AvgLen,
-			c.edges.docFreq(headID), bm25N, docLen,
+			df, bm25N, docLen,
 			search.DefaultBM25K1, search.DefaultBM25B,
 		))
 	default: // WeightingRaw
@@ -516,19 +525,98 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 		}
 	}
 
-	// Local forward-push. p is the approximate PPR vector, r the residual.
-	// We drain each vertex's residual into p (the alpha share) and across its
-	// weighting-transformed, row-normalized out-edges (the 1-alpha share)
-	// until every residual falls below eps·deg.
-	type scoredEdge struct {
-		head S
-		a    float64
+	return pushPageRank(ctx, seed, alpha, epsilon, budget, 0, func(tail S, visit func(uint64) error) (pprRow[S], error) {
+		var row pprRow[S]
+		if !c.vertices.Has(tail) {
+			return row, nil
+		}
+		heads, ok := c.edges.headsOf(tail)
+		if !ok {
+			return row, nil
+		}
+		capacity := len(heads)
+		if view != nil {
+			capacity = min(capacity, 64)
+		}
+		edges := make([]pprEdge[S], 0, capacity)
+		for headID, w := range heads {
+			if err := visit(1); err != nil {
+				return pprRow[S]{}, err
+			}
+			head, ok := c.edges.resolveID(headID)
+			if !ok || !c.vertices.Has(head) || !c.queryEdgeVisible(view, tail, head) || keep != nil && !keep(head) {
+				continue
+			}
+			sum, _, nonZero := w.snapshotAt(now)
+			if !nonZero {
+				continue
+			}
+			weight := float64(c.scoreEdge(weighting, sum, headID, len(heads), bm25N, bm25AvgLen))
+			if weight <= 0 {
+				continue
+			}
+			edges = append(edges, pprEdge[S]{head: head, weight: weight})
+		}
+		// Enqueue heads in the same ascending order as the stored graph.
+		// The order affects which residuals reach the push threshold.
+		sort.Slice(edges, func(i, j int) bool { return stableKeyLess(edges[i].head, edges[j].head) })
+		for _, edge := range edges {
+			row.weight += edge.weight
+		}
+		row.degree = len(edges)
+		row.edges = pprEdgesFromSlice(edges)
+		return row, nil
+	})
+}
+
+type pprEdge[S comparable] struct {
+	head   S
+	weight float64
+}
+
+type pprRow[S comparable] struct {
+	degree int
+	weight float64
+	edges  iter.Seq2[pprEdge[S], error]
+}
+
+func pprEdgesFromSlice[S comparable](edges []pprEdge[S]) iter.Seq2[pprEdge[S], error] {
+	return func(yield func(pprEdge[S], error) bool) {
+		for _, edge := range edges {
+			if !yield(edge, nil) {
+				return
+			}
+		}
 	}
+}
+
+// pushPageRank shares the forward-push algorithm across RAM and stored graph
+// views. A row supplies its normalizing sum and degree before distributing
+// residual; storage can compute both and stream the edges on a second pass.
+func pushPageRank[S comparable](ctx context.Context, seed S, alpha, epsilon float64, budget PPRWorkBudget, maxStates int, read func(S, func(uint64) error) (pprRow[S], error)) (map[S]float64, error) {
 	p := make(map[S]float64)
-	r := map[S]float64{seed: 1}
+	residual := map[S]float64{seed: 1}
 	queue := []S{seed}
 	inQueue := map[S]bool{seed: true}
 	pushes, touchedEdges := 0, 0
+	budgetError := func() *PPRWorkBudgetExceededError {
+		return &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
+	}
+	visit := func(edges uint64) error {
+		if edges > uint64(budget.MaxTouchedEdges-touchedEdges) {
+			touchedEdges = budget.MaxTouchedEdges
+			if touchedEdges < math.MaxInt {
+				touchedEdges++ // Report the first rejected touch, even for a bulk charge.
+			}
+			return budgetError()
+		}
+		checkpoint := touchedEdges / pprCtxCheckInterval
+		touchedEdges += int(edges)
+		if checkpoint != touchedEdges/pprCtxCheckInterval {
+			return ctx.Err()
+		}
+		return nil
+	}
 	compactQueue := func(qi int) ([]S, int) {
 		if qi < pprQueueCompactThreshold || qi*2 < len(queue) {
 			return queue, qi
@@ -538,94 +626,43 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 	}
 
 	for qi := 0; qi < len(queue); {
-		u := queue[qi]
+		tail := queue[qi]
 		var zero S
 		queue[qi] = zero
 		qi++
-		inQueue[u] = false
-		ru := r[u]
+		inQueue[tail] = false
+		mass := residual[tail]
 
-		// Gather u's live, kept, weighting-transformed out-edges and their
-		// affinity sum wu. A tail whose vertex is no longer live contributes
-		// nothing (referential closure, #750), exactly as in neighborContext.
-		var outs []scoredEdge
-		var wu float64
-		var docLen int
-		if c.vertices.Has(u) {
-			if heads, ok := c.edges.headsOf(u); ok {
-				docLen = len(heads)
-				capacity := len(heads)
-				if view != nil {
-					capacity = min(capacity, 64)
-				}
-				outs = make([]scoredEdge, 0, capacity)
-				for headID, w := range heads {
-					// Bound physical adjacency work, including rejected edges. This
-					// counter is not an aggregate of the traversable graph.
-					touchedEdges++
-					if touchedEdges > budget.MaxTouchedEdges {
-						return nil, &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
-					}
-					if touchedEdges%pprCtxCheckInterval == 0 {
-						if err := ctx.Err(); err != nil {
-							return nil, err
-						}
-					}
-					head, ok := c.edges.resolveID(headID)
-					if !ok {
-						continue
-					}
-					if !c.vertices.Has(head) {
-						continue
-					}
-					if !c.queryEdgeVisible(view, u, head) || keep != nil && !keep(head) {
-						continue
-					}
-					sum, _, nonZero := w.snapshotAt(now)
-					if !nonZero {
-						continue
-					}
-					a := float64(c.scoreEdge(weighting, sum, headID, docLen, bm25N, bm25AvgLen))
-					if a <= 0 {
-						continue
-					}
-					outs = append(outs, scoredEdge{head: head, a: a})
-					wu += a
-				}
-			}
+		row, err := read(tail, visit)
+		if err != nil {
+			return nil, err
 		}
-
-		if view != nil {
-			// Stable ordering makes constrained path normalization reproducible;
-			// ranking weights still use the shared graph corpus statistics.
-			sort.Slice(outs, func(i, j int) bool { return stableKeyLess(outs[i].head, outs[j].head) })
-			wu = 0
-			for _, edge := range outs {
-				wu += edge.a
-			}
-		}
-
-		// ACL stopping rule: skip vertices whose residual is too small to
-		// matter. A sink (no live kept out-edges) is still drained once — its
-		// alpha share is absorbed into p and the remaining mass leaks — using a
-		// degree floor of 1 so a non-trivial residual is not stranded forever.
-		if ru < epsilon*float64(max(len(outs), 1)) {
+		// Use a degree floor of 1 for sinks. Drain their alpha share into
+		// the result, so a nontrivial residual is not stranded forever.
+		if mass < epsilon*float64(max(row.degree, 1)) {
 			queue, qi = compactQueue(qi)
 			continue
 		}
 		if pushes >= budget.MaxPushes {
-			return nil, &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
+			return nil, budgetError()
 		}
-
-		r[u] = 0
-		p[u] += alpha * ru
-		if wu > 0 {
-			spread := (1 - alpha) * ru
-			for _, e := range outs {
-				r[e.head] += spread * (e.a / wu)
-				if !inQueue[e.head] {
-					queue = append(queue, e.head)
-					inQueue[e.head] = true
+		residual[tail] = 0
+		p[tail] += alpha * mass
+		if row.weight > 0 {
+			spread := (1 - alpha) * mass
+			for edge, err := range row.edges {
+				if err != nil {
+					return nil, err
+				}
+				if maxStates > 0 && len(residual) >= maxStates {
+					if _, exists := residual[edge.head]; !exists {
+						return nil, ErrStoredTraversalBudgetExceeded
+					}
+				}
+				residual[edge.head] += spread * (edge.weight / row.weight)
+				if !inQueue[edge.head] {
+					queue = append(queue, edge.head)
+					inQueue[edge.head] = true
 				}
 			}
 		}
@@ -737,10 +774,6 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 	// incremental cut bookkeeping keyed by member sets, but edges to
 	// untouched vertices still contribute to d_w — and therefore to cut —
 	// so the boundary they form is not invisible to the sweep.
-	type outEdge struct {
-		head S
-		a    float64
-	}
 	touched := make([]S, 0, len(p))
 	for v, mass := range p {
 		if mass <= 0 {
@@ -748,15 +781,12 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 		}
 		touched = append(touched, v)
 	}
-	if view != nil {
-		sort.Slice(touched, func(i, j int) bool { return stableKeyLess(touched[i], touched[j]) })
-	}
-	adj := make(map[S][]outEdge, len(touched))
+	sort.Slice(touched, func(i, j int) bool { return stableKeyLess(touched[i], touched[j]) })
+	adj := make(map[S][]pprEdge[S], len(touched))
 	dw := make(map[S]float64, len(touched))
 	var volTouched float64
 	for _, u := range touched {
-		var outs []outEdge
-		var du float64
+		var outs []pprEdge[S]
 		if heads, ok := c.edges.headsOf(u); ok {
 			docLen := len(heads)
 			for headID, w := range heads {
@@ -778,114 +808,24 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 				if a <= 0 {
 					continue
 				}
-				outs = append(outs, outEdge{head: head, a: a})
-				du += a
+				outs = append(outs, pprEdge[S]{head: head, weight: a})
 			}
 		}
-		if view != nil {
-			sort.Slice(outs, func(i, j int) bool { return stableKeyLess(outs[i].head, outs[j].head) })
-			du = 0
-			for _, edge := range outs {
-				du += edge.a
-			}
+		sort.Slice(outs, func(i, j int) bool { return stableKeyLess(outs[i].head, outs[j].head) })
+		var du float64
+		for _, edge := range outs {
+			du += edge.weight
 		}
 		adj[u] = outs
 		dw[u] = du
 		volTouched += du
 	}
 
-	// Sweep order: p(v)/max(d_w(v),1) descending, ties by ascending key; the
-	// seed is forced to position 0 so it is a member of every prefix.
-	order := make([]S, 0, len(touched))
-	for _, v := range touched {
-		if v != seed {
-			order = append(order, v)
-		}
-	}
-	rate := func(v S) float64 { return p[v] / math.Max(dw[v], 1) }
-	sort.Slice(order, func(i, j int) bool {
-		ri, rj := rate(order[i]), rate(order[j])
-		if ri != rj {
-			return ri > rj
-		}
-		return lessKey(order[i], order[j])
+	selected, err := sweepCommunity(seed, maxSize, touched, p, dw, volTouched, func(tail S) iter.Seq2[pprEdge[S], error] {
+		return pprEdgesFromSlice(adj[tail])
 	})
-	order = append([]S{seed}, order...)
-
-	// Incremental sweep. members is the growing prefix S; frontierWeight[x]
-	// aggregates Σ_{u∈S} w(u→x) for x∉S so admitting x later removes its
-	// incoming boundary weight from cut in O(1).
-	limit := len(order)
-	if maxSize > 0 && maxSize < limit {
-		limit = maxSize
-	}
-	members := make(map[S]bool, limit)
-	frontierWeight := make(map[S]float64)
-	var cut, vol float64
-	bestPhi := math.Inf(1)
-	bestLen := 0
-	phis := make([]float64, 0, limit)
-	for i := 0; i < limit; i++ {
-		v := order[i]
-		members[v] = true
-		cut -= frontierWeight[v]
-		delete(frontierWeight, v)
-		for _, e := range adj[v] {
-			if members[e.head] {
-				continue
-			}
-			cut += e.a
-			frontierWeight[e.head] += e.a
-		}
-		vol += dw[v]
-
-		denom := math.Min(vol, volTouched-vol)
-		var phi float64
-		switch {
-		case denom <= 0:
-			// The prefix swallowed (at least) the whole touched volume — the
-			// trivial "everything" cut. Score it +Inf so the sweep can never
-			// select the full universe just because its boundary vanished.
-			phi = math.Inf(1)
-		case cut == 0:
-			// A closed prefix (no boundary at all) is a perfect community.
-			phi = 0
-		default:
-			phi = cut / denom
-		}
-		phis = append(phis, phi)
-		if phi < bestPhi {
-			bestPhi = phi
-			bestLen = i + 1
-		}
-	}
-
-	// Degenerate sweep → fall back to top-maxSize by mass so behaviour
-	// degrades to the PPR arm's selection. Degenerate means: too few touched
-	// vertices to define a boundary, or a monotone conductance profile (no
-	// interior minimum to call the community edge).
-	selected := order[:max(bestLen, 1)]
-	if len(touched) < 3 || isMonotone(phis) {
-		// Deterministic mass ranking: (p desc, key asc). The pq.Top helper
-		// breaks score ties arbitrarily, which would make tied memberships
-		// flap across runs — the sweep's determinism contract covers the
-		// fallback too.
-		byMass := make([]S, 0, len(touched))
-		for _, v := range touched {
-			if v != seed {
-				byMass = append(byMass, v)
-			}
-		}
-		sort.Slice(byMass, func(i, j int) bool {
-			if p[byMass[i]] != p[byMass[j]] {
-				return p[byMass[i]] > p[byMass[j]]
-			}
-			return lessKey(byMass[i], byMass[j])
-		})
-		if maxSize > 0 && maxSize-1 < len(byMass) {
-			byMass = byMass[:maxSize-1] // -1: the seed occupies one slot
-		}
-		selected = append([]S{seed}, byMass...)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Materialize the induced subgraph on the selected set: live member
@@ -943,6 +883,116 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 		}
 	}
 	return g, expirations, nil
+}
+
+// sweepCommunity shares the conductance selection across RAM and stored
+// graph views. Only heads that can join this sweep need a retained boundary
+// weight; all other edges still contribute to the cut.
+func sweepCommunity[S comparable](seed S, maxSize int, touched []S, p, dw map[S]float64, volTouched float64, outgoing func(S) iter.Seq2[pprEdge[S], error]) ([]S, error) {
+	// Sweep order: p(v)/max(d_w(v),1) descending, ties by ascending key; the
+	// seed is forced to position 0 so it is a member of every prefix.
+	order := make([]S, 0, len(touched))
+	for _, v := range touched {
+		if v != seed {
+			order = append(order, v)
+		}
+	}
+	rate := func(v S) float64 { return p[v] / math.Max(dw[v], 1) }
+	sort.Slice(order, func(i, j int) bool {
+		ri, rj := rate(order[i]), rate(order[j])
+		if ri != rj {
+			return ri > rj
+		}
+		return lessKey(order[i], order[j])
+	})
+	order = append([]S{seed}, order...)
+
+	// Incremental sweep. members is the growing prefix S; frontierWeight[x]
+	// aggregates Σ_{u∈S} w(u→x) for x∉S so admitting x later removes its
+	// incoming boundary weight from cut in O(1).
+	limit := len(order)
+	if maxSize > 0 && maxSize < limit {
+		limit = maxSize
+	}
+	prefixCandidates := make(map[S]bool, limit)
+	for _, key := range order[:limit] {
+		prefixCandidates[key] = true
+	}
+	members := make(map[S]bool, limit)
+	frontierWeight := make(map[S]float64, limit)
+	var cut, vol float64
+	bestPhi := math.Inf(1)
+	bestLen := 0
+	phis := make([]float64, 0, limit)
+	for i := 0; i < limit; i++ {
+		v := order[i]
+		members[v] = true
+		cut -= frontierWeight[v]
+		delete(frontierWeight, v)
+		for edge, err := range outgoing(v) {
+			if err != nil {
+				return nil, err
+			}
+			if members[edge.head] {
+				continue
+			}
+			cut += edge.weight
+			if prefixCandidates[edge.head] {
+				frontierWeight[edge.head] += edge.weight
+			}
+		}
+		vol += dw[v]
+
+		denom := math.Min(vol, volTouched-vol)
+		var phi float64
+		switch {
+		case denom <= 0:
+			// The prefix swallowed (at least) the whole touched volume — the
+			// trivial "everything" cut. Score it +Inf so the sweep can never
+			// select the full universe just because its boundary vanished.
+			phi = math.Inf(1)
+		case cut == 0:
+			// A closed prefix (no boundary at all) is a perfect community.
+			phi = 0
+		default:
+			phi = cut / denom
+		}
+		phis = append(phis, phi)
+		if phi < bestPhi {
+			bestPhi = phi
+			bestLen = i + 1
+		}
+	}
+
+	// Degenerate sweep → fall back to top-maxSize by mass so behaviour
+	// degrades to the PPR arm's selection. Degenerate means: too few touched
+	// vertices to define a boundary, or a monotone conductance profile (no
+	// interior minimum to call the community edge).
+	selected := order[:max(bestLen, 1)]
+	if len(touched) < 3 || isMonotone(phis) {
+		// Deterministic mass ranking: (p desc, key asc). The pq.Top helper
+		// breaks score ties arbitrarily, which would make tied memberships
+		// flap across runs — the sweep's determinism contract covers the
+		// fallback too.
+		byMass := make([]S, 0, len(touched))
+		for _, v := range touched {
+			if v != seed {
+				byMass = append(byMass, v)
+			}
+		}
+		sort.Slice(byMass, func(i, j int) bool {
+			if p[byMass[i]] != p[byMass[j]] {
+				return p[byMass[i]] > p[byMass[j]]
+			}
+			return lessKey(byMass[i], byMass[j])
+		})
+		if maxSize > 0 && maxSize-1 < len(byMass) {
+			byMass = byMass[:maxSize-1] // -1: the seed occupies one slot
+		}
+		selected = append([]S{seed}, byMass...)
+	}
+
+	return selected, nil
 }
 
 // isMonotone reports whether the conductance profile has no interior
