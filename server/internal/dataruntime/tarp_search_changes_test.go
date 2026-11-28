@@ -22,7 +22,8 @@ func TestTarpSearchChangesFollowAtomicGraphCut(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	baseline := tarpSearchCut{epoch: 17, first: 1, digest: sha256.Sum256([]byte("base"))}
 	var next tarpSearchCut
-	keys := []string{"data:b", "data:a", "data:b", "data:" + strings.Repeat("a", 40_000), "data:" + strings.Repeat("b", 40_000)}
+	keys := []string{"data:b", "data:a", "data:b", "data:" + strings.Repeat("a", 70_000), "data:" + strings.Repeat("b", 40_000)}
+	const journalBytes = 128 << 10
 	before, err := db.Read()
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +59,7 @@ func TestTarpSearchChangesFollowAtomicGraphCut(t *testing.T) {
 		t.Fatalf("missing accepted effect: %q, %v", effect, err)
 	}
 	var seen []string
-	if err := visitTarpSearchChanges(ctx, after.Snapshot, after.Generation, cut, 0, baseline.digest, 100_000, 4, func(seq uint64, key string) error {
+	if err := visitTarpSearchChanges(ctx, after.Snapshot, after.Generation, cut, 0, baseline.digest, journalBytes, 4, func(seq uint64, key string) error {
 		if seq != 1 {
 			t.Fatalf("wrong accepted sequence: %d", seq)
 		}
@@ -79,7 +80,7 @@ func TestTarpSearchChangesFollowAtomicGraphCut(t *testing.T) {
 	if err := testVisit(after, baseline.digest, 64<<10); !errors.Is(err, errTarpSearchCut) {
 		t.Fatalf("expected byte budget failure: %v", err)
 	}
-	if err := testVisit(after, [sha256.Size]byte{2}, 100_000); !errors.Is(err, errTarpSearchCut) {
+	if err := testVisit(after, [sha256.Size]byte{2}, journalBytes); !errors.Is(err, errTarpSearchCut) {
 		t.Fatalf("accepted unrelated source cut: %v", err)
 	}
 	if err := db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, batch graphstore.Writer) error {
@@ -88,11 +89,43 @@ func TestTarpSearchChangesFollowAtomicGraphCut(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := testVisit(read(), baseline.digest, 100_000); !errors.Is(err, errTarpSearchCut) {
+	if err := testVisit(read(), baseline.digest, journalBytes); !errors.Is(err, errTarpSearchCut) {
 		t.Fatalf("accepted a missing change chunk: %v", err)
 	}
-	if err := testVisit(after, baseline.digest, 100_000); err != nil {
+	if err := testVisit(after, baseline.digest, journalBytes); err != nil {
 		t.Fatalf("pinned previous cut became invalid: %v", err)
+	}
+}
+
+func TestTarpSearchChangeRebuildBoundaryKeepsGraphCommit(t *testing.T) {
+	ctx := t.Context()
+	runtime, rpc := openTarpTestRuntime(t, t.TempDir(), 16)
+	runtime.tarp.trackSearch = true
+	key := strings.Repeat("k", searchChangeMaxKeyBytes+1)
+	if _, err := rpc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := rpc.GetVertex(ctx, &pb.GetVertexRequest{Key: key}); err != nil || got.GetVertex().GetKey() != key {
+		t.Fatalf("Graph lost the accepted Vertex: %v", err)
+	}
+	view, err := runtime.GraphStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	cut, err := readTarpSearchCut(ctx, view.Snapshot, view.Generation)
+	if err != nil || cut.last != 1 {
+		t.Fatalf("Search did not advance with the Graph commit: %+v, %v", cut, err)
+	}
+	visit := func(uint64, string) error {
+		t.Fatal("a rebuild boundary emitted a partial key list")
+		return nil
+	}
+	if err := visitTarpSearchChanges(ctx, view.Snapshot, view.Generation, cut, 0, cut.digest, 8<<20, 10, visit); !errors.Is(err, errTarpSearchCut) {
+		t.Fatalf("old Search base crossed an invalidation boundary: %v", err)
+	}
+	if err := visitTarpSearchChanges(ctx, view.Snapshot, view.Generation, cut, cut.last, cut.digest, 8<<20, 10, visit); err != nil {
+		t.Fatalf("a rebuilt base must be able to certify the new cut: %v", err)
 	}
 }
 

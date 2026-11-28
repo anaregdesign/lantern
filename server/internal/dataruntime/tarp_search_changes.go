@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -20,9 +19,10 @@ import (
 // Search source rows live in the authoritative Graph commit. The accepted
 // sequence is independent of local relay sequence and storage generations.
 const (
-	tarpSearchSource       byte = 24
-	tarpSearchChange       byte = 25
-	searchChangeChunkBytes      = 64 << 10
+	tarpSearchSource        byte = 24
+	tarpSearchChange        byte = 25
+	searchChangeChunkBytes       = 64 << 10
+	searchChangeMaxKeyBytes      = 1 << 20
 )
 
 type tarpSearchCut struct {
@@ -83,8 +83,11 @@ func stageTarpSearchChanges(b graphstore.Writer, gen uint64, cut tarpSearchCut, 
 	slices.Sort(keys)
 	keys = slices.Compact(keys)
 	for _, key := range keys {
-		if key == "" || len(key) > searchChangeChunkBytes-binary.MaxVarintLen64 {
-			return cut, fmt.Errorf("%w: invalid Vertex identity", errTarpSearchCut)
+		if key == "" || len(key) > searchChangeMaxKeyBytes {
+			// Some accepted graph effects cannot be represented by the
+			// Search index. Keep the graph commit and force a fresh base.
+			keys = nil
+			break
 		}
 	}
 
@@ -93,23 +96,34 @@ func stageTarpSearchChanges(b graphstore.Writer, gen uint64, cut tarpSearchCut, 
 	h := sha256.New()
 	h.Write(cut.digest[:])
 	h.Write(publication[:])
+	if len(keys) == 0 {
+		h.Write([]byte("Lantern Search rebuild boundary 1"))
+	}
 	chunk := uint32(0)
 	payload := make([]byte, 0, searchChangeChunkBytes)
-	flush := func() {
+	writeChunk := func(data []byte) {
 		chunk++
-		b.Put(binary.BigEndian.AppendUint32(bytes.Clone(prefix), chunk), payload)
-		h.Write(payload)
-		payload = payload[:0]
+		b.Put(binary.BigEndian.AppendUint32(bytes.Clone(prefix), chunk), data)
+		h.Write(data)
 	}
 	for _, key := range keys {
 		if len(payload)+binary.MaxVarintLen64+len(key) > searchChangeChunkBytes {
-			flush()
+			if len(payload) != 0 {
+				writeChunk(payload)
+				payload = payload[:0]
+			}
+			if binary.MaxVarintLen64+len(key) > searchChangeChunkBytes {
+				jumbo := make([]byte, 0, binary.MaxVarintLen64+len(key))
+				jumbo = binary.AppendUvarint(jumbo, uint64(len(key)))
+				writeChunk(append(jumbo, key...))
+				continue
+			}
 		}
 		payload = binary.AppendUvarint(payload, uint64(len(key)))
 		payload = append(payload, key...)
 	}
 	if len(payload) != 0 {
-		flush()
+		writeChunk(payload)
 	}
 
 	copy(cut.digest[:], h.Sum(nil))
@@ -142,6 +156,7 @@ func visitTarpSearchChanges(ctx context.Context, snap *tarp.Snapshot, gen uint64
 		}
 		chunks := binary.BigEndian.Uint32(raw[:4])
 		want := binary.BigEndian.Uint64(raw[4:12])
+		// A zero-chunk footer marks an accepted effect requiring rebuild.
 		if chunks == 0 || chunks == math.MaxUint32 || want < uint64(chunks) {
 			return errTarpSearchCut
 		}
@@ -158,9 +173,10 @@ func visitTarpSearchChanges(ctx context.Context, snap *tarp.Snapshot, gen uint64
 			if err != nil {
 				return errors.Join(errTarpSearchCut, err)
 			}
-			if len(data) == 0 || len(data) > searchChangeChunkBytes || len(data) > maxBytes {
+			if len(data) == 0 || len(data) > searchChangeMaxKeyBytes+binary.MaxVarintLen64 || len(data) > maxBytes {
 				return errTarpSearchCut
 			}
+			jumbo := len(data) > searchChangeChunkBytes
 			maxBytes -= len(data)
 			h.Write(data)
 			for len(data) != 0 {
@@ -169,7 +185,7 @@ func visitTarpSearchChanges(ctx context.Context, snap *tarp.Snapshot, gen uint64
 					return errTarpSearchCut
 				}
 				data = data[used:]
-				if n > uint64(len(data)) {
+				if n > searchChangeMaxKeyBytes || n > uint64(len(data)) || jumbo && n != uint64(len(data)) {
 					return errTarpSearchCut
 				}
 				key := string(data[:n])
