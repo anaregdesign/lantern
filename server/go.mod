@@ -10,7 +10,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/anaregdesign/lantern/core v0.21.4
 	github.com/anaregdesign/lantern/pb v0.17.0
-	github.com/anaregdesign/tarp v0.16.1-0.20261128011806-483b40ed3a18
+	github.com/anaregdesign/tarp v0.17.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/wire v0.7.0
 	github.com/prometheus/client_golang v1.25.0
