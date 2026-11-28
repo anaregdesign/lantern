@@ -179,7 +179,7 @@ func TestTarpDiskSearchCaptureUsesCommittedChangesAndAdmittedKeys(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer advanced.Close()
+	defer func() { _ = advanced.Close() }()
 	ref, err := readTarpSearchBaseRef(ctx, advanced)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestTarpDiskSearchFencesClockRollbackAfterPhysicalVertexExpiry(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rows, err := diskRows()
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestTarpDiskSearchFencesClockRollbackAfterPhysicalVertexExpiry(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	if err := checkTarpSearchTime(ctx, view.Snapshot, view.Generation, now); !errors.Is(err, search.ErrIndexIncomplete) {
 		t.Fatalf("rollback could resurrect reclaimed postings: %v", err)
 	}

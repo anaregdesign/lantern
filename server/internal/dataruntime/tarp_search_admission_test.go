@@ -36,13 +36,13 @@ func TestTarpSearchAdmissionUsesStagedGraphTimeAndDoesNotPublishRejectedRows(t *
 		_ = authority.Close()
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer func() { _ = runtime.Close() }()
 	r := runtime.tarp
 	derived, err := tarp.Open(t.TempDir(), tarp.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer derived.Close()
+	defer func() { _ = derived.Close() }()
 	config := tarpSearchStartup{
 		corpus: "test", fingerprint: "project/v1",
 		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },
@@ -83,7 +83,7 @@ func TestTarpSearchAdmissionUsesStagedGraphTimeAndDoesNotPublishRejectedRows(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer before.Close()
+	defer func() { _ = before.Close() }()
 	// The worker may hold its reader gate while it validates a future Graph
 	// selector. Admission under the Graph mutation lock must still finish.
 	r.diskSearch.mu.Lock()
@@ -98,7 +98,7 @@ func TestTarpSearchAdmissionUsesStagedGraphTimeAndDoesNotPublishRejectedRows(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer after.Close()
+	defer func() { _ = after.Close() }()
 	if after.Revision != before.Revision || after.Generation != before.Generation {
 		t.Fatal("rejected admission committed a Graph revision")
 	}
@@ -166,7 +166,7 @@ func TestTarpSearchAdmissionPreservesReceiptPutRejectionAndRetry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer view.Close()
+		defer func() { _ = view.Close() }()
 		cut, err = readTarpSearchCut(ctx, view.Snapshot, view.Generation)
 		if err != nil {
 			t.Fatal(err)

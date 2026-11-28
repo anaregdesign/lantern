@@ -42,7 +42,7 @@ func (r *tarpRelay) openDiskSearch(ctx context.Context, derived *tarp.DB, config
 	if err != nil {
 		return 0, err
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	source, err := captureTarpDiskSearchInput(ctx, view, config.corpus, config.fingerprint, time.Now(), config.project)
 	if err != nil {
 		return 0, err

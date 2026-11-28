@@ -182,7 +182,7 @@ func (idx *DiskIndex) ValidateAdmission(ctx context.Context, now time.Time, curr
 	if err != nil {
 		return err
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	return view.Validate(ctx, now, current, proposed, budget)
 }
 
@@ -310,7 +310,7 @@ func (idx *DiskIndex) InspectAtWithChanges(ctx context.Context, now time.Time, c
 	if err != nil {
 		return IndexMemoryStats{}, err
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	q := diskQuery{
 		index: idx, snap: view.snapshot, work: newWorkTracker(ctx, diskBoundBudget(Budget{})),
 		now: now, stats: idx.footer.Stats, capacity: idx.footer.Capacity,

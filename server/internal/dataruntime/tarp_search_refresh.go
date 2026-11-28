@@ -206,7 +206,7 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 	if err != nil {
 		return err
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	input, err := captureTarpDiskSearchInput(ctx, view, w.config.corpus, w.config.fingerprint, time.Now(), w.config.project)
 	if err != nil {
 		return err

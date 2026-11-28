@@ -148,7 +148,7 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 		result.BackendError = err
 		return result
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	now := time.Now()
 	index, input, err := reader.readInput(ctx, view, now)
 	if err != nil {
@@ -240,7 +240,7 @@ func (r *ServingRuntime) SearchIndexStats(ctx context.Context) search.IndexMemor
 	if err != nil {
 		return incomplete
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	now := time.Now()
 	index, input, err := reader.readInput(ctx, view, now)
 	if err != nil {
@@ -264,7 +264,7 @@ func (reader *tarpDiskSearchReader) advance(ctx context.Context, graph *graphsto
 	if err != nil {
 		return err
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	index := reader.base.Load()
 	if index == nil {
 		return search.ErrIndexIncomplete

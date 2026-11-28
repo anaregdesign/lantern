@@ -87,7 +87,7 @@ func TestOwnedTarpSearchRefreshRebuildsAfterNativeGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	runtime, executor = openTarpTestRuntime(t, graphDir, 16)
 	id, err := runtime.tarp.openDiskSearch(ctx, reopened, config)
 	if err != nil || id != fresh.BaseID() || !sameTarpDiskSource(runtime.tarp.diskSearch.base.Load().Source(), fresh.Source()) {
@@ -132,7 +132,7 @@ func TestTarpSearchRefreshResolvesPendingSelectorBeforeRetirement(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer derived.Close()
+	defer func() { _ = derived.Close() }()
 	config := tarpSearchStartup{
 		corpus: "test", fingerprint: "v1",
 		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },
@@ -153,7 +153,7 @@ func TestTarpSearchRefreshResolvesPendingSelectorBeforeRetirement(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cut.Close()
+	defer func() { _ = cut.Close() }()
 	input, err := captureTarpDiskSearchInput(ctx, cut, config.corpus, config.fingerprint, time.Now(), config.project)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestOwnedTarpSearchRefreshRecoversBoundedLagAndRetiresCrashArtifacts(t *tes
 	ctx := t.Context()
 	dir := t.TempDir()
 	graphDir, indexDir := filepath.Join(dir, "graph"), filepath.Join(dir, "search")
-	runtime, executor := openTarpTestRuntime(t, graphDir, 16)
+	runtime, _ := openTarpTestRuntime(t, graphDir, 16)
 	config := tarpSearchStartup{
 		corpus: "test", fingerprint: "lag/v1",
 		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },
@@ -238,7 +238,7 @@ func TestOwnedTarpSearchRefreshRecoversBoundedLagAndRetiresCrashArtifacts(t *tes
 		t.Fatal(err)
 	}
 
-	runtime, executor = openTarpTestRuntime(t, graphDir, 16)
+	runtime, executor := openTarpTestRuntime(t, graphDir, 16)
 	derived, err = tarp.Open(indexDir, tarp.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestTarpSearchDerivedReadFaultRebuildsOnlyTheSelectedBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer derived.Close()
+	defer func() { _ = derived.Close() }()
 	config := tarpSearchStartup{
 		corpus: "test", fingerprint: "read-fault/v1",
 		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },

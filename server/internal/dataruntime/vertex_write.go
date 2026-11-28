@@ -116,7 +116,7 @@ func (s *Executor) commitLocalVertexWALLocked(
 	relay := s.runtime.tarp
 	_, err := s.log.CommitPrepared(effect, ts, func(wal mutationlog.WAL, entry mutationlog.Entry) error {
 		if wal != relay || !writer.matches(entry.Op) {
-			return &mutationlog.DefiniteWALAbort{Cause: errors.New("Tarp Vertex publication requires the original owner and operation")}
+			return &mutationlog.DefiniteWALAbort{Cause: errors.New("staged Vertex publication requires the original Tarp owner and operation")}
 		}
 		return relay.write(entry, writer)
 	}, release)

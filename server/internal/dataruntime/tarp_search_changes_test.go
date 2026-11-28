@@ -112,7 +112,7 @@ func TestTarpSearchChangeRebuildBoundaryKeepsGraphCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer view.Close()
+	defer func() { _ = view.Close() }()
 	cut, err := readTarpSearchCut(ctx, view.Snapshot, view.Generation)
 	if err != nil || cut.last != 1 {
 		t.Fatalf("Search did not advance with the Graph commit: %+v, %v", cut, err)

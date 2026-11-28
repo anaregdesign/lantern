@@ -129,7 +129,7 @@ func TestPinnedDiskAdmissionKeepsItsCutAcrossDerivedAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	before := []DiskDocument{{Key: "a", Document: Text("alpha")}}
 	if err := BuildDiskBase(ctx, db, 1, source, diskTestDocuments(before), analyzer, opts...); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestPinnedDiskAdmissionKeepsItsCutAcrossDerivedAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admission.Close()
+	defer func() { _ = admission.Close() }()
 
 	next := source
 	next.Sequence++

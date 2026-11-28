@@ -13,7 +13,7 @@ func TestTrackVertexWritesComparesThePinnedPreimage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rows, err := NewRows[string, string](tarp.StringCodec{}, tarp.StringCodec{})
 	if err != nil {
 		t.Fatal(err)

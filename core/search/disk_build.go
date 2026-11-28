@@ -484,7 +484,7 @@ func NextDiskBase(ctx context.Context, db *tarp.DB, after uint64) (uint64, error
 	if err != nil {
 		return 0, err
 	}
-	defer snap.Close()
+	defer func() { _ = snap.Close() }()
 	lower := diskBasePrefix(after + 1)
 	domain := lower[:len(lower)-8]
 	_, upper := tarp.PrefixRange(domain)
