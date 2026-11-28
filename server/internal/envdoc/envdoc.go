@@ -45,8 +45,8 @@ var descriptions = map[string]string{
 	"LANTERN_BLOCK_PROFILE_RATE":     "runtime.SetBlockProfileRate in nanoseconds between samples (0 = disabled).",
 
 	"LANTERN_DEFAULT_TTL_SECONDS": "Reported in GetServerStatus and startup logs only; RPC writes without an expiration are permanent (decay is opt-in per write, #523).",
-	"LANTERN_GC_INTERVAL_SECONDS": "Graph-cache GC tick interval in seconds (expired vertex/edge sweep).",
-	"LANTERN_GC_EDGE_BUDGET":      "Maximum tail buckets swept per GC tick (0 = full sweep); high-degree tails can still be expensive.",
+	"LANTERN_GC_INTERVAL_SECONDS": "Interval in seconds for online TTL reclamation and the Edge cleanup sweep.",
+	"LANTERN_GC_EDGE_BUDGET":      "Maximum tails examined per tick for zero-weight or dangling Edge cleanup (0 = full sweep). Tarp TTL reclamation uses its own row and byte batches.",
 
 	"LANTERN_SHUTDOWN_TIMEOUT_SECONDS": "Graceful-shutdown drain budget for in-flight requests before a hard close.",
 	"LANTERN_DRAIN_DELAY_SECONDS":      "Zero-drop rolling-update window: keep serving this long after readiness flips NOT_SERVING (0 = disabled).",
