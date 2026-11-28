@@ -116,7 +116,7 @@ func (in tarpDiskSearchInput) changes(ctx context.Context, base search.DiskSourc
 			}
 			vertex, ok, err := in.rows.GetVertex(in.snapshot, in.generation, key)
 			if err != nil {
-				yield(search.DiskDocument{}, err)
+				yield(search.DiskDocument{}, errors.Join(search.ErrIndexIncomplete, err))
 				return
 			}
 			doc := search.DiskDocument{Key: key}
@@ -133,6 +133,7 @@ func (in tarpDiskSearchInput) changes(ctx context.Context, base search.DiskSourc
 type tarpDiskSearchReader struct {
 	mu             sync.RWMutex
 	base           atomic.Pointer[search.DiskIndex]
+	badBase        atomic.Pointer[search.DiskIndex]
 	project        func(string, *pb.Vertex) search.Document
 	maxChangeBytes int
 	maxChangeKeys  int
@@ -163,7 +164,7 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	ranked, stats, err := index.SearchAtWithChanges(ctx, spec.Query, spec.Limit, accept,
 		spec.Options, spec.Phrase, budget, now, input.changes(ctx, index.Source(), reader.maxChangeBytes, reader.maxChangeKeys))
 	var analysisLimit *search.AnalysisLimitError
-	if errors.Is(err, search.ErrDiskIndex) || errors.As(err, &analysisLimit) {
+	if reader.noteDerivedFault(index, err) || errors.As(err, &analysisLimit) {
 		err = errors.Join(search.ErrIndexIncomplete, err)
 	}
 	result.Stats, result.BackendError = stats, err
@@ -190,6 +191,23 @@ func (reader *tarpDiskSearchReader) capture(ctx context.Context, db *graphstore.
 	}
 	result.Hits = hits
 	return result
+}
+
+func isDerivedSearchFault(err error) bool {
+	return !errors.Is(err, search.ErrIndexIncomplete) &&
+		(errors.Is(err, search.ErrDiskIndex) || errors.Is(err, tarp.ErrDataUnavailable) || errors.Is(err, tarp.ErrCorrupt))
+}
+
+// Graph-stream read failures carry ErrIndexIncomplete. Only a fault from the
+// selected derived base should schedule replacement of that exact handle.
+func (reader *tarpDiskSearchReader) noteDerivedFault(index *search.DiskIndex, err error) bool {
+	if !isDerivedSearchFault(err) {
+		return false
+	}
+	if reader.base.Load() == index {
+		reader.badBase.Store(index)
+	}
+	return true
 }
 
 func (reader *tarpDiskSearchReader) readInput(ctx context.Context, view *graphstore.ReadView, now time.Time) (*search.DiskIndex, tarpDiskSearchInput, error) {
@@ -230,6 +248,7 @@ func (r *ServingRuntime) SearchIndexStats(ctx context.Context) search.IndexMemor
 	}
 	stats, err := index.InspectAtWithChanges(ctx, now, input.changes(ctx, index.Source(), reader.maxChangeBytes, reader.maxChangeKeys))
 	if err != nil {
+		reader.noteDerivedFault(index, err)
 		return incomplete
 	}
 	return stats

@@ -233,6 +233,10 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 	}
 	certified := selected != nil && selected.BaseID() == ref.ID && sameTarpDiskSource(selected.Source(), ref.Source) &&
 		ref.Source.Epoch == input.source.Epoch
+	if certified && reader.badBase.CompareAndSwap(selected, nil) {
+		reader.base.CompareAndSwap(selected, nil)
+		return w.rebuild(rebuildCtx, input, w.active)
+	}
 	if !certified {
 		reader.base.Store(nil)
 		return w.rebuild(rebuildCtx, input, w.active)
@@ -256,7 +260,7 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 	if errors.Is(err, search.ErrBudgetExceeded) || errors.Is(err, errTarpSearchCut) {
 		return w.rebuild(rebuildCtx, input, ref.ID)
 	}
-	if _, openErr := search.OpenDiskIndex(ctx, w.derived, ref.ID, ref.Source, w.config.analyzer, w.config.scorer, w.config.options...); errors.Is(openErr, search.ErrDiskIndex) {
+	if _, openErr := search.OpenDiskIndex(ctx, w.derived, ref.ID, ref.Source, w.config.analyzer, w.config.scorer, w.config.options...); isDerivedSearchFault(openErr) {
 		reader.base.Store(nil)
 		return w.rebuild(rebuildCtx, input, ref.ID)
 	}

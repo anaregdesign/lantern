@@ -267,3 +267,42 @@ func TestOwnedTarpSearchRefreshRecoversBoundedLagAndRetiresCrashArtifacts(t *tes
 		t.Fatalf("rebuild lost authoritative rows: %+v, %v", result, err)
 	}
 }
+
+func TestTarpSearchDerivedReadFaultRebuildsOnlyTheSelectedBase(t *testing.T) {
+	ctx := t.Context()
+	runtime, _ := openTarpTestRuntime(t, t.TempDir(), 16)
+	derived, err := tarp.Open(t.TempDir(), tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer derived.Close()
+	config := tarpSearchStartup{
+		corpus: "test", fingerprint: "read-fault/v1",
+		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },
+		analyzer:       search.NewAnalyzer(nil, search.WhitespaceTokenizer{}, nil),
+		maxChangeBytes: 1 << 20, maxChangeKeys: 64,
+	}
+	id, err := runtime.tarp.openDiskSearch(ctx, derived, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := runtime.tarp.diskSearch
+	base := reader.base.Load()
+	worker := tarpSearchRefresh{relay: runtime.tarp, derived: derived, config: config, active: id}
+	if reader.noteDerivedFault(base, errors.Join(search.ErrIndexIncomplete, tarp.ErrDataUnavailable)) {
+		t.Fatal("Graph-stream read failure scheduled a derived rebuild")
+	}
+	if !reader.noteDerivedFault(base, tarp.ErrDataUnavailable) || !reader.noteDerivedFault(base, tarp.ErrCorrupt) {
+		t.Fatal("derived storage faults did not request a rebuild")
+	}
+	if err := worker.refreshWithin(ctx, ctx); err != nil {
+		t.Fatal(err)
+	}
+	fresh := reader.base.Load()
+	if fresh == nil || fresh.BaseID() == id || fresh.Source().Sequence != base.Source().Sequence {
+		t.Fatal("worker did not rebuild the same committed source")
+	}
+	if !reader.noteDerivedFault(base, tarp.ErrDataUnavailable) || reader.badBase.Load() != nil {
+		t.Fatal("an obsolete handle requested rebuild of the new selection")
+	}
+}
