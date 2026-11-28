@@ -208,6 +208,17 @@ exact Prometheus series.
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
 | `lantern_build_info{version,commit,go_version}` | Version pinning for cross-checks during upgrade. |
 
+Reads hide expired values at their deadlines. Online TTL GC scans committed
+Tarp snapshots in pages of up to 128 rows and 1 MiB of encoded input, with
+one larger valid row allowed to make progress. It rechecks each batch on the
+current write cut. Foreground writes can proceed between batches, and a
+renewal committed before reclamation survives. An expired Edge can continue
+to count against physical capacity until the sweep removes its last Source
+and header. Zero-weight and dangling Edge cleanup still removes a whole
+bucket atomically. GC duration measures the whole sweep, including discovery
+and writer waits. It can increase even when the individual publication gate
+holds get shorter.
+
 ### 4.3 Search health and replica consistency
 
 Search has both a local derived index and a cluster-wide configuration

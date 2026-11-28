@@ -7,16 +7,20 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/tarp"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -49,6 +53,139 @@ func durableRuntimeTestConfig(path string) ReceiptDatabaseConfig {
 		NodeID: hlc.NodeID{0x31},
 		Now:    now,
 	}
+}
+
+type runtimeExpiryObserver struct {
+	testPublicationObserver
+	first  sync.Once
+	commit chan struct{}
+	resume chan struct{}
+}
+
+func (o *runtimeExpiryObserver) OnPublicationGate(category string, wait, body, unlock time.Duration) {
+	o.testPublicationObserver.OnPublicationGate(category, wait, body, unlock)
+	if category == "gc" {
+		o.first.Do(func() {
+			close(o.commit)
+			<-o.resume
+		})
+	}
+}
+
+func TestServingRuntimeOnlineExpiryReleasesPublicationGate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "graph")
+		open := func() *ServingRuntime {
+			t.Helper()
+			graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+			rt, err := OpenGraphDatabase(t.Context(), dir, hlc.NodeID{1}, graph, mutationlog.Options{Capacity: 8}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return rt
+		}
+		rt := open()
+		defer rt.Close()
+		executor := rt.NewExecutor(nil)
+		observer := &runtimeExpiryObserver{commit: make(chan struct{}), resume: make(chan struct{})}
+		executor.WithHotPathMetrics(observer)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		deadline := time.Now().Add(time.Minute)
+
+		const count = 260
+		vertices := make([]*pb.Vertex, count)
+		for i := range vertices {
+			vertices[i] = &pb.Vertex{
+				Key:        fmt.Sprintf("expires-%03d", i),
+				Expiration: timestamppb.New(deadline),
+			}
+		}
+		if _, err := executor.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: vertices}); err != nil {
+			t.Fatal(err)
+		}
+
+		finished := make(chan struct{}, 1)
+		rt.graph.SetGCHooks(nil, func(time.Duration) {
+			select {
+			case finished <- struct{}{}:
+			default:
+			}
+		})
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			rt.graph.Watch(ctx, time.Minute)
+		}()
+		resume := sync.OnceFunc(func() { close(observer.resume) })
+		defer func() {
+			cancel()
+			resume()
+			<-watchDone
+		}()
+		select {
+		case <-observer.commit:
+		case <-time.After(2 * time.Minute):
+			t.Fatal("no durable expiry publication")
+		}
+
+		// The observer pauses the watcher after unlocking its first commit.
+		// One row has expired physically and a later row is still available
+		// for renewal by an independently admitted foreground write.
+		rows, err := diskRows()
+		if err != nil {
+			t.Fatal(err)
+		}
+		renewed := vertices[count-1].Key
+		checkRows := func(store *graphstore.DB, wantRenewed bool) {
+			t.Helper()
+			err := store.WithCommittedSnapshot(func(generation uint64, snap *tarp.Snapshot) error {
+				if _, found, err := rows.GetVertexMetadata(snap, generation, vertices[0].Key); err != nil || found {
+					return fmt.Errorf("first expired row found=%t: %v", found, err)
+				}
+				v, found, err := rows.GetVertex(snap, generation, renewed)
+				if err != nil || !found {
+					return fmt.Errorf("later row found=%t: %v", found, err)
+				}
+				if (v.Value.GetString_() == "renewed") != wantRenewed {
+					return fmt.Errorf("renewed row=%v, want renewed=%t", v.Value, wantRenewed)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		checkRows(rt.GraphStore(), false)
+		if _, err := executor.PutVertex(ctx, &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{
+				Key:        renewed,
+				Value:      &pb.Vertex_String_{String_: "renewed"},
+				Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		resume()
+		select {
+		case <-finished:
+		case <-time.After(time.Minute):
+			t.Fatal("expiry pass did not finish")
+		}
+		cancel()
+		<-watchDone
+
+		checkRows(rt.GraphStore(), true)
+		if rt.graph.VertexCount() != 1 {
+			t.Fatalf("resident Vertex count = %d, want 1", rt.graph.VertexCount())
+		}
+		if err := rt.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened := open()
+		defer reopened.Close()
+		checkRows(reopened.GraphStore(), true)
+	})
 }
 
 func TestServingRuntimeCertificationRejectsRetainedOversizedFrame(t *testing.T) {

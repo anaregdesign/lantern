@@ -196,7 +196,7 @@ failure (#847). The most common knobs:
 | `LANTERN_DATA_DIR` | `tarp.db` (`/var/lib/lantern/runtime/graph` in the container image) | Node-owned database directory. Reuse it when restarting the same node. |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes (omitted TTL/expiration ⇒ permanent; decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
-| `LANTERN_GC_EDGE_BUDGET` | `0` | Maximum tail buckets swept per tick; `0` keeps the full sweep. A high-degree tail can still dominate a bounded tick. Monitor tail backlog and reclamation lag when enabling. |
+| `LANTERN_GC_EDGE_BUDGET` | `0` | Maximum tails checked per tick for zero-weight and dangling Edge cleanup. `0` keeps the full sweep. Tarp TTL reclamation uses independent row and byte batches. |
 | `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | Per-RPC message size caps (Connect / gRPC / gRPC-Web). The send cap is also the certified admission bound for canonical full-mutation `SubscribeResponse` frames. |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Per-connection stream cap (0 = unlimited). |
 | `LANTERN_RATE_LIMIT_RPS` / `LANTERN_RATE_LIMIT_BURST` | `0` | Process-wide token-bucket rate limit (0 disables). |

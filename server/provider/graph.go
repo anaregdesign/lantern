@@ -106,7 +106,6 @@ func WireCacheGCHooks(
 			slog.Int("tails_scanned", stats.ScannedTails),
 			slog.Int("edges_scanned", stats.ScannedEdges),
 			slog.Int("contributions_expired", stats.ExpiredContributions),
-			slog.Int("contributions_compacted_in_live_edges", stats.CompactedContributionsInLiveBuckets),
 			slog.Int("tail_backlog", stats.BacklogTails),
 		)
 		tick.vertices, tick.edges, tick.dangling = 0, 0, 0

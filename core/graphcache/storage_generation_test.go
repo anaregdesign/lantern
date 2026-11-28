@@ -224,9 +224,9 @@ func TestWriteStorageGenerationStreamsColdContributions(t *testing.T) {
 	if bucket == nil || !bucket.cold {
 		t.Fatal("restored bucket must be cold")
 	}
-	bucket.load = func() ([]weightValue, error) {
+	bucket.load = func(*time.Time) (storedWeight, error) {
 		t.Fatal("a cold Snapshot bucket was materialized")
-		return nil, nil
+		return storedWeight{}, nil
 	}
 	target, err := db.BeginGeneration()
 	if err != nil {

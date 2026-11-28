@@ -120,6 +120,12 @@ func matchesStorageWeight[K comparable](w *weight, row graphstore.EdgeBucket[K],
 		if w.storedCount != want {
 			return false
 		}
+		// Online reclamation can invalidate a derived summary without
+		// retaining a second copy of the bucket. The outer comparison
+		// also verifies that this is the active committed storage cut.
+		if w.storedSummaryInvalid {
+			return true
+		}
 		detail, folded := row.RetainedDetail(*scratch)
 		*scratch = folded
 		var earliest time.Time

@@ -2,6 +2,12 @@
 
 Status: Accepted
 
+The measurements and tail-budget trade-off below describe the in-memory
+sweep. Tarp-backed serving now reclaims expired rows in independent bounded
+batches under [#2273](https://github.com/anaregdesign/lantern/issues/2273).
+The tail budget still caps the zero-weight and dangling Edge cleanup sweep.
+The 60-second default interval applies to both passes.
+
 ## Context
 
 At 100,000 vertices and about 3.2 million edges, #1183 measured direct

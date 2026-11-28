@@ -18,6 +18,7 @@ type storageResidency[S comparable, T any] struct {
 	recoveryExpired     bool
 	sourceOrderVerified bool
 	pending             storageSweep[S]
+	structuralCursor    storageStructuralCursor[S]
 	maintenance         func(func() error) error
 }
 
@@ -102,6 +103,7 @@ func (c *GraphCache[S, T]) StorageGenerationPublished() {
 	c.vertices.SetValueLoader(c.storage.vertex)
 	c.vertices.ReleaseValues()
 	c.storage.pending = storageSweep[S]{}
+	c.storage.structuralCursor = storageStructuralCursor[S]{}
 	c.bindStorageGCHooks()
 	c.releaseStorageIndexes()
 	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
