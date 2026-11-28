@@ -580,20 +580,39 @@ func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
 	if _, err := rand.Read(payload); err != nil {
 		t.Fatal(err)
 	}
+	const sourceWrites = 65
+	type seedWriteTiming struct {
+		startAfter, duration time.Duration
+	}
+	var seedTimings [sourceWrites + 1]seedWriteTiming
+	attempted := 0
+	seedBegan := time.Now()
 	seedCtx, seedCancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer seedCancel()
-	for sequence := range 65 {
-		if _, err := fixture.primary[0].PutVertex(seedCtx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
-			Key: fmt.Sprintf("data:spool-large-%02d", sequence), Value: &pb.Vertex_Bytes{Bytes: payload},
-		}}); err != nil {
-			t.Fatal("large native source seed", err)
+	// A durable write can finish after the seed deadline. Keep earlier calls
+	// so the next call reporting expiration does not hide the time spent.
+	defer func() {
+		t.Logf("large native seed timing: attempted=%d/%d calls(start_after_ns,duration_ns)=%v", attempted, len(seedTimings), seedTimings[:attempted])
+	}()
+	seedVertex := func(node *service.LanternService, phase string, vertex *pb.Vertex) {
+		began := time.Now()
+		_, err := node.PutVertex(seedCtx, &pb.PutVertexRequest{Vertex: vertex})
+		timing := seedWriteTiming{startAfter: began.Sub(seedBegan), duration: time.Since(began)}
+		seedTimings[attempted] = timing
+		attempted++
+		if err != nil {
+			t.Fatalf("large native %s seed write=%d/%d: start_after=%s duration=%s setup_elapsed=%s context_error=%v: %v",
+				phase, attempted, len(seedTimings), timing.startAfter, timing.duration, timing.startAfter+timing.duration, seedCtx.Err(), err)
 		}
 	}
-	if _, err := fixture.primary[1].PutVertex(seedCtx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
-		Key: "data:spool-resident", Value: &pb.Vertex_String_{String_: "resident"},
-	}}); err != nil {
-		t.Fatal(err)
+	for sequence := range sourceWrites {
+		seedVertex(fixture.primary[0], "source", &pb.Vertex{
+			Key: fmt.Sprintf("data:spool-large-%02d", sequence), Value: &pb.Vertex_Bytes{Bytes: payload},
+		})
 	}
+	seedVertex(fixture.primary[1], "resident", &pb.Vertex{
+		Key: "data:spool-resident", Value: &pb.Vertex_String_{String_: "resident"},
+	})
 	if first, ok := fixture.firstSeq(0); !ok || first != 62 {
 		t.Fatalf("large source did not require Snapshot: retained first=%d present=%t", first, ok)
 	}
