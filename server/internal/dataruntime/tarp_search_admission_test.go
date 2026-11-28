@@ -1,8 +1,10 @@
 package dataruntime
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -263,4 +265,156 @@ func TestTarpSearchAdmissionPreservesReceiptPutRejectionAndRetry(t *testing.T) {
 		t.Fatalf("over-budget peer cut emitted Search results: %+v, %v", captured, err)
 	}
 
+}
+
+type searchAdmissionObservedContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *searchAdmissionObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestTarpSearchAdmissionWaitsForTheSelectedRefreshBeforeStaging(t *testing.T) {
+	ctx := t.Context()
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](0)
+	graphDB, err := graphstore.Open(ctx, t.TempDir(), hlc.NodeID{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := RestoreGraphStorage(ctx, graph, graphDB)
+	if err != nil {
+		_ = graphDB.Close()
+		t.Fatal(err)
+	}
+	runtime, err := NewTarpGraphServingRuntime(ctx, graph, graphDB, mutationlog.Options{Capacity: 16}, stage, "")
+	if err != nil {
+		_ = graphDB.Close()
+		t.Fatal(err)
+	}
+	defer func() { _ = runtime.Close() }()
+	executor := runtime.NewExecutor(nil)
+	derived, err := tarp.Open(t.TempDir(), tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = derived.Close() }()
+	config := tarpSearchStartup{
+		corpus: "test", fingerprint: "admission-race/v1",
+		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },
+		analyzer:       search.NewAnalyzer(nil, search.WhitespaceTokenizer{}, nil),
+		maxChangeBytes: 1 << 20, maxChangeKeys: 64,
+	}
+	relay := runtime.tarp
+	if _, err := relay.openDiskSearch(ctx, derived, config); err != nil {
+		t.Fatal(err)
+	}
+	relay.diskAdmission = true
+	put := func(ctx context.Context, key string) error {
+		_, err := executor.PutVertex(ctx, &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: key}},
+		})
+		return err
+	}
+	if err := put(ctx, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	reader := relay.diskSearch
+	base := reader.base.Load()
+
+	// Retain the Graph writer gate while refresh commits the newer footer
+	// in the sidecar. Its Graph selector and handle remain at the old cut.
+	writerEntered := make(chan struct{})
+	writerRelease := make(chan struct{})
+	releaseWriter := sync.OnceFunc(func() { close(writerRelease) })
+	defer releaseWriter()
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- relay.db.Update(func(uint64, *tarp.Snapshot, *tarp.WriteBatch) error {
+			close(writerEntered)
+			<-writerRelease
+			return nil
+		})
+	}()
+	select {
+	case <-writerEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Graph writer did not enter")
+	}
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- reader.advance(ctx, relay.db, derived, base.BaseID(), config.analyzer, nil, search.Budget{})
+	}()
+	awaitSearchRefresh(t, func() bool {
+		_, err := search.OpenDiskIndex(ctx, derived, base.BaseID(), base.Source(), config.analyzer, nil)
+		return errors.Is(err, search.ErrDiskIndex)
+	})
+	if reader.base.Load() != base {
+		t.Fatal("refresh advanced the handle before selecting it in Graph")
+	}
+
+	startPut := func(key string) (context.CancelFunc, <-chan error) {
+		t.Helper()
+		putCtx, cancel := context.WithCancel(ctx)
+		observed := &searchAdmissionObservedContext{Context: putCtx, waiting: make(chan struct{})}
+		done := make(chan error, 1)
+		go func() { done <- put(observed, key) }()
+		select {
+		case <-observed.waiting:
+		case err := <-done:
+			cancel()
+			t.Fatalf("Put returned before waiting for the incomplete refresh: %v", err)
+		case <-time.After(5 * time.Second):
+			cancel()
+			t.Fatal("Put staged without waiting for Search admission")
+		}
+		return cancel, done
+	}
+	cancel, canceled := startPut("canceled")
+	cancel()
+	select {
+	case err := <-canceled:
+		if connect.CodeOf(err) != connect.CodeCanceled {
+			t.Fatalf("waiting Put returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting Put did not honor cancellation")
+	}
+
+	cancel, accepted := startPut("accepted")
+	defer cancel()
+	releaseWriter()
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Graph writer did not release")
+	}
+	select {
+	case err := <-refreshDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not select its footer")
+	}
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("Put rejected a healthy selected refresh: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Put did not resume after refresh")
+	}
+	if seq := executor.LocalSeq(runtime.NodeID()); seq != 2 {
+		t.Fatalf("canceled admission changed the origin sequence: %d", seq)
+	}
+	if _, err := executor.GetVertex(ctx, &pb.GetVertexRequest{Key: "canceled"}); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("canceled admission reached the Graph: %v", err)
+	}
 }

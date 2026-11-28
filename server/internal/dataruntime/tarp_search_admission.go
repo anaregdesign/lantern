@@ -71,9 +71,36 @@ func (p searchPostimages) documents(project func(string, *pb.Vertex) search.Docu
 	}
 }
 
+// holdDiskSearchAdmission keeps the worker from advancing the selected
+// footer between a local Graph stage's application time and its WAL commit.
+func (s *Executor) holdDiskSearchAdmission(ctx context.Context) (func(), error) {
+	if s.runtime == nil || s.runtime.tarp == nil || !s.runtime.tarp.diskAdmission || s.runtime.tarp.diskSearch == nil {
+		return func() {}, nil
+	}
+	return s.runtime.tarp.diskSearch.holdAdmission(ctx)
+}
+
+// Admission has its own gate because Graph and Query take the reader gate
+// in different scopes. The worker takes admission before either reader or
+// Graph writer locks. A request waiting for refresh can still be canceled.
+func (reader *tarpDiskSearchReader) holdAdmission(ctx context.Context) (func(), error) {
+	reader.admissionOnce.Do(func() { reader.admissionSlot = make(chan struct{}, 1) })
+	select {
+	case reader.admissionSlot <- struct{}{}:
+		release := func() { <-reader.admissionSlot }
+		if err := ctx.Err(); err != nil {
+			release()
+			return nil, err
+		}
+		return release, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // validateAdmission runs under Graph's writer lock using the very preimage
-// that will be committed. The active Search handle is atomic: taking the
-// Search reader gate here would invert advance's reader-gate -> Graph order.
+// that will be committed. A local stage holds admission before taking Graph
+// locks. The Query reader gate must not be acquired here.
 func (reader *tarpDiskSearchReader) validateAdmission(ctx context.Context, index *search.DiskIndex, admission *search.DiskAdmission, snapshot *tarp.Snapshot, generation uint64, cut tarpSearchCut, at time.Time, proposal searchPostimages) error {
 	if at.IsZero() || reader.badBase.Load() == index {
 		return search.ErrIndexIncomplete

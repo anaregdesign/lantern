@@ -338,6 +338,11 @@ func (w *tarpSearchRefresh) rebuild(ctx context.Context, input tarpDiskSearchInp
 	}
 	reader := w.relay.diskSearch
 	ref := tarpSearchBaseRef{ID: id, Source: input.source}
+	release, err := reader.holdAdmission(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	reader.mu.Lock()
 	if err := selectTarpSearchBase(ctx, w.relay.db, w.derived, ref, w.config.analyzer, w.config.scorer,
 		w.config.maxChangeBytes, w.config.maxChangeKeys, w.config.options...); err != nil {

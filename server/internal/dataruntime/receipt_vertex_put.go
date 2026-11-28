@@ -445,6 +445,11 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	origin := s.clock.NodeID()
 	seq := s.origins.LocalSeq(origin) + 1
 	ts := s.clock.Now()
+	releaseSearch, err := s.holdDiskSearchAdmission(ctx)
+	if err != nil {
+		return nil, ctxToConnect(err)
+	}
+	defer releaseSearch()
 	graphTx, err := c.cache.BeginVertexPutContext(ctx, items, ts, call.IfAbsent)
 	if err != nil {
 		return nil, searchIndexWriteError(err)

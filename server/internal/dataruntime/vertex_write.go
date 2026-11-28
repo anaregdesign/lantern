@@ -165,10 +165,14 @@ func (s *Executor) putStagedLocalVerticesLocked(
 ) (*pb.PutVerticesResponse, error) {
 	// Keep the application and owned WAL attempt together under the executor
 	// gate, even if the original caller is gone.
+	release, err := s.holdDiskSearchAdmission(ctx)
+	if err != nil {
+		return nil, ctxToConnect(err)
+	}
+	defer release()
 	ctx = context.WithoutCancel(ctx)
 	dirty := s.publicationFaultCount != 0
 	var stage *graphcache.VertexPutTransaction[string, *pb.Vertex]
-	var err error
 	if dirty {
 		stage, err = graph.BeginVertexPutInAppliedViewContext(ctx, items, ts, ifAbsent)
 	} else {

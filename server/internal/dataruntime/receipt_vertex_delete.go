@@ -234,6 +234,11 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if err != nil {
 		return nil, err
 	}
+	releaseSearch, err := s.holdDiskSearchAdmission(ctx)
+	if err != nil {
+		return nil, ctxToConnect(err)
+	}
+	defer releaseSearch()
 	graphTx, err := c.cache.BeginVertexDeleteContext(ctx, keys, ts, expiration)
 	if err != nil {
 		return nil, searchIndexWriteError(err)

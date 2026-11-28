@@ -132,6 +132,8 @@ func (in tarpDiskSearchInput) changes(ctx context.Context, base search.DiskSourc
 
 type tarpDiskSearchReader struct {
 	mu             sync.RWMutex
+	admissionOnce  sync.Once
+	admissionSlot  chan struct{}
 	base           atomic.Pointer[search.DiskIndex]
 	badBase        atomic.Pointer[search.DiskIndex]
 	project        func(string, *pb.Vertex) search.Document
@@ -258,6 +260,11 @@ func (r *ServingRuntime) SearchIndexStats(ctx context.Context) search.IndexMemor
 // Graph. Holding the reader gate keeps new captures from opening the old
 // handle after the derived footer has changed.
 func (reader *tarpDiskSearchReader) advance(ctx context.Context, graph *graphstore.DB, derived *tarp.DB, id uint64, analyzer search.Analyzer, scorer search.Scorer, budget search.Budget, opts ...search.IndexOption) error {
+	release, err := reader.holdAdmission(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
 	view, err := graph.Read()
