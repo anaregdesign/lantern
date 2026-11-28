@@ -1,7 +1,7 @@
 github.com/RoaringBitmap/roaring/v2 v2.30.0 h1:1sD4xsCenNd9n/gOWaExCWanP9WTyiNuqLAvaDQ5jkY=
 github.com/RoaringBitmap/roaring/v2 v2.30.0/go.mod h1:BZufmFbox589n3j5eOmyTaLSGXbRLc2LmQvjKjzSEGU=
-github.com/anaregdesign/tarp v0.16.0 h1:TnOytQQ1OgIRMS01/9cwaJfJLkpQeCzhO6ZVgejovnI=
-github.com/anaregdesign/tarp v0.16.0/go.mod h1:V+x1ZRDKaituOeiBNQl7XvWP43S8iqPAVEfsN/JtUXc=
+github.com/anaregdesign/tarp v0.16.1-0.20261128011806-483b40ed3a18 h1:agUZSWFGb3bdqQKBN8VVfTYgAcesWFPY3ER87f0YMPg=
+github.com/anaregdesign/tarp v0.16.1-0.20261128011806-483b40ed3a18/go.mod h1:V+x1ZRDKaituOeiBNQl7XvWP43S8iqPAVEfsN/JtUXc=
 github.com/bits-and-blooms/bitset v1.24.4 h1:95H15Og1clikBrKr/DuzMXkQzECs1M6hhoGXLwLQOZE=
 github.com/bits-and-blooms/bitset v1.24.4/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
 github.com/mschoch/smat v0.2.0 h1:8imxQsjDm8yFEAVBe7azKmKSgzSkZXDuKkSq9374khM=

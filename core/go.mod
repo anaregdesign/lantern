@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.30.0
-	github.com/anaregdesign/tarp v0.16.0
+	github.com/anaregdesign/tarp v0.16.1-0.20261128011806-483b40ed3a18
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
