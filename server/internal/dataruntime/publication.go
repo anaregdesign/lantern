@@ -501,15 +501,23 @@ func (s *Executor) publishLocalGraphPutLocked(op *pb.MutationOp, ts hlc.Timestam
 // publishLocalGraphDeleteLocked preserves the exact accepted indexes and
 // deadline returned by the same GraphCache application lock.
 func (s *Executor) publishLocalGraphDeleteLocked(op *pb.MutationOp, ts hlc.Timestamp, expiration time.Time, acceptedIndexes []int) error {
+	effect, err := s.newLocalGraphDeleteEffectLocked(op, ts, expiration, acceptedIndexes)
+	if err != nil {
+		return err
+	}
+	return s.publishLocalGraphEffectLocked(effect)
+}
+
+func (s *Executor) newLocalGraphDeleteEffectLocked(op *pb.MutationOp, ts hlc.Timestamp, expiration time.Time, acceptedIndexes []int) (*graphDeleteEffectEnvelope, error) {
 	mutation := s.newLocalMutationLocked(op, ts)
 	if !expiration.IsZero() {
 		mutation.TombstoneExpiration = timestamppb.New(expiration)
 	}
 	effect, err := newGraphDeleteEffectEnvelope(mutation, acceptedIndexes)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("local Delete publication evidence: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("local Delete publication evidence: %w", err))
 	}
-	return s.publishLocalGraphEffectLocked(effect)
+	return effect, nil
 }
 
 func (s *Executor) publishLocalGraphAddLocked(mutation *pb.Mutation, accepted []bool) error {

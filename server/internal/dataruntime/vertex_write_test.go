@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/graphstorage"
 	"github.com/anaregdesign/tarp"
@@ -167,7 +169,7 @@ func TestStagedGraphFirstVertexRepairWithNewerPendingPeer(t *testing.T) {
 			if local.approval != approved || !local.matches(approved.effect) || !local.approval.diskApproved {
 				t.Fatal("repair lacks the original Graph/Search approval")
 			}
-			copy := *approved.effect
+			copy := *approved.effect.(*graphPutEffectEnvelope)
 			if local.matches(&copy) {
 				t.Fatal("a separate write borrowed the original approval")
 			}
@@ -278,5 +280,145 @@ func TestStagedGraphFirstVertexAdmissionRejectionAbortsGraph(t *testing.T) {
 	rt.tarp.stage = stage
 	if out, err := s.PutVertex(ctx, request); err != nil || out.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
 		t.Fatalf("retry after rejected admission = %v, %v", out, err)
+	}
+}
+
+func TestStagedGraphFirstVertexDeleteRepairsOriginalBeforeUsingAppliedView(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	rt, s := newStagedGraphFirstVertexRuntime(t, dir)
+	s.WithTombstoneTTL(time.Hour)
+	const overlap, pendingOnly = "overlap", "pending-only"
+	vertex := func(key, value string) *pb.Vertex {
+		return &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: value}}
+	}
+	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex(overlap, "original")}); err != nil {
+		t.Fatal(err)
+	}
+	stage := rt.tarp.stage
+	fail := &tarp.OpError{Operation: "apply", Phase: "prepare", Outcome: tarp.NotApplied, Err: errors.New("injected write rejection")}
+	var original *graphDeleteEffectEnvelope
+	var originalApproval *localVertexWALApproval
+	var repaired, usedAppliedView bool
+	rt.tarp.stage = func(ctx context.Context, gen uint64, snap *tarp.Snapshot, batch graphstore.Writer,
+		keys graphcache.StorageKeys[string], writer graphcache.StorageRowWriter[string, *pb.Vertex],
+	) error {
+		if err := stage(ctx, gen, snap, batch, keys, writer); err != nil {
+			return err
+		}
+		local, ok := writer.(*localVertexWALWriter)
+		if !ok {
+			return fail // The peer applies its graph effect but cannot append yet.
+		}
+		if local.requiresSearchAdmission() {
+			t.Fatal("an ordinary exact Delete requested a strict Search admission")
+		}
+		effect, ok := local.approval.effect.(*graphDeleteEffectEnvelope)
+		if !ok || !local.matches(effect) {
+			t.Fatal("local Delete lacks its exact graph-effect envelope")
+		}
+		if local.repairing {
+			if effect != original || local.approval != originalApproval {
+				t.Fatal("repair rebuilt the original Delete decision")
+			}
+			copy := *effect
+			if local.matches(&copy) {
+				t.Fatal("a separate Delete borrowed the original effect")
+			}
+			repaired = true
+			return nil
+		}
+		if original == nil {
+			if local.dirtyCut || !slices.Equal(effect.AcceptedIndexes, []uint32{0, 1, 2}) {
+				t.Fatalf("clean Delete evidence = %+v", effect.AcceptedIndexes)
+			}
+			original, originalApproval = effect, local.approval
+			return fail
+		}
+		if !repaired || !local.dirtyCut || !slices.Equal(effect.AcceptedIndexes, []uint32{0, 1}) {
+			t.Fatalf("new Delete did not use the applied cut after original repair: repaired=%t dirty=%t accepted=%v",
+				repaired, local.dirtyCut, effect.AcceptedIndexes)
+		}
+		usedAppliedView = true
+		return nil
+	}
+	request := &pb.DeleteVerticesRequest{Keys: []string{overlap, "absent", overlap}}
+	if _, err := s.DeleteVertices(ctx, request); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("failed local Delete publication = %v", err)
+	}
+	pending := s.pendingLocalMutation
+	if pending == nil || original == nil || pending.walOp != original || pending.vertexApproval != originalApproval {
+		t.Fatal("definite append failure did not keep the original Delete envelope")
+	}
+	if _, live := rt.graph.GetVertex(overlap); live {
+		t.Fatal("definite append failure discarded the already-applied Delete")
+	}
+	request.Keys[0] = "changed after return"
+	if got := original.Mutation.GetOp().GetDeleteVertices().GetKeys(); !slices.Equal(got, []string{overlap, "absent", overlap}) {
+		t.Fatalf("pending Delete retained caller-owned keys: %q", got)
+	}
+	origin, peer := rt.clock.NodeID(), hlc.NodeID{7}
+	remote := &pb.Mutation{
+		Origin: peer[:], Seq: 1, Hlc: newHLC(pending.mutation.GetHlc().GetWallNs()+1, peer),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{vertex(overlap, "newer peer"), vertex(pendingOnly, "peer pending only")},
+		}}},
+	}
+	if err := s.ApplyMutation(ctx, remote); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("failed peer publication = %v", err)
+	}
+	deleted, err := s.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{pendingOnly, pendingOnly}})
+	if err != nil || deleted.GetDeleted() != 1 || !slices.Equal(deleted.GetExisted(), []bool{true, false}) || !usedAppliedView {
+		t.Fatalf("Delete on applied cut = %v, %v, usedAppliedView=%t", deleted, err, usedAppliedView)
+	}
+	if s.pendingLocalMutation != nil || s.LocalSeq(origin) != 3 || s.LocalSeq(peer) != 0 || s.publicationFaultCount != 1 {
+		t.Fatal("local repair published the wrong origin or cleared the peer's pending fault")
+	}
+	rows, err := graphstorage.Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.GraphStore().WithCommittedSnapshot(func(gen uint64, snap *tarp.Snapshot) error {
+		stored, found, err := rows.GetVertex(snap, gen, overlap)
+		if err != nil || !found || stored.Value.GetString_() != "newer peer" {
+			t.Fatalf("local Delete repair overwrote the newer peer postimage: %+v, %v", stored, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt.tarp.stage = stage
+	if err := s.ApplyMutation(ctx, remote); err != nil || s.LocalSeq(peer) != 1 || s.publicationFaultCount != 0 {
+		t.Fatalf("peer repair = %v, seq=%d faults=%d", err, s.LocalSeq(peer), s.publicationFaultCount)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, reopened := newStagedGraphFirstVertexRuntime(t, dir)
+	read, err := reopened.GetVertex(ctx, &pb.GetVertexRequest{Key: overlap})
+	if err != nil || read.GetVertex().GetString_() != "newer peer" || reopened.LocalSeq(origin) != 3 || reopened.LocalSeq(peer) != 1 {
+		t.Fatalf("reopen = %v, %v", read, err)
+	}
+	if _, err := reopened.GetVertex(ctx, &pb.GetVertexRequest{Key: pendingOnly}); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("reopen resurrected the peer Vertex after a newer local Delete: %v", err)
+	}
+}
+
+func TestGraphFirstVertexDeleteStillAllowsIncompleteSearch(t *testing.T) {
+	ctx := t.Context()
+	rt, s := newStagedGraphFirstVertexRuntime(t, t.TempDir())
+	s.WithTombstoneTTL(time.Hour)
+	rt.graph.EnableSearchIndex(func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) }, strings.Compare)
+	const key = "item"
+	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "value"}}}); err != nil {
+		t.Fatal(err)
+	}
+	rt.graph.BeginSearchIndexRecovery()
+	deleted, err := s.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{key, key, "absent"}})
+	if err != nil || deleted.GetDeleted() != 1 || !slices.Equal(deleted.GetExisted(), []bool{true, false, false}) {
+		t.Fatalf("Delete with incomplete Search = %v, %v", deleted, err)
+	}
+	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: key}); connect.CodeOf(err) != connect.CodeNotFound || s.LocalSeq(rt.clock.NodeID()) != 2 {
+		t.Fatalf("Delete with incomplete Search did not publish: %v", err)
 	}
 }

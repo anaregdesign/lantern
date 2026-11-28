@@ -1446,7 +1446,6 @@ func (s *Executor) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequ
 		if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
 			return nil, err
 		}
-		var accepted []int
 		if s.tombstoneTTL > 0 {
 			// Replicated path: sample the commit HLC ONCE and stamp BOTH the
 			// tombstone and the logged mutation with it. Sampling clock.Now()
@@ -1454,20 +1453,14 @@ func (s *Executor) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequ
 			// left a window where a concurrent Put with an HLC between the two
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
-			var err error
-			outcomes, accepted, err = s.deleteVertexBatchAtCut(in.GetKeys(), ts, tombExp, true)
-			if err != nil {
-				return nil, writeError(err)
-			}
-		} else {
-			outcomes = s.cache.DeleteVerticesOutcomes(in.GetKeys())
-			accepted = allAcceptedIndexes(len(in.GetKeys()))
+			return s.deleteLocalVerticesHLCLocked(ctx, mutationOp, ts, tombExp)
 		}
+		outcomes = s.cache.DeleteVerticesOutcomes(in.GetKeys())
 		deleted, err := checkedDeleteOutcomes(outcomes, len(in.GetKeys()))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, accepted); err != nil {
+		if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, allAcceptedIndexes(len(in.GetKeys()))); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil

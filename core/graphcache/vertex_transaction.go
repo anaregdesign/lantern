@@ -404,7 +404,16 @@ func (c *GraphCache[S, T]) BeginVertexDelete(
 func (c *GraphCache[S, T]) BeginVertexDeleteContext(
 	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
 ) (*VertexDeleteTransaction[S, T], error) {
-	return c.beginVertexDelete(ctx, keys, ts, expiration, true)
+	return c.beginVertexDelete(ctx, keys, ts, expiration, true, false)
+}
+
+// BeginVertexDeleteInAppliedViewContext stages an exact local Delete against
+// the graph-applied state while the publication owner has pending WAL work.
+// The owner must serialize the stage and WAL attempt with that pending work.
+func (c *GraphCache[S, T]) BeginVertexDeleteInAppliedViewContext(
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
+) (*VertexDeleteTransaction[S, T], error) {
+	return c.beginVertexDelete(ctx, keys, ts, expiration, true, true)
 }
 
 // BeginReplicatedVertexDelete stages a certified remote exact Delete without
@@ -421,11 +430,11 @@ func (c *GraphCache[S, T]) BeginReplicatedVertexDelete(
 func (c *GraphCache[S, T]) BeginReplicatedVertexDeleteContext(
 	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time,
 ) (*VertexDeleteTransaction[S, T], error) {
-	return c.beginVertexDelete(ctx, keys, ts, expiration, false)
+	return c.beginVertexDelete(ctx, keys, ts, expiration, false, false)
 }
 
 func (c *GraphCache[S, T]) beginVertexDelete(
-	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time, strict bool,
+	ctx context.Context, keys []S, ts hlc.Timestamp, expiration time.Time, strict, appliedView bool,
 ) (*VertexDeleteTransaction[S, T], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -499,10 +508,14 @@ func (c *GraphCache[S, T]) beginVertexDelete(
 			return nil, search.ErrIndexIncomplete
 		}
 
-		before, err := c.storedVertexPreimagesLocked(ctx, keys)
-		if err != nil {
-			unlockMu()
-			return nil, err
+		var before map[S]storedVertexBefore
+		if !appliedView {
+			var err error
+			before, err = c.storedVertexPreimagesLocked(ctx, keys)
+			if err != nil {
+				unlockMu()
+				return nil, err
+			}
 		}
 		_, acceptedIndexes := c.planExactVertexDeleteLocked(keys, ts, before)
 		acceptedKeys := vertexKeysAtIndexes(keys, acceptedIndexes)
