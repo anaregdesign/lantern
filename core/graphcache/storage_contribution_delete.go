@@ -68,6 +68,10 @@ func (s *stagedEdgeContributionDelete[S, T]) prepareStoredBuckets(ctx context.Co
 			if err != nil {
 				return err
 			}
+			resident := s.base.cache.edges.bucket(pair.Tail, pair.Head)
+			if present != (resident != nil) || present && !matchesStoredDeleteHeader(resident, header) {
+				return fmt.Errorf("%w: committed contribution bucket differs from the cache", graphstore.ErrInvalidRow)
+			}
 			bucket = &storedContributionBucket{header: header, present: present}
 			s.stored.buckets[pair] = bucket
 		}
@@ -98,9 +102,6 @@ func (s *stagedEdgeContributionDelete[S, T]) prepareStoredBuckets(ctx context.Co
 		if err != nil {
 			return err
 		}
-		if !matchesStoredDeleteHeader(plan.before, bucket.header) {
-			return fmt.Errorf("%w: committed contribution bucket differs from the cache", graphstore.ErrInvalidRow)
-		}
 		excluded := make(map[graphstore.SourceID]struct{}, len(bucket.removed))
 		for id := range bucket.removed {
 			excluded[id] = struct{}{}
@@ -127,9 +128,6 @@ func (s *stagedEdgeContributionDelete[S, T]) prepareStoredBuckets(ctx context.Co
 }
 
 func matchesStoredDeleteHeader(bucket *weight, header graphstore.Edge) bool {
-	if bucket == nil {
-		return false
-	}
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
 	return bucket.cold && bucket.lastHLC == header.HLC && bucket.lastOrdinal == header.LastOrdinal
