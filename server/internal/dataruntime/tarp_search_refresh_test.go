@@ -201,3 +201,69 @@ func awaitSearchRefresh(t *testing.T, ready func() bool) {
 		}
 	}
 }
+
+func TestOwnedTarpSearchRefreshRecoversBoundedLagAndRetiresCrashArtifacts(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	graphDir, indexDir := filepath.Join(dir, "graph"), filepath.Join(dir, "search")
+	runtime, executor := openTarpTestRuntime(t, graphDir, 16)
+	config := tarpSearchStartup{
+		corpus: "test", fingerprint: "lag/v1",
+		project:        func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) },
+		analyzer:       search.NewAnalyzer(nil, search.WhitespaceTokenizer{}, nil),
+		maxChangeBytes: 1 << 20, maxChangeKeys: 1,
+	}
+	derived, err := tarp.Open(indexDir, tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.tarp.openDiskSearch(ctx, derived, config); err != nil {
+		t.Fatal(err)
+	}
+	base := runtime.tarp.diskSearch.base.Load()
+	abandoned, err := reserveTarpSearchBase(ctx, derived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := func(yield func(search.DiskDocument, error) bool) {
+		yield(search.DiskDocument{Key: "abandoned", Document: search.Text("partial")}, nil)
+	}
+	if err := search.BuildDiskBase(ctx, derived, abandoned, base.Source(), docs, config.analyzer); err != nil {
+		t.Fatal(err)
+	}
+	if err := derived.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, executor = openTarpTestRuntime(t, graphDir, 16)
+	derived, err = tarp.Open(indexDir, tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.startOwnedDiskSearch(ctx, derived, config, 25*time.Millisecond, 2*time.Second); err != nil {
+		_ = derived.Close()
+		t.Fatal(err)
+	}
+	awaitSearchRefresh(t, func() bool {
+		id, err := search.NextDiskBase(ctx, derived, base.BaseID())
+		return err == nil && id == 0
+	})
+	_, err = executor.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "docs:a", Value: &pb.Vertex_String_{String_: "lagged"}},
+		{Key: "docs:b", Value: &pb.Vertex_String_{String_: "lagged"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitSearchRefresh(t, func() bool {
+		fresh := runtime.tarp.diskSearch.base.Load()
+		return fresh != nil && fresh.BaseID() != base.BaseID() && fresh.Source().Sequence > base.Source().Sequence
+	})
+	result, err := (searchReader{service: executor}).Capture(ctx, query.Spec{Query: "lagged", Limit: 10})
+	if err != nil || result.BackendError != nil || len(result.Hits) != 2 {
+		t.Fatalf("rebuild lost authoritative rows: %+v, %v", result, err)
+	}
+}

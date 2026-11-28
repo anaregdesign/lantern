@@ -199,7 +199,7 @@ func OpenDiskIndex(ctx context.Context, db *tarp.DB, base uint64, source DiskSou
 	}
 	for class, fields := range footer.Stats {
 		for fieldID, field := range fields {
-			if field.Count > footer.Documents || field.Length > math.MaxInt || field.Length < field.Count ||
+			if field.Count > footer.LiveDocuments || field.Length > math.MaxInt || field.Length < field.Count ||
 				(field.Count == 0) != (field.Length == 0) {
 				return nil, diskInvalid("invalid corpus statistics")
 			}

@@ -225,3 +225,39 @@ func TestTarpDiskSearchCaptureUsesCommittedChangesAndAdmittedKeys(t *testing.T) 
 	}
 
 }
+
+func TestTarpDiskSearchFencesClockRollbackAfterPhysicalVertexExpiry(t *testing.T) {
+	ctx := t.Context()
+	now := time.Unix(1_800_000_000, 0)
+	db, err := graphstore.Open(ctx, t.TempDir(), hlc.NodeID{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := diskRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := now.Add(time.Minute)
+	if err := db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, writer graphstore.Writer) error {
+		return rows.PutVertex(writer, gen, "ttl", graphstore.Vertex[*pb.Vertex]{
+			Value: &pb.Vertex{Key: "ttl"}, Expiration: deadline,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.ReclaimExpired(ctx, db, deadline.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	view, err := db.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	if err := checkTarpSearchTime(ctx, view.Snapshot, view.Generation, now); !errors.Is(err, search.ErrIndexIncomplete) {
+		t.Fatalf("rollback could resurrect reclaimed postings: %v", err)
+	}
+	if err := checkTarpSearchTime(ctx, view.Snapshot, view.Generation, deadline); err != nil {
+		t.Fatalf("equal expiry cutoff is already outside the live corpus: %v", err)
+	}
+}

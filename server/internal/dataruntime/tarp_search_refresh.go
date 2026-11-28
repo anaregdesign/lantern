@@ -22,8 +22,10 @@ type tarpSearchRefresh struct {
 	config    tarpSearchStartup
 	directory string
 
-	active  uint64
-	pending uint64 // one unconfirmed build or obsolete base awaiting proof
+	active       uint64
+	pending      uint64 // one unconfirmed build or obsolete base awaiting proof
+	cleanupAfter uint64
+	cleanupDone  bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -52,11 +54,14 @@ func (r *ServingRuntime) StartDiskSearch(ctx context.Context, directory string, 
 		maxChangeKeys:  4096,
 		lazyBoot:       true,
 	}
-	derived, err := openTarpSearchStore(ctx, directory)
+	const startupAttempt = 2 * time.Second
+	startupCtx, cancel := context.WithTimeout(ctx, startupAttempt)
+	derived, err := openTarpSearchStore(startupCtx, directory)
 	var id uint64
 	if err == nil {
-		id, err = r.tarp.openDiskSearch(ctx, derived, config)
+		id, err = r.tarp.openDiskSearch(startupCtx, derived, config)
 	}
+	cancel()
 	if ctx.Err() != nil {
 		if derived != nil {
 			return errors.Join(ctx.Err(), derived.Close())
@@ -64,7 +69,7 @@ func (r *ServingRuntime) StartDiskSearch(ctx context.Context, directory string, 
 		return ctx.Err()
 	}
 	if err != nil {
-		if !errors.Is(err, search.ErrIndexIncomplete) {
+		if !errors.Is(err, search.ErrIndexIncomplete) && !errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("Tarp Search startup deferred", "error", err)
 		}
 		r.tarp.diskSearch = &tarpDiskSearchReader{
@@ -73,15 +78,17 @@ func (r *ServingRuntime) StartDiskSearch(ctx context.Context, directory string, 
 		r.tarp.trackSearch = true
 	}
 	r.tarp.diskAdmission = true
-	r.startSearchWorker(derived, config, id, directory, 50*time.Millisecond, 2*time.Second)
+	r.startSearchWorker(derived, config, id, directory, 50*time.Millisecond, startupAttempt)
 	return nil
 }
 
 func openTarpSearchStore(ctx context.Context, directory string) (*tarp.DB, error) {
 	return tarp.OpenContext(ctx, directory, tarp.Options{
+		OpenValidation:         tarp.Indexed,
 		BTreeMemoryBudgetBytes: 16 << 20,
 		ValueCacheBudgetBytes:  16 << 20,
 		ReadFileHandles:        32,
+		MaxRecordBytes:         4 << 20,
 	})
 }
 
@@ -190,7 +197,7 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 	}
 	if w.derived == nil {
 		var err error
-		w.derived, err = openTarpSearchStore(ctx, w.directory)
+		w.derived, err = openTarpSearchStore(rebuildCtx, w.directory)
 		if err != nil {
 			return err
 		}
@@ -213,6 +220,17 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 	}
 	reader := w.relay.diskSearch
 	selected := reader.base.Load()
+	if selected == nil && w.active == 0 && ref.ID != 0 {
+		id, index, err := reusableTarpSearchBase(ctx, view, input, w.derived, w.config)
+		if err != nil && !errors.Is(err, search.ErrIndexIncomplete) {
+			return err
+		}
+		if index != nil {
+			w.active = id
+			reader.base.Store(index)
+			selected = index
+		}
+	}
 	certified := selected != nil && selected.BaseID() == ref.ID && sameTarpDiskSource(selected.Source(), ref.Source) &&
 		ref.Source.Epoch == input.source.Epoch
 	if !certified {
@@ -227,7 +245,10 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 		}
 	}
 	err = reader.advance(ctx, w.relay.db, w.derived, selected.BaseID(), w.config.analyzer, w.config.scorer, search.Budget{}, w.config.options...)
-	if err == nil || ctx.Err() != nil {
+	if err == nil {
+		return w.reclaimAbandonedBase(ctx)
+	}
+	if ctx.Err() != nil {
 		return err
 	}
 	// The same immutable base cannot advance through a suffix exceeding
@@ -240,6 +261,30 @@ func (w *tarpSearchRefresh) refreshWithin(ctx, rebuildCtx context.Context) error
 		return w.rebuild(rebuildCtx, input, ref.ID)
 	}
 	return err
+}
+
+// Sweep abandoned startup/refresh generations one base at a time. In-process
+// replacement already retires its previous base through pending; the sweep
+// also handles artifacts left before a crash. The worker owns all selectors.
+func (w *tarpSearchRefresh) reclaimAbandonedBase(ctx context.Context) error {
+	if w.cleanupDone {
+		return nil
+	}
+	id, err := search.NextDiskBase(ctx, w.derived, w.cleanupAfter)
+	if err != nil {
+		return err
+	}
+	if id == 0 {
+		w.cleanupDone = true
+		return nil
+	}
+	if id != w.active && id != w.pending {
+		if err := search.RetireDiskBase(ctx, w.derived, id); err != nil {
+			return err
+		}
+	}
+	w.cleanupAfter = id
+	return nil
 }
 
 func (w *tarpSearchRefresh) resolvePending(ctx context.Context, graph *graphstore.ReadView) error {
