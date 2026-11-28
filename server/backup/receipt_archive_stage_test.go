@@ -23,6 +23,8 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
+type archiveEdgeKey struct{ tail, head string }
+
 func TestReceiptWholeStateArchiveStageKeepsDetachedReceiptAndCut(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
 	raw := encodedWholeStateArchive(t, archive)
@@ -412,6 +414,49 @@ func TestReceiptWholeStateArchiveStageRejectsInconsistentFloors(t *testing.T) {
 			candidate, err := stageReceiptWholeStateArchive(context.Background(), bytes.NewReader(raw), archive.Policy, time.Hour, nil)
 			if !errors.Is(err, errWholeStateArchive) || candidate != nil {
 				t.Fatalf("inconsistent archive yielded candidate=%p, err=%v", candidate, err)
+			}
+		})
+	}
+}
+
+func TestReceiptWholeStateArchiveStageRejectsDuplicateTombstones(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	stamp := archive.Graph[0].GetHeader().GetCutoffHlc()
+	deadline := timestamppb.New(time.Now().Add(time.Hour))
+	id := [24]byte{1}
+	tests := []struct {
+		name  string
+		frame *pb.SnapshotResponse
+		count func(*pb.SnapshotFooter) *uint64
+	}{
+		{"vertex", &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{
+			VertexTombstone: &pb.SnapshotVertexTombstone{Key: "deleted", Hlc: stamp, Expiration: deadline},
+		}}, func(f *pb.SnapshotFooter) *uint64 { return &f.VertexTombstoneCount }},
+		{"edge", &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{
+			EdgeTombstone: &pb.SnapshotEdgeTombstone{Tail: "deleted", Head: "head", Hlc: stamp, Expiration: deadline},
+		}}, func(f *pb.SnapshotFooter) *uint64 { return &f.EdgeTombstoneCount }},
+		{"contribution", &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+			EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+				Tail: "deleted", Head: "head", ContribId: id[:], Hlc: stamp, Expiration: deadline,
+			},
+		}}, func(f *pb.SnapshotFooter) *uint64 { return &f.EdgeContributionTombstoneCount }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := archive
+			footer := proto.CloneOf(archive.Graph[len(archive.Graph)-1])
+			*tt.count(footer.GetFooter()) = 2
+			candidate.Graph = append([]*pb.SnapshotResponse{archive.Graph[0], tt.frame, tt.frame}, archive.Graph[1:len(archive.Graph)-1]...)
+			candidate.Graph = append(candidate.Graph, footer)
+			var raw bytes.Buffer
+			// Write a correct container so receive-side identity validation
+			// handles the repeated record.
+			if _, err := writeValidatedWholeStateArchive(t.Context(), &raw, candidate); err != nil {
+				t.Fatal(err)
+			}
+			got, err := stageReceiptWholeStateArchive(t.Context(), &raw, archive.Policy, time.Hour, nil)
+			if got != nil || !errors.Is(err, errWholeStateArchive) || !strings.Contains(err.Error(), "duplicate") {
+				t.Fatalf("duplicate marker produced (%v, %v)", got, err)
 			}
 		})
 	}

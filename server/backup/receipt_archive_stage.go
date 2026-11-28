@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/graphstore"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -27,8 +29,6 @@ type receiptWholeStateStage struct {
 	cutoffLocalSeq uint64
 	cutoffHLC      hlc.Timestamp
 }
-
-type archiveEdgeKey struct{ tail, head string }
 
 // A nil HLC represents a local-only live row with no recorded causal floor.
 // Every explicit floor must be a complete nonzero timestamp and node identity.
@@ -117,7 +117,7 @@ func stageDecodedReceiptWholeStateArchive(
 	if err := graph.CompleteSearchIndexRecovery(); err != nil {
 		return nil, fmt.Errorf("backup: rebuild staged search index: %w", err)
 	}
-	if err := validateStagedTombstones(graph, archive.Graph); err != nil {
+	if err := validateStagedTombstones(ctx, graph, archive.Graph); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -275,76 +275,51 @@ func replayReceiptArchiveGraph(
 	return nil
 }
 
-// The snapshot replay API deliberately treats an expired Delete marker as a
-// no-op and returns no outcome. For a private whole-state candidate, silently
-// losing a retained D4 floor is unacceptable: verify exact deadlines and HLCs
-// after all replay/index work, before any candidate can escape.
-func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], frames []*pb.SnapshotResponse) error {
-	type marker struct {
-		hlc        hlc.Timestamp
-		expiration time.Time
+// The replay API treats expired Delete markers as no-ops and returns no
+// outcome. Verify the complete set of retained D4 floors after replay using
+// the identities already checked for uniqueness during archive validation.
+func validateStagedTombstones(ctx context.Context, graph *graphcache.GraphCache[string, *pb.Vertex], frames []*pb.SnapshotResponse) error {
+	matches, err := graph.MatchesUniqueReplicationTombstones(ctx, receiptArchiveTombstones(ctx, frames))
+	if err != nil {
+		return err
 	}
-	vertices := make(map[string]marker)
-	edges := make(map[archiveEdgeKey]marker)
-	contributions := make(map[graphcache.EdgeContributionKey[string]]marker)
-	for _, frame := range frames[1 : len(frames)-1] {
-		switch entry := frame.GetEntry().(type) {
-		case *pb.SnapshotResponse_VertexTombstone:
-			item := entry.VertexTombstone
-			ts, _ := archiveHLC(item.GetHlc())
-			vertices[item.GetKey()] = marker{ts, item.GetExpiration().AsTime()}
-		case *pb.SnapshotResponse_EdgeTombstone:
-			item := entry.EdgeTombstone
-			ts, _ := archiveHLC(item.GetHlc())
-			edges[archiveEdgeKey{item.GetTail(), item.GetHead()}] = marker{ts, item.GetExpiration().AsTime()}
-		case *pb.SnapshotResponse_EdgeContributionTombstone:
-			item := entry.EdgeContributionTombstone
-			ts, _ := archiveHLC(item.GetHlc())
-			var id graphcache.ContribID
-			copy(id[:], item.GetContribId())
-			contributions[graphcache.EdgeContributionKey[string]{
-				Tail: item.GetTail(), Head: item.GetHead(), ContribID: id,
-			}] = marker{ts, item.GetExpiration().AsTime()}
-		}
-	}
-	snapshot := graph.SnapshotReplicationTombstones()
-	now := time.Now()
-	for _, item := range snapshot.Vertices {
-		want, ok := vertices[item.Key]
-		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) {
-			return wholeStateArchiveError("staged vertex tombstone differs from archive")
-		}
-		delete(vertices, item.Key)
-	}
-	for _, item := range snapshot.Edges {
-		key := archiveEdgeKey{item.Tail, item.Head}
-		want, ok := edges[key]
-		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) {
-			return wholeStateArchiveError("staged edge tombstone differs from archive")
-		}
-		delete(edges, key)
-	}
-	for _, item := range snapshot.EdgeContributions {
-		want, ok := contributions[item.EdgeContributionKey]
-		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) {
-			return wholeStateArchiveError("staged edge contribution tombstone differs from archive")
-		}
-		delete(contributions, item.EdgeContributionKey)
-	}
-	for _, want := range vertices {
-		if now.Before(want.expiration) {
-			return wholeStateArchiveError("live staged vertex tombstone is missing")
-		}
-	}
-	for _, want := range edges {
-		if now.Before(want.expiration) {
-			return wholeStateArchiveError("live staged edge tombstone is missing")
-		}
-	}
-	for _, want := range contributions {
-		if now.Before(want.expiration) {
-			return wholeStateArchiveError("live staged edge contribution tombstone is missing")
-		}
+	if !matches {
+		return wholeStateArchiveError("staged tombstones differ from archive")
 	}
 	return nil
+}
+
+func receiptArchiveTombstones(ctx context.Context, frames []*pb.SnapshotResponse) iter.Seq2[graphstore.FloorEntry[string], error] {
+	return func(yield func(graphstore.FloorEntry[string], error) bool) {
+		for _, frame := range frames[1 : len(frames)-1] {
+			var row graphstore.FloorEntry[string]
+			if err := ctx.Err(); err != nil {
+				yield(row, err)
+				return
+			}
+			switch entry := frame.GetEntry().(type) {
+			case *pb.SnapshotResponse_VertexTombstone:
+				item := entry.VertexTombstone
+				row.Key = graphstore.FloorKey[string]{Kind: graphstore.VertexTombstone, Key: item.GetKey()}
+				row.Floor.HLC, _ = archiveHLC(item.GetHlc())
+				row.Floor.Expiration = item.GetExpiration().AsTime()
+			case *pb.SnapshotResponse_EdgeTombstone:
+				item := entry.EdgeTombstone
+				row.Key = graphstore.FloorKey[string]{Kind: graphstore.EdgeTombstone, Tail: item.GetTail(), Head: item.GetHead()}
+				row.Floor.HLC, _ = archiveHLC(item.GetHlc())
+				row.Floor.Expiration = item.GetExpiration().AsTime()
+			case *pb.SnapshotResponse_EdgeContributionTombstone:
+				item := entry.EdgeContributionTombstone
+				row.Key = graphstore.FloorKey[string]{Kind: graphstore.ContributionTombstone, Tail: item.GetTail(), Head: item.GetHead()}
+				copy(row.Key.ContribID[:], item.GetContribId())
+				row.Floor.HLC, _ = archiveHLC(item.GetHlc())
+				row.Floor.Expiration = item.GetExpiration().AsTime()
+			default:
+				continue
+			}
+			if !yield(row, nil) {
+				return
+			}
+		}
+	}
 }
