@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"time"
@@ -69,24 +70,42 @@ func (ReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
 	return raw, nil
 }
 
-// DigestCombinedReceiptBaseline identifies the same canonical archive without
-// assembling a second full copy of the two encoded sections.
+// DigestCombinedReceiptBaseline hashes the canonical archive without retaining
+// either encoded section. The first pass provides the section lengths and
+// checksums for the header. The second hashes the complete ordered container.
 func (ReceiptBaselineCodec) DigestCombinedReceiptBaseline(
 	ctx context.Context,
 	capture dataruntime.ReceiptWholeStateCapture,
 ) ([32]byte, uint64, error) {
-	active, retired, err := encodeReceiptBaselineSections(ctx, capture)
+	archive, retired, err := validateReceiptBaselineCapture(ctx, capture)
 	if err != nil {
 		return [32]byte{}, 0, err
 	}
-	header, size, err := combinedReceiptBaselineHeader(active, retired)
+	activeHash := sha256.New()
+	activeSize, err := writeValidatedWholeStateArchive(ctx, activeHash, archive)
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	retiredHash := sha256.New()
+	retiredSize, err := writeRetiredCatalogArchive(ctx, retiredHash, capture.Policy, retired)
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	var activeDigest, retiredDigest [sha256.Size]byte
+	activeHash.Sum(activeDigest[:0])
+	retiredHash.Sum(retiredDigest[:0])
+	header, size, err := receiptBaselineHeader(activeSize, retiredSize, activeDigest, retiredDigest)
 	if err != nil {
 		return [32]byte{}, 0, err
 	}
 	h := sha256.New()
 	h.Write(header[:])
-	h.Write(active)
-	h.Write(retired)
+	if _, err := writeValidatedWholeStateArchive(ctx, h, archive); err != nil {
+		return [32]byte{}, 0, err
+	}
+	if _, err := writeRetiredCatalogArchive(ctx, h, capture.Policy, retired); err != nil {
+		return [32]byte{}, 0, err
+	}
 	var digest [32]byte
 	h.Sum(digest[:0])
 	h.Write(digest[:])
@@ -97,12 +116,12 @@ func (ReceiptBaselineCodec) DigestCombinedReceiptBaseline(
 	return digest, uint64(size), nil
 }
 
-func encodeReceiptBaselineSections(ctx context.Context, capture dataruntime.ReceiptWholeStateCapture) ([]byte, []byte, error) {
+func validateReceiptBaselineCapture(ctx context.Context, capture dataruntime.ReceiptWholeStateCapture) (wholeStateArchive, mutationreceipt.RetiredCatalogSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return wholeStateArchive{}, mutationreceipt.RetiredCatalogSnapshot{}, err
 	}
 	if capture.Retired.ClockHighWaterMillis != capture.Receipts.ClockHighWaterMillis {
-		return nil, nil, fmt.Errorf("%w: active and retired high-water differ", errReceiptCombinedBaseline)
+		return wholeStateArchive{}, mutationreceipt.RetiredCatalogSnapshot{}, fmt.Errorf("%w: active and retired high-water differ", errReceiptCombinedBaseline)
 	}
 	archive := wholeStateArchive{
 		Graph:    capture.Graph,
@@ -110,18 +129,29 @@ func encodeReceiptBaselineSections(ctx context.Context, capture dataruntime.Rece
 		Policy:   capture.Policy,
 		Origins:  capture.Origins,
 	}
-	var encoded bytes.Buffer
-	if err := encodeWholeStateArchive(&encoded, archive); err != nil {
-		return nil, nil, err
+	if err := validateWholeStateArchive(archive); err != nil {
+		return wholeStateArchive{}, mutationreceipt.RetiredCatalogSnapshot{}, err
 	}
-	retired, err := encodeRetiredCatalogArchive(capture.Policy, capture.Retired)
+	retired, err := canonicalRetiredCatalogArchive(capture.Policy, capture.Receipts.ClockHighWaterMillis, capture.Retired)
+	if err != nil {
+		return wholeStateArchive{}, mutationreceipt.RetiredCatalogSnapshot{}, err
+	}
+	return archive, retired, ctx.Err()
+}
+
+func encodeReceiptBaselineSections(ctx context.Context, capture dataruntime.ReceiptWholeStateCapture) ([]byte, []byte, error) {
+	archive, _, err := validateReceiptBaselineCapture(ctx, capture)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := ctx.Err(); err != nil {
+	var active, retired bytes.Buffer
+	if _, err := writeValidatedWholeStateArchive(ctx, &active, archive); err != nil {
 		return nil, nil, err
 	}
-	return encoded.Bytes(), retired, nil
+	if _, err := writeRetiredCatalogArchive(ctx, &retired, capture.Policy, capture.Retired); err != nil {
+		return nil, nil, err
+	}
+	return active.Bytes(), retired.Bytes(), ctx.Err()
 }
 
 func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
@@ -169,6 +199,10 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 	if err := validateRetiredCatalogArchive(stage.policy, activeState.ClockHighWaterMillis, retired); err != nil {
 		return nil, err
 	}
+	return receiptBaselineCandidate(archive, stage, retired), nil
+}
+
+func receiptBaselineCandidate(archive wholeStateArchive, stage *receiptWholeStateStage, retired mutationreceipt.RetiredCatalogSnapshot) *dataruntime.ReceiptBaselineCandidate {
 	return &dataruntime.ReceiptBaselineCandidate{
 		NamespaceFormat: archive.Graph[0].GetHeader().GetNamespaceFormat(),
 		Graph:           stage.graph,
@@ -178,7 +212,7 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 		Origins:         append([]dataruntime.OriginState(nil), stage.origins...),
 		CutoffLocalSeq:  stage.cutoffLocalSeq,
 		CutoffHLC:       stage.cutoffHLC,
-	}, nil
+	}
 }
 
 func encodeCombinedReceiptBaseline(active, retired []byte) ([]byte, error) {
@@ -196,13 +230,19 @@ func encodeCombinedReceiptBaseline(active, retired []byte) ([]byte, error) {
 }
 
 func combinedReceiptBaselineHeader(active, retired []byte) ([receiptCombinedBaselineHeaderSize]byte, int, error) {
+	activeDigest := sha256.Sum256(active)
+	retiredDigest := sha256.Sum256(retired)
+	return receiptBaselineHeader(len(active), len(retired), activeDigest, retiredDigest)
+}
+
+func receiptBaselineHeader(activeSize, retiredSize int, activeDigest, retiredDigest [sha256.Size]byte) ([receiptCombinedBaselineHeaderSize]byte, int, error) {
 	var raw [receiptCombinedBaselineHeaderSize]byte
-	if len(active) == 0 || len(active) > wholeStateArchiveMaxBytes ||
-		len(retired) == 0 || len(retired) > wholeStateArchiveMaxBytes ||
-		len(active) > math.MaxInt-len(retired)-receiptCombinedBaselineHeaderSize-receiptCombinedBaselineFooterSize {
+	if activeSize == 0 || activeSize > wholeStateArchiveMaxBytes ||
+		retiredSize == 0 || retiredSize > wholeStateArchiveMaxBytes ||
+		activeSize > math.MaxInt-retiredSize-receiptCombinedBaselineHeaderSize-receiptCombinedBaselineFooterSize {
 		return raw, 0, fmt.Errorf("%w: section size exceeds limit", errReceiptCombinedBaseline)
 	}
-	total := receiptCombinedBaselineHeaderSize + len(active) + len(retired) + receiptCombinedBaselineFooterSize
+	total := receiptCombinedBaselineHeaderSize + activeSize + retiredSize + receiptCombinedBaselineFooterSize
 	if total > receiptCombinedBaselineMaxBytes {
 		return raw, 0, fmt.Errorf("%w: container exceeds byte limit", errReceiptCombinedBaseline)
 	}
@@ -211,10 +251,8 @@ func combinedReceiptBaselineHeader(active, retired []byte) ([receiptCombinedBase
 	binary.BigEndian.PutUint16(raw[10:12], wholeStateArchiveVersion)
 	binary.BigEndian.PutUint16(raw[12:14], retiredCatalogArchiveVersion)
 	binary.BigEndian.PutUint16(raw[14:16], receiptCombinedBaselineReserved)
-	binary.BigEndian.PutUint64(raw[16:24], uint64(len(active)))
-	binary.BigEndian.PutUint64(raw[24:32], uint64(len(retired)))
-	activeDigest := sha256.Sum256(active)
-	retiredDigest := sha256.Sum256(retired)
+	binary.BigEndian.PutUint64(raw[16:24], uint64(activeSize))
+	binary.BigEndian.PutUint64(raw[24:32], uint64(retiredSize))
 	copy(raw[32:64], activeDigest[:])
 	copy(raw[64:96], retiredDigest[:])
 	return raw, total, nil
@@ -301,55 +339,52 @@ func marshalRetiredCatalogArchive(
 	state mutationreceipt.RetiredCatalogSnapshot,
 ) ([]byte, error) {
 	var out bytes.Buffer
-	out.WriteString(retiredCatalogArchiveMagic)
-	writeArchiveU16(&out, retiredCatalogArchiveVersion)
-	writeArchiveU16(&out, 0)
-	writeArchiveU32(&out, 0)
-	out.Write(active.Epoch[:])
-	writeArchiveU64(&out, uint64(state.ClockHighWaterMillis))
-	writeArchiveU64(&out, uint64(active.MaxEntries))
-	writeArchiveU64(&out, active.MaxBytes)
-	writeArchiveU32(&out, uint32(len(state.Epochs)))
-	receiptCount := uint64(0)
-	for _, member := range state.Epochs {
-		if uint64(len(member.State.Receipts)) > math.MaxUint64-receiptCount {
-			return nil, fmt.Errorf("%w: receipt count overflow", errReceiptCombinedBaseline)
-		}
-		receiptCount += uint64(len(member.State.Receipts))
-	}
-	writeArchiveU64(&out, receiptCount)
-	for _, member := range state.Epochs {
-		var payload bytes.Buffer
-		payload.Write(member.Policy.Epoch[:])
-		writeArchiveU64(&payload, uint64(member.Policy.Retention/time.Millisecond))
-		writeArchiveU64(&payload, uint64(member.Policy.MaxEntries))
-		writeArchiveU64(&payload, member.Policy.MaxBytes)
-		payload.Write(member.State.PolicyFingerprint[:])
-		writeArchiveU64(&payload, uint64(len(member.State.Receipts)))
-		if payload.Len() != retiredCatalogEpochPayloadSize {
-			return nil, errReceiptCombinedBaseline
-		}
-		if err := writeArchiveRecord(&out, retiredCatalogEpochRecord, payload.Bytes()); err != nil {
-			return nil, err
-		}
-		for _, receipt := range member.State.Receipts {
-			if err := writeArchiveRecord(&out, retiredCatalogReceiptRecord, encodeArchiveReceipt(receipt)); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if out.Len()+5+retiredCatalogArchiveFooterSize > wholeStateArchiveMaxBytes {
-		return nil, fmt.Errorf("%w: retired section exceeds byte limit", errReceiptCombinedBaseline)
-	}
-	digest := sha256.Sum256(out.Bytes())
-	var footer bytes.Buffer
-	writeArchiveU64(&footer, uint64(len(state.Epochs)))
-	writeArchiveU64(&footer, receiptCount)
-	footer.Write(digest[:])
-	if err := writeArchiveRecord(&out, retiredCatalogFooterRecord, footer.Bytes()); err != nil {
+	if _, err := writeRetiredCatalogArchive(context.Background(), &out, active, state); err != nil {
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+func writeRetiredCatalogArchive(ctx context.Context, w io.Writer, active mutationreceipt.Config, state mutationreceipt.RetiredCatalogSnapshot) (int, error) {
+	var header bytes.Buffer
+	header.WriteString(retiredCatalogArchiveMagic)
+	writeArchiveU16(&header, retiredCatalogArchiveVersion)
+	writeArchiveU16(&header, 0)
+	writeArchiveU32(&header, 0)
+	header.Write(active.Epoch[:])
+	writeArchiveU64(&header, uint64(state.ClockHighWaterMillis))
+	writeArchiveU64(&header, uint64(active.MaxEntries))
+	writeArchiveU64(&header, active.MaxBytes)
+	writeArchiveU32(&header, uint32(len(state.Epochs)))
+	receiptCount := uint64(0)
+	for _, member := range state.Epochs {
+		if uint64(len(member.State.Receipts)) > math.MaxUint64-receiptCount {
+			return 0, fmt.Errorf("%w: receipt count overflow", errReceiptCombinedBaseline)
+		}
+		receiptCount += uint64(len(member.State.Receipts))
+	}
+	writeArchiveU64(&header, receiptCount)
+	counts := []uint64{uint64(len(state.Epochs)), receiptCount}
+	return writeArchiveSection(ctx, w, header.Bytes(), counts, func(visit func(byte, []byte) error) error {
+		for _, member := range state.Epochs {
+			var payload bytes.Buffer
+			payload.Write(member.Policy.Epoch[:])
+			writeArchiveU64(&payload, uint64(member.Policy.Retention/time.Millisecond))
+			writeArchiveU64(&payload, uint64(member.Policy.MaxEntries))
+			writeArchiveU64(&payload, member.Policy.MaxBytes)
+			payload.Write(member.State.PolicyFingerprint[:])
+			writeArchiveU64(&payload, uint64(len(member.State.Receipts)))
+			if err := visit(retiredCatalogEpochRecord, payload.Bytes()); err != nil {
+				return err
+			}
+			for _, receipt := range member.State.Receipts {
+				if err := visit(retiredCatalogReceiptRecord, encodeArchiveReceipt(receipt)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func decodeRetiredCatalogArchive(
@@ -505,25 +540,34 @@ func validateRetiredCatalogArchive(
 	activeHighWaterMillis int64,
 	state mutationreceipt.RetiredCatalogSnapshot,
 ) error {
+	_, err := canonicalRetiredCatalogArchive(active, activeHighWaterMillis, state)
+	return err
+}
+
+func canonicalRetiredCatalogArchive(
+	active mutationreceipt.Config,
+	activeHighWaterMillis int64,
+	state mutationreceipt.RetiredCatalogSnapshot,
+) (mutationreceipt.RetiredCatalogSnapshot, error) {
 	if state.ClockHighWaterMillis != activeHighWaterMillis {
-		return fmt.Errorf("%w: retired high-water differs from active Store", errReceiptCombinedBaseline)
+		return mutationreceipt.RetiredCatalogSnapshot{}, fmt.Errorf("%w: retired high-water differs from active Store", errReceiptCombinedBaseline)
 	}
 	config, err := retiredCatalogConfigFromActive(active, activeHighWaterMillis)
 	if err != nil {
-		return err
+		return mutationreceipt.RetiredCatalogSnapshot{}, err
 	}
 	catalog, err := mutationreceipt.NewRetiredCatalogFromSnapshot(config, state)
 	if err != nil {
-		return errors.Join(errReceiptCombinedBaseline, err)
+		return mutationreceipt.RetiredCatalogSnapshot{}, errors.Join(errReceiptCombinedBaseline, err)
 	}
 	canonical, err := catalog.Snapshot(time.UnixMilli(activeHighWaterMillis))
 	if err != nil {
-		return errors.Join(errReceiptCombinedBaseline, err)
+		return mutationreceipt.RetiredCatalogSnapshot{}, errors.Join(errReceiptCombinedBaseline, err)
 	}
 	if !reflect.DeepEqual(canonical, state) {
-		return fmt.Errorf("%w: retired catalog is not canonical", errReceiptCombinedBaseline)
+		return mutationreceipt.RetiredCatalogSnapshot{}, fmt.Errorf("%w: retired catalog is not canonical", errReceiptCombinedBaseline)
 	}
-	return nil
+	return canonical, nil
 }
 
 func retiredCatalogConfigFromActive(

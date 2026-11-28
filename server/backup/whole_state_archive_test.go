@@ -696,17 +696,17 @@ func uncheckedArchiveWithGraph(t *testing.T, a wholeStateArchive) []byte {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := writeArchiveRecord(&out, wholeStateGraphRecord, payload); err != nil {
+		if err := writeArchiveRecordBytes(&out, wholeStateGraphRecord, payload); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, receipt := range a.Receipts.Receipts {
-		if err := writeArchiveRecord(&out, wholeStateReceiptRecord, encodeArchiveReceipt(receipt)); err != nil {
+		if err := writeArchiveRecordBytes(&out, wholeStateReceiptRecord, encodeArchiveReceipt(receipt)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, origin := range a.Origins {
-		if err := writeArchiveRecord(&out, wholeStateOriginRecord, encodeArchiveOrigin(origin)); err != nil {
+		if err := writeArchiveRecordBytes(&out, wholeStateOriginRecord, encodeArchiveOrigin(origin)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -716,7 +716,7 @@ func uncheckedArchiveWithGraph(t *testing.T, a wholeStateArchive) []byte {
 	writeArchiveU64(&footer, uint64(len(a.Receipts.Receipts)))
 	writeArchiveU64(&footer, uint64(len(a.Origins)))
 	footer.Write(digest[:])
-	if err := writeArchiveRecord(&out, wholeStateFooterRecord, footer.Bytes()); err != nil {
+	if err := writeArchiveRecordBytes(&out, wholeStateFooterRecord, footer.Bytes()); err != nil {
 		t.Fatal(err)
 	}
 	return out.Bytes()

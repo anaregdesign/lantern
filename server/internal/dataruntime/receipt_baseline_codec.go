@@ -23,15 +23,16 @@ const (
 // depend on backup.
 // It is an internal composition seam, not a transport or user-facing API.
 type ReceiptBaselineArchiveCodec interface {
-	EncodeCombinedReceiptBaseline(context.Context, ReceiptWholeStateCapture) ([]byte, error)
 	DigestCombinedReceiptBaseline(context.Context, ReceiptWholeStateCapture) ([32]byte, uint64, error)
-	StageCombinedReceiptBaseline(
+	// StageReceiptBaselineCapture returns a detached candidate and canonical
+	// graph frames for publication digest calculation and retry.
+	StageReceiptBaselineCapture(
 		context.Context,
-		[]byte,
+		ReceiptWholeStateCapture,
 		mutationreceipt.Config,
 		time.Duration,
 		func(*graphcache.GraphCache[string, *pb.Vertex]) error,
-	) (*ReceiptBaselineCandidate, error)
+	) (*ReceiptBaselineCandidate, []*pb.SnapshotResponse, error)
 }
 
 // ReceiptBaselineCandidate is a fully validated detached archive image.
