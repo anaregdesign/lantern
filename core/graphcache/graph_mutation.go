@@ -101,7 +101,7 @@ func (c *GraphCache[S, T]) beginGraphMutation(ctx context.Context, vertices []Ve
 		mixed.edges[i].RequireLiveEndpoints = local
 		mixed.edges[i].NoEndpointCreation = true
 	}
-	vertex, err := c.beginVertexPut(ctx, vertices, ts, false, local, mixed)
+	vertex, err := c.beginVertexPut(ctx, vertices, ts, false, local, false, mixed)
 	if err != nil {
 		return nil, err
 	}

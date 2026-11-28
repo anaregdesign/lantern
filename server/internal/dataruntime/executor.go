@@ -732,13 +732,21 @@ func (s *Executor) newLocalMutationLocked(op *pb.MutationOp, ts hlc.Timestamp) *
 // appendPreparedLocalMutationLocked never reapplies graph effects. Its owned
 // effect envelope is reused verbatim after a graph-first WAL failure.
 func (s *Executor) appendPreparedLocalMutationLocked(effect mutationlog.MutationOp) error {
+	return s.appendLocalGraphWALLocked(effect, nil, nil)
+}
+
+func (s *Executor) appendLocalGraphWALLocked(effect mutationlog.MutationOp, writer *localVertexWALWriter, release func(mutationlog.Entry)) error {
 	mutation, err := graphEffectMutation(effect)
 	if err != nil {
 		return err
 	}
 	origin := s.clock.NodeID()
 	ts := hlcFromProto(mutation.GetHlc())
-	err = s.appendGraphLog(effect, ts)
+	if writer == nil {
+		err = s.appendGraphLog(effect, ts)
+	} else {
+		err = s.commitLocalVertexWALLocked(effect, ts, writer, release)
+	}
 	if err != nil {
 		return err
 	}
@@ -1196,90 +1204,18 @@ func (s *Executor) PutVertices(ctx context.Context, request *pb.PutVerticesReque
 			DenyLifecycleReduction: s.denyVertexLifecycle(ctx, v.GetKey()),
 		})
 	}
-	// Conditional put (#896): write only keys with no live vertex. "Live"
-	// follows the #750 visibility rule, so an expired-but-uncollected vertex
-	// does not block the write. Under replication we stamp accepted live and
-	// expired delete-like outcomes with the mutation's HLC and replicate that subset as an
-	// unconditional LWW put — two concurrent if_absent writers both win
-	// locally, then converge via higher-HLC-wins (documented best-effort,
-	// like Redis SETNX with async replicas).
-	if request.GetIfAbsent() {
-		if s.clock != nil {
-			gate := s.lockPublicationGate("local_put", false)
-			defer gate.Unlock()
-			if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
-				return nil, err
-			}
-			if err := s.checkVertexCapacity(len(items)); err != nil {
-				return nil, err
-			}
-			if err := s.prepareLocalMutationLocked(); err != nil {
-				return nil, err
-			}
-			ts := s.clock.Now()
-			if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
-				return nil, err
-			}
-			outcomes, err := s.putVertexBatchAtCut(items, ts, true)
-			if err != nil {
-				return nil, searchIndexWriteError(err)
-			}
-			wireOutcomes, err := putOutcomes(outcomes, len(in))
-			if err != nil {
-				return nil, err
-			}
-			// Keep accepted live and EXPIRED outcomes in one request-ordered
-			// mutation. Splitting by outcome reorders duplicate keys and can make
-			// a peer commit a different final state than the origin.
-			if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
-				if err := s.publishLocalGraphPutLocked(mutation, ts, acceptedPutOutcomes(outcomes)); err != nil {
-					return nil, err
-				}
-			}
-			return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
-		}
-		gate := s.lockPublicationGate("local_put", false)
-		defer gate.Unlock()
-		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
-			return nil, err
-		}
-		if err := s.checkVertexCapacity(len(items)); err != nil {
-			return nil, err
-		}
-		outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentOutcomesChecked(items)
-		if err != nil {
-			return nil, searchIndexWriteError(err)
-		}
-		wireOutcomes, err := putOutcomes(outcomes, len(in))
-		if err != nil {
-			return nil, err
-		}
-		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
+	gate := s.lockPublicationGate("local_put", false)
+	defer gate.Unlock()
+	if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+		return nil, err
 	}
-	// When replication is enabled (clock wired) every local write is stamped
-	// with the SAME HLC it is logged under, via the *HLC cache method, so the
-	// origin's own PutVertex participates in last-writer-wins on equal footing
-	// with the values its peers apply from this log entry. The non-HLC method
-	// stored a value WITHOUT a vertexHLC watermark, so a concurrently-written
-	// OLDER value replayed from a peer would clobber the origin's newer value
-	// on the origin alone while every other replica kept the newer one —
-	// permanent divergence (docs/replication.md "Higher HLC wins"). The
-	// non-replicated path (clock nil) keeps the cheaper watermark-free method.
-	//
-	// A born-expired unconditional Put is an accepted delete-like overwrite: it
-	// removes any prior live value and returns EXPIRED. It therefore MUST be
-	// logged so peers remove their prior value too. Only causally superseded
-	// inputs are excluded from replication; otherwise HA replicas could retain
-	// an old live value after the origin reports the replacement as expired.
+	if err := s.checkVertexCapacity(len(items)); err != nil {
+		return nil, err
+	}
+	// A replicated Put uses one HLC for application and its accepted events.
+	// A born-expired item still publishes an overwrite barrier so peers remove
+	// the previous value, and conditional skips retain request order in the response.
 	if s.clock != nil {
-		gate := s.lockPublicationGate("local_put", false)
-		defer gate.Unlock()
-		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
-			return nil, err
-		}
-		if err := s.checkVertexCapacity(len(items)); err != nil {
-			return nil, err
-		}
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
@@ -1287,39 +1223,23 @@ func (s *Executor) PutVertices(ctx context.Context, request *pb.PutVerticesReque
 		if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
 			return nil, err
 		}
-		outcomes, err := s.putVertexBatchAtCut(items, ts, false)
-		if err != nil {
-			return nil, searchIndexWriteError(err)
-		}
-		wireOutcomes, err := putOutcomes(outcomes, len(in))
-		if err != nil {
-			return nil, err
-		}
-		if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
-			if err := s.publishLocalGraphPutLocked(mutation, ts, acceptedPutOutcomes(outcomes)); err != nil {
-				return nil, err
-			}
-		}
-		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
-	} else {
-		gate := s.lockPublicationGate("local_put", false)
-		defer gate.Unlock()
-		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
-			return nil, err
-		}
-		if err := s.checkVertexCapacity(len(items)); err != nil {
-			return nil, err
-		}
-		outcomes, err := s.cache.PutVerticesWithExpirationOutcomesChecked(items)
-		if err != nil {
-			return nil, searchIndexWriteError(err)
-		}
-		wireOutcomes, err := putOutcomes(outcomes, len(in))
-		if err != nil {
-			return nil, err
-		}
-		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
+		return s.putLocalVerticesLocked(ctx, items, in, ts, request.GetIfAbsent())
 	}
+	var outcomes []graphcache.PutOutcome
+	var err error
+	if request.GetIfAbsent() {
+		outcomes, err = s.cache.PutVerticesWithExpirationIfAbsentOutcomesChecked(items)
+	} else {
+		outcomes, err = s.cache.PutVerticesWithExpirationOutcomesChecked(items)
+	}
+	if err != nil {
+		return nil, searchIndexWriteError(err)
+	}
+	wireOutcomes, err := putOutcomes(outcomes, len(in))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 }
 
 func putOutcomes(outcomes []graphcache.PutOutcome, want int) ([]pb.PutOutcome, error) {

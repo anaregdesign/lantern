@@ -31,14 +31,15 @@ const (
 )
 
 type pendingMutation struct {
-	mutation *pb.Mutation
-	receipt  receiptMutationEnvelope
-	receipts receiptMutationEnvelope
-	walOp    mutationlog.MutationOp
-	size     int
-	applied  bool // graph committed; retry the log append without applying twice
-	faulted  bool // relay WAL failed after graph apply; all CDC streams are gapped
-	opName   string
+	mutation       *pb.Mutation
+	receipt        receiptMutationEnvelope
+	receipts       receiptMutationEnvelope
+	walOp          mutationlog.MutationOp
+	vertexApproval *localVertexWALApproval
+	size           int
+	applied        bool // graph committed; retry the log append without applying twice
+	faulted        bool // relay WAL failed after graph apply; all CDC streams are gapped
+	opName         string
 }
 
 type receiptMutationEnvelope interface {
@@ -453,7 +454,15 @@ func (s *Executor) prepareLocalMutationLocked() error {
 		return err
 	}
 	if pending := s.pendingLocalMutation; pending != nil {
-		if err := s.appendPreparedLocalMutationLocked(pending.walOp); err != nil {
+		var writer *localVertexWALWriter
+		if pending.vertexApproval != nil {
+			writer = &localVertexWALWriter{
+				StorageRowWriter: s.runtime.graph,
+				approval:         pending.vertexApproval,
+				repairing:        true,
+			}
+		}
+		if err := s.appendLocalGraphWALLocked(pending.walOp, writer, nil); err != nil {
 			return connect.NewError(connect.CodeUnavailable,
 				fmt.Errorf("local mutation publication repair: %w", err))
 		}
@@ -520,18 +529,25 @@ func (s *Executor) publishLocalGraphEffectLocked(effect mutationlog.MutationOp) 
 		return connect.NewError(connect.CodeInternal, err)
 	}
 	if err := s.appendPreparedLocalMutationLocked(effect); err != nil {
-		pending := &pendingMutation{mutation: mutation, walOp: effect, size: proto.Size(mutation), applied: true}
-		s.pendingLocalMutation = pending
-		s.markPublicationFault(pending)
-		logger := s.logger
-		if logger == nil {
-			logger = slog.Default()
-		}
-		logger.Warn("local mutation log append failed", slog.Any("err", err))
-		return connect.NewError(connect.CodeUnavailable,
-			fmt.Errorf("local mutation log append (graph effect is ambiguous): %w", err))
+		return s.retainLocalGraphPublicationLocked(mutation, effect, nil, err)
 	}
 	return nil
+}
+
+func (s *Executor) retainLocalGraphPublicationLocked(mutation *pb.Mutation, effect mutationlog.MutationOp, approval *localVertexWALApproval, err error) error {
+	pending := &pendingMutation{
+		mutation: mutation, walOp: effect, vertexApproval: approval,
+		size: proto.Size(mutation), applied: true,
+	}
+	s.pendingLocalMutation = pending
+	s.markPublicationFault(pending)
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("local mutation log append failed", slog.Any("err", err))
+	return connect.NewError(connect.CodeUnavailable,
+		fmt.Errorf("local mutation log append (graph effect is ambiguous): %w", err))
 }
 
 func graphEffectMutation(op mutationlog.MutationOp) (*pb.Mutation, error) {

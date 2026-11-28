@@ -51,7 +51,14 @@ func (c *GraphCache[S, T]) BeginVertexPut(
 func (c *GraphCache[S, T]) BeginVertexPutContext(
 	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, nil)
+	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, false, nil)
+}
+
+// BeginVertexPutInAppliedViewContext stages a local Put against the applied
+// graph. The serving publisher uses this view while already-applied peer
+// effects wait for their original WAL publication.
+func (c *GraphCache[S, T]) BeginVertexPutInAppliedViewContext(ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool) (*VertexPutTransaction[S, T], error) {
+	return c.beginVertexPut(ctx, items, ts, ifAbsent, true, true, nil)
 }
 
 // BeginReplicatedVertexPut stages an already-committed receiver projection.
@@ -70,11 +77,11 @@ func (c *GraphCache[S, T]) BeginReplicatedVertexPut(
 func (c *GraphCache[S, T]) BeginReplicatedVertexPutContext(
 	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(ctx, items, ts, false, false, nil)
+	return c.beginVertexPut(ctx, items, ts, false, false, false, nil)
 }
 
 func (c *GraphCache[S, T]) beginVertexPut(
-	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict bool,
+	ctx context.Context, items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict, appliedView bool,
 	mixed *stagedGraphMutation[S, T],
 ) (*VertexPutTransaction[S, T], error) {
 	if err := ctx.Err(); err != nil {
@@ -177,10 +184,14 @@ func (c *GraphCache[S, T]) beginVertexPut(
 			return nil, search.ErrIndexIncomplete
 		}
 
-		before, err := c.storedVertexPreimagesLocked(ctx, vertexKeys)
-		if err != nil {
-			unlockMu()
-			return nil, err
+		var before map[S]storedVertexBefore
+		if !appliedView {
+			var err error
+			before, err = c.storedVertexPreimagesLocked(ctx, vertexKeys)
+			if err != nil {
+				unlockMu()
+				return nil, err
+			}
 		}
 		applied := c.planStagedVertexPutLocked(items, ts, ifAbsent, time.Now(), nil, before)
 		final := finalVertexIndexes(items, applied)

@@ -242,6 +242,10 @@ func NewGraphCacheWithStaging[S comparable, T any](defaultTTL time.Duration) *Gr
 	return c
 }
 
+// SupportsMutationStaging reports whether the cache was constructed with the
+// shared visibility gate for staged transactions.
+func (c *GraphCache[S, T]) SupportsMutationStaging() bool { return c.publicationGate != nil }
+
 func newGraphCacheWithStaging[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
 	return NewGraphCacheWithStaging[S, T](defaultTTL)
 }
