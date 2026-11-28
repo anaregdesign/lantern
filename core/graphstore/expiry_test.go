@@ -58,7 +58,7 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pinned.Close()
-	cursor, err := rows.reclaimExpiryNext(t.Context(), db, now, expiryCursor{})
+	cursor, err := reclaimTestChunk(t.Context(), rows, db, now, ExpiryCursor{})
 	if err != nil || cursor.after == nil || cursor.family != 0 {
 		t.Fatalf("first chunk cursor = %+v, err %v", cursor, err)
 	}
@@ -88,7 +88,7 @@ func TestReclaimExpiredResumesWithFreshCut(t *testing.T) {
 	}
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	stopped, err := rows.reclaimExpiryNext(cancelled, db, now, cursor)
+	stopped, err := reclaimTestChunk(cancelled, rows, db, now, cursor)
 	if !errors.Is(err, context.Canceled) || string(stopped.after) != string(cursor.after) {
 		t.Fatalf("cancelled chunk advanced cursor = %+v, err %v", stopped, err)
 	}
@@ -190,9 +190,13 @@ func TestReclaimExpiredRestartsOnGenerationChange(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cursor, err := rows.reclaimExpiryNext(t.Context(), db, now, expiryCursor{})
+	cursor, err := reclaimTestChunk(t.Context(), rows, db, now, ExpiryCursor{})
 	if err != nil || cursor.after == nil {
 		t.Fatalf("initial cursor = %+v, err %v", cursor, err)
+	}
+	stale, err := rows.DiscoverExpiryChunk(t.Context(), db, now, cursor)
+	if err != nil || !stale.Pending() {
+		t.Fatalf("old generation has no pending expiry row: %+v, err %v", stale, err)
 	}
 	next, err := db.BeginGeneration()
 	if err != nil {
@@ -207,13 +211,198 @@ func TestReclaimExpiredRestartsOnGenerationChange(t *testing.T) {
 	if err := next.Publish(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := rows.reclaimExpiryNext(t.Context(), db, now, cursor)
+	restarted, effects, err := rows.ReclaimExpiredChunk(t.Context(), db, now, stale)
+	if err != nil || restarted.generation != next.ID() || restarted.after != nil || len(effects.Vertices) != 0 {
+		t.Fatalf("stale plan reset = %+v, effects %+v, err %v", restarted, effects, err)
+	}
+	resumed, err := reclaimTestChunk(t.Context(), rows, db, now, restarted)
 	if err != nil || resumed.generation != next.ID() {
 		t.Fatalf("resumed cursor = %+v, err %v", resumed, err)
 	}
 	if err := db.WithCommittedSnapshot(func(gen uint64, s *tarp.Snapshot) error {
 		if _, found, err := rows.GetVertex(s, gen, "earlier-key"); found || err != nil {
 			t.Fatalf("new generation earlier key found=%v err=%v", found, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reclaimTestChunk(ctx context.Context, rows *Rows[string, string], db *DB, now time.Time, cursor ExpiryCursor) (ExpiryCursor, error) {
+	plan, err := rows.DiscoverExpiryChunk(ctx, db, now, cursor)
+	if err != nil {
+		return cursor, err
+	}
+	next, _, err := rows.ReclaimExpiredChunk(ctx, db, now, plan)
+	return next, err
+}
+
+func TestReclaimExpiredChunkRevalidatesSelectedRows(t *testing.T) {
+	ctx := t.Context()
+	db, err := Open(ctx, t.TempDir(), hlc.NodeID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := NewRows[string, string](tarp.StringCodec{}, tarp.StringCodec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(3000, 0).UTC()
+	future := now.Add(time.Hour)
+	old := hlc.Timestamp{WallNs: 1, NodeID: hlc.NodeID{1}}
+	newer := hlc.Timestamp{WallNs: 2, NodeID: hlc.NodeID{1}}
+	source := Source{Weight: 1, Expiration: now, HLC: old}
+	renewed := Source{Weight: 2, Expiration: future, HLC: newer}
+	replaced := Source{Weight: 3, Expiration: now, HLC: newer}
+	mixed := EdgeKey[string]{Tail: "a", Head: "b"}
+	gone := EdgeKey[string]{Tail: "a", Head: "c"}
+	grew := EdgeKey[string]{Tail: "a", Head: "d"}
+	id := func(n byte) SourceID { return SourceID{ContribID: [24]byte{n}} }
+	removeID, renewID, replaceID := id(1), id(2), id(3)
+	floor := FloorKey[string]{Kind: ContributionTombstone, Tail: mixed.Tail, Head: mixed.Head, ContribID: [24]byte{4}}
+	renewFloor := floor
+	renewFloor.ContribID = [24]byte{5}
+	update := func(f func(uint64, Writer) error) {
+		t.Helper()
+		if err := db.UpdateRows(ctx, func(gen uint64, _ *tarp.Snapshot, b Writer) error { return f(gen, b) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	update(func(gen uint64, b Writer) error {
+		return errors.Join(
+			rows.PutVertex(b, gen, "expired", Vertex[string]{Value: "expired", Expiration: now, HLC: old}),
+			rows.PutVertex(b, gen, "renewed", Vertex[string]{Value: "old", Expiration: now, HLC: old}),
+			rows.PutEdge(b, gen, mixed, Edge{HLC: old, Base: &source}),
+			rows.PutEdge(b, gen, gone, Edge{HLC: old, Base: &source, LastOrdinal: 17}),
+			rows.PutEdge(b, gen, grew, Edge{HLC: old}),
+			rows.ReplaceSource(b, gen, mixed, removeID, nil, &source),
+			rows.ReplaceSource(b, gen, mixed, renewID, nil, &source),
+			rows.ReplaceSource(b, gen, mixed, replaceID, nil, &source),
+			rows.PutFloor(b, gen, floor, Floor{HLC: old, Expiration: now}),
+			rows.PutFloor(b, gen, renewFloor, Floor{HLC: old, Expiration: now}),
+			rows.MarkSourceOrder(b, gen),
+		)
+	})
+	discover := func(cursor ExpiryCursor) ExpiryPlan {
+		t.Helper()
+		plan, err := rows.DiscoverExpiryChunk(ctx, db, now, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	apply := func(plan ExpiryPlan) (ExpiryCursor, ExpiryEffects[string]) {
+		t.Helper()
+		next, effects, err := rows.ReclaimExpiredChunk(ctx, db, now, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return next, effects
+	}
+
+	vertexPlan := discover(ExpiryCursor{})
+	if !vertexPlan.Pending() || vertexPlan.Next().Generation() != 0 {
+		t.Fatalf("Vertex plan can advance without a commit: %+v", vertexPlan.Next())
+	}
+	revision := db.head.revision
+	if _, effects, err := rows.ReclaimExpiredChunk(ctx, db, now.Add(-time.Nanosecond), vertexPlan); err != nil ||
+		len(effects.Vertices) != 0 || db.head.revision != revision {
+		t.Fatalf("rolled-back clock reclaimed a live row: %+v %v", effects, err)
+	}
+	update(func(gen uint64, b Writer) error {
+		return rows.PutVertex(b, gen, "renewed", Vertex[string]{Value: "new", Expiration: future, HLC: newer})
+	})
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	stopped, rejected, err := rows.ReclaimExpiredChunk(cancelled, db, now, vertexPlan)
+	if !errors.Is(err, context.Canceled) || stopped.Generation() != 0 || len(rejected.Vertices) != 0 {
+		t.Fatalf("cancelled plan advanced or emitted effects: %+v %+v %v", stopped, rejected, err)
+	}
+	cursor, effects := apply(vertexPlan)
+	if len(effects.Vertices) != 1 || effects.Vertices[0].Key != "expired" || effects.Vertices[0].Metadata.HLC != old {
+		t.Fatalf("Vertex effects = %+v", effects)
+	}
+
+	sourcePlan := discover(cursor)
+	if !sourcePlan.Pending() || sourcePlan.ScannedSources() != 3 {
+		t.Fatalf("Source discovery did not measure three rows: %+v", sourcePlan)
+	}
+	update(func(gen uint64, b Writer) error {
+		return errors.Join(
+			rows.ReplaceSource(b, gen, mixed, renewID, &source, &renewed),
+			rows.ReplaceSource(b, gen, mixed, replaceID, &source, &replaced),
+		)
+	})
+	cursor, effects = apply(sourcePlan)
+	if len(effects.Sources) != 1 || effects.Sources[0].Key != mixed || effects.Sources[0].Source != (SourceEntry{ID: removeID, Source: source}) {
+		t.Fatalf("Source effects = %+v", effects)
+	}
+
+	edgePlan := discover(cursor)
+	if !edgePlan.Pending() || edgePlan.ScannedEdges() != 3 {
+		t.Fatalf("Edge discovery did not measure three rows: %+v", edgePlan)
+	}
+	update(func(gen uint64, b Writer) error {
+		return rows.ReplaceSource(b, gen, grew, id(8), nil, &renewed)
+	})
+	cursor, effects = apply(edgePlan)
+	if len(effects.Edges) != 2 || effects.Edges[0].Key != mixed || effects.Edges[0].Removed ||
+		effects.Edges[0].Before.Base == nil || effects.Edges[1].Key != gone || !effects.Edges[1].Removed ||
+		effects.Edges[1].Before.LastOrdinal != 17 {
+		t.Fatalf("Edge effects = %+v", effects)
+	}
+	for range 2 { // No Vertex or Edge tombstones in this fixture.
+		plan := discover(cursor)
+		if plan.Pending() {
+			t.Fatal("unexpected tombstone before contribution family")
+		}
+		cursor = plan.Next()
+	}
+	floorPlan := discover(cursor)
+	update(func(gen uint64, b Writer) error {
+		return rows.PutFloor(b, gen, renewFloor, Floor{HLC: newer, Expiration: future})
+	})
+	cursor, effects = apply(floorPlan)
+	if !cursor.Done() || len(effects.Floors) != 1 || effects.Floors[0].Key != floor ||
+		effects.Floors[0].Floor.HLC != old {
+		t.Fatalf("tombstone progress/effects: %+v %+v", cursor, effects)
+	}
+	if err := db.WithCommittedSnapshot(func(gen uint64, snap *tarp.Snapshot) error {
+		vertex, found, err := rows.GetVertex(snap, gen, "renewed")
+		if err != nil || !found || vertex.Value != "new" {
+			t.Fatalf("renewed Vertex = %+v %t %v", vertex, found, err)
+		}
+		edge, found, err := rows.GetEdge(snap, gen, mixed)
+		if err != nil || !found || edge.Base != nil || edge.HLC != old {
+			t.Fatalf("mixed Edge = %+v %t %v", edge, found, err)
+		}
+		for key, want := range map[EdgeKey[string]]bool{gone: false, grew: true} {
+			_, found, err := rows.GetEdge(snap, gen, key)
+			if err != nil || found != want {
+				t.Fatalf("Edge %+v found=%t err=%v", key, found, err)
+			}
+		}
+		for k, ts := range map[FloorKey[string]]hlc.Timestamp{
+			{Kind: VertexBarrier, Key: "expired"}:                 old,
+			{Kind: EdgeBarrier, Tail: gone.Tail, Head: gone.Head}: old,
+			renewFloor: newer,
+		} {
+			f, found, err := rows.GetFloor(snap, gen, k)
+			if err != nil || !found || f.HLC != ts {
+				t.Fatalf("Floor %+v = %+v %t %v", k, f, found, err)
+			}
+		}
+		for id, want := range map[SourceID]Source{renewID: renewed, replaceID: replaced} {
+			actual, found, err := rows.GetSource(snap, gen, mixed, id)
+			if err != nil || !found || actual != want {
+				t.Fatalf("Source %+v = %+v %t %v", id, actual, found, err)
+			}
+		}
+		summary, err := rows.SummarizeEdgeSources(ctx, snap, gen, mixed, edge, now, nil)
+		if err != nil || summary.RetainedAdds != 2 || summary.Count != 1 || summary.Weight != renewed.Weight {
+			t.Fatalf("remaining ordered Sources = %+v %v", summary, err)
 		}
 		return nil
 	}); err != nil {

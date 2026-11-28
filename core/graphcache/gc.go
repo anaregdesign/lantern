@@ -12,7 +12,9 @@ import (
 // positive edge budget counts tail buckets; ScannedEdges exposes high-degree
 // tails that can still dominate a budgeted tick. Contribution counts include
 // expiry inside buckets that remain live, which the edge-expiration counter
-// cannot represent.
+// cannot represent. Managed-storage sweeps count individual durable expiries
+// and structural scans separately. They do not attribute an individual
+// expiration to a bucket that may also be removed on a later cut.
 type GCSweepStats struct {
 	ScannedTails                        int
 	ScannedEdges                        int
@@ -247,6 +249,10 @@ func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked(now time.Time) {
 			c.clearVertexHLCLocked(key)
 		}
 	}
+	c.shrinkVertexHLCLocked(before)
+}
+
+func (c *GraphCache[S, T]) shrinkVertexHLCLocked(before int) {
 	// Reclaim the oversized bucket array after a large drain. Go never shrinks a
 	// map after delete, so without this the map keeps the heap it sized for its
 	// high-water entry count even though len() has collapsed (#727). When the
@@ -279,6 +285,8 @@ func (c *GraphCache[S, T]) SetGCHooks(onExpire func(kind string, n int), onGCDur
 // carries a cursor across ticks so every tail is still reclaimed within bounded
 // time. n <= 0 (the default) restores the full single-tick sweep and clears any
 // in-flight cursor. Safe for concurrent use; takes effect on the next tick.
+// Managed storage applies the tail budget to structural Edge removal. It
+// discovers individual durable TTL expirations separately in bounded chunks.
 func (c *GraphCache[S, T]) SetGCEdgeBudget(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -289,16 +297,23 @@ func (c *GraphCache[S, T]) SetGCEdgeBudget(n int) {
 	if n == 0 {
 		c.gcSweepPlan = nil
 		c.gcSweepPos = 0
+		if c.storage != nil {
+			c.storage.structuralCursor = storageStructuralCursor[S]{}
+		}
 	}
 }
 
 // GCSweepBacklog reports how many tail buckets remain in the current
 // incremental sweep cycle (#744) — those not yet visited by flush(). It is 0
-// when the incremental sweep is disabled or a cycle has just completed, and
+// when the incremental sweep is disabled or a cycle has just completed. The
+// managed-storage count is an estimate based on tails at cycle start and
 // lets operators see when bounded cleanup is falling behind the write rate.
 func (c *GraphCache[S, T]) GCSweepBacklog() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if c.storage != nil && c.storage.structuralCursor.generation != 0 {
+		return c.storage.structuralCursor.remaining
+	}
 	return len(c.gcSweepPlan) - c.gcSweepPos
 }
 
@@ -339,36 +354,19 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			start := time.Now()
 			var vExpired, eExpired, dRemoved int
-			tick := func() error {
-				now := c.applicationTime()
-				vExpired = c.flushVerticesAt(now)
-				if vExpired > 0 {
-					c.mu.RLock()
-					index := c.searchIndex
-					incomplete := index != nil && index.Health() != search.IndexHealthy
-					c.mu.RUnlock()
-					if incomplete {
-						_ = c.RebuildSearchIndex()
-					}
-				}
-				eExpired, dRemoved = c.flushAt(now)
-
-				if c.storage != nil {
-					return c.flushStorage(ctx, now)
-				}
-				return nil
-			}
-			var maintenance func(func() error) error
 			c.hookMu.RLock()
+			var maintenance func(func() error) error
 			if c.storage != nil {
 				maintenance = c.storage.maintenance
 			}
 			c.hookMu.RUnlock()
+			var err error
 			if maintenance != nil {
-				if err := maintenance(tick); err != nil {
-					continue
-				}
-			} else if err := tick(); err != nil {
+				vExpired, eExpired, dRemoved, err = c.reclaimOnlineStorage(ctx, maintenance, c.applicationTime())
+			} else {
+				vExpired, eExpired, dRemoved, err = c.flushWatchTick(ctx, c.applicationTime())
+			}
+			if err != nil {
 				continue
 			}
 			d := time.Since(start)
@@ -392,4 +390,23 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 			return
 		}
 	}
+}
+
+// flushWatchTick preserves the cache-only and caller-managed storage paths.
+func (c *GraphCache[S, T]) flushWatchTick(ctx context.Context, now time.Time) (vertices, edges, dangling int, err error) {
+	vertices = c.flushVerticesAt(now)
+	if vertices > 0 {
+		c.mu.RLock()
+		index := c.searchIndex
+		incomplete := index != nil && index.Health() != search.IndexHealthy
+		c.mu.RUnlock()
+		if incomplete {
+			_ = c.RebuildSearchIndex()
+		}
+	}
+	edges, dangling = c.flushAt(now)
+	if c.storage != nil {
+		err = c.flushStorage(ctx, now)
+	}
+	return vertices, edges, dangling, err
 }

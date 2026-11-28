@@ -127,7 +127,7 @@ func TestVerifiedVertexBytesRejectsUnknownGraphFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, family := range []byte{0, sourceOrderFamily + 1} {
+	for i, family := range []byte{0, vertexExpiryFamily + 1} {
 		gen := uint64(i + 1)
 		key, err := familyPrefix(gen, family)
 		if err != nil {
@@ -146,6 +146,71 @@ func TestVerifiedVertexBytesRejectsUnknownGraphFamilies(t *testing.T) {
 		}
 		if err := s.Close(); err != nil || !errors.Is(got, ErrInvalidRow) {
 			t.Fatalf("family %d: verification %v, close %v", family, got, err)
+		}
+	}
+}
+
+func TestVerifiedVertexBytesChecksExpiryWatermark(t *testing.T) {
+	db, err := tarp.Open(t.TempDir(), tarp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := NewRows[string, string](tarp.StringCodec{}, tarp.StringCodec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := db.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var batch tarp.WriteBatch
+	deadline := time.Unix(100, 0)
+	err = StageVertexExpiryWatermark(t.Context(), snap, &batch, 1, deadline)
+	if err := errors.Join(err, snap.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.PutVertex(&batch, 1, "survivor", Vertex[string]{Value: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Apply(&batch); err != nil {
+		t.Fatal(err)
+	}
+	verify := func() (int, error) {
+		t.Helper()
+		snap, err := db.Snapshot()
+		if err != nil {
+			return 0, err
+		}
+		defer snap.Close()
+		count := 0
+		for v, err := range rows.VerifiedVertices(t.Context(), snap, 1) {
+			if err != nil {
+				return count, err
+			}
+			if v.Key != "survivor" || v.Vertex.Value != "kept" {
+				t.Fatalf("verified unexpected Vertex %+v", v)
+			}
+			count++
+		}
+		return count, nil
+	}
+	if count, err := verify(); err != nil || count != 1 {
+		t.Fatalf("valid watermark yielded %d Vertices, err=%v", count, err)
+	}
+	key, err := familyPrefix(1, vertexExpiryFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, malformed := range [][]byte{append(append([]byte(nil), key...), 1), key} {
+		if err := db.Put(malformed, []byte("invalid")); err != nil {
+			t.Fatal(err)
+		}
+		if count, err := verify(); !errors.Is(err, ErrInvalidRow) || count != 0 {
+			t.Fatalf("invalid watermark yielded %d Vertices, err=%v", count, err)
+		}
+		if err := db.Delete(malformed); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

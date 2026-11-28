@@ -82,7 +82,7 @@ func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
 		"vertices_expired", "edges_expired", "dangling_edges_removed",
 		"vertices_remaining", "edges_remaining", "duration_ms", "duration_ns",
 		"tails_scanned", "edges_scanned", "contributions_expired",
-		"contributions_compacted_in_live_edges", "tail_backlog",
+		"tail_backlog",
 	} {
 		if _, ok := rec[k]; !ok {
 			t.Errorf("missing field %q in record: %v", k, rec)

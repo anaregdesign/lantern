@@ -78,9 +78,9 @@ func TestStoredContributionDeleteStagesOnlyTargetedRows(t *testing.T) {
 	}
 	now = deadline
 	before := c.edges.bucket(pair.Tail, pair.Head)
-	before.load = func() ([]weightValue, error) {
+	before.load = func(*time.Time) (storedWeight, error) {
 		t.Error("exact contribution Delete loaded the entire bucket")
-		return nil, errors.New("full bucket load")
+		return storedWeight{}, errors.New("full bucket load")
 	}
 	keys := []EdgeContributionKey[string]{requested, missing, requested, last}
 	storageKeys := StorageKeys[string]{Contributions: keys}

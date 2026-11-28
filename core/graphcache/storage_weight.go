@@ -8,6 +8,14 @@ import (
 	"github.com/anaregdesign/tarp"
 )
 
+// The cold loader returns ordered aggregates for a time sample or raw
+// values when a writer needs to edit the bucket.
+type storedWeight struct {
+	values []weightValue
+	sum    float32
+	latest time.Time
+}
+
 // bindWeight installs a cold bucket descriptor after its exact contents have
 // been committed. Keep its Put floor, count and aggregate metadata, which
 // support causal checks and preflight budgets without loading a source.
@@ -17,6 +25,7 @@ func (s *storageResidency[S, T]) bindWeight(key graphstore.EdgeKey[S], w *weight
 	if w.cold {
 		return
 	}
+	w.storedSummaryInvalid = false
 	w.storedCount = len(w.values)
 	w.storedSum = w.sum
 	w.storedLatest = time.Time{}
@@ -42,8 +51,8 @@ func (s *storageResidency[S, T]) bindWeightLoader(key graphstore.EdgeKey[S], w *
 	if w.load != nil {
 		return
 	}
-	w.load = func() ([]weightValue, error) {
-		var values []weightValue
+	w.load = func(summaryAt *time.Time) (storedWeight, error) {
+		var state storedWeight
 		err := s.db.WithCommittedSnapshot(func(g uint64, snap *tarp.Snapshot) error {
 			e, found, err := s.rows.GetEdge(snap, g, key)
 			if err != nil {
@@ -52,8 +61,13 @@ func (s *storageResidency[S, T]) bindWeightLoader(key graphstore.EdgeKey[S], w *
 			if !found {
 				return graphstore.ErrInvalidRow
 			}
+			if summaryAt != nil {
+				summary, err := s.rows.SummarizeEdgeSources(context.Background(), snap, g, key, e, *summaryAt, nil)
+				state.sum, state.latest = summary.Weight, summary.Latest
+				return err
+			}
 			if base := e.Base; base != nil {
-				values = append(values, weightValue{value: base.Weight, expiration: base.Expiration, hlc: base.HLC, derivedAggregate: base.DerivedAggregate})
+				state.values = append(state.values, weightValue{value: base.Weight, expiration: base.Expiration, hlc: base.HLC, derivedAggregate: base.DerivedAggregate})
 			}
 			for row, err := range s.rows.Sources(context.Background(), snap, g, key) {
 				if err != nil {
@@ -63,14 +77,14 @@ func (s *storageResidency[S, T]) bindWeightLoader(key graphstore.EdgeKey[S], w *
 					return graphstore.ErrInvalidRow
 				}
 				src := row.Source
-				values = append(values, weightValue{value: src.Weight, expiration: src.Expiration, hlc: src.HLC, contribID: row.ID.ContribID, ordinal: row.ID.Ordinal})
+				state.values = append(state.values, weightValue{value: src.Weight, expiration: src.Expiration, hlc: src.HLC, contribID: row.ID.ContribID, ordinal: row.ID.Ordinal})
 			}
 			return nil
 		})
 		if err != nil {
-			return nil, s.fence(err)
+			return storedWeight{}, s.fence(err)
 		}
-		return values, nil
+		return state, nil
 	}
 }
 
@@ -80,11 +94,11 @@ func (w *weight) loadLocked(now time.Time) bool {
 	if !w.cold || w.values != nil {
 		return true
 	}
-	values, err := w.load()
+	state, err := w.load(nil)
 	if err != nil {
 		return false
 	}
-	w.values = values
+	w.values = state.values
 	w.needsSort = true
 	w.flushLockedAt(now)
 	return true

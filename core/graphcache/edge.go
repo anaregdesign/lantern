@@ -36,18 +36,19 @@ type weightValue struct {
 type weight struct {
 	// Cold buckets keep their lookup and causal metadata in RAM. Source
 	// payloads are borrowed from the active Tarp generation per operation.
-	load           func() ([]weightValue, error)
-	cold           bool
-	storedCount    int
-	storedExpiry   time.Time
-	storedExplicit bool
-	storedSum      float32
-	storedLatest   time.Time
-	changes        sourceChanges
-	lastOrdinal    uint64
-	mu             sync.Mutex
-	values         []weightValue
-	sum            float32
+	load                 func(*time.Time) (storedWeight, error)
+	storedSummaryInvalid bool
+	cold                 bool
+	storedCount          int
+	storedExpiry         time.Time
+	storedExplicit       bool
+	storedSum            float32
+	storedLatest         time.Time
+	changes              sourceChanges
+	lastOrdinal          uint64
+	mu                   sync.Mutex
+	values               []weightValue
+	sum                  float32
 	// lastFlushLen is len(values) immediately after the most recent
 	// flushLocked. It anchors the amortized-compaction trigger in
 	// addWithExpiration: a flush fires when len(values) exceeds
@@ -362,7 +363,7 @@ func (w *weight) isZeroAndPruned() (bool, int) {
 func (w *weight) isZeroAndPrunedAt(now time.Time) (bool, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.cold && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
+	if w.cold && !w.storedSummaryInvalid && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
 		return w.storedSum == 0 && !w.storedExplicit, 0
 	}
 	if !w.loadLocked(now) {
@@ -439,8 +440,17 @@ func (w *weight) snapshotAt(now time.Time) (sum float32, latest time.Time, nonZe
 // that has locked all of its buckets before sampling one observation time.
 // Caller must hold w.mu.
 func (w *weight) snapshotLockedAt(now time.Time) (sum float32, latest time.Time, nonZero bool) {
-	if w.cold && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
-		return w.storedSum, w.storedLatest, w.storedSum != 0
+	if w.cold {
+		if !w.storedSummaryInvalid && (w.storedExpiry.IsZero() || now.Before(w.storedExpiry)) {
+			return w.storedSum, w.storedLatest, w.storedSum != 0
+		}
+		if w.storedSummaryInvalid {
+			state, err := w.load(&now)
+			if err != nil {
+				return 0, time.Time{}, false
+			}
+			return state.sum, state.latest, state.sum != 0
+		}
 	}
 	if !w.loadLocked(now) {
 		return 0, time.Time{}, false

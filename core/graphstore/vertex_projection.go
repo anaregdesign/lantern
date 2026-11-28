@@ -79,17 +79,16 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 			yield(zero, err)
 			return
 		}
-		last, err := familyPrefix(gen, sourceOrderFamily)
+		watermark, err := familyPrefix(gen, vertexExpiryFamily)
 		if err != nil {
 			yield(zero, err)
 			return
 		}
-		// The recognized families occupy the contiguous interval from Vertex
-		// to ordered Sources. Look outside it for undeclared graph records.
+		// The expiry watermark is the last graph family and owns one exact
+		// key. Reject undeclared families and any suffix on that key.
 		header := prefixBounds(first[:len(first)-1])
 		vertices, metadata := prefixBounds(first), prefixBounds(projection)
-		_, graphEnd := tarp.PrefixRange(last)
-		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {graphEnd, header.upper}} {
+		for _, bound := range []scanBounds{{header.lower, vertices.lower}, {append(bytes.Clone(watermark), 0), header.upper}} {
 			for _, err := range snap.KeysRange(ctx, bound.lower, bound.upper) {
 				if err == nil {
 					err = fmt.Errorf("%w: unknown graph row family", ErrInvalidRow)
@@ -97,6 +96,10 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 				yield(zero, err)
 				return
 			}
+		}
+		if _, err := VertexExpiryWatermark(ctx, snap, gen); err != nil {
+			yield(zero, err)
+			return
 		}
 		next, stop := iter.Pull2(snap.ScanRange(ctx, metadata.lower, metadata.upper))
 		defer stop()
@@ -119,7 +122,7 @@ func (r *Rows[K, V]) VerifiedVertexBytes(ctx context.Context, snap *tarp.Snapsho
 				yield(zero, err)
 				return
 			}
-			if !bytes.Equal(row.Key[len(first):], meta.Key[len(last):]) || !bytes.Equal(row.Value[:metadataSize], meta.Value) {
+			if !bytes.Equal(row.Key[len(first):], meta.Key[len(projection):]) || !bytes.Equal(row.Value[:metadataSize], meta.Value) {
 				yield(zero, fmt.Errorf("%w: mismatched vertex projection", ErrInvalidRow))
 				return
 			}

@@ -13,7 +13,7 @@ import (
 //   - LANTERN_DATA_DIR             (default tarp.db) — node-owned graph database directory
 //   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
 //   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
-//   - LANTERN_GC_EDGE_BUDGET             (default 0) — tail buckets scanned per tick; 0 = full sweep
+//   - LANTERN_GC_EDGE_BUDGET             (default 0) — zero-weight/dangling Edge tails per tick; 0 = full sweep
 //   - LANTERN_MAX_VERTICES               (default 0 = unlimited)
 //   - LANTERN_MAX_EDGES                  (default 0 = unlimited)
 //   - LANTERN_MAX_VERTEX_CAUSAL_ENTRIES  (default 0 = unlimited)
